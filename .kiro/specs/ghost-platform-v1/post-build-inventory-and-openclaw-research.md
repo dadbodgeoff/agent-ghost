@@ -1103,3 +1103,269 @@ distributing corrupt files), it's directly applicable to agent trust scoring:
   each agent computes its contribution and shares with neighbors. No central authority needed.
   However, for GHOST's initial deployment (single-host, few agents), centralized computation
   in the gateway is simpler and sufficient.
+**Recommended GHOST ghost-mesh Design**:
+
+Build ghost-mesh as an A2A-compatible protocol layer with GHOST-specific security extensions:
+
+1. **Agent Cards** — Extend A2A Agent Cards with GHOST-specific fields: Ed25519 public key,
+   convergence profile, trust score, SybilGuard lineage hash. Serve at
+   `/.well-known/agent.json` on the gateway's API server. Signed with the agent's Ed25519 key
+   so remote agents can verify authenticity.
+
+2. **Trust Scoring** — Implement EigenTrust over the existing cortex-crdt infrastructure.
+   Local trust values derived from: task completion rate, policy compliance history, convergence
+   score stability, message signing consistency. Global trust computed via power iteration on
+   the gateway (centralized for v1, distributed later). Trust scores stored in cortex-crdt
+   (replicated across agents via CRDT merge). Pre-trusted set: agents with >30 days history
+   and convergence level consistently L0-L1.
+
+3. **Task Delegation** — Build on GHOST's existing delegation state machine
+   (OFFERED→ACCEPTED/REJECTED→COMPLETED/DISPUTED) but add A2A-compatible JSON-RPC endpoints.
+   This allows GHOST agents to delegate to non-GHOST A2A agents and vice versa.
+
+4. **Memory Poisoning Defense** — Temporal attack detection: if an agent's memory writes
+   cluster suspiciously (many writes in short period, writes that contradict recent history,
+   writes with anomalous importance scores), flag for review. Leverage cortex-validation's
+   existing D3 (contradiction detection) and D4 (pattern alignment) dimensions.
+
+5. **Cascade Circuit Breakers** — If agent A delegates to agent B, and B's convergence score
+   spikes during the task, A's circuit breaker trips for B-delegated tasks. Prevents a
+   compromised agent from propagating damage through delegation chains. Configurable depth
+   limit (default 3 hops).
+
+**Effort Estimate**: ~4-6 weeks for a functional ghost-mesh with A2A compatibility and
+EigenTrust integration.
+
+---
+
+### Item 4: Network Egress Policy Engine
+
+**Problem**: GHOST's AgentIsolation modes (InProcess, Process, Container) control process-level
+isolation, but there's no fine-grained network egress control. A compromised agent (via prompt
+injection or malicious skill) could exfiltrate data to any reachable endpoint. Docker's
+`--network none` is too coarse (blocks all network access including legitimate LLM API calls).
+What's needed is per-agent, per-domain allowlisting.
+
+**eBPF cgroup-based Filtering** (Linux)
+
+eBPF (extended Berkeley Packet Filter) enables programmable network filtering at the kernel
+level without modifying the kernel itself. For GHOST's use case:
+
+- **cgroup attachment**: Each agent process (or container) runs in its own cgroup. An eBPF
+  program attached to the cgroup's `connect4`/`connect6` hooks intercepts every outbound
+  TCP connection attempt BEFORE the connection is established.
+
+- **Per-agent allowlists**: The eBPF program checks the destination IP against a per-cgroup
+  allowlist stored in an eBPF map (hash map of allowed IPs/CIDRs). Connections to non-allowed
+  destinations are rejected with EPERM. DNS resolution happens in userspace first, so the
+  eBPF program sees resolved IPs.
+
+- **Aya Crate** (crates.io/crates/aya): Pure-Rust eBPF framework. Write eBPF programs in
+  Rust (compiled to BPF bytecode via `aya-bpf`), load and manage them from userspace via
+  `aya`. No C toolchain or libbpf dependency. Actively maintained, used in production by
+  Cloudflare and others.
+- **CargoWall**: An eBPF-based firewall specifically designed for container and LLM agent
+  security. Demonstrates the pattern of using eBPF cgroup filters for AI agent network
+  isolation. Validates that this approach is production-viable for the exact use case GHOST
+  needs.
+
+**macOS Alternative**
+
+eBPF is Linux-only. macOS requires different approaches:
+
+- **Network Extension Framework** (NEFilterProvider): Apple's official API for content filtering.
+  Requires a System Extension (not a kernel extension). Can inspect and block outbound connections
+  per-process. Requires Apple Developer Program membership and notarization. Complex to implement
+  but provides the same per-process network control as eBPF on Linux.
+
+- **pf (Packet Filter) Rules**: macOS includes pf (from OpenBSD). Can create per-user or
+  per-anchor rules that restrict outbound connections. Less granular than eBPF (no per-process
+  control without additional tooling) but simpler to implement. Requires root privileges to
+  modify pf rules.
+
+- **Practical Recommendation for macOS**: For development/homelab use, pf rules with per-agent
+  anchors are sufficient. For production macOS deployments (rare — most production will be
+  Linux), Network Extension is the proper solution.
+
+**Recommended GHOST Integration Design**:
+
+- Configuration in ghost.yml per agent:
+  ```yaml
+  agents:
+    jarvis:
+      network:
+        egress_policy: allowlist  # or "unrestricted" (default for dev)
+        allowed_domains:
+          - api.anthropic.com
+          - api.openai.com
+          - generativelanguage.googleapis.com
+          - "*.slack.com"  # for Slack channel adapter
+        blocked_domains:
+          - "*.pastebin.com"
+          - "*.ngrok.io"
+        log_violations: true
+        alert_on_violation: true  # emit TriggerEvent
+  ```
+- New `ghost-egress` crate with `EgressPolicy` trait and three implementations:
+  - `EbpfEgressPolicy` (Linux, requires CAP_BPF) — eBPF cgroup filter via Aya
+  - `PfEgressPolicy` (macOS) — pf anchor rules via subprocess
+  - `ProxyEgressPolicy` (cross-platform fallback) — localhost HTTP proxy (like ghost-proxy)
+    that only forwards to allowed domains. Agent's HTTP client configured to use the proxy.
+    No kernel privileges needed. Slightly higher latency but works everywhere.
+
+- Integration with AgentIsolation modes:
+  - InProcess: ProxyEgressPolicy (can't do per-thread network filtering)
+  - Process: EbpfEgressPolicy on Linux, PfEgressPolicy on macOS
+  - Container: Docker network policy (already supported via --network and iptables)
+
+- Violation events feed into AutoTriggerEvaluator. Configurable threshold: N violations in
+  M minutes → QUARANTINE.
+
+**Effort Estimate**: ~2-3 weeks. ProxyEgressPolicy (cross-platform fallback) is ~3 days.
+eBPF implementation is ~1-2 weeks. macOS pf is ~2-3 days.
+
+---
+
+### Item 5: Mobile Companion Apps
+
+**Problem**: GHOST's SvelteKit dashboard is web-only. For a "24/7 Jarvis" experience, users
+need native mobile apps with push notifications (approval requests, convergence alerts, kill
+switch notifications), quick actions (approve/reject proposals, trigger kill switch), and
+real-time status monitoring.
+
+**Tauri 2.0** (Stable release: October 2024)
+
+Tauri 2.0 is the leading Rust-based framework for cross-platform applications, and its 2.0
+release made iOS and Android first-class citizens alongside desktop (macOS, Windows, Linux):
+- **Architecture**: Rust backend (business logic, system APIs) + web frontend (UI via system
+  WebView). On mobile: WKWebView on iOS, WebView2/Android WebView on Android. The Rust backend
+  compiles to a native library (.dylib/.so) that the platform app loads.
+
+- **Frontend Reuse**: GHOST's existing SvelteKit dashboard can be directly reused as the Tauri
+  frontend with minimal modifications. SvelteKit's adapter-static generates a static site that
+  Tauri bundles. The API client already exists — just needs to point to the remote gateway
+  instead of localhost.
+
+- **Rust Backend Reuse**: Tauri's Rust backend can import GHOST crates directly. For example,
+  the mobile app could use ghost-signing for local key management, itp-protocol for event
+  parsing, or cortex-core types for type-safe API responses.
+
+- **Push Notifications**: Tauri 2.0 has a notification plugin (`tauri-plugin-notification`) for
+  local notifications. For remote push notifications (the critical use case — gateway sends
+  alert to phone):
+  - **iOS**: Apple Push Notification service (APNs). Gateway sends push via APNs HTTP/2 API.
+    Requires Apple Developer Program ($99/year), push certificate, and device token registration.
+  - **Android**: Firebase Cloud Messaging (FCM). Gateway sends push via FCM HTTP v1 API.
+    Requires Firebase project (free tier sufficient).
+  - **Implementation**: New `ghost-push` module in ghost-gateway. On convergence alert, kill
+    switch trigger, or proposal requiring approval → send push notification via APNs/FCM.
+    Device tokens registered via the mobile app's settings screen and stored in ghost.yml or
+    SQLite.
+
+- **Quick Actions**: iOS supports actionable notifications (approve/reject buttons directly
+  on the notification). Android supports notification actions. These map directly to GHOST's
+  proposal approval workflow — user taps "Approve" on notification → API call to
+  POST /api/proposals/{id}/approve.
+**PWA Alternative** (Cheaper, Faster)
+
+Before investing in native apps, a Progressive Web App (PWA) could cover 80% of the use case:
+
+- GHOST's SvelteKit dashboard already runs in a browser. Adding a `manifest.json` and service
+  worker makes it installable as a PWA on both iOS and Android.
+- **Web Push API**: Supported on Android (Chrome, Firefox, Edge) and macOS Safari. NOT supported
+  on iOS Safari as of early 2026 for third-party web apps (Apple restricts Web Push to apps
+  added to Home Screen, and even then it's limited). This is the main limitation.
+- **Offline Support**: Service worker caches the dashboard shell. API calls fail gracefully
+  when offline, show cached last-known state.
+- **Cost**: ~2-3 days to add PWA support to the existing SvelteKit dashboard. No app store
+  submission, no Apple Developer Program fee.
+
+**Recommended Approach**:
+
+1. **Phase 1 (Post-v1, immediate)**: PWA support for the SvelteKit dashboard. ~2-3 days.
+   Covers Android push notifications and desktop. iOS gets installable app but no push.
+
+2. **Phase 2 (Post-v1, when needed)**: Tauri 2.0 mobile apps for iOS push notifications and
+   native quick actions. ~3-4 weeks for both platforms. Reuse SvelteKit frontend, add Rust
+   backend for local key management and push token registration.
+
+**Effort Estimate**: PWA: 2-3 days. Full Tauri mobile: 3-4 weeks.
+
+---
+
+### Item 6: OAuth Brokering Service
+
+**Problem**: GHOST agents need to interact with third-party APIs (Gmail, GitHub, Slack, Google
+Calendar, etc.) on behalf of the user. Currently, ghost-skills' CredentialBroker handles
+skill-level opaque tokens, but there's no platform-wide OAuth 2.0 flow management. The agent
+should never see raw OAuth access/refresh tokens — it should only know "I have access to
+Gmail" and the platform handles the actual authentication.
+**Design Decision: Build Own vs. Integrate External**
+
+Option A — **External Service (Composio, Nango, Paragon)**:
+- Composio (composio.dev) is the most popular for AI agent OAuth brokering. Handles 250+
+  integrations. Agent gets a connection ID, Composio handles OAuth flows, token storage,
+  refresh, and API execution.
+- Pros: Immediate access to 250+ integrations, no OAuth implementation work, handles edge
+  cases (token refresh races, provider-specific quirks).
+- Cons: External dependency (SaaS), data flows through third-party servers (conflicts with
+  GHOST's local-first philosophy), monthly cost, vendor lock-in.
+
+Option B — **Build Own (ghost-oauth)**:
+- Self-hosted OAuth broker running as a separate process (or module in ghost-gateway).
+- Handles OAuth 2.0 Authorization Code + PKCE flows for configured providers.
+- Stores tokens in encrypted vault (age encryption, vault key in OS keychain via ghost-secrets).
+- Agent receives opaque reference IDs. When agent calls a tool that needs OAuth, the broker:
+  1. Looks up the reference ID → finds the encrypted token
+  2. Decrypts the token (in-memory, zeroize after use)
+  3. Executes the API call server-side
+  4. Returns the result to the agent
+  5. Agent never sees the token
+- Pros: Fully local, no external dependency, aligns with GHOST philosophy.
+- Cons: Must implement per-provider OAuth quirks, token refresh logic, and maintain provider
+  configurations. Initial effort is higher.
+
+**Recommended Approach**: Build `ghost-oauth` (Option B) for core integrations (Gmail, GitHub,
+Slack, Google Calendar — the 80% use case), with an optional Composio adapter for the long
+tail of integrations. This preserves local-first while providing escape hatch for niche APIs.
+**ghost-oauth Architecture**:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   ghost-gateway                      │
+│                                                      │
+│  Agent: "Read my latest Gmail"                       │
+│    ↓                                                 │
+│  ToolExecutor: tool=gmail_read, ref_id=gmail-user-1  │
+│    ↓                                                 │
+│  ghost-oauth broker:                                 │
+│    1. Lookup ref_id → encrypted token blob           │
+│    2. Decrypt via ghost-secrets (keychain)            │
+│    3. Check token expiry → refresh if needed          │
+│    4. Execute Gmail API call server-side              │
+│    5. Return result to agent                          │
+│    6. Zeroize token from memory                       │
+│                                                      │
+│  Agent sees: {emails: [...]}                         │
+│  Agent never sees: Bearer ya29.a0AfH6SM...           │
+└─────────────────────────────────────────────────────┘
+```
+
+**OAuth 2.0 PKCE Flow** (for initial authorization):
+
+1. User clicks "Connect Gmail" in SvelteKit dashboard.
+2. ghost-oauth generates code_verifier (random 43-128 chars) and code_challenge (SHA-256 hash).
+3. Dashboard redirects user to Google's OAuth consent screen with code_challenge.
+4. User authorizes. Google redirects back to ghost-gateway's callback endpoint with auth code.
+5. ghost-oauth exchanges auth code + code_verifier for access_token + refresh_token.
+6. Tokens encrypted with age, stored in `~/.ghost/oauth/tokens/{provider}/{ref_id}.age`.
+7. Vault key stored in OS keychain via ghost-secrets.
+8. Agent receives only the ref_id (e.g., "gmail-user-1").
+
+**Token Lifecycle Management**:
+- Access tokens: short-lived (typically 1 hour). Refresh automatically on 401.
+- Refresh tokens: long-lived. Store encrypted. Rotate when provider issues new refresh token.
+- Revocation: user clicks "Disconnect" in dashboard → delete encrypted token file + revoke
+  at provider's revocation endpoint.
+- Kill switch integration: QUARANTINE/KILL_ALL → all OAuth reference IDs become non-functional
+  (broker refuses to decrypt/execute). Tokens remain encrypted on disk for forensic review.

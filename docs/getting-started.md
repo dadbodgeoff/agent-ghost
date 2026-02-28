@@ -1,12 +1,17 @@
-# Getting Started
+# Getting Started with GHOST Platform
+
+> GHOST: General Hybrid Orchestrated Self-healing Taskrunner
 
 ## Prerequisites
 
 - Rust 1.80+ with `cargo`
-- Node.js 18+ (for dashboard and WhatsApp bridge)
 - SQLite 3.35+ (bundled via `rusqlite`)
+- Node.js 18+ (for WhatsApp bridge and dashboard)
+- An LLM API key (Anthropic, OpenAI, Gemini, or Ollama)
 
-## Installation
+## Quick Start
+
+### 1. Build from Source
 
 ```bash
 # Clone the repository
@@ -17,69 +22,105 @@ cd ghost
 cargo build --release
 
 # The gateway binary is at target/release/ghost
+# The convergence monitor is at target/release/convergence-monitor
 ```
 
-## First Agent Setup
+### 2. Create Configuration
 
-1. Create a configuration file:
-
-```bash
-cp schemas/ghost-config.example.yml ghost.yml
-```
-
-2. Edit `ghost.yml` with your agent configuration:
+Create `~/.ghost/config/ghost.yml` (or use the local `ghost.yml`):
 
 ```yaml
-agents:
-  - name: my-agent
-    model: gpt-4
-    channel: cli
+gateway:
+  bind: "127.0.0.1"
+  port: 18789
+  db_path: "~/.ghost/data/ghost.db"
 
-models:
-  providers:
-    - name: openai
-      api_key: ${OPENAI_API_KEY}
+agents:
+  - name: "my-agent"
+    spending_cap: 5.0
+    capabilities:
+      - "web_search"
+      - "file_read"
+      - "memory_write"
+    isolation: inprocess
+
+channels:
+  - channel_type: cli
+    agent: "my-agent"
 
 convergence:
-  profile: standard
+  profile: "standard"
 ```
 
-3. Set your API key:
+### 3. Set Up Agent Identity
 
 ```bash
-export OPENAI_API_KEY="your-key-here"
+mkdir -p ~/.ghost/agents/my-agent/cognition
 ```
 
-4. Start the gateway:
+Create `~/.ghost/agents/my-agent/cognition/SOUL.md`:
+
+```markdown
+# Soul Document
+
+You are a helpful AI assistant. You operate within the GHOST platform
+safety framework. You use simulation-framed language when discussing
+internal states.
+```
+
+Create `~/.ghost/agents/my-agent/cognition/IDENTITY.md`:
+
+```markdown
+# Identity
+
+- Name: My Agent
+- Voice: Professional, helpful
+- Emoji: 🤖
+```
+
+### 4. Set Environment Variables
 
 ```bash
+export GHOST_TOKEN="your-secret-token"
+export ANTHROPIC_API_KEY="sk-ant-..."  # or OPENAI_API_KEY, etc.
+```
+
+### 5. Start the Platform
+
+```bash
+# Terminal 1: Start the convergence monitor
+./target/release/convergence-monitor
+
+# Terminal 2: Start the gateway
 ./target/release/ghost serve
-```
 
-5. Chat with your agent:
-
-```bash
+# Terminal 3: Chat with your agent
 ./target/release/ghost chat
 ```
 
-## Directory Structure
+### 6. Verify It's Working
 
-After first run, GHOST creates:
+```bash
+# Check gateway health
+curl http://127.0.0.1:18789/api/health
 
+# Check convergence monitor health
+curl http://127.0.0.1:18790/health
 ```
-~/.ghost/
-├── agents/{name}/
-│   ├── keys/           # Ed25519 keypairs
-│   ├── cognition/      # SOUL.md, IDENTITY.md, MEMORY.md
-│   └── sessions/       # Session JSONL files
-├── data/
-│   └── convergence_state/  # Per-agent convergence JSON
-├── monitor.sock        # Unix socket for monitor IPC
-└── ghost.db            # SQLite database
+
+## Docker Quick Start
+
+```bash
+cd deploy
+docker-compose up -d
 ```
+
+This starts the gateway, convergence monitor, and dashboard.
 
 ## Next Steps
 
-- [Configuration Reference](configuration.md) for full `ghost.yml` options
-- [Convergence Safety](convergence-safety.md) to understand monitoring
-- [Skill Authoring](skill-authoring.md) to extend agent capabilities
+- [Configuration Reference](configuration.md) — full ghost.yml options
+- [Skill Authoring](skill-authoring.md) — writing custom skills
+- [Channel Adapters](channel-adapters.md) — connecting Telegram, Discord, etc.
+- [Convergence Safety](convergence-safety.md) — understanding the safety system
+- [Architecture](architecture.md) — how it all fits together

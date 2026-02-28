@@ -1,97 +1,168 @@
 # Configuration Reference
 
-All GHOST configuration lives in `ghost.yml` at the project root.
+GHOST Platform is configured via `ghost.yml`. The gateway searches for config in this order:
+
+1. CLI argument: `ghost serve --config /path/to/ghost.yml`
+2. Environment variable: `GHOST_CONFIG=/path/to/ghost.yml`
+3. User config: `~/.ghost/config/ghost.yml`
+4. Local config: `./ghost.yml`
 
 ## Environment Variable Substitution
 
-Use `${VAR_NAME}` syntax for secrets:
+Use `${VAR_NAME}` syntax in ghost.yml to reference environment variables:
 
 ```yaml
+security:
+  token: "${GHOST_TOKEN}"
 models:
   providers:
-    - name: openai
-      api_key: ${OPENAI_API_KEY}
+    - name: anthropic
+      api_key_env: "ANTHROPIC_API_KEY"
 ```
 
-Missing variables produce a descriptive error at startup.
+## Full Schema Reference
 
-## Agents
+### gateway
+
+```yaml
+gateway:
+  bind: "127.0.0.1"     # Bind address (default: 127.0.0.1)
+  port: 18789            # Port (default: 18789, matches OpenClaw)
+  db_path: "~/.ghost/data/ghost.db"  # SQLite database path
+```
+
+### agents
 
 ```yaml
 agents:
-  - name: my-agent
-    model: gpt-4
-    channel: cli
-    isolation: in_process  # in_process | process | container
-    template: personal     # personal | developer | researcher
+  - name: "ghost"              # Agent name (unique identifier)
+    spending_cap: 5.0          # Daily spending cap in USD (default: 5.0)
+    capabilities:              # Explicit capability grants (deny-by-default)
+      - "web_search"
+      - "file_read"
+      - "file_write"
+      - "memory_write"
+      - "shell_sandboxed"
+    isolation: inprocess        # inprocess | process | container
+    template: null              # Optional: personal | developer | researcher
 ```
 
-## Models
+### channels
 
 ```yaml
-models:
-  providers:
-    - name: openai
-      api_key: ${OPENAI_API_KEY}
-    - name: anthropic
-      api_key: ${ANTHROPIC_API_KEY}
-    - name: ollama
-      base_url: http://localhost:11434
-  fallback_order: [openai, anthropic, ollama]
+channels:
+  - channel_type: cli          # cli | websocket | telegram | discord | slack | whatsapp
+    agent: "ghost"             # Agent name to bind to
+    options: {}                # Channel-specific options
 ```
 
-## Convergence
+Channel-specific options:
+
+```yaml
+# Telegram
+- channel_type: telegram
+  agent: "ghost"
+  options:
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+
+# Discord
+- channel_type: discord
+  agent: "ghost"
+  options:
+    bot_token: "${DISCORD_BOT_TOKEN}"
+    guild_id: "123456789"
+
+# Slack
+- channel_type: slack
+  agent: "ghost"
+  options:
+    bot_token: "${SLACK_BOT_TOKEN}"
+    app_token: "${SLACK_APP_TOKEN}"
+
+# WhatsApp (requires Node.js 18+ and baileys-bridge)
+- channel_type: whatsapp
+  agent: "ghost"
+  options:
+    bridge_path: "extension/bridges/baileys-bridge"
+
+# WebSocket
+- channel_type: websocket
+  agent: "ghost"
+  options:
+    bind: "127.0.0.1"
+    port: 18791
+```
+
+### convergence
 
 ```yaml
 convergence:
-  profile: standard  # standard | research | companion | productivity
-  calibration_sessions: 10
-  contacts:
-    email: ${ALERT_EMAIL}
-    webhook: ${ALERT_WEBHOOK_URL}
-  scoring:
-    signal_weights: [0.143, 0.143, 0.143, 0.143, 0.143, 0.143, 0.143]
-    level_thresholds: [0.3, 0.5, 0.7, 0.85]
-  intervention:
-    cooldown_minutes_by_level: [0, 0, 5, 240, 1440]
-    max_session_duration_minutes: 360
-    min_session_gap_minutes: 30
+  profile: "standard"          # standard | research | companion | productivity
+  monitor:
+    address: "127.0.0.1:18790" # Convergence monitor address
+  contacts:                    # Emergency contacts for Level 3+ interventions
+    - contact_type: email
+      target: "[email]"
+    - contact_type: webhook
+      target: "https://hooks.example.com/ghost"
 ```
 
 ### Convergence Profiles
 
-| Profile | Description | Key Differences |
-|---------|-------------|-----------------|
-| standard | Default balanced profile | Equal signal weights |
-| research | For research assistants | Higher thresholds, relaxed session limits |
-| companion | For companion agents | Lower thresholds, stricter monitoring |
-| productivity | For task-focused agents | Minimal emotional signal weight |
+| Profile | Description | Threshold Adjustments |
+|---------|-------------|----------------------|
+| standard | Default balanced profile | Default thresholds |
+| research | Relaxed for research use | Higher thresholds, longer sessions allowed |
+| companion | Stricter for companion use | Lower thresholds, more sensitive |
+| productivity | Task-focused | Reduced emotional signal weight |
 
-## Channels
+### security
 
 ```yaml
-channels:
-  cli:
-    enabled: true
-  websocket:
-    enabled: true
-    port: 8080
-  telegram:
-    bot_token: ${TELEGRAM_BOT_TOKEN}
-  discord:
-    bot_token: ${DISCORD_BOT_TOKEN}
+security:
+  soul_drift_threshold: 0.15   # Alert threshold for identity drift (default: 0.15)
 ```
 
-## Backup
+### models
+
+```yaml
+models:
+  providers:
+    - name: anthropic
+      api_key_env: "ANTHROPIC_API_KEY"
+    - name: openai
+      api_key_env: "OPENAI_API_KEY"
+    - name: ollama
+      api_key_env: null         # Ollama doesn't need an API key
+```
+
+### backup
 
 ```yaml
 backup:
-  enabled: true
-  interval: daily  # daily | weekly
-  retention_days: 30
-  encryption_key: ${GHOST_BACKUP_KEY}
+  enabled: false               # Enable automatic backups
+  interval: "daily"            # daily | weekly
+  retention_count: 7           # Number of backups to keep
 ```
 
-## Hot-Reload
+## Hot Reload
 
-Non-critical settings (convergence weights, channel configs) can be changed without restart. Critical settings (agent isolation mode, database path) require a restart.
+Non-critical settings can be changed without restarting the gateway:
+- Convergence profile
+- Spending caps
+- Channel options
+- Backup settings
+
+Critical settings require a restart:
+- Gateway bind/port
+- Database path
+- Agent isolation mode
+
+## Validation
+
+Validate your config against the JSON schema:
+
+```bash
+# The schema is at schemas/ghost-config.schema.json
+ghost serve --config ghost.yml  # Validates on startup
+```
