@@ -1,0 +1,77 @@
+# GHOST Platform Configuration — ghost.yml
+# Full reference: docs/configuration.md
+# Schema: schemas/ghost-config.schema.json
+
+gateway:
+  bind: "127.0.0.1"
+  port: 18789
+  db_path: "~/.ghost/data/ghost.db"
+
+agents:
+  - name: "aria"
+    spending_cap: 5.0
+    capabilities:
+      - "web_search"
+      - "file_read"
+      - "file_write"
+      - "memory_write"
+    isolation: inprocess
+    template: "personal"
+
+channels:
+  - channel_type: cli
+    agent: "aria"
+  - channel_type: websocket
+    agent: "aria"
+    options:
+      bind: "127.0.0.1"
+      port: 18791
+
+models:
+  default_provider: "anthropic"
+  providers:
+    anthropic:
+      api_key: "${ANTHROPIC_API_KEY}"
+      model: "claude-sonnet-4-20250514"
+    openai:
+      api_key: "${OPENAI_API_KEY}"
+      model: "gpt-4o"
+
+security:
+  ghost_token: "${GHOST_TOKEN}"
+  mtls_enabled: false
+  cors_origins:
+    - "http://127.0.0.1:5173"
+
+convergence:
+  profile: "standard"
+  monitor:
+    host: "127.0.0.1"
+    port: 18790
+    socket_path: "~/.ghost/monitor.sock"
+  thresholds:
+    level_1: 0.3
+    level_2: 0.5
+    level_3: 0.7
+    level_4: 0.85
+  contacts:
+    email: "${GHOST_CONTACT_EMAIL}"
+    webhook: "${GHOST_WEBHOOK_URL}"
+
+heartbeat:
+  interval_minutes: 30
+  active_hours:
+    start: "08:00"
+    end: "22:00"
+  timezone: "America/New_York"
+  cost_ceiling: 0.50
+
+proxy:
+  enabled: false
+  port: 8080
+
+backup:
+  enabled: true
+  interval: "daily"
+  retention_count: 7
+  backup_dir: "~/.ghost/backups"

@@ -1,0 +1,36 @@
+# systemd unit file for ghost-gateway (Req 40 AC3).
+
+[Unit]
+Description=GHOST Platform Gateway
+After=network.target
+Documentation=https://github.com/ghost-platform/ghost
+
+[Service]
+Type=simple
+User=ghost
+Group=ghost
+ExecStart=/usr/local/bin/ghost serve --config /etc/ghost/ghost.yml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+
+# Environment
+Environment=RUST_LOG=info
+EnvironmentFile=-/etc/ghost/ghost.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/ghost /home/ghost/.ghost
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

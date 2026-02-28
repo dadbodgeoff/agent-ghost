@@ -1,0 +1,16 @@
+[package]
+name = "cortex-privacy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Privacy patterns including emotional/attachment content detection for ConvergenceAwareFilter"
+
+[dependencies]
+cortex-core = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

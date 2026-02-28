@@ -1,0 +1,50 @@
+# Homelab deployment: gateway + monitor + dashboard (Req 40 AC2).
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "18789:18789"
+    volumes:
+      - ghost-data:/home/ghost/.ghost
+      - ./ghost.yml:/home/ghost/.ghost/config/ghost.yml:ro
+    environment:
+      - GHOST_TOKEN=${GHOST_TOKEN}
+      - GHOST_BACKUP_KEY=${GHOST_BACKUP_KEY:-}
+      - RUST_LOG=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ghost", "status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  monitor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["serve", "--monitor-mode"]
+    ports:
+      - "18790:18790"
+    volumes:
+      - ghost-data:/home/ghost/.ghost
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+
+  dashboard:
+    image: node:20-slim
+    working_dir: /app
+    volumes:
+      - ../dashboard:/app:ro
+    command: ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "5173"]
+    ports:
+      - "5173:5173"
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+volumes:
+  ghost-data:

@@ -1,0 +1,31 @@
+[package]
+name = "ghost-agent-loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Agent runner with gate checks, circuit breaker, prompt compilation, proposal extraction, and tool execution"
+
+[dependencies]
+cortex-core = { workspace = true }
+ghost-llm = { path = "../ghost-llm" }
+ghost-identity = { path = "../ghost-identity" }
+ghost-policy = { workspace = true }
+read-only-pipeline = { workspace = true }
+simulation-boundary = { workspace = true }
+itp-protocol = { workspace = true }
+cortex-validation = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+async-trait = "0.1"
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { version = "1", features = ["full", "test-util"] }

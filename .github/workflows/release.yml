@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: ghost
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: ghost
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary: ghost
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: ghost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # Cross-compilation support for aarch64-linux
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} -p ghost-gateway
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/
+          cd dist
+          tar czf ghost-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ${{ matrix.binary }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-${{ matrix.target }}
+          path: dist/*.tar.gz
+
+  # Build convergence monitor binary
+  build-monitor:
+    name: Build Monitor ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build monitor binary
+        run: cargo build --release --target ${{ matrix.target }} -p convergence-monitor
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/convergence-monitor dist/
+          cd dist
+          tar czf convergence-monitor-${{ github.ref_name }}-${{ matrix.target }}.tar.gz convergence-monitor
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: monitor-${{ matrix.target }}
+          path: dist/*.tar.gz
+
+  release:
+    name: Create Release
+    needs: [build, build-monitor]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          generate_release_notes: true

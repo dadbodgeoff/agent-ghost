@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GHOST Platform Configuration",
+  "description": "Schema for ghost.yml configuration file",
+  "type": "object",
+  "properties": {
+    "gateway": {
+      "type": "object",
+      "properties": {
+        "bind": { "type": "string", "default": "127.0.0.1" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 18789 },
+        "db_path": { "type": "string", "default": "~/.ghost/data/ghost.db" }
+      },
+      "additionalProperties": true
+    },
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "spending_cap": { "type": "number", "minimum": 0, "default": 5.0 },
+          "capabilities": { "type": "array", "items": { "type": "string" } },
+          "isolation": { "type": "string", "enum": ["inprocess", "process", "container"], "default": "inprocess" },
+          "template": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "channels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["channel_type", "agent"],
+        "properties": {
+          "channel_type": { "type": "string", "enum": ["cli", "websocket", "telegram", "discord", "slack", "whatsapp"] },
+          "agent": { "type": "string" },
+          "options": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "default_provider": { "type": "string" },
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "api_key": { "type": "string" },
+              "base_url": { "type": "string" },
+              "model": { "type": "string" }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "ghost_token": { "type": "string" },
+        "mtls_enabled": { "type": "boolean", "default": false },
+        "ca_cert_path": { "type": "string" },
+        "cors_origins": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "convergence": {
+      "type": "object",
+      "properties": {
+        "profile": { "type": "string", "enum": ["standard", "research", "companion", "productivity"], "default": "standard" },
+        "monitor": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string", "default": "127.0.0.1" },
+            "port": { "type": "integer", "default": 18790 },
+            "socket_path": { "type": "string", "default": "~/.ghost/monitor.sock" }
+          }
+        },
+        "thresholds": {
+          "type": "object",
+          "properties": {
+            "level_1": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.3 },
+            "level_2": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
+            "level_3": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.7 },
+            "level_4": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.85 }
+          }
+        },
+        "weights": {
+          "type": "object",
+          "properties": {
+            "session_duration": { "type": "number" },
+            "inter_session_gap": { "type": "number" },
+            "response_latency": { "type": "number" },
+            "vocabulary_convergence": { "type": "number" },
+            "goal_boundary_erosion": { "type": "number" },
+            "initiative_balance": { "type": "number" },
+            "disengagement_resistance": { "type": "number" }
+          }
+        },
+        "contacts": {
+          "type": "object",
+          "properties": {
+            "email": { "type": "string", "format": "email" },
+            "sms_webhook": { "type": "string", "format": "uri" },
+            "webhook": { "type": "string", "format": "uri" }
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "heartbeat": {
+      "type": "object",
+      "properties": {
+        "interval_minutes": { "type": "integer", "minimum": 1, "default": 30 },
+        "active_hours": {
+          "type": "object",
+          "properties": {
+            "start": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" },
+            "end": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" }
+          }
+        },
+        "timezone": { "type": "string" },
+        "cost_ceiling": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "proxy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "port": { "type": "integer", "default": 8080 },
+        "domains": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "backup": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "interval": { "type": "string", "enum": ["daily", "weekly"], "default": "daily" },
+        "retention_count": { "type": "integer", "minimum": 1, "default": 7 },
+        "backup_dir": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

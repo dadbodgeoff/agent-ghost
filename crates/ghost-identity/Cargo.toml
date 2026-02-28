@@ -1,0 +1,24 @@
+[package]
+name = "ghost-identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Soul, identity, keypair management, and drift detection for GHOST agents"
+
+[dependencies]
+ghost-signing = { workspace = true }
+cortex-core = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"

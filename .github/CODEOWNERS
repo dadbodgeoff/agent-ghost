@@ -1,0 +1,48 @@
+# GHOST Platform — Code Ownership
+#
+# Safety-critical paths require review from the safety team.
+# All other paths require review from the platform team.
+
+# Safety-critical: convergence monitor
+crates/convergence-monitor/                @ghost-platform/safety
+
+# Safety-critical: simulation boundary enforcement
+crates/simulation-boundary/                @ghost-platform/safety
+
+# Safety-critical: kill switch and auto-triggers
+crates/ghost-gateway/src/safety/           @ghost-platform/safety
+
+# Safety-critical: policy engine
+crates/ghost-policy/                       @ghost-platform/safety
+
+# Safety-critical: proposal validation (D5-D7)
+crates/cortex/cortex-validation/           @ghost-platform/safety
+
+# Safety-critical: ITP protocol
+crates/itp-protocol/                       @ghost-platform/safety
+
+# Safety-critical: CORP_POLICY
+CORP_POLICY.md                             @ghost-platform/safety
+
+# Cryptographic signing
+crates/ghost-signing/                      @ghost-platform/safety @ghost-platform/crypto
+
+# CRDT signing and sybil resistance
+crates/cortex/cortex-crdt/                 @ghost-platform/safety @ghost-platform/crypto
+
+# Hash chains and tamper evidence
+crates/cortex/cortex-temporal/             @ghost-platform/safety
+
+# Agent loop (gate checks are safety-critical)
+crates/ghost-agent-loop/                   @ghost-platform/platform
+
+# Gateway (bootstrap, shutdown, session management)
+crates/ghost-gateway/                      @ghost-platform/platform
+
+# Cortex core types
+crates/cortex/cortex-core/                 @ghost-platform/platform
+
+# CI/CD and security
+.github/                                   @ghost-platform/platform
+deny.toml                                  @ghost-platform/platform
+SECURITY.md                                @ghost-platform/safety

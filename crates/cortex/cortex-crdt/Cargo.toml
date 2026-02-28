@@ -1,0 +1,21 @@
+[package]
+name = "cortex-crdt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CRDT primitives with Ed25519 signed deltas and sybil resistance for Cortex"
+
+[dependencies]
+cortex-core = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+toml = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "cortex-multiagent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Multi-agent consensus shielding for multi-source validation"
+
+[dependencies]
+cortex-core = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

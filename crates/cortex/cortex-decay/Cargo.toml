@@ -1,0 +1,17 @@
+[package]
+name = "cortex-decay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Memory decay engine with convergence-aware factor for Cortex"
+
+[dependencies]
+cortex-core = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

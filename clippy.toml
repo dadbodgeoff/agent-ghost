@@ -1,0 +1,5 @@
+# GHOST Platform — Workspace Lint Rules
+# Applied via `cargo clippy --workspace -- -D warnings`
+
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 10

@@ -1,0 +1,44 @@
+{
+  "manifest_version": 2,
+  "name": "GHOST Convergence Monitor",
+  "version": "0.1.0",
+  "description": "Passive convergence monitoring for AI chat platforms",
+  "permissions": [
+    "storage",
+    "nativeMessaging",
+    "activeTab",
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://character.ai/*",
+    "https://gemini.google.com/*",
+    "https://chat.deepseek.com/*",
+    "https://grok.x.ai/*"
+  ],
+  "background": {
+    "scripts": ["src/background/service-worker.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://character.ai/*",
+        "https://gemini.google.com/*",
+        "https://chat.deepseek.com/*",
+        "https://grok.x.ai/*"
+      ],
+      "js": ["src/content/observer.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_action": {
+    "default_popup": "src/popup/popup.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ghost-convergence@ghost-platform.dev"
+    }
+  }
+}

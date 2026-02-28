@@ -1,0 +1,28 @@
+# GHOST Platform Configuration
+# See schemas/ghost-config.example.yml for full reference.
+
+gateway:
+  bind: "127.0.0.1"
+  port: 18789
+  db_path: "~/.ghost/data/ghost.db"
+
+agents:
+  - name: "ghost"
+    spending_cap: 5.0
+    capabilities:
+      - "web_search"
+      - "file_read"
+      - "memory_write"
+    isolation: inprocess
+
+channels:
+  - channel_type: cli
+    agent: "ghost"
+
+convergence:
+  profile: "standard"
+
+backup:
+  enabled: false
+  interval: "daily"
+  retention_count: 7

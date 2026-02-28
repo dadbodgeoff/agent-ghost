@@ -1,0 +1,16 @@
+[package]
+name = "cortex-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Convergence metrics endpoints (Prometheus gauges/counters/histograms)"
+
+[dependencies]
+cortex-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

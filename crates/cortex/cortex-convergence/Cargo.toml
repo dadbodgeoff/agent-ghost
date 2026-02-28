@@ -1,0 +1,17 @@
+[package]
+name = "cortex-convergence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "7-signal convergence computation, composite scoring, and convergence-aware filtering"
+
+[dependencies]
+cortex-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

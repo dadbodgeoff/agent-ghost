@@ -1,0 +1,52 @@
+//! Forward-only migrations. No down/rollback.
+
+pub mod v016_convergence_safety;
+pub mod v017_convergence_tables;
+pub mod v018_delegation_state;
+
+use rusqlite::Connection;
+use cortex_core::models::error::CortexResult;
+use crate::to_storage_err;
+
+pub const LATEST_VERSION: u32 = 18;
+
+type MigrationFn = fn(&Connection) -> CortexResult<()>;
+
+const MIGRATIONS: [(u32, &str, MigrationFn); 3] = [
+    (16, "convergence_safety", v016_convergence_safety::migrate),
+    (17, "convergence_tables", v017_convergence_tables::migrate),
+    (18, "delegation_state", v018_delegation_state::migrate),
+];
+
+/// Ensure the schema_version table exists and run pending migrations.
+pub fn run_migrations(conn: &Connection) -> CortexResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );"
+    ).map_err(|e| to_storage_err(e.to_string()))?;
+
+    let current: u32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    for &(version, name, migrate_fn) in &MIGRATIONS {
+        if version > current {
+            tracing::info!(version, name, "running migration");
+            migrate_fn(conn)?;
+            conn.execute(
+                "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
+                rusqlite::params![version, name],
+            )
+            .map_err(|e| to_storage_err(e.to_string()))?;
+        }
+    }
+
+    Ok(())
+}
