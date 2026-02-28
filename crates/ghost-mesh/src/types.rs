@@ -373,3 +373,44 @@ pub struct MeshSettlement {
     pub payment_id: Uuid,
     pub settled_at: DateTime<Utc>,
 }
+
+/// Placeholder for mesh wallet balance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshWallet {
+    pub agent_id: String,
+    pub currency: String,
+    pub balance: u64,
+}
+
+/// Placeholder for mesh transaction record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshTransaction {
+    pub id: Uuid,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub amount: u64,
+    pub currency: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Placeholder for mesh escrow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshEscrow {
+    pub id: Uuid,
+    pub transaction_id: Uuid,
+    pub depositor: String,
+    pub beneficiary: String,
+    pub amount: u64,
+    pub currency: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Placeholder for mesh receipt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshReceipt {
+    pub id: Uuid,
+    pub transaction_id: Uuid,
+    pub amount: u64,
+    pub currency: String,
+    pub issued_at: DateTime<Utc>,
+}

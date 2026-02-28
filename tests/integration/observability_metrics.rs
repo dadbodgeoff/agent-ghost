@@ -17,7 +17,7 @@ fn metrics_lifecycle() {
     metrics.inc_interventions();
     metrics.inc_interventions();
     metrics.inc_violations();
-    metrics.set_signals("agent-001", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]);
+    metrics.set_signals("agent-001", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.0]);
 
     // Snapshot
     let snap = metrics.snapshot();

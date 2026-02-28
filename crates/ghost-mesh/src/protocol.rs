@@ -105,3 +105,29 @@ impl MeshProtocol {
         ))
     }
 }
+
+/// A2A JSON-RPC 2.0 method names.
+pub mod methods {
+    /// Submit a task to an agent.
+    pub const TASKS_SEND: &str = "tasks/send";
+    /// Get the status of a task.
+    pub const TASKS_GET: &str = "tasks/get";
+    /// Cancel a task.
+    pub const TASKS_CANCEL: &str = "tasks/cancel";
+    /// Submit a task and subscribe to updates via SSE.
+    pub const TASKS_SEND_SUBSCRIBE: &str = "tasks/sendSubscribe";
+}
+
+/// A2A JSON-RPC 2.0 error codes.
+pub mod error_codes {
+    /// Standard JSON-RPC: method not found.
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+    /// Standard JSON-RPC: invalid params.
+    pub const INVALID_PARAMS: i32 = -32602;
+    /// Standard JSON-RPC: internal error.
+    pub const INTERNAL_ERROR: i32 = -32603;
+    /// Application-specific: task not found.
+    pub const TASK_NOT_FOUND: i32 = -32001;
+    /// Application-specific: task already completed.
+    pub const TASK_ALREADY_COMPLETED: i32 = -32002;
+}

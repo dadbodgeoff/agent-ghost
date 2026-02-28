@@ -364,7 +364,7 @@ fn convergence_mixed_nan_valid_signals() {
 /// Zero weights must not cause division by zero.
 #[test]
 fn convergence_zero_weights_no_panic() {
-    let scorer = CompositeScorer::new([0.0; 7], [0.3, 0.5, 0.7, 0.85]);
+    let scorer = CompositeScorer::new([0.0; 8], [0.3, 0.5, 0.7, 0.85]);
     let score = scorer.compute(&[0.5; 7]);
     assert_eq!(score, 0.0, "Zero weights should produce score 0.0, not panic or NaN");
 }

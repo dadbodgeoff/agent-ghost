@@ -75,10 +75,32 @@ impl ToolOutputCache {
 
         // Only write if not already cached (content-addressable dedup)
         if !file_path.exists() {
-            // Atomic write: write to temp, then rename
-            let temp_path = self.cache_dir.join(format!("{hash}.tmp"));
+            // Atomic write: write to unique temp, then rename.
+            // Each caller gets its own temp file to avoid races when
+            // multiple threads store the same content concurrently.
+            let temp_path = self.cache_dir.join(format!(
+                "{hash}.{}.{}.tmp",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
             fs::write(&temp_path, output)?;
-            fs::rename(&temp_path, &file_path)?;
+            // rename is atomic on POSIX; if another thread already placed
+            // the target, this overwrites with identical content (safe).
+            match fs::rename(&temp_path, &file_path) {
+                Ok(()) => {}
+                Err(e) if file_path.exists() => {
+                    // Another thread won the race — clean up our temp file
+                    let _ = fs::remove_file(&temp_path);
+                    tracing::debug!("cache dedup race: {e}");
+                }
+                Err(e) => {
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(e);
+                }
+            }
         }
 
         let token_count = self.counter.count(output);

@@ -36,6 +36,7 @@ members = [
     "crates/ghost-oauth",
     "crates/ghost-egress",
     "crates/ghost-mesh",
+    "crates/ghost-integration-tests",
 ]
 
 [workspace.package]
@@ -90,6 +91,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Testing
 proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 # Async trait
 async-trait = "0.1"

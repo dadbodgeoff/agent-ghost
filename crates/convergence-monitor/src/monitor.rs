@@ -414,7 +414,7 @@ impl ConvergenceMonitor {
             if cached.cached_at.elapsed() < self.config.score_cache_ttl {
                 // Use cached score — skip expensive signal computation
                 // Signals unavailable from cache; use zeroed placeholder
-                (cached.score, cached.level, [0.0; 7])
+                (cached.score, cached.level, [0.0; 8])
             } else {
                 self.compute_score(event.agent_id)
             }
@@ -487,7 +487,7 @@ impl ConvergenceMonitor {
     ///
     /// Extracted so the score cache path (step 7) can skip this expensive
     /// computation while still proceeding to intervention evaluation.
-    fn compute_score(&mut self, agent_id: Uuid) -> (f64, u8, [f64; 7]) {
+    fn compute_score(&mut self, agent_id: Uuid) -> (f64, u8, [f64; 8]) {
         // ── Step 8: Compute signals (dirty-flag throttled) ──────────
         let signals = self.signal_computer.compute(agent_id);
 
@@ -499,7 +499,7 @@ impl ConvergenceMonitor {
         let base_score = if weight_total > 0.0 {
             weighted_sum / weight_total
         } else {
-            signals.iter().sum::<f64>() / 7.0
+            signals.iter().sum::<f64>() / 8.0
         };
 
         // Apply amplification rules

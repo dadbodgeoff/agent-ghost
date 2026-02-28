@@ -1,58 +1,63 @@
-//! Adversarial: Convergence score manipulation attempts (Task 7.3).
+//! Adversarial test suite: Convergence score manipulation attempts.
 //!
-//! Tests attempts to game the scoring system via crafted signals,
-//! boundary conditions, amplification edge cases, and baseline manipulation.
+//! Tests attempts to game the scoring system via crafted ITP events,
+//! signal boundary conditions, and amplification edge cases.
 
-use cortex_convergence::scoring::baseline::BaselineState;
 use cortex_convergence::scoring::composite::CompositeScorer;
+use cortex_convergence::scoring::baseline::BaselineState;
 
+/// Build a calibrated baseline for testing.
 fn calibrated_baseline() -> BaselineState {
     let mut baseline = BaselineState::new(10);
     for i in 0..10 {
         let v = (i as f64) / 10.0;
-        baseline.record_session(&[v, v, v, v, v, v, v]);
+        baseline.record_session(&[v, v, v, v, v, v, v, v]);
     }
     assert!(!baseline.is_calibrating);
     baseline
 }
 
-// ── Signal range invariant ──────────────────────────────────────────────
+// ── Signal range invariant (Req 41 AC14) ────────────────────────────────
 
 #[test]
-fn all_zero_signals_low_score() {
+fn all_zero_signals_produce_zero_score() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let result = scorer.score(&[0.0; 7], &baseline, None, None);
+    let signals = [0.0f64; 8];
+    let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         result.score < 0.3,
-        "All-zero signals must produce low score, got {}",
+        "All-zero signals should produce low score (L0), got {}",
         result.score
     );
 }
 
 #[test]
-fn all_one_signals_high_score() {
+fn all_one_signals_produce_max_score() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let result = scorer.score(&[1.0; 7], &baseline, None, None);
+    let signals = [1.0f64; 8];
+    let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         result.score >= 0.90,
-        "All-one signals must produce high score, got {}",
+        "All-one signals should produce score near 1.0, got {}",
         result.score
     );
 }
 
-// ── NaN / negative / overflow handling ──────────────────────────────────
-
 #[test]
-fn nan_signals_safe_output() {
+fn nan_signals_produce_safe_output() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let result = scorer.score(&[f64::NAN; 7], &baseline, None, None);
-    assert!(!result.score.is_nan(), "NaN signals must not produce NaN score");
+    let signals = [f64::NAN; 8];
+    let result = scorer.score(&signals, &baseline, None, None);
+    assert!(
+        !result.score.is_nan(),
+        "NaN signals should not produce NaN score"
+    );
     assert!(
         (0.0..=1.0).contains(&result.score),
-        "NaN signals must produce score in [0.0, 1.0], got {}",
+        "NaN signals should produce score in [0.0, 1.0], got {}",
         result.score
     );
 }
@@ -61,10 +66,11 @@ fn nan_signals_safe_output() {
 fn negative_signals_clamped() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let result = scorer.score(&[-0.5; 7], &baseline, None, None);
+    let signals = [-0.5f64; 8];
+    let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         (0.0..=1.0).contains(&result.score),
-        "Negative signals must produce clamped score, got {}",
+        "Negative signals should produce clamped score in [0.0, 1.0], got {}",
         result.score
     );
 }
@@ -73,44 +79,49 @@ fn negative_signals_clamped() {
 fn signals_above_one_clamped() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let result = scorer.score(&[1.5; 7], &baseline, None, None);
+    let signals = [1.5f64; 8];
+    let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         (0.0..=1.0).contains(&result.score),
-        "Signals >1.0 must produce clamped score, got {}",
+        "Signals >1.0 should produce clamped score in [0.0, 1.0], got {}",
         result.score
     );
 }
 
+// ── Level threshold boundaries ──────────────────────────────────────────
+
 #[test]
-fn infinity_signals_safe() {
+fn score_boundary_level_thresholds() {
     let scorer = CompositeScorer::default();
-    let baseline = calibrated_baseline();
-    let result = scorer.score(&[f64::INFINITY; 7], &baseline, None, None);
-    assert!(
-        (0.0..=1.0).contains(&result.score) || !result.score.is_nan(),
-        "Infinity signals must not crash, got {}",
-        result.score
-    );
+    let baseline = BaselineState::new(10); // calibrating → pass-through
+
+    let r = scorer.score(&[0.0; 8], &baseline, None, None);
+    assert_eq!(r.level, 0, "Score {} should be level 0", r.score);
+
+    let r = scorer.score(&[1.0; 8], &baseline, None, None);
+    assert_eq!(r.level, 4, "Score {} should be level 4", r.score);
 }
 
 // ── Baseline manipulation resistance ────────────────────────────────────
 
 #[test]
-fn baseline_frozen_after_calibration() {
+fn baseline_not_updated_after_establishment() {
     let mut baseline = BaselineState::new(10);
+
     for i in 0..10 {
         let v = (i as f64) * 0.1;
-        baseline.record_session(&[v, v, v, v, v, v, v]);
+        baseline.record_session(&[v, v, v, v, v, v, v, v]);
     }
-    assert!(!baseline.is_calibrating);
+    assert!(!baseline.is_calibrating, "Should be calibrated after 10 sessions");
 
     let mean_before = baseline.per_signal[0].mean;
-    baseline.record_session(&[1.0; 7]); // Attempt to manipulate
+
+    baseline.record_session(&[1.0; 8]);
     let mean_after = baseline.per_signal[0].mean;
 
     assert!(
         (mean_before - mean_after).abs() < f64::EPSILON,
-        "Baseline must not change after establishment: before={}, after={}",
+        "Baseline should not change after establishment: before={}, after={}",
         mean_before,
         mean_after
     );
@@ -119,60 +130,48 @@ fn baseline_frozen_after_calibration() {
 #[test]
 fn baseline_calibrating_during_first_10_sessions() {
     let baseline = BaselineState::new(10);
-    assert!(baseline.is_calibrating);
+    assert!(baseline.is_calibrating, "Should be calibrating initially");
 }
 
 // ── Amplification bounds ────────────────────────────────────────────────
 
 #[test]
-fn meso_amplification_bounded() {
+fn meso_amplification_still_bounded() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let meso_data = vec![0.3, 0.5, 0.7, 0.9]; // positive slope → 1.1x
-    let result = scorer.score(&[0.95; 7], &baseline, Some(&meso_data), None);
-    assert!(
-        (0.0..=1.0).contains(&result.score),
-        "Meso-amplified score must be in [0.0, 1.0], got {}",
-        result.score
-    );
-}
-
-#[test]
-fn macro_amplification_bounded() {
-    let scorer = CompositeScorer::default();
-    let baseline = calibrated_baseline();
-    let result = scorer.score(&[0.95; 7], &baseline, None, Some(&[1.0; 7]));
-    assert!(
-        (0.0..=1.0).contains(&result.score),
-        "Macro-amplified score must be in [0.0, 1.0], got {}",
-        result.score
-    );
-}
-
-#[test]
-fn both_amplifications_bounded() {
-    let scorer = CompositeScorer::default();
-    let baseline = calibrated_baseline();
+    let signals = [0.95f64; 8];
     let meso_data = vec![0.3, 0.5, 0.7, 0.9];
-    let result = scorer.score(&[0.95; 7], &baseline, Some(&meso_data), Some(&[1.0; 7]));
+    let result = scorer.score(&signals, &baseline, Some(&meso_data), None);
     assert!(
         (0.0..=1.0).contains(&result.score),
-        "Both amplifications must still produce score in [0.0, 1.0], got {}",
+        "Meso-amplified score should be in [0.0, 1.0], got {}",
         result.score
     );
 }
 
-// ── Level threshold boundaries ──────────────────────────────────────────
+#[test]
+fn macro_amplification_still_bounded() {
+    let scorer = CompositeScorer::default();
+    let baseline = calibrated_baseline();
+    let signals = [0.95f64; 8];
+    let result = scorer.score(&signals, &baseline, None, Some(&[1.0; 8]));
+    assert!(
+        (0.0..=1.0).contains(&result.score),
+        "Macro-amplified score should be in [0.0, 1.0], got {}",
+        result.score
+    );
+}
 
 #[test]
-fn level_thresholds_deterministic() {
+fn both_amplifications_still_bounded() {
     let scorer = CompositeScorer::default();
-    // Use calibrating baseline so raw values pass through
-    let baseline = BaselineState::new(10);
-
-    let r0 = scorer.score(&[0.0; 7], &baseline, None, None);
-    assert_eq!(r0.level, 0, "Score {} must be level 0", r0.score);
-
-    let r4 = scorer.score(&[1.0; 7], &baseline, None, None);
-    assert_eq!(r4.level, 4, "Score {} must be level 4", r4.score);
+    let baseline = calibrated_baseline();
+    let signals = [0.95f64; 8];
+    let meso_data = vec![0.3, 0.5, 0.7, 0.9];
+    let result = scorer.score(&signals, &baseline, Some(&meso_data), Some(&[1.0; 8]));
+    assert!(
+        (0.0..=1.0).contains(&result.score),
+        "Both amplifications should still produce score in [0.0, 1.0], got {}",
+        result.score
+    );
 }

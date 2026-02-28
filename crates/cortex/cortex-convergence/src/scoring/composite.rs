@@ -230,9 +230,15 @@ impl CompositeScorer {
     }
 
     /// Score-to-level with critical single-signal overrides (AC6).
+    ///
+    /// Accepts 7-signal array for backward compatibility with tests.
+    /// Pads with 0.0 for S8 before delegating to check_critical_override.
     pub fn score_to_level_with_overrides(&self, signals: &[f64; 7], score: f64) -> u8 {
         let mut level = self.score_to_level(score);
-        if self.check_critical_override(signals) {
+        let signals_8: [f64; 8] = std::array::from_fn(|i| {
+            if i < 7 { signals[i] } else { 0.0 }
+        });
+        if self.check_critical_override(&signals_8) {
             level = level.max(2);
         }
         level
