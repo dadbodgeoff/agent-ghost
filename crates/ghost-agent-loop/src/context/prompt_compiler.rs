@@ -16,6 +16,7 @@ use ghost_llm::tokens::TokenCounter;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+use super::memory_compressor::MemoryCompressor;
 use super::observation_masker::{ObservationMasker, ObservationMaskerConfig};
 use super::spotlighting::{Spotlighter, SpotlightingConfig};
 use super::token_budget::{Budget, TokenBudgetAllocator};
@@ -45,12 +46,51 @@ pub struct PromptInput {
     pub user_message: String,
 }
 
+/// Statistics from a prompt compilation pass.
+///
+/// Tracks token savings from each optimization stage (Task 18.4).
+#[derive(Debug, Clone)]
+pub struct CompilationStats {
+    /// L7 token count before compression.
+    pub l7_original_tokens: usize,
+    /// L7 token count after compression.
+    pub l7_compressed_tokens: usize,
+    /// L8 token count before masking.
+    pub l8_original_tokens: usize,
+    /// L8 token count after masking.
+    pub l8_masked_tokens: usize,
+    /// Total tokens across all layers before optimization.
+    pub total_original_tokens: usize,
+    /// Total tokens across all layers after optimization.
+    pub total_optimized_tokens: usize,
+    /// Overall compression ratio (optimized / original). < 1.0 means smaller.
+    pub compression_ratio: f64,
+    /// Whether the StablePrefixCache was hit.
+    pub cache_hit: bool,
+}
+
+impl Default for CompilationStats {
+    fn default() -> Self {
+        Self {
+            l7_original_tokens: 0,
+            l7_compressed_tokens: 0,
+            l8_original_tokens: 0,
+            l8_masked_tokens: 0,
+            total_original_tokens: 0,
+            total_optimized_tokens: 0,
+            compression_ratio: 1.0,
+            cache_hit: false,
+        }
+    }
+}
+
 /// Compiles 10 prompt layers with budget allocation and truncation.
 pub struct PromptCompiler {
     counter: TokenCounter,
     context_window: usize,
     spotlighter: Spotlighter,
     observation_masker: Option<ObservationMasker>,
+    memory_compressor: Option<MemoryCompressor>,
 }
 
 impl PromptCompiler {
@@ -60,6 +100,7 @@ impl PromptCompiler {
             context_window,
             spotlighter: Spotlighter::new(SpotlightingConfig::default()),
             observation_masker: None,
+            memory_compressor: None,
         }
     }
 
@@ -70,6 +111,7 @@ impl PromptCompiler {
             context_window,
             spotlighter: Spotlighter::new(config),
             observation_masker: None,
+            memory_compressor: None,
         }
     }
 
@@ -87,15 +129,42 @@ impl PromptCompiler {
             context_window,
             spotlighter: Spotlighter::new(spotlighting_config),
             observation_masker: Some(ObservationMasker::new(masker_config)),
+            memory_compressor: None,
+        }
+    }
+
+    /// Create a PromptCompiler with ALL optimizations enabled (Task 18.4).
+    ///
+    /// Pipeline order: L7 compression → L8 masking → spotlighting → budget → truncation.
+    pub fn full(
+        context_window: usize,
+        spotlighting_config: SpotlightingConfig,
+        masker_config: ObservationMaskerConfig,
+        compressor: MemoryCompressor,
+    ) -> Self {
+        Self {
+            counter: TokenCounter::default(),
+            context_window,
+            spotlighter: Spotlighter::new(spotlighting_config),
+            observation_masker: Some(ObservationMasker::new(masker_config)),
+            memory_compressor: Some(compressor),
         }
     }
 
     /// Compile all 10 layers from input data.
     ///
-    /// Ordering: observation masking -> spotlighting -> budget allocation -> truncation.
+    /// Pipeline order (Task 18.4):
+    ///   1. L7: memory compression (if enabled)
+    ///   2. L8: observation masking (if enabled)
+    ///   3. All layers: spotlighting
+    ///   4. Budget allocation
+    ///   5. Truncation
+    ///
     /// L0 and L1 are NEVER datamarked.
     /// L4 timestamps are sanitized to preserve KV cache stability.
-    pub fn compile(&self, input: &PromptInput) -> Vec<PromptLayer> {
+    pub fn compile(&self, input: &PromptInput) -> (Vec<PromptLayer>, CompilationStats) {
+        let mut stats = CompilationStats::default();
+
         let mut budgets = TokenBudgetAllocator::default_budgets();
 
         // Adjust budgets for spotlighting: datamarking roughly doubles token count
@@ -126,19 +195,67 @@ impl PromptCompiler {
         // Sanitize L4 environment timestamps (Task 16.3)
         let sanitized_environment = sanitize_environment_timestamps(&input.environment);
 
-        // Apply observation masking to L8 BEFORE spotlighting (Task 17.3).
-        // Masking reduces token count; spotlighting doubles it -- mask first
-        // to minimize the doubling impact.
+        // ── Step 1: L7 memory compression (Task 18.4) ──────────────────
+        let memory_logs = if let Some(ref compressor) = self.memory_compressor {
+            let original_tokens = self.counter.count(&input.memory_logs);
+            stats.l7_original_tokens = original_tokens;
+
+            // compress_memories is async but we need sync here — use
+            // block_in_place + block_on to safely call async from sync context,
+            // even when already inside a tokio runtime.
+            let compressed = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    let result = tokio::task::block_in_place(|| {
+                        handle.block_on(compressor.compress_memories(&input.memory_logs))
+                    });
+                    match result {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "L7 memory compression failed in compile, using raw");
+                            input.memory_logs.clone()
+                        }
+                    }
+                }
+                Err(_) => {
+                    tracing::debug!("No tokio runtime for L7 compression, using raw memories");
+                    input.memory_logs.clone()
+                }
+            };
+
+            let compressed_tokens = self.counter.count(&compressed);
+            stats.l7_compressed_tokens = compressed_tokens;
+
+            if stats.l7_original_tokens > compressed_tokens {
+                tracing::info!(
+                    original = stats.l7_original_tokens,
+                    compressed = compressed_tokens,
+                    saved = stats.l7_original_tokens - compressed_tokens,
+                    "L7 memory compression applied in compile"
+                );
+            }
+
+            compressed
+        } else {
+            let tokens = self.counter.count(&input.memory_logs);
+            stats.l7_original_tokens = tokens;
+            stats.l7_compressed_tokens = tokens;
+            input.memory_logs.clone()
+        };
+
+        // ── Step 2: L8 observation masking (Task 17.3) ─────────────────
+        let l8_original_tokens = self.counter.count(&input.conversation_history);
+        stats.l8_original_tokens = l8_original_tokens;
+
         let conversation_history = match &self.observation_masker {
             Some(masker) => {
                 match masker.mask_history(&input.conversation_history) {
                     Ok(masked) => {
-                        let original_tokens = self.counter.count(&input.conversation_history);
                         let masked_tokens = self.counter.count(&masked);
-                        let saved = original_tokens.saturating_sub(masked_tokens);
+                        stats.l8_masked_tokens = masked_tokens;
+                        let saved = l8_original_tokens.saturating_sub(masked_tokens);
                         if saved > 0 {
                             tracing::info!(
-                                original_tokens,
+                                original_tokens = l8_original_tokens,
                                 masked_tokens,
                                 saved,
                                 "Observation masking applied"
@@ -148,13 +265,18 @@ impl PromptCompiler {
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "Observation masking failed, using unmasked history");
+                        stats.l8_masked_tokens = l8_original_tokens;
                         input.conversation_history.clone()
                     }
                 }
             }
-            None => input.conversation_history.clone(),
+            None => {
+                stats.l8_masked_tokens = l8_original_tokens;
+                input.conversation_history.clone()
+            }
         };
 
+        // ── Step 3: Spotlighting + layer assembly ──────────────────────
         let contents: [&str; 10] = [
             &input.corp_policy,
             &input.simulation_prompt,
@@ -163,7 +285,7 @@ impl PromptCompiler {
             &sanitized_environment,
             &input.skill_index,
             &input.convergence_state,
-            &input.memory_logs,
+            &memory_logs,
             &conversation_history,
             &input.user_message,
         ];
@@ -182,10 +304,44 @@ impl PromptCompiler {
             })
             .collect();
 
-        // Apply truncation if total exceeds context window
+        // ── Step 4 & 5: Budget allocation + truncation ─────────────────
         self.apply_truncation(&mut layers, &allocated);
 
-        layers
+        // Compute final stats
+        let total_optimized: usize = layers.iter().map(|l| l.token_count).sum();
+        stats.total_optimized_tokens = total_optimized;
+
+        // Approximate original total: sum of raw input token counts
+        let raw_counts: [usize; 10] = [
+            self.counter.count(&input.corp_policy),
+            self.counter.count(&input.simulation_prompt),
+            self.counter.count(&input.soul_identity),
+            self.counter.count(&input.tool_schemas),
+            self.counter.count(&input.environment),
+            self.counter.count(&input.skill_index),
+            self.counter.count(&input.convergence_state),
+            stats.l7_original_tokens,
+            stats.l8_original_tokens,
+            self.counter.count(&input.user_message),
+        ];
+        stats.total_original_tokens = raw_counts.iter().sum();
+
+        stats.compression_ratio = if stats.total_original_tokens == 0 {
+            1.0
+        } else {
+            stats.total_optimized_tokens as f64 / stats.total_original_tokens as f64
+        };
+
+        tracing::info!(
+            l7_saved = stats.l7_original_tokens.saturating_sub(stats.l7_compressed_tokens),
+            l8_saved = stats.l8_original_tokens.saturating_sub(stats.l8_masked_tokens),
+            total_original = stats.total_original_tokens,
+            total_optimized = stats.total_optimized_tokens,
+            compression_ratio = format!("{:.3}", stats.compression_ratio),
+            "Prompt compilation stats"
+        );
+
+        (layers, stats)
     }
     fn apply_truncation(&self, layers: &mut [PromptLayer], allocated: &[usize; 10]) {
         let total: usize = layers.iter().map(|l| l.token_count).sum();

@@ -264,16 +264,14 @@ fn bench_prompt_compilation(c: &mut Criterion) {
     let input = PromptInput {
         corp_policy: "No harmful content. Respect user privacy.".into(),
         simulation_prompt: "You are a helpful AI assistant operating within simulation boundaries.".into(),
-        soul: "I am Ghost, a thoughtful and capable AI assistant.".into(),
-        identity: "Ghost Agent v1".into(),
+        soul_identity: "I am Ghost, a thoughtful and capable AI assistant.".into(),
         tool_schemas: r#"[{"name":"web_search","description":"Search the web"}]"#.into(),
         environment: "macOS, Rust project, VSCode".into(),
         skill_index: "web_search, file_read, memory_write".into(),
         convergence_state: "score: 0.15, level: 0, calibrating: false".into(),
-        memory: "User prefers concise responses. Working on Rust project.".into(),
+        memory_logs: "User prefers concise responses. Working on Rust project.".into(),
         conversation_history: "User: Help me with Rust\nAssistant: Sure! What do you need?\nUser: How do I use traits?".into(),
         user_message: "Can you show me an example of trait objects?".into(),
-        intervention_level: 0,
     };
 
     c.bench_function("prompt_compile_10_layers", |b| {

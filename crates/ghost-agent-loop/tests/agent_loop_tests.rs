@@ -359,7 +359,7 @@ fn prompt_compiler_all_10_layers_present() {
         user_message: "What is Rust?".into(),
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert_eq!(layers.len(), 10);
 }
 
@@ -371,7 +371,7 @@ fn prompt_compiler_l0_contains_corp_policy() {
         ..Default::default()
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(layers[0].content.contains("ABSOLUTE POLICY"));
     assert_eq!(layers[0].name, "CORP_POLICY");
 }
@@ -384,7 +384,7 @@ fn prompt_compiler_l1_contains_simulation_prompt() {
         ..Default::default()
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(layers[1].content.contains("SIMULATION BOUNDARY"));
 }
 
@@ -396,7 +396,7 @@ fn prompt_compiler_l9_contains_user_message() {
         ..Default::default()
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(layers[9].content.contains("meaning of life"));
 }
 
@@ -455,7 +455,7 @@ fn prompt_compiler_tiny_context_window_preserves_l0_l1_l9() {
         ..Default::default()
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     // L0, L1, L9 must still have content
     assert!(!layers[0].content.is_empty());
     assert!(!layers[1].content.is_empty());
@@ -470,7 +470,7 @@ fn prompt_compiler_empty_memory_no_error() {
         ..Default::default()
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(layers[7].content.is_empty());
 }
 
@@ -867,7 +867,7 @@ fn prompt_compiler_l6_contains_convergence_state() {
         ..Default::default()
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert_eq!(layers[6].name, "CONVERGENCE_STATE");
     assert!(layers[6].content.contains("score=0.42"));
     assert!(layers[6].content.contains("level=2"));
@@ -1200,7 +1200,7 @@ fn l3_content_identical_regardless_of_intervention_level() {
         tool_schemas: "shell\nfilesystem\nweb_search\nproactive\nheartbeat\npersonal".into(),
         ..Default::default()
     };
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     // L3 always contains all schemas (no filtering in compile anymore)
     assert!(layers[3].content.contains("proactive"));
     assert!(layers[3].content.contains("heartbeat"));
@@ -1279,7 +1279,7 @@ fn sanitize_l4_in_compile_strips_seconds() {
         environment: "Time: 2026-02-28T14:30:45Z".into(),
         ..Default::default()
     };
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(layers[4].content.contains("14:30"));
     assert!(!layers[4].content.contains(":45"));
 }
@@ -1317,7 +1317,7 @@ fn compile_no_longer_modifies_l1() {
         simulation_prompt: "EXACT_L1_CONTENT".into(),
         ..Default::default()
     };
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert_eq!(layers[1].content, "EXACT_L1_CONTENT");
 }
 
@@ -1362,7 +1362,7 @@ fn spotlighting_still_applied_to_l7_l8() {
         conversation_history: "World".into(),
         ..Default::default()
     };
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     // L7 and L8 should be datamarked
     assert_eq!(layers[7].content, "H^e^l^l^o");
     assert_eq!(layers[8].content, "W^o^r^l^d");

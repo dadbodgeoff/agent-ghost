@@ -124,7 +124,7 @@ fn prompt_compilation_produces_10_layers() {
         user_message: "What is 2+2?".into(),
     };
 
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert_eq!(layers.len(), 10);
     assert!(layers[0].content.contains("No harmful content"));
     assert!(layers[9].content.contains("What is 2+2"));

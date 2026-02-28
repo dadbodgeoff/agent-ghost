@@ -294,7 +294,7 @@ fn prompt_compiler_new_no_masking_backward_compat() {
     let compiler = PromptCompiler::new(128_000);
     let history = build_history(5, 500);
     let input = default_input_with_history(&history);
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(layers[8].content.contains('x'), "Raw content should be present in L8");
     assert!(!layers[8].content.contains("ref:"), "No masking references should appear");
 }
@@ -312,7 +312,7 @@ fn prompt_compiler_with_observation_masking_masks_l8() {
     let compiler = PromptCompiler::with_observation_masking(128_000, spot_config, masker_config);
     let history = build_history(5, 500);
     let input = default_input_with_history(&history);
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(layers[8].content.contains("[tool_result:"), "Old turns should have compact refs");
     assert!(layers[8].content.contains("Turn 5"), "Turn 5 should be inline");
 }
@@ -334,7 +334,7 @@ fn prompt_compiler_masking_plus_spotlighting_masked_content_datamarked() {
     let compiler = PromptCompiler::with_observation_masking(128_000, spot_config, masker_config);
     let history = build_history(3, 500);
     let input = default_input_with_history(&history);
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     let l8 = &layers[8].content;
     assert!(l8.contains('\u{2195}'), "L8 should be datamarked");
 }
@@ -355,8 +355,8 @@ fn prompt_compiler_l8_token_count_reduced_after_masking() {
     );
     let history = build_history(5, 2000);
     let input = default_input_with_history(&history);
-    let layers_no_mask = compiler_no_mask.compile(&input);
-    let layers_mask = compiler_mask.compile(&input);
+    let (layers_no_mask, _) = compiler_no_mask.compile(&input);
+    let (layers_mask, _) = compiler_mask.compile(&input);
     assert!(
         layers_mask[8].token_count < layers_no_mask[8].token_count,
         "Masked L8 ({}) should have fewer tokens than unmasked ({})",
@@ -380,8 +380,8 @@ fn prompt_compiler_l0_through_l7_and_l9_unaffected_by_masking() {
     );
     let history = build_history(5, 500);
     let input = default_input_with_history(&history);
-    let layers_no_mask = compiler_no_mask.compile(&input);
-    let layers_mask = compiler_mask.compile(&input);
+    let (layers_no_mask, _) = compiler_no_mask.compile(&input);
+    let (layers_mask, _) = compiler_mask.compile(&input);
     for i in 0..8 {
         assert_eq!(layers_no_mask[i].content, layers_mask[i].content,
             "Layer {} should be unaffected by masking", i);
@@ -405,7 +405,7 @@ fn prompt_compiler_masker_error_falls_back_to_unmasked() {
     );
     let history = build_history(3, 500);
     let input = default_input_with_history(&history);
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     assert!(!layers[8].content.is_empty());
 }
 
@@ -423,7 +423,7 @@ fn prompt_compiler_full_compile_with_masking_references_for_old_inline_for_recen
     );
     let history = build_history(6, 500);
     let input = default_input_with_history(&history);
-    let layers = compiler.compile(&input);
+    let (layers, _stats) = compiler.compile(&input);
     let l8 = &layers[8].content;
     let ref_count = l8.matches("[tool_result:").count();
     assert_eq!(ref_count, 4, "Expected 4 masked references, got {ref_count}");
