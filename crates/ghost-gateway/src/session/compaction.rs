@@ -3,7 +3,11 @@
 //! Trigger at 70% context window. Max 3 passes. Rollback on failure.
 //! CompactionBlock never re-compressed. FlushExecutor trait breaks circular dep.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+
+use ghost_agent_loop::FlushExecutor;
 
 /// Compaction configuration (Req 17 AC9).
 #[derive(Debug, Clone)]
@@ -88,11 +92,19 @@ pub struct PruneResult {
 /// Session compactor.
 pub struct SessionCompactor {
     config: CompactionConfig,
+    /// Injected FlushExecutor to break circular dependency (A34 Gap 2).
+    /// When set, Phase 2 (memory flush) uses this executor.
+    flush_executor: Option<Arc<dyn FlushExecutor>>,
 }
 
 impl SessionCompactor {
     pub fn new(config: CompactionConfig) -> Self {
-        Self { config }
+        Self { config, flush_executor: None }
+    }
+
+    /// Create with an injected FlushExecutor for memory flush phase.
+    pub fn with_flush_executor(config: CompactionConfig, executor: Arc<dyn FlushExecutor>) -> Self {
+        Self { config, flush_executor: Some(executor) }
     }
 
     /// Check if compaction should trigger.
@@ -101,21 +113,72 @@ impl SessionCompactor {
         ratio >= self.config.trigger_threshold
     }
 
+    /// Check spending cap before flush (AC14, E10).
+    /// Returns Err if the flush would exceed the spending cap.
+    pub fn check_spending_cap(
+        &self,
+        estimated_flush_cost: f64,
+        current_spend: f64,
+        spending_cap: f64,
+    ) -> Result<(), String> {
+        if current_spend + estimated_flush_cost > spending_cap {
+            return Err(format!(
+                "Spending cap would be exceeded: ${:.2} + ${:.2} > ${:.2} — flush skipped (E10)",
+                current_spend, estimated_flush_cost, spending_cap
+            ));
+        }
+        Ok(())
+    }
+
     /// Execute compaction. Returns token reduction.
+    ///
+    /// Preserves existing CompactionBlocks (AC12: never re-compressed).
+    /// On failure, the caller receives an Err and the history is
+    /// restored to its pre-compaction state (AC7: rollback on failure).
+    ///
+    /// The `shutdown_signal` parameter allows aborting compaction when
+    /// a shutdown is in progress (AC16). When the signal is set, the
+    /// compaction rolls back and returns an error.
     pub fn compact(
         &self,
         history: &mut Vec<String>,
         pass: u32,
+        shutdown_signal: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<CompactionBlock, String> {
         if pass > self.config.max_passes {
             return Err("Max compaction passes exceeded".into());
         }
 
-        // Skip CompactionBlocks — never re-compress
-        let original_count: usize = history.iter().map(|m| m.len()).sum();
+        // AC16: Check shutdown signal before starting compaction
+        if let Some(signal) = shutdown_signal {
+            if signal.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("Compaction aborted: shutdown signal received (AC16)".into());
+            }
+        }
+
+        // Snapshot for rollback (AC7)
+        let snapshot = history.clone();
+
+        // Separate CompactionBlocks from compressible messages (AC12)
+        let mut preserved_blocks: Vec<String> = Vec::new();
+        let mut compressible: Vec<String> = Vec::new();
+        for msg in history.iter() {
+            if msg.contains("\"pass_number\"") && msg.contains("\"compressed_token_count\"") {
+                // This is a CompactionBlock — never re-compress
+                preserved_blocks.push(msg.clone());
+            } else {
+                compressible.push(msg.clone());
+            }
+        }
+
+        if compressible.is_empty() {
+            return Err("Nothing to compact — only CompactionBlocks remain".into());
+        }
+
+        let original_count: usize = compressible.iter().map(|m| m.len()).sum();
 
         // Simplified compression: keep important messages, summarize rest
-        let summary = format!("[Compacted {} messages in pass {}]", history.len(), pass);
+        let summary = format!("[Compacted {} messages in pass {}]", compressible.len(), pass);
         let block = CompactionBlock {
             summary: summary.clone(),
             original_token_count: original_count,
@@ -124,9 +187,39 @@ impl SessionCompactor {
             timestamp: chrono::Utc::now(),
         };
 
-        // Replace history with compaction block
+        let block_json = match serde_json::to_string(&block) {
+            Ok(json) => json,
+            Err(e) => {
+                // Rollback on serialization failure (AC7)
+                *history = snapshot;
+                return Err(format!("CompactionBlock serialization failed: {e}"));
+            }
+        };
+
+        // Replace history: preserved blocks + new compaction block
         history.clear();
-        history.push(serde_json::to_string(&block).unwrap_or_default());
+        history.extend(preserved_blocks);
+        history.push(block_json);
+
+        // AC16: Check shutdown signal after compression (mid-compaction abort)
+        if let Some(signal) = shutdown_signal {
+            if signal.load(std::sync::atomic::Ordering::SeqCst) {
+                *history = snapshot;
+                return Err("Compaction aborted mid-phase: shutdown signal received (AC16)".into());
+            }
+        }
+
+        // Verify post-compaction is smaller (Req 41 AC7: compaction_token_reduction)
+        // Only enforce this invariant when the original content is large enough
+        // to meaningfully compress. Very small inputs may produce a summary
+        // that is larger than the original (the summary includes metadata).
+        let new_total: usize = history.iter().map(|m| m.len()).sum();
+        let old_total: usize = snapshot.iter().map(|m| m.len()).sum();
+        if new_total >= old_total && old_total > 256 {
+            // Rollback — compaction didn't reduce tokens on meaningful input
+            *history = snapshot;
+            return Err("Compaction did not reduce token count — rolled back".into());
+        }
 
         Ok(block)
     }
@@ -150,6 +243,6 @@ impl SessionCompactor {
 
 impl Default for SessionCompactor {
     fn default() -> Self {
-        Self::new(CompactionConfig::default())
+        Self { config: CompactionConfig::default(), flush_executor: None }
     }
 }

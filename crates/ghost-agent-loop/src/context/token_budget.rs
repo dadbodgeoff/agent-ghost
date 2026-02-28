@@ -48,8 +48,9 @@ impl TokenBudgetAllocator {
         for (i, budget) in budgets.iter().enumerate() {
             match budget {
                 Budget::Uncapped => {
-                    // Uncapped layers get their full content (estimated later)
-                    allocated[i] = usize::MAX;
+                    // Uncapped layers are not bounded — they use their actual content size.
+                    // We don't count them toward the fixed total.
+                    allocated[i] = 0;
                 }
                 Budget::Fixed(n) => {
                     allocated[i] = *n;

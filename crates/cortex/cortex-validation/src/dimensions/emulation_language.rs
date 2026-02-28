@@ -9,13 +9,13 @@ use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
 
 /// D7 result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EmulationResult {
     pub max_severity: f64,
     pub flags: Vec<EmulationFlag>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EmulationFlag {
     pub pattern_name: &'static str,
     pub category: &'static str,

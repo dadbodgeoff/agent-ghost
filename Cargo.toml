@@ -32,6 +32,8 @@ members = [
     "crates/cortex/cortex-privacy",
     "crates/cortex/cortex-multiagent",
     "crates/cortex/cortex-napi",
+    "crates/ghost-integration-tests",
+    # "crates/ghost-mesh",  # Phase 9 — uncomment when ClawMesh protocol is designed
 ]
 
 [workspace.package]
@@ -86,6 +88,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Testing
 proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 # Async trait
 async-trait = "0.1"
@@ -122,6 +125,7 @@ cortex-retrieval = { path = "crates/cortex/cortex-retrieval" }
 cortex-privacy = { path = "crates/cortex/cortex-privacy" }
 cortex-multiagent = { path = "crates/cortex/cortex-multiagent" }
 cortex-napi = { path = "crates/cortex/cortex-napi" }
+ghost-mesh = { path = "crates/ghost-mesh" }
 
 # HTTP / Web
 axum = { version = "0.7", features = ["ws", "macros"] }
@@ -156,3 +160,5 @@ opt-level = 3
 incremental = true
 debug = 2
 opt-level = 0
+
+

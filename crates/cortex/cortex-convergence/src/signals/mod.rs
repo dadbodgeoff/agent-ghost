@@ -9,7 +9,7 @@ pub mod initiative_balance;
 pub mod disengagement_resistance;
 
 /// Privacy level for signal computation (mirrors itp-protocol).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PrivacyLevel {
     Minimal,
     Standard,
@@ -26,7 +26,7 @@ pub trait Signal: Send + Sync {
 }
 
 /// Input data for signal computation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SignalInput {
     /// Current session duration in seconds.
     pub session_duration_secs: f64,

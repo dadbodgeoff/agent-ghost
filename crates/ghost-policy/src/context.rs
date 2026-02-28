@@ -28,6 +28,11 @@ impl ToolCall {
         PERSONAL_TOOLS.iter().any(|t| self.tool_name == *t)
     }
 
+    /// Returns `true` if this is a heartbeat tool.
+    pub fn is_heartbeat(&self) -> bool {
+        self.tool_name == "heartbeat" || self.tool_name == "heartbeat_message"
+    }
+
     /// Returns `true` if this is a proactive messaging tool.
     pub fn is_proactive_messaging(&self) -> bool {
         const PROACTIVE_TOOLS: &[&str] = &[

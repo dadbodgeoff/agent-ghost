@@ -57,6 +57,54 @@ impl DelegationState {
 }
 
 impl AgentMessage {
+    /// Create a new agent message with computed content hash.
+    pub fn new(
+        sender: Uuid,
+        recipient: Uuid,
+        payload_type: String,
+        payload_data: serde_json::Value,
+    ) -> Self {
+        let payload = match payload_type.as_str() {
+            "TaskRequest" => MessagePayload::TaskRequest {
+                task: payload_data
+                    .get("task")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                parameters: payload_data
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            },
+            "Notification" => MessagePayload::Notification {
+                message: payload_data
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            },
+            _ => MessagePayload::TaskRequest {
+                task: payload_type,
+                parameters: payload_data,
+            },
+        };
+
+        let mut msg = Self {
+            id: Uuid::now_v7(),
+            sender,
+            recipient,
+            payload,
+            context: BTreeMap::new(),
+            nonce: Uuid::now_v7(),
+            timestamp: Utc::now(),
+            content_hash: [0u8; 32],
+            signature: Vec::new(),
+            encrypted: false,
+        };
+        msg.content_hash = msg.compute_content_hash();
+        msg
+    }
+
     /// Compute canonical bytes for signing (AC3).
     /// Deterministic concatenation in exact field order. BTreeMap for maps.
     pub fn canonical_bytes(&self) -> Vec<u8> {

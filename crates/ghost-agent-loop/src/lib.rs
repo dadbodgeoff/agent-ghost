@@ -12,6 +12,7 @@
 //! GATE 3: kill switch
 
 pub mod runner;
+pub use runner::FlushExecutor;
 pub mod circuit_breaker;
 pub mod damage_counter;
 pub mod itp_emitter;

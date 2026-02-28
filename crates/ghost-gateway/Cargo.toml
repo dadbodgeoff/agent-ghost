@@ -83,6 +83,9 @@ regex = { workspace = true }
 # Futures
 futures = "0.3"
 
+# Email (for notification dispatcher)
+lettre = { workspace = true }
+
 # Async trait
 async-trait = { workspace = true }
 

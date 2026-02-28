@@ -144,8 +144,13 @@ impl InterventionStateMachine {
 
         // If score is below current level threshold, track for de-escalation
         if target_level < state.level {
+            // Score is below current level — accumulate de-escalation credit.
+            // consecutive_normal is NOT reset here; it tracks consecutive
+            // cycles where the score is below the current level.
             state.consecutive_normal += 1;
         } else {
+            // Score is AT current level — not improving, reset de-escalation
+            // credits since the agent is still at the same risk level.
             state.consecutive_normal = 0;
         }
 

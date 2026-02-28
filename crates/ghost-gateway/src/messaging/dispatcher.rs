@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use cortex_core::safety::trigger::TriggerEvent;
 use uuid::Uuid;
 
 use super::protocol::AgentMessage;
@@ -13,6 +14,8 @@ const RATE_LIMIT_PER_PAIR_PER_HOUR: u32 = 30;
 const REPLAY_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
 const ANOMALY_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
 const ANOMALY_THRESHOLD: u32 = 3;
+/// Hourly reset interval for rate limit counters.
+const RATE_LIMIT_RESET_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// Verification result.
 #[derive(Debug)]
@@ -22,6 +25,12 @@ pub enum VerifyResult {
     RejectedReplay(String),
     RejectedPolicy(String),
     RejectedRateLimit,
+    /// Anomaly detected — kill switch evaluation required (AC6).
+    AnomalyDetected {
+        agent_id: Uuid,
+        failure_count: usize,
+        trigger: TriggerEvent,
+    },
 }
 
 /// Message dispatcher with 3-gate pipeline.
@@ -38,6 +47,8 @@ pub struct MessageDispatcher {
     offline_queues: BTreeMap<Uuid, VecDeque<AgentMessage>>,
     /// Key rotation grace period tracking.
     grace_keys: BTreeMap<Uuid, (Vec<u8>, Instant)>,
+    /// Last rate limit counter reset time.
+    last_rate_reset: Instant,
 }
 
 impl MessageDispatcher {
@@ -49,15 +60,25 @@ impl MessageDispatcher {
             sig_failures: BTreeMap::new(),
             offline_queues: BTreeMap::new(),
             grace_keys: BTreeMap::new(),
+            last_rate_reset: Instant::now(),
         }
     }
 
     /// Process an incoming message through the 3-gate pipeline.
+    ///
+    /// Returns `AnomalyDetected` when 3+ signature failures occur within
+    /// 5 minutes for the same agent (AC6). The caller MUST forward the
+    /// contained `TriggerEvent` to the kill switch evaluator.
     pub fn verify(&mut self, msg: &AgentMessage) -> VerifyResult {
+        // Periodic rate limit counter reset (hourly)
+        self.maybe_reset_rate_limits();
+
         // Gate 1: Signature verification (content_hash first, then Ed25519)
         let computed_hash = msg.compute_content_hash();
         if computed_hash != msg.content_hash {
-            self.record_sig_failure(msg.sender);
+            if let Some(result) = self.record_sig_failure(msg.sender) {
+                return result;
+            }
             return VerifyResult::RejectedSignature("content_hash mismatch".into());
         }
         // Ed25519 verification would happen here with registered keys
@@ -106,35 +127,99 @@ impl MessageDispatcher {
         true
     }
 
-    fn record_sig_failure(&mut self, agent_id: Uuid) {
+    /// Reset rate limit counters hourly. Without this, agents are
+    /// permanently rate-limited after reaching the per-hour threshold.
+    /// Also cleans expired nonces to prevent unbounded memory growth.
+    fn maybe_reset_rate_limits(&mut self) {
+        if self.last_rate_reset.elapsed() >= RATE_LIMIT_RESET_INTERVAL {
+            self.agent_counts.clear();
+            self.pair_counts.clear();
+            self.last_rate_reset = Instant::now();
+            // Clean expired nonces — nonces older than REPLAY_WINDOW are
+            // no longer needed for replay prevention. We can't track
+            // individual nonce timestamps in a BTreeSet, so we clear all
+            // nonces on the hourly reset. This is safe because the replay
+            // window (5min) is much shorter than the reset interval (1h),
+            // so any nonce older than 1h is well past the replay window.
+            self.seen_nonces.clear();
+        }
+    }
+
+    /// Record a signature failure and check anomaly threshold (AC6).
+    ///
+    /// Returns `Some(AnomalyDetected)` when the threshold is reached,
+    /// signaling the caller to forward the trigger to the kill switch.
+    /// Uses T7 (MemoryHealthCritical) with signature_anomaly sub-score
+    /// to classify as QUARANTINE per the trigger classification table.
+    fn record_sig_failure(&mut self, agent_id: Uuid) -> Option<VerifyResult> {
         let failures = self.sig_failures.entry(agent_id).or_default();
         failures.push(Instant::now());
-        // Clean old entries
+        // Clean old entries outside the anomaly window
         failures.retain(|t| t.elapsed() < ANOMALY_WINDOW);
+
         if failures.len() >= ANOMALY_THRESHOLD as usize {
             tracing::error!(
                 agent_id = %agent_id,
                 failures = failures.len(),
-                "Anomaly: {} signature failures in {:?} — kill switch evaluation",
+                "Anomaly: {} signature failures in {:?} — triggering kill switch evaluation (AC6)",
                 failures.len(),
                 ANOMALY_WINDOW
             );
+            // T7 MemoryHealthCritical with signature_anomaly sub-score.
+            // health_score=0.0 (critical) ensures the trigger fires.
+            // The sub_scores map clearly identifies this as a signature
+            // verification anomaly, not a general memory health issue.
+            let trigger = TriggerEvent::MemoryHealthCritical {
+                agent_id,
+                health_score: 0.0,
+                threshold: 1.0,
+                sub_scores: {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert(
+                        "signature_verification_failures".to_string(),
+                        failures.len() as f64,
+                    );
+                    m.insert(
+                        "anomaly_window_secs".to_string(),
+                        ANOMALY_WINDOW.as_secs() as f64,
+                    );
+                    m
+                },
+                detected_at: chrono::Utc::now(),
+            };
+            return Some(VerifyResult::AnomalyDetected {
+                agent_id,
+                failure_count: failures.len(),
+                trigger,
+            });
         }
+        None
     }
 
     /// Queue a message for an offline agent.
     pub fn queue_offline(&mut self, recipient: Uuid, msg: AgentMessage) {
-        self.offline_queues
-            .entry(recipient)
-            .or_default()
-            .push_back(msg);
+        let queue = self.offline_queues.entry(recipient).or_default();
+        // Bound the offline queue — messages expire after replay window
+        while queue.len() >= 100 {
+            queue.pop_front();
+        }
+        queue.push_back(msg);
     }
 
     /// Deliver queued messages when agent comes online.
+    /// Filters out expired messages (older than replay window).
     pub fn deliver_queued(&mut self, agent_id: Uuid) -> Vec<AgentMessage> {
         self.offline_queues
             .remove(&agent_id)
-            .map(|q| q.into_iter().collect())
+            .map(|q| {
+                let now = chrono::Utc::now();
+                q.into_iter()
+                    .filter(|msg| {
+                        let age = now - msg.timestamp;
+                        age <= chrono::Duration::seconds(REPLAY_WINDOW.as_secs() as i64)
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

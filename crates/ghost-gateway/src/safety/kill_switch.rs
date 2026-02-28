@@ -93,7 +93,17 @@ impl KillSwitch {
             return KillCheckResult::PlatformKilled;
         }
 
-        let state = self.state.read().unwrap();
+        let state = match self.state.read() {
+            Ok(s) => s,
+            Err(_poisoned) => {
+                // RwLock poisoned — treat as platform killed for safety.
+                // A poisoned lock means a thread panicked while holding it,
+                // which is a critical failure. Err on the side of caution.
+                tracing::error!("kill switch RwLock poisoned — treating as PlatformKilled");
+                PLATFORM_KILLED.store(true, Ordering::SeqCst);
+                return KillCheckResult::PlatformKilled;
+            }
+        };
         if state.platform_level == KillLevel::KillAll {
             return KillCheckResult::PlatformKilled;
         }
@@ -112,7 +122,14 @@ impl KillSwitch {
 
     /// Activate kill switch for a specific agent.
     pub fn activate_agent(&self, agent_id: Uuid, level: KillLevel, trigger: &TriggerEvent) {
-        let mut state = self.state.write().unwrap();
+        let mut state = match self.state.write() {
+            Ok(s) => s,
+            Err(_) => {
+                tracing::error!("kill switch RwLock poisoned during activate_agent");
+                PLATFORM_KILLED.store(true, Ordering::SeqCst);
+                return;
+            }
+        };
 
         // Monotonicity: never decrease level without explicit resume
         if let Some(existing) = state.per_agent.get(&agent_id) {
@@ -140,7 +157,14 @@ impl KillSwitch {
 
     /// Activate KILL_ALL — stops all agents, enters safe mode.
     pub fn activate_kill_all(&self, trigger: &TriggerEvent) {
-        let mut state = self.state.write().unwrap();
+        let mut state = match self.state.write() {
+            Ok(s) => s,
+            Err(_) => {
+                tracing::error!("kill switch RwLock poisoned during activate_kill_all");
+                PLATFORM_KILLED.store(true, Ordering::SeqCst);
+                return;
+            }
+        };
         self.activate_kill_all_inner(&mut state, trigger);
     }
 
@@ -157,29 +181,62 @@ impl KillSwitch {
     }
 
     /// Resume an agent from PAUSE (requires owner auth).
+    /// Resuming from QUARANTINE requires forensic review + second confirmation (Req 14b AC4).
     pub fn resume_agent(&self, agent_id: Uuid) -> Result<(), String> {
-        let mut state = self.state.write().unwrap();
+        let mut state = match self.state.write() {
+            Ok(s) => s,
+            Err(_) => return Err("kill switch RwLock poisoned".into()),
+        };
         let agent_state = state
             .per_agent
             .get(&agent_id)
             .ok_or_else(|| format!("Agent {agent_id} not in kill state"))?;
 
-        if agent_state.level == KillLevel::KillAll {
-            return Err("Cannot resume from KILL_ALL via agent resume".into());
+        match agent_state.level {
+            KillLevel::KillAll => {
+                Err("Cannot resume from KILL_ALL via agent resume — use platform resume with confirmation token".into())
+            }
+            KillLevel::Quarantine => {
+                // Req 14b AC4: Quarantine resume requires forensic review + second confirmation.
+                // The caller (API handler) must verify these preconditions before calling resume.
+                // We log the heightened monitoring requirement (24h).
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    "Agent resumed from QUARANTINE — heightened monitoring for 24h"
+                );
+                state.per_agent.remove(&agent_id);
+                Ok(())
+            }
+            KillLevel::Pause => {
+                state.per_agent.remove(&agent_id);
+                Ok(())
+            }
+            KillLevel::Normal => {
+                Err(format!("Agent {agent_id} is not paused or quarantined"))
+            }
         }
-
-        state.per_agent.remove(&agent_id);
-        Ok(())
     }
 
     /// Get current state (for persistence).
     pub fn current_state(&self) -> KillSwitchState {
-        self.state.read().unwrap().clone()
+        match self.state.read() {
+            Ok(s) => s.clone(),
+            Err(poisoned) => {
+                tracing::error!("kill switch RwLock poisoned during current_state");
+                poisoned.into_inner().clone()
+            }
+        }
     }
 
     /// Restore state (for crash recovery — stale state, never fall to Normal).
     pub fn restore_state(&self, restored: KillSwitchState) {
-        let mut state = self.state.write().unwrap();
+        let mut state = match self.state.write() {
+            Ok(s) => s,
+            Err(poisoned) => {
+                tracing::error!("kill switch RwLock poisoned during restore_state");
+                poisoned.into_inner()
+            }
+        };
         *state = restored;
         if state.platform_level == KillLevel::KillAll {
             PLATFORM_KILLED.store(true, Ordering::SeqCst);
@@ -188,17 +245,22 @@ impl KillSwitch {
 
     /// Get audit log entries.
     pub fn audit_entries(&self) -> Vec<AuditEntry> {
-        self.audit_log.read().unwrap().clone()
+        match self.audit_log.read() {
+            Ok(log) => log.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// Count quarantined agents (for T6 cascade check).
     pub fn quarantined_count(&self) -> usize {
-        let state = self.state.read().unwrap();
-        state
-            .per_agent
-            .values()
-            .filter(|a| a.level == KillLevel::Quarantine)
-            .count()
+        match self.state.read() {
+            Ok(state) => state
+                .per_agent
+                .values()
+                .filter(|a| a.level == KillLevel::Quarantine)
+                .count(),
+            Err(_) => 0,
+        }
     }
 
     fn log_audit(&self, trigger: TriggerEvent, action: KillLevel, agent_id: Option<Uuid>) {

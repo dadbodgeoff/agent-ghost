@@ -3,7 +3,7 @@
 //! Triggered every 1000 events or 24 hours (AC9).
 
 /// A Merkle tree built from hash chain leaves.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MerkleTree {
     pub root: [u8; 32],
     pub leaves: Vec<[u8; 32]>,

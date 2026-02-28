@@ -93,7 +93,7 @@ impl ConvergencePolicyTightener {
         }
 
         // Disable heartbeat
-        if call.tool_name == "heartbeat" {
+        if call.is_heartbeat() {
             return Some(DenialFeedback::new(
                 "Heartbeat disabled at intervention level 4",
                 "convergence_level_4_heartbeat_disabled",

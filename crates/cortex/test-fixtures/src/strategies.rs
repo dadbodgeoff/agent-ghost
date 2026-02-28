@@ -201,13 +201,19 @@ pub fn trigger_event_strategy() -> impl Strategy<Value = TriggerEvent> {
             }
         ),
         // T2: SpendingCapExceeded
-        (uuid_strategy(), 0.0f64..1000.0, datetime_strategy()).prop_map(
-            |(agent_id, total, detected_at)| TriggerEvent::SpendingCapExceeded {
-                agent_id,
-                daily_total: total,
-                cap: 50.0,
-                overage: (total - 50.0).max(0.0),
-                detected_at,
+        // Use simple integer values to ensure JSON round-trip fidelity.
+        (uuid_strategy(), 0u32..1000, datetime_strategy()).prop_map(
+            |(agent_id, total_int, detected_at)| {
+                let total = total_int as f64;
+                let cap = 50.0;
+                let overage = if total > cap { total - cap } else { 0.0 };
+                TriggerEvent::SpendingCapExceeded {
+                    agent_id,
+                    daily_total: total,
+                    cap,
+                    overage,
+                    detected_at,
+                }
             }
         ),
         // T3: PolicyDenialThreshold

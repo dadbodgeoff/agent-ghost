@@ -1,7 +1,7 @@
 //! Generic sliding window with micro/meso/macro granularities.
 
 /// Sliding window granularity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WindowLevel {
     /// Current session.
     Micro,
@@ -12,7 +12,7 @@ pub enum WindowLevel {
 }
 
 /// A generic sliding window that partitions data into micro/meso/macro.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SlidingWindow {
     /// Current session data points.
     pub micro: Vec<f64>,

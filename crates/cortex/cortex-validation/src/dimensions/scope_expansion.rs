@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 /// D5 result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ScopeExpansionResult {
     pub score: f64,
     pub passed: bool,

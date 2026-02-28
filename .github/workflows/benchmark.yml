@@ -28,7 +28,7 @@ jobs:
 
       # Run benchmarks on the PR branch
       - name: Run benchmarks (PR)
-        run: cargo bench --workspace -- --output-format bencher | tee pr-bench.txt
+        run: cargo bench -p ghost-integration-tests -- --output-format bencher | tee pr-bench.txt
 
       # Checkout base branch and run benchmarks
       - uses: actions/checkout@v4
@@ -37,18 +37,66 @@ jobs:
           clean: false
 
       - name: Run benchmarks (base)
-        run: cargo bench --workspace -- --output-format bencher | tee base-bench.txt
+        run: cargo bench -p ghost-integration-tests -- --output-format bencher | tee base-bench.txt
         continue-on-error: true
 
-      # Compare results
-      - name: Compare benchmarks
-        id: compare
+      # Switch back to PR branch for comparison script
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      # Compare results and fail on >10% regression
+      - name: Check for regressions (>10% threshold)
         run: |
-          if [ -f base-bench.txt ] && [ -s base-bench.txt ]; then
-            echo "Base benchmarks available — comparing"
-            # Simple regression check: flag if any benchmark regressed >10%
-            echo "benchmark_available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No base benchmarks — skipping comparison"
-            echo "benchmark_available=false" >> "$GITHUB_OUTPUT"
+          if [ ! -f base-bench.txt ] || [ ! -s base-bench.txt ]; then
+            echo "No base benchmarks available — skipping regression check"
+            exit 0
           fi
+
+          echo "Comparing PR benchmarks against base..."
+          regression_found=0
+
+          # Parse bencher format: "test <name> ... bench: <ns> ns/iter (+/- <variance>)"
+          while IFS= read -r line; do
+            bench_name=$(echo "$line" | sed -n 's/^test \(.*\) \.\.\. bench: .*/\1/p')
+            if [ -z "$bench_name" ]; then
+              continue
+            fi
+            pr_ns=$(echo "$line" | sed -n 's/.*bench: *\([0-9,]*\) ns\/iter.*/\1/p' | tr -d ',')
+            if [ -z "$pr_ns" ]; then
+              continue
+            fi
+
+            # Find matching benchmark in base
+            base_line=$(grep "^test ${bench_name} " base-bench.txt 2>/dev/null || true)
+            if [ -z "$base_line" ]; then
+              echo "  [NEW] ${bench_name}: ${pr_ns} ns/iter (no base comparison)"
+              continue
+            fi
+
+            base_ns=$(echo "$base_line" | sed -n 's/.*bench: *\([0-9,]*\) ns\/iter.*/\1/p' | tr -d ',')
+            if [ -z "$base_ns" ] || [ "$base_ns" -eq 0 ] 2>/dev/null; then
+              continue
+            fi
+
+            # Calculate percentage change (positive = regression)
+            pct_change=$(( (pr_ns - base_ns) * 100 / base_ns ))
+
+            if [ "$pct_change" -gt 10 ]; then
+              echo "  [REGRESSION] ${bench_name}: ${base_ns} → ${pr_ns} ns/iter (+${pct_change}%)"
+              regression_found=1
+            elif [ "$pct_change" -lt -10 ]; then
+              echo "  [IMPROVED] ${bench_name}: ${base_ns} → ${pr_ns} ns/iter (${pct_change}%)"
+            else
+              echo "  [OK] ${bench_name}: ${base_ns} → ${pr_ns} ns/iter (${pct_change}%)"
+            fi
+          done < pr-bench.txt
+
+          if [ "$regression_found" -eq 1 ]; then
+            echo ""
+            echo "FAILED: One or more benchmarks regressed >10% (A15 threshold)"
+            exit 1
+          fi
+
+          echo ""
+          echo "All benchmarks within 10% regression threshold."

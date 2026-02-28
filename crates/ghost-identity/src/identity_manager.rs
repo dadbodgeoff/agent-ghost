@@ -70,7 +70,14 @@ impl IdentityManager {
         };
 
         self.identity = Some(identity);
-        Ok(self.identity.as_ref().unwrap())
+        // SAFETY: We just assigned Some above, so this branch is unreachable.
+        // Structured to avoid unwrap() per Task 7.1 conventions.
+        match self.identity.as_ref() {
+            Some(id) => Ok(id),
+            None => Err(IdentityError::ReadError(
+                "internal error: identity not set after assignment".into(),
+            )),
+        }
     }
 
     pub fn identity(&self) -> Option<&AgentIdentity> {

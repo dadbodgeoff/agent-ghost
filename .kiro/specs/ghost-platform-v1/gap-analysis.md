@@ -1,6 +1,7 @@
 # GHOST Platform v1 — Gap Analysis & Build Plan
 
 > Generated: 2026-02-28
+> Last updated: 2026-02-28 (post-build pass 2)
 > Scope: Everything missing, incomplete, or needing wiring — mapped against tasks.md (47 tasks, 9 phases), requirements.md (41 requirements), design.md, and FILE_MAPPING.md.
 > Method: Full crate-by-crate inventory of actual source code vs spec expectations.
 
@@ -8,13 +9,20 @@
 
 ## 1. Executive Summary
 
-The GHOST Platform has 25 Rust crates in the workspace, all with real implementations (27K+ lines total). Supporting infrastructure (browser extension, SvelteKit dashboard, deploy configs, schemas, ghost.yml) exists. The codebase is architecturally sound — the gap is not "build from scratch" but rather:
+The GHOST Platform has 25+ Rust crates in the workspace, all with real implementations (27K+ lines total). Supporting infrastructure (browser extension, SvelteKit dashboard, deploy configs, schemas, ghost.yml) exists. The codebase is architecturally sound.
 
-- **Missing non-Rust deliverables**: CI/CD, root config files, CORP_POLICY.md, SECURITY.md, docs/
-- **Missing crate**: `cortex-test-fixtures` (shared proptest strategies), `ghost-mesh` (placeholder)
-- **Missing crate modifications**: 5 existing cortex crates need convergence-related additions
-- **Missing test suites**: Adversarial tests, property tests (Req 41), e2e integration, benchmarks
-- **Missing cross-crate wiring**: Several integration flows not yet connected end-to-end
+**Build progress (as of pass 2):**
+- ✅ All 15 gaps (GAP-01 through GAP-15) have been addressed
+- ✅ All non-Rust deliverables created (CI/CD, docs, configs, CORP_POLICY, SECURITY, extension)
+- ✅ 5 cortex crate modifications completed (observability, retrieval, privacy, multiagent, napi)
+- ✅ cortex-test-fixtures crate created with proptest strategies
+- ✅ ghost-mesh placeholder crate created (Phase 9, commented out in workspace)
+- ✅ Adversarial test suites (6 files), property tests, hash algorithm separation tests
+- ✅ E2E integration tests (8 files covering cross-crate wiring)
+- ✅ Criterion performance benchmarks
+- ✅ Baileys WhatsApp bridge
+- ✅ Browser extension: full JS + TS source, adapters, popup, dashboard, IndexedDB storage
+- ⚠️ Remaining: cargo build verification, CORP_POLICY.md real signature, ghost-mesh workspace activation
 
 ---
 
@@ -58,27 +66,27 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 
 | Deliverable | Status | Notes |
 |-------------|--------|-------|
-| Browser extension (`extension/`) | ✅ Exists | Chrome + Firefox manifests, content scripts, popup, dashboard |
+| Browser extension (`extension/`) | ✅ Complete | Chrome + Firefox manifests, JS + TS source, 6 adapters, popup, dashboard, IndexedDB, package.json |
 | SvelteKit dashboard (`dashboard/`) | ✅ Exists | package.json, svelte.config.js, routes, components |
 | Deploy configs (`deploy/`) | ✅ Exists | Dockerfile, docker-compose.yml, docker-compose.prod.yml, ghost.service |
 | Schemas (`schemas/`) | ✅ Exists | ghost-config.schema.json, ghost-config.example.yml |
 | Root ghost.yml | ✅ Exists | Gateway, agents, channels, convergence, backup config |
 | Architecture docs (root) | ✅ Exists | 10 detailed sequence flow docs (~1.1MB total) |
-| `docs/` directory | ❌ Missing | getting-started, configuration, skill-authoring, channel-adapters, convergence-safety, architecture |
-| `.github/workflows/` | ❌ Missing | ci.yml, release.yml, security-audit.yml, benchmark.yml |
-| `.github/CODEOWNERS` | ❌ Missing | Ownership mapping for safety-critical paths |
-| `deny.toml` | ❌ Missing | cargo-deny license/advisory config |
-| `rustfmt.toml` | ❌ Missing | Workspace formatting rules |
-| `clippy.toml` | ❌ Missing | Workspace lint rules |
-| `SECURITY.md` | ❌ Missing | Security policy + disclosure process |
-| `CORP_POLICY.md` | ❌ Missing | Root corporate policy document (referenced by ghost-policy, ghost-identity) |
-| Baileys WhatsApp bridge | ❌ Missing | `extension/bridges/baileys-bridge/` Node.js sidecar |
+| `docs/` directory | ✅ Complete | getting-started, configuration, skill-authoring, channel-adapters, convergence-safety, architecture |
+| `.github/workflows/` | ✅ Complete | ci.yml, release.yml, security-audit.yml, benchmark.yml |
+| `.github/CODEOWNERS` | ✅ Complete | Ownership mapping for safety-critical paths |
+| `deny.toml` | ✅ Complete | cargo-deny license/advisory config |
+| `rustfmt.toml` | ✅ Complete | Workspace formatting rules |
+| `clippy.toml` | ✅ Complete | Workspace lint rules |
+| `SECURITY.md` | ✅ Complete | Security policy + disclosure process |
+| `CORP_POLICY.md` | ✅ Complete | Root corporate policy document (placeholder signature) |
+| Baileys WhatsApp bridge | ✅ Complete | `extension/bridges/baileys-bridge/` Node.js sidecar |
 
 ---
 
 ## 4. Gap Inventory
 
-### GAP-01: `cortex-test-fixtures` crate (NEW)
+### GAP-01: `cortex-test-fixtures` crate (NEW) ✅ COMPLETE
 - **Task**: 7.2
 - **Req**: 41 (all 17 AC)
 - **What**: Shared proptest strategy library consumed by all crates' property tests
@@ -97,7 +105,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~400 lines
 - **Priority**: HIGH — blocks all property testing (Task 7.2)
 
-### GAP-02: `ghost-mesh` placeholder crate (NEW)
+### GAP-02: `ghost-mesh` placeholder crate (NEW) ✅ COMPLETE
 - **Task**: 9.1
 - **What**: Placeholder crate with trait definitions only — no implementation
 - **Files needed**:
@@ -110,7 +118,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~100 lines
 - **Priority**: LOW — Phase 9 deferred item
 
-### GAP-03: cortex-observability modifications
+### GAP-03: cortex-observability modifications ✅ COMPLETE
 - **Task**: 7.4
 - **What**: Add convergence metrics endpoints (Prometheus gauges/counters/histograms)
 - **Crate**: `crates/cortex/cortex-observability/` (if exists) or new module
@@ -118,28 +126,28 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~200 lines
 - **Priority**: MEDIUM
 
-### GAP-04: cortex-retrieval modifications
+### GAP-04: cortex-retrieval modifications ✅ COMPLETE
 - **Task**: 7.4
 - **What**: Add `convergence_score` as 11th scoring factor in ScorerWeights
 - **Crate**: Not in workspace — likely an existing external cortex crate
 - **Effort**: ~50 lines
 - **Priority**: MEDIUM
 
-### GAP-05: cortex-privacy modifications
+### GAP-05: cortex-privacy modifications ✅ COMPLETE
 - **Task**: 7.4
 - **What**: Add emotional/attachment content patterns for ConvergenceAwareFilter
 - **Crate**: Not in workspace — likely an existing external cortex crate
 - **Effort**: ~100 lines
 - **Priority**: MEDIUM
 
-### GAP-06: cortex-multiagent modifications
+### GAP-06: cortex-multiagent modifications ✅ COMPLETE
 - **Task**: 7.4
 - **What**: ConsensusShield for multi-source validation
 - **Crate**: Not in workspace — likely an existing external cortex crate
 - **Effort**: ~150 lines
 - **Priority**: MEDIUM
 
-### GAP-07: cortex-napi modifications
+### GAP-07: cortex-napi modifications ✅ COMPLETE
 - **Task**: 7.4
 - **What**: Convergence API bindings (TypeScript types via ts-rs, NAPI functions)
 - **Crate**: Not in workspace — likely an existing external cortex crate
@@ -147,7 +155,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Priority**: LOW — only needed for Node.js consumers
 
 
-### GAP-08: Baileys WhatsApp Bridge (NEW)
+### GAP-08: Baileys WhatsApp Bridge (NEW) ✅ COMPLETE
 - **Task**: 5.7
 - **What**: Node.js JSON-RPC stdin/stdout bridge to WhatsApp Web
 - **Files needed**:
@@ -157,7 +165,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~200 lines (JS)
 - **Priority**: MEDIUM — WhatsApp channel won't work without it
 
-### GAP-09: CORP_POLICY.md (NEW)
+### GAP-09: CORP_POLICY.md (NEW) ✅ COMPLETE
 - **Task**: 4.2, 3.4
 - **What**: Root corporate policy document consumed by ghost-policy engine and ghost-identity CorpPolicyLoader
 - **Location**: Root `CORP_POLICY.md` or `~/.ghost/CORP_POLICY.md`
@@ -166,7 +174,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~100 lines (policy text) + signing tooling
 - **Priority**: HIGH — ghost-policy and ghost-identity reference it directly
 
-### GAP-10: `docs/` directory (NEW)
+### GAP-10: `docs/` directory (NEW) ✅ COMPLETE
 - **Task**: 7.5
 - **Files needed**:
   - `docs/getting-started.md` — Installation, first agent setup, ghost.yml basics
@@ -178,7 +186,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~2000 lines (documentation)
 - **Priority**: LOW — not blocking any code
 
-### GAP-11: CI/CD Workflows (NEW)
+### GAP-11: CI/CD Workflows (NEW) ✅ COMPLETE
 - **Task**: 8.3
 - **Files needed**:
   - `.github/workflows/ci.yml` — fmt, clippy, test, deny, npm lint
@@ -189,7 +197,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~400 lines (YAML)
 - **Priority**: MEDIUM — needed before any real CI
 
-### GAP-12: Root Config Files (NEW)
+### GAP-12: Root Config Files (NEW) ✅ COMPLETE
 - **Task**: 8.3
 - **Files needed**:
   - `deny.toml` — license allowlist (MIT, Apache-2.0, BSD-2/3-Clause, ISC, Zlib), advisory DB, duplicate detection
@@ -203,7 +211,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 
 ## 5. Missing Test Suites
 
-### GAP-13: Adversarial Test Suites
+### GAP-13: Adversarial Test Suites ✅ COMPLETE
 - **Task**: 7.3
 - **Req**: 32 AC7
 - **Files needed**:
@@ -216,7 +224,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~800 lines
 - **Priority**: HIGH — safety-critical validation
 
-### GAP-14: End-to-End Integration Tests
+### GAP-14: End-to-End Integration Tests ✅ COMPLETE
 - **Task**: 8.1
 - **What**: Cross-crate integration tests covering full lifecycles:
   - Full agent turn lifecycle (message → routing → gates → prompt → LLM → response → proposal → delivery → ITP → compaction)
@@ -230,7 +238,7 @@ All 25 workspace crates have real, functional implementations. Here's the per-cr
 - **Effort**: ~1500 lines
 - **Priority**: HIGH — validates the entire system works together
 
-### GAP-15: Performance Benchmarks
+### GAP-15: Performance Benchmarks ✅ COMPLETE
 - **Task**: 8.2
 - **What**: Criterion benchmarks for critical paths:
   - Hash chain computation: 10K events/sec target
@@ -414,56 +422,57 @@ How GHOST maps to OpenClaw's architecture:
 
 ## 9. Priority-Ordered Build Plan
 
-### Tier 1: Immediate (blocks other work)
-| Gap | Item | Effort | Why First |
-|-----|------|--------|-----------|
-| GAP-09 | CORP_POLICY.md | ~100 lines | ghost-policy and ghost-identity reference it directly |
-| GAP-12 | Root config files (deny.toml, rustfmt.toml, clippy.toml, SECURITY.md) | ~150 lines | Needed for consistent formatting and CI |
-| GAP-01 | cortex-test-fixtures crate | ~400 lines | Blocks all property testing |
+### Tier 1: Immediate (blocks other work) ✅ ALL COMPLETE
+| Gap | Item | Effort | Status |
+|-----|------|--------|--------|
+| GAP-09 | CORP_POLICY.md | ~100 lines | ✅ Done |
+| GAP-12 | Root config files (deny.toml, rustfmt.toml, clippy.toml, SECURITY.md) | ~150 lines | ✅ Done |
+| GAP-01 | cortex-test-fixtures crate | ~400 lines | ✅ Done |
 
-### Tier 2: Safety-Critical (validates correctness)
-| Gap | Item | Effort | Why |
-|-----|------|--------|-----|
-| GAP-13 | Adversarial test suites | ~800 lines | Validates safety-critical paths |
-| Task 7.2 | Correctness properties (17 proptest suites) | ~1200 lines | Req 41 — formal invariant verification |
-| GAP-14 | E2E integration tests | ~1500 lines | Validates cross-crate wiring |
+### Tier 2: Safety-Critical (validates correctness) ✅ ALL COMPLETE
+| Gap | Item | Effort | Status |
+|-----|------|--------|--------|
+| GAP-13 | Adversarial test suites | ~800 lines | ✅ Done |
+| Task 7.2 | Correctness properties (17 proptest suites) | ~1200 lines | ✅ Done |
+| GAP-14 | E2E integration tests | ~1500 lines | ✅ Done |
 
-### Tier 3: Infrastructure (enables CI/CD)
-| Gap | Item | Effort | Why |
-|-----|------|--------|-----|
-| GAP-11 | CI/CD workflows | ~400 lines | Automated testing and release |
-| GAP-15 | Performance benchmarks | ~600 lines | Regression detection |
+### Tier 3: Infrastructure (enables CI/CD) ✅ ALL COMPLETE
+| Gap | Item | Effort | Status |
+|-----|------|--------|--------|
+| GAP-11 | CI/CD workflows | ~400 lines | ✅ Done |
+| GAP-15 | Performance benchmarks | ~600 lines | ✅ Done |
 
-### Tier 4: Feature Completeness
-| Gap | Item | Effort | Why |
-|-----|------|--------|-----|
-| GAP-08 | Baileys WhatsApp bridge | ~200 lines | WhatsApp channel support |
-| GAP-02 | ghost-mesh placeholder | ~100 lines | Phase 9 trait boundary |
-| GAP-03-07 | Cortex crate modifications | ~700 lines | Convergence integration in existing cortex crates |
+### Tier 4: Feature Completeness ✅ ALL COMPLETE
+| Gap | Item | Effort | Status |
+|-----|------|--------|--------|
+| GAP-08 | Baileys WhatsApp bridge | ~200 lines | ✅ Done |
+| GAP-02 | ghost-mesh placeholder | ~100 lines | ✅ Done |
+| GAP-03-07 | Cortex crate modifications | ~700 lines | ✅ Done |
 
-### Tier 5: Documentation
-| Gap | Item | Effort | Why |
-|-----|------|--------|-----|
-| GAP-10 | docs/ directory | ~2000 lines | User-facing documentation |
+### Tier 5: Documentation ✅ ALL COMPLETE
+| Gap | Item | Effort | Status |
+|-----|------|--------|--------|
+| GAP-10 | docs/ directory | ~2000 lines | ✅ Done |
 
 ---
 
 ## 10. Estimated Total Remaining Effort
 
-| Category | Lines | Hours (est.) |
-|----------|-------|-------------|
-| Tier 1: Immediate | ~650 | 3-4h |
-| Tier 2: Safety tests | ~3500 | 15-20h |
-| Tier 3: CI/CD + benchmarks | ~1000 | 4-6h |
-| Tier 4: Features | ~1000 | 4-6h |
-| Tier 5: Documentation | ~2000 | 6-8h |
-| **Total** | **~8150** | **~32-44h** |
+All 15 gaps have been addressed. Remaining work is verification and polish:
 
-The codebase is architecturally complete. The remaining work is primarily:
-1. Testing infrastructure (test-fixtures, property tests, adversarial tests, e2e)
-2. CI/CD and project hygiene (workflows, config files, CORP_POLICY)
-3. Documentation
-4. Minor feature gaps (Baileys bridge, cortex modifications, ghost-mesh placeholder)
+| Category | Status |
+|----------|--------|
+| Tier 1: Immediate | ✅ Complete |
+| Tier 2: Safety tests | ✅ Complete |
+| Tier 3: CI/CD + benchmarks | ✅ Complete |
+| Tier 4: Features | ✅ Complete |
+| Tier 5: Documentation | ✅ Complete |
+
+**Remaining verification tasks:**
+- `cargo build --workspace` to verify all crates compile
+- `cargo test --workspace` to verify all tests pass
+- CORP_POLICY.md needs real Ed25519 signature (currently placeholder)
+- ghost-mesh crate is commented out in workspace — uncomment when ready for Phase 9
 
 ---
 

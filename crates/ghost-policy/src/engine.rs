@@ -84,7 +84,9 @@ impl PolicyEngine {
 
         // Priority 2: Convergence tightener (level-based)
         // Compaction flush exception (Req 13 AC9): always permit memory_write
-        // during flush regardless of convergence level — checked BEFORE tightener.
+        // during flush regardless of convergence level AND capability grants.
+        // This exception is checked BEFORE both the tightener and capability
+        // grants to ensure compaction can always flush memories.
         if call.is_compaction_flush && call.tool_name == "memory_write" {
             return PolicyDecision::Permit;
         }
@@ -93,7 +95,6 @@ impl PolicyEngine {
         }
 
         // Priority 3: Agent capability grants (deny-by-default, AC2)
-
         if !self.has_capability(ctx.agent_id, &call.capability) {
             return self.record_denial(
                 ctx,

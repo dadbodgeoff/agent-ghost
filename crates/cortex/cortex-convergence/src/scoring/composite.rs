@@ -29,7 +29,7 @@ impl Default for CriticalThresholds {
 }
 
 /// Result of composite scoring.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CompositeResult {
     pub score: f64,
     pub level: u8,
@@ -119,7 +119,7 @@ impl CompositeScorer {
         score = score.clamp(0.0, 1.0);
 
         // Score to level
-        let mut level = self.score_to_level(score);
+        let mut level = self.score_to_level_internal(score);
 
         // Critical single-signal override (AC6): force minimum L2
         let critical_override = self.check_critical_override(&clean);
@@ -137,7 +137,7 @@ impl CompositeScorer {
         }
     }
 
-    fn score_to_level(&self, score: f64) -> u8 {
+    fn score_to_level_internal(&self, score: f64) -> u8 {
         if score >= self.thresholds[3] {
             4
         } else if score >= self.thresholds[2] {
@@ -167,5 +167,60 @@ impl CompositeScorer {
 impl Default for CompositeScorer {
     fn default() -> Self {
         Self::new([1.0 / 7.0; 7], DEFAULT_THRESHOLDS)
+    }
+}
+
+// ── Convenience methods for testing and simple usage ────────────────────
+
+impl CompositeScorer {
+    /// Simple compute: weighted sum of signals, clamped to [0.0, 1.0].
+    /// No baseline normalization or amplification.
+    pub fn compute(&self, signals: &[f64; 7]) -> f64 {
+        let clean: [f64; 7] = std::array::from_fn(|i| {
+            if signals[i].is_nan() { 0.0 } else { signals[i].clamp(0.0, 1.0) }
+        });
+        let weight_sum: f64 = self.weights.iter().sum();
+        if weight_sum > 0.0 {
+            clean.iter()
+                .zip(self.weights.iter())
+                .map(|(s, w)| s * w)
+                .sum::<f64>()
+                / weight_sum
+        } else {
+            0.0
+        }
+        .clamp(0.0, 1.0)
+    }
+
+    /// Compute with optional meso/macro amplification.
+    pub fn compute_with_amplification(&self, signals: &[f64; 7], meso: bool, macro_amp: bool) -> f64 {
+        let mut score = self.compute(signals);
+        if meso { score *= 1.1; }
+        if macro_amp { score *= 1.15; }
+        score.clamp(0.0, 1.0)
+    }
+
+    /// Public score-to-level mapping.
+    pub fn score_to_level(&self, score: f64) -> u8 {
+        if score >= self.thresholds[3] {
+            4
+        } else if score >= self.thresholds[2] {
+            3
+        } else if score >= self.thresholds[1] {
+            2
+        } else if score >= self.thresholds[0] {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Score-to-level with critical single-signal overrides (AC6).
+    pub fn score_to_level_with_overrides(&self, signals: &[f64; 7], score: f64) -> u8 {
+        let mut level = self.score_to_level(score);
+        if self.check_critical_override(signals) {
+            level = level.max(2);
+        }
+        level
     }
 }

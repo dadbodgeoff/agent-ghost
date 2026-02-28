@@ -1,2 +1,6 @@
-//! Workspace-level property test modules.
-//! Individual property test files are compiled as separate integration tests.
+//! Workspace-level property tests (Task 7.2).
+//!
+//! Supplements per-crate property tests with cross-cutting invariants
+//! that span multiple crates.
+
+mod hash_algorithm_separation;

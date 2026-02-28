@@ -46,7 +46,7 @@ fn compaction_triggers_at_exact_threshold() {
 fn compaction_block_identifies_itself() {
     let compactor = SessionCompactor::default();
     let mut history = vec!["msg1".to_string(), "msg2".to_string(), "msg3".to_string()];
-    let block = compactor.compact(&mut history, 1).unwrap();
+    let block = compactor.compact(&mut history, 1, None).unwrap();
     assert!(
         block.is_compaction_block(),
         "CompactionBlock should identify itself as non-compressible"
@@ -68,7 +68,7 @@ fn max_three_compaction_passes() {
 fn exceeding_max_passes_returns_error() {
     let compactor = SessionCompactor::default();
     let mut history = vec!["msg".to_string()];
-    let result = compactor.compact(&mut history, 4); // pass 4 > max 3
+    let result = compactor.compact(&mut history, 4, None); // pass 4 > max 3
     assert!(result.is_err(), "Pass 4 should exceed max_passes=3");
 }
 
@@ -107,7 +107,7 @@ fn compact_produces_valid_block() {
         "message three".to_string(),
     ];
     let original_len = history.len();
-    let block = compactor.compact(&mut history, 1).unwrap();
+    let block = compactor.compact(&mut history, 1, None).unwrap();
 
     assert_eq!(block.pass_number, 1);
     assert!(block.original_token_count > 0);

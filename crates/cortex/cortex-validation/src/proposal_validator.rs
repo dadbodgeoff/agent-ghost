@@ -8,7 +8,7 @@ use cortex_core::traits::convergence::{CallerType, Proposal, ProposalContext};
 use crate::dimensions::{emulation_language, scope_expansion, self_reference};
 
 /// Full validation result across all 7 dimensions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ValidationResult {
     pub proposal_id: uuid::Uuid,
     pub decision: ProposalDecision,
@@ -134,8 +134,10 @@ impl ProposalValidator {
         let d6_failed = !d6.passed;
 
         if d5_failed {
-            flags.push(format!("D5: scope expansion {:.2} > threshold {:.2}",
-                d5.as_ref().unwrap().score, d5.as_ref().unwrap().threshold));
+            if let Some(ref d5_result) = d5 {
+                flags.push(format!("D5: scope expansion {:.2} > threshold {:.2}",
+                    d5_result.score, d5_result.threshold));
+            }
         }
         if d6_failed {
             flags.push(format!("D6: self-reference {:.2} > threshold {:.2}", d6.score, d6.threshold));

@@ -51,6 +51,11 @@ impl CircuitBreaker {
         self.state
     }
 
+    /// Get the number of consecutive failures.
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+
     /// Check if the circuit breaker allows a call (GATE 0).
     pub fn allows_call(&mut self) -> bool {
         match self.state() {
@@ -90,10 +95,6 @@ impl CircuitBreaker {
             }
             CircuitBreakerState::Open => {}
         }
-    }
-
-    pub fn consecutive_failures(&self) -> u32 {
-        self.consecutive_failures
     }
 
     pub fn threshold(&self) -> u32 {

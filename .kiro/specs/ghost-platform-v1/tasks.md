@@ -1662,7 +1662,7 @@
 
 ---
 
-### Task 8.1 — End-to-End Integration Tests
+### Task 8.1 — End-to-End Integration Tests ✅
 - **Scope**: Cross-crate integration
 - **What to test**:
   - Full agent turn lifecycle: inbound message → routing → gate checks → prompt compilation → LLM call → response processing → proposal extraction → delivery → ITP emission → compaction check
@@ -1678,7 +1678,7 @@
 
 ---
 
-### Task 8.2 — Performance Benchmarks
+### Task 8.2 — Performance Benchmarks ✅
 - **Scope**: Critical paths
 - **What to benchmark** (using Criterion):
   - Hash chain computation: 10K events/sec target
@@ -1695,7 +1695,7 @@
 
 ---
 
-### Task 8.3 — CI/CD Workflows + Project Root Config Files
+### Task 8.3 — CI/CD Workflows + Project Root Config Files ✅
 - **Design**: A15
 - **Files**: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/workflows/security-audit.yml`, `.github/workflows/benchmark.yml`, `.github/CODEOWNERS`, `deny.toml`, `rustfmt.toml`, `clippy.toml`, `SECURITY.md`
 - **What to build**:
@@ -1722,7 +1722,7 @@
 
 ---
 
-### Task 9.1 — ghost-mesh: ClawMesh Agent-to-Agent Payment Protocol (Placeholder)
+### Task 9.1 — ghost-mesh: ClawMesh Agent-to-Agent Payment Protocol (Placeholder) ✅
 - **Source**: FILE_MAPPING.md §ghost-mesh, AGENT_ARCHITECTURE_v2.md §5
 - **Crate**: `crates/ghost-mesh/` (NEW — placeholder only)
 - **Files**: `Cargo.toml`, `src/lib.rs`, `src/types.rs`, `src/traits.rs`, `src/protocol.rs`

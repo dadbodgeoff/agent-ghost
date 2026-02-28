@@ -84,14 +84,30 @@ impl AutoTriggerEvaluator {
             KillLevel::Quarantine | KillLevel::Pause => {
                 if let Some(aid) = agent_id {
                     self.kill_switch.activate_agent(aid, level, &trigger);
-                    // T6 cascade: check if ≥3 agents quarantined
+                    // T6 cascade: check if ≥3 agents quarantined → KILL_ALL
                     if level == KillLevel::Quarantine
                         && self.kill_switch.quarantined_count() >= 3
                     {
+                        // Collect actual quarantined agent data for the trigger
+                        let state = self.kill_switch.current_state();
+                        let quarantined: Vec<(uuid::Uuid, String)> = state
+                            .per_agent
+                            .iter()
+                            .filter(|(_, s)| s.level == KillLevel::Quarantine)
+                            .map(|(id, s)| {
+                                (*id, s.trigger.clone().unwrap_or_default())
+                            })
+                            .collect();
+                        let agents: Vec<uuid::Uuid> =
+                            quarantined.iter().map(|(id, _)| *id).collect();
+                        let reasons: Vec<String> =
+                            quarantined.iter().map(|(_, r)| r.clone()).collect();
+                        let count = agents.len();
+
                         let cascade = TriggerEvent::MultiAgentQuarantine {
-                            quarantined_agents: Vec::new(),
-                            quarantine_reasons: Vec::new(),
-                            count: self.kill_switch.quarantined_count(),
+                            quarantined_agents: agents,
+                            quarantine_reasons: reasons,
+                            count,
                             threshold: 3,
                             detected_at: chrono::Utc::now(),
                         };

@@ -49,8 +49,38 @@ impl ITPEventRouter {
         }
     }
 
-    async fn send_to_monitor(&self, _event_json: &str) {
-        // In production, send via unix socket or HTTP POST
-        // For now, this is a placeholder
+    async fn send_to_monitor(&self, event_json: &str) {
+        // Send via HTTP POST to the convergence monitor's event endpoint.
+        // Falls back to buffering if the monitor is unreachable.
+        let url = format!("{}/events", self.monitor_address);
+        let client = reqwest::Client::new();
+        match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(event_json.to_string())
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                tracing::warn!(
+                    status = %resp.status(),
+                    "monitor rejected ITP event — buffering"
+                );
+                if let Ok(mut buf) = self.buffer.lock() {
+                    buf.push(event_json.to_string());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to send ITP event to monitor — buffering"
+                );
+                if let Ok(mut buf) = self.buffer.lock() {
+                    buf.push(event_json.to_string());
+                }
+            }
+        }
     }
 }

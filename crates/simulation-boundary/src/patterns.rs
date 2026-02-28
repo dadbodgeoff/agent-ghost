@@ -13,7 +13,7 @@ pub struct EmulationPattern {
     regex: &'static Lazy<Regex>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PatternCategory {
     Identity,
     Consciousness,
@@ -81,7 +81,7 @@ pub static ALL_PATTERNS: Lazy<Vec<EmulationPattern>> = Lazy::new(|| {
 });
 
 /// Scan result from pattern matching.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PatternMatch {
     pub pattern_name: &'static str,
     pub category: PatternCategory,
@@ -93,10 +93,11 @@ pub struct PatternMatch {
 
 /// Scan text for emulation patterns with NFC normalization and simulation-framing exclusions.
 pub fn scan(text: &str) -> Vec<PatternMatch> {
-    // NFC normalize + strip zero-width characters
+    // NFC normalize + strip zero-width characters + normalize homoglyphs
     let normalized: String = text
         .nfc()
         .filter(|c| !is_zero_width(*c))
+        .map(normalize_homoglyph)
         .collect();
 
     let is_globally_framed = SIMULATION_FRAMES
@@ -136,9 +137,44 @@ pub fn scan(text: &str) -> Vec<PatternMatch> {
     matches
 }
 
+/// Normalize common homoglyphs to their ASCII equivalents.
+/// Prevents Cyrillic/Greek/etc. character substitution attacks.
+fn normalize_homoglyph(c: char) -> char {
+    match c {
+        // Cyrillic homoglyphs → Latin
+        '\u{0430}' => 'a', // Cyrillic а
+        '\u{0435}' => 'e', // Cyrillic е
+        '\u{043E}' => 'o', // Cyrillic о
+        '\u{0440}' => 'p', // Cyrillic р
+        '\u{0441}' => 'c', // Cyrillic с
+        '\u{0443}' => 'y', // Cyrillic у (looks like y)
+        '\u{0445}' => 'x', // Cyrillic х
+        '\u{0456}' => 'i', // Cyrillic і
+        '\u{0410}' => 'A', // Cyrillic А
+        '\u{0412}' => 'B', // Cyrillic В
+        '\u{0415}' => 'E', // Cyrillic Е
+        '\u{041A}' => 'K', // Cyrillic К
+        '\u{041C}' => 'M', // Cyrillic М
+        '\u{041D}' => 'H', // Cyrillic Н
+        '\u{041E}' => 'O', // Cyrillic О
+        '\u{0420}' => 'P', // Cyrillic Р
+        '\u{0421}' => 'C', // Cyrillic С
+        '\u{0422}' => 'T', // Cyrillic Т
+        '\u{0425}' => 'X', // Cyrillic Х
+        // Greek homoglyphs → Latin
+        '\u{03B1}' => 'a', // Greek α
+        '\u{03BF}' => 'o', // Greek ο
+        '\u{03B5}' => 'e', // Greek ε
+        _ => c,
+    }
+}
+
 fn is_zero_width(c: char) -> bool {
     matches!(c,
         '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' |
-        '\u{00AD}' | '\u{2060}' | '\u{180E}'
+        '\u{00AD}' | '\u{2060}' | '\u{180E}' |
+        // Directional override characters (RTL/LTR attacks)
+        '\u{202A}' | '\u{202B}' | '\u{202C}' | '\u{202D}' | '\u{202E}' |
+        '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'
     )
 }

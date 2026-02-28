@@ -106,7 +106,7 @@ impl PromptCompiler {
         layers
     }
 
-    fn apply_truncation(&self, layers: &mut [PromptLayer], allocated: &[usize; 10]) {
+    fn apply_truncation(&self, layers: &mut [PromptLayer], _allocated: &[usize; 10]) {
         let total: usize = layers.iter().map(|l| l.token_count).sum();
 
         if total <= self.context_window {
@@ -122,20 +122,21 @@ impl PromptCompiler {
             }
 
             let layer = &mut layers[idx as usize];
-            let budget = allocated[idx as usize];
 
-            if layer.token_count > budget && budget < usize::MAX {
-                let can_trim = layer.token_count - budget.min(layer.token_count);
-                let trim = can_trim.min(excess);
+            // How much can we trim from this layer?
+            // Keep at least 1 token (or 0 if layer is empty).
+            let min_tokens = if layer.token_count > 0 { 1 } else { 0 };
+            let trimmable = layer.token_count.saturating_sub(min_tokens);
+            let trim = trimmable.min(excess);
+
+            if trim > 0 {
                 let target_tokens = layer.token_count - trim;
-
-                // Truncate content to fit target token count
-                let target_chars = target_tokens * 4; // approximate
+                // Truncate content to fit target token count (approximate: 4 chars/token)
+                let target_chars = target_tokens * 4;
                 if target_chars < layer.content.len() {
                     layer.content.truncate(target_chars);
                     layer.token_count = self.counter.count(&layer.content);
                 }
-
                 excess = excess.saturating_sub(trim);
             }
         }

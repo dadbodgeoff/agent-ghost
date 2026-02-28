@@ -7,7 +7,7 @@ use crate::patterns::{self, PatternMatch};
 use crate::reframer::OutputReframer;
 
 /// Enforcement mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EnforcementMode {
     /// Flag and log, return original text.
     Soft,
@@ -18,14 +18,14 @@ pub enum EnforcementMode {
 }
 
 /// Result of scanning output.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ScanResult {
     pub violations: Vec<PatternMatch>,
     pub mode: EnforcementMode,
 }
 
 /// Result of enforcement.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum EnforcementResult {
     /// No violations found.
     Clean(String),

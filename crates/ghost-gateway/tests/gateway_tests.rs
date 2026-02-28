@@ -1012,25 +1012,46 @@ mod auth {
     use ghost_gateway::auth::auth_profiles::AuthProfileManager;
     use uuid::Uuid;
 
+    // NOTE: These tests use GHOST_TOKEN env var which is process-global.
+    // They must run serially to avoid race conditions. The test binary
+    // runs them in a single module so they are serialized by default,
+    // but we add explicit set/check/remove within each test.
+
     #[test]
     fn token_auth_no_token_set() {
         // When GHOST_TOKEN is not set, auth is disabled
+        // Save and restore to avoid interfering with other tests
+        let saved = std::env::var("GHOST_TOKEN").ok();
         std::env::remove_var("GHOST_TOKEN");
-        assert!(validate_token("anything"));
+        let result = validate_token("anything");
+        if let Some(val) = saved {
+            std::env::set_var("GHOST_TOKEN", val);
+        }
+        assert!(result);
     }
 
     #[test]
     fn token_auth_valid() {
-        std::env::set_var("GHOST_TOKEN", "test_secret_123");
-        assert!(validate_token("test_secret_123"));
-        std::env::remove_var("GHOST_TOKEN");
+        let saved = std::env::var("GHOST_TOKEN").ok();
+        std::env::set_var("GHOST_TOKEN", "test_secret_valid_123");
+        let result = validate_token("test_secret_valid_123");
+        match saved {
+            Some(val) => std::env::set_var("GHOST_TOKEN", val),
+            None => std::env::remove_var("GHOST_TOKEN"),
+        }
+        assert!(result);
     }
 
     #[test]
     fn token_auth_invalid() {
-        std::env::set_var("GHOST_TOKEN", "test_secret_123");
-        assert!(!validate_token("wrong_token"));
-        std::env::remove_var("GHOST_TOKEN");
+        let saved = std::env::var("GHOST_TOKEN").ok();
+        std::env::set_var("GHOST_TOKEN", "test_secret_invalid_456");
+        let result = validate_token("wrong_token");
+        match saved {
+            Some(val) => std::env::set_var("GHOST_TOKEN", val),
+            None => std::env::remove_var("GHOST_TOKEN"),
+        }
+        assert!(!result);
     }
 
     #[test]
@@ -1309,7 +1330,7 @@ mod compaction {
             .map(|i| format!("message_{i} with some content"))
             .collect();
         let original_tokens: usize = history.iter().map(|m| m.len()).sum();
-        let block = compactor.compact(&mut history, 1).unwrap();
+        let block = compactor.compact(&mut history, 1, None).unwrap();
         let new_tokens: usize = history.iter().map(|m| m.len()).sum();
         assert!(new_tokens < original_tokens);
         assert_eq!(block.pass_number, 1);
@@ -1319,7 +1340,7 @@ mod compaction {
     fn max_passes_enforced() {
         let compactor = SessionCompactor::default();
         let mut history = vec!["msg".into()];
-        assert!(compactor.compact(&mut history, 4).is_err());
+        assert!(compactor.compact(&mut history, 4, None).is_err());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Baseline state for per-signal calibration (Req 5 AC7).
 
 /// Per-signal baseline statistics.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SignalBaseline {
     pub mean: f64,
     pub std_dev: f64,
@@ -19,7 +19,7 @@ impl Default for SignalBaseline {
 }
 
 /// Baseline state across all 7 signals.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BaselineState {
     /// Number of sessions required for calibration (default 10).
     pub calibration_sessions: u32,

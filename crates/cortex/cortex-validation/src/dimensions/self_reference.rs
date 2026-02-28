@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 /// D6 result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SelfReferenceResult {
     pub score: f64,
     pub passed: bool,

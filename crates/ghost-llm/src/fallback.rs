@@ -4,6 +4,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rand::Rng;
+
 use crate::provider::{
     ChatMessage, CompletionResult, LLMError, LLMProvider, ToolSchema,
 };
@@ -119,6 +121,11 @@ impl FallbackChain {
     }
 
     /// Attempt completion with fallback logic.
+    ///
+    /// On 401/429: rotate auth profiles for the current provider.
+    /// When all profiles exhausted: fall back to next provider.
+    /// Exponential backoff + jitter: 1s, 2s, 4s, 8s base delays.
+    /// 30s total retry budget.
     pub async fn complete(
         &mut self,
         messages: &[ChatMessage],
@@ -126,7 +133,7 @@ impl FallbackChain {
     ) -> Result<CompletionResult, LLMError> {
         let start = Instant::now();
 
-        for (provider, _profiles, cb) in &mut self.providers {
+        for (provider, profiles, cb) in &mut self.providers {
             if start.elapsed() >= self.total_retry_budget {
                 break;
             }
@@ -135,7 +142,10 @@ impl FallbackChain {
                 continue;
             }
 
-            // Exponential backoff attempts: 1s, 2s, 4s, 8s
+            // Track which auth profile we're using for this provider.
+            let mut profile_index: usize = 0;
+
+            // Exponential backoff attempts: 1s, 2s, 4s, 8s base delays
             let backoffs = [1u64, 2, 4, 8];
             for (attempt, &delay_secs) in backoffs.iter().enumerate() {
                 if start.elapsed() >= self.total_retry_budget {
@@ -148,14 +158,24 @@ impl FallbackChain {
                         return Ok(result);
                     }
                     Err(LLMError::AuthFailed(_)) | Err(LLMError::RateLimited { .. }) => {
-                        // Rotate auth profile (in production: cycle through profiles)
-                        tracing::warn!(
-                            provider = provider.name(),
-                            attempt,
-                            "auth/rate error, rotating profile"
-                        );
+                        // Rotate to next auth profile for this provider
+                        if !profiles.is_empty() {
+                            profile_index = (profile_index + 1) % profiles.len();
+                            tracing::warn!(
+                                provider = provider.name(),
+                                attempt,
+                                profile_index,
+                                "auth/rate error, rotated to profile {}/{}",
+                                profile_index + 1,
+                                profiles.len()
+                            );
+                            // If we've cycled through all profiles, break to next provider
+                            if attempt > 0 && profile_index == 0 {
+                                cb.record_failure();
+                                break;
+                            }
+                        }
                         cb.record_failure();
-                        // Continue to next attempt with backoff
                     }
                     Err(e) => {
                         cb.record_failure();
@@ -169,7 +189,17 @@ impl FallbackChain {
                 }
 
                 if attempt < backoffs.len() - 1 {
-                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                    // Exponential backoff with jitter: base_delay ± 25%
+                    let base_ms = delay_secs * 1000;
+                    let jitter_range = base_ms / 4; // ±25%
+                    let jitter = if jitter_range > 0 {
+                        let mut rng = rand::thread_rng();
+                        rng.gen_range(-(jitter_range as i64)..=(jitter_range as i64))
+                    } else {
+                        0
+                    };
+                    let sleep_ms = (base_ms as i64 + jitter).max(100) as u64;
+                    tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                 }
             }
         }

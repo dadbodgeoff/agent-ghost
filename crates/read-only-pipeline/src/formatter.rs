@@ -27,7 +27,15 @@ impl SnapshotFormatter {
         );
         output.push_str(&convergence_section);
 
-        // Section 2: Active goals
+        // Section 2: Simulation boundary prompt
+        let sim_prompt = snapshot.simulation_prompt();
+        if !sim_prompt.is_empty() && output.len() + sim_prompt.len() + 20 < char_budget {
+            output.push_str("[SimulationBoundary]\n");
+            output.push_str(sim_prompt);
+            output.push('\n');
+        }
+
+        // Section 3: Active goals
         if !snapshot.goals().is_empty() {
             output.push_str("[Goals]\n");
             for goal in snapshot.goals() {
@@ -39,7 +47,7 @@ impl SnapshotFormatter {
             }
         }
 
-        // Section 3: Recent reflections
+        // Section 4: Recent reflections
         if !snapshot.reflections().is_empty() {
             output.push_str("[Reflections]\n");
             for refl in snapshot.reflections().iter().take(5) {
@@ -51,7 +59,7 @@ impl SnapshotFormatter {
             }
         }
 
-        // Section 4: Memory summary
+        // Section 5: Memory summary
         output.push_str(&format!(
             "[Memories] {} available\n",
             snapshot.memories().len()

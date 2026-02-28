@@ -48,14 +48,19 @@ impl GatewayBootstrap {
         // Pre-step: Check kill_state.json on startup (AC13)
         // If present, enter safe mode — previous KILL_ALL was not cleanly resolved.
         let kill_state_path = shellexpand_tilde("~/.ghost/data/kill_state.json");
-        if std::path::Path::new(&kill_state_path).exists() {
+        let safe_mode = std::path::Path::new(&kill_state_path).exists();
+        if safe_mode {
             tracing::warn!(
                 path = %kill_state_path,
                 "kill_state.json found — previous KILL_ALL not resolved. Entering safe mode."
             );
-            // In safe mode: load config but restrict all agent operations.
+            // In safe mode: load config and run migrations, but set
+            // PLATFORM_KILLED so all agent operations are blocked.
             // The operator must delete kill_state.json or use the dashboard
             // API with a confirmation token to resume.
+            use crate::safety::kill_switch::PLATFORM_KILLED;
+            use std::sync::atomic::Ordering;
+            PLATFORM_KILLED.store(true, Ordering::SeqCst);
         }
 
         // Step 1: Load + validate ghost.yml

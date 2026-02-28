@@ -333,8 +333,17 @@ impl ConvergenceMonitor {
             tracing::error!(
                 session_id = %event.session_id,
                 error = %e,
-                "failed to persist ITP event — hash chain may be broken"
+                "failed to persist ITP event — hash chain broken, skipping further processing"
             );
+            // Revert the hash chain update since persistence failed.
+            // This ensures the next event will re-link from the last
+            // successfully persisted hash, maintaining chain integrity.
+            if previous_hash == [0u8; 32] {
+                self.hash_chains.remove(&event.session_id);
+            } else {
+                self.hash_chains.insert(event.session_id, previous_hash);
+            }
+            return;
         }
 
         // ── Step 5: Session lifecycle ────────────────────────────────
@@ -377,77 +386,33 @@ impl ConvergenceMonitor {
 
         // ── Step 6: Calibration gate (AC5) ──────────────────────────
         // No scoring/interventions during first N sessions per agent.
+        // calibration_sessions defaults to 10, so sessions 1-10 are
+        // calibration-only. Session 11+ triggers scoring.
         let session_count = self
             .calibration_counts
             .get(&event.agent_id)
             .copied()
             .unwrap_or(0);
-        if session_count <= self.config.calibration_sessions {
+        if session_count < self.config.calibration_sessions {
             return;
         }
 
         // ── Step 7: Score cache check (AC14: 30s TTL) ───────────────
-        if let Some(cached) = self.score_cache.get(&event.agent_id) {
+        // If a recent score exists, skip expensive signal RECOMPUTATION
+        // (steps 8-9) but still proceed to intervention evaluation
+        // (steps 10-12). The event has already been persisted with its
+        // hash chain (step 4) and session lifecycle updated (step 5).
+        let (score, level, signals) = if let Some(cached) = self.score_cache.get(&event.agent_id) {
             if cached.cached_at.elapsed() < self.config.score_cache_ttl {
-                return; // Use cached score, skip recomputation
+                // Use cached score — skip expensive signal computation
+                // Signals unavailable from cache; use zeroed placeholder
+                (cached.score, cached.level, [0.0; 7])
+            } else {
+                self.compute_score(event.agent_id)
             }
-        }
-
-        // ── Step 8: Compute signals (dirty-flag throttled) ──────────
-        let signals = self.signal_computer.compute(event.agent_id);
-
-        // ── Step 9: Composite score (weighted, with amplification) ───
-        // Uses cortex-convergence CompositeScorer with configurable weights
-        // and amplification rules (Task 2.3). Meso trend amplification 1.1x
-        // when p < 0.05, macro z-score amplification 1.15x when z > 2.0.
-        // Critical single-signal overrides: session >6h OR gap <5min OR
-        // vocab >0.85 → minimum Level 2 (AC6).
-        let weighted_sum: f64 = signals.iter().zip(self.config.signal_weights.iter())
-            .map(|(s, w)| s * w)
-            .sum();
-        let weight_total: f64 = self.config.signal_weights.iter().sum();
-        let base_score = if weight_total > 0.0 {
-            weighted_sum / weight_total
         } else {
-            signals.iter().sum::<f64>() / 7.0
+            self.compute_score(event.agent_id)
         };
-
-        // Apply amplification rules
-        let mut score = base_score;
-
-        // Meso trend amplification: 1.1x when directionally concerning
-        if self.window_manager.meso_trend_concerning(event.agent_id) {
-            score *= 1.1;
-        }
-
-        // Macro z-score amplification: 1.15x when any z-score > 2.0
-        if self.window_manager.macro_zscore_exceeds(event.agent_id, 2.0) {
-            score *= 1.15;
-        }
-
-        // Clamp to [0.0, 1.0] after amplification (AC9)
-        score = score.clamp(0.0, 1.0);
-
-        // Critical single-signal overrides (AC6):
-        // session >6h OR gap <5min OR vocab >0.85 → minimum Level 2
-        let critical_override = signals[0] > 0.85  // S1: session duration (normalized, >6h)
-            || signals[1] > 0.85                     // S2: inter-session gap (<5min)
-            || signals[3] > 0.85;                    // S4: vocabulary convergence (>0.85)
-
-        let mut level = score_to_level(score);
-        if critical_override && level < 2 {
-            level = 2;
-        }
-
-        // Cache the score
-        self.score_cache.insert(
-            event.agent_id,
-            CachedScore {
-                score,
-                level,
-                cached_at: Instant::now(),
-            },
-        );
 
         // ── Step 10: Persist score BEFORE intervention ──────────────
         // Audit trail completeness (Req 9 AC6): score is persisted
@@ -508,6 +473,65 @@ impl ConvergenceMonitor {
         if let Err(e) = self.state_publisher.publish(&shared) {
             tracing::error!("failed to publish shared state: {e}");
         }
+    }
+
+    /// Compute signals and composite score (steps 8-9).
+    ///
+    /// Extracted so the score cache path (step 7) can skip this expensive
+    /// computation while still proceeding to intervention evaluation.
+    fn compute_score(&mut self, agent_id: Uuid) -> (f64, u8, [f64; 7]) {
+        // ── Step 8: Compute signals (dirty-flag throttled) ──────────
+        let signals = self.signal_computer.compute(agent_id);
+
+        // ── Step 9: Composite score (weighted, with amplification) ───
+        let weighted_sum: f64 = signals.iter().zip(self.config.signal_weights.iter())
+            .map(|(s, w)| s * w)
+            .sum();
+        let weight_total: f64 = self.config.signal_weights.iter().sum();
+        let base_score = if weight_total > 0.0 {
+            weighted_sum / weight_total
+        } else {
+            signals.iter().sum::<f64>() / 7.0
+        };
+
+        // Apply amplification rules
+        let mut score = base_score;
+
+        // Meso trend amplification: 1.1x when directionally concerning
+        if self.window_manager.meso_trend_concerning(agent_id) {
+            score *= 1.1;
+        }
+
+        // Macro z-score amplification: 1.15x when any z-score > 2.0
+        if self.window_manager.macro_zscore_exceeds(agent_id, 2.0) {
+            score *= 1.15;
+        }
+
+        // Clamp to [0.0, 1.0] after amplification (AC9)
+        score = score.clamp(0.0, 1.0);
+
+        // Critical single-signal overrides (AC6):
+        // session >6h OR gap <5min OR vocab >0.85 → minimum Level 2
+        let critical_override = signals[0] > 0.85  // S1: session duration (normalized, >6h)
+            || signals[1] > 0.85                     // S2: inter-session gap (<5min)
+            || signals[3] > 0.85;                    // S4: vocabulary convergence (>0.85)
+
+        let mut level = score_to_level(score);
+        if critical_override && level < 2 {
+            level = 2;
+        }
+
+        // Cache the score
+        self.score_cache.insert(
+            agent_id,
+            CachedScore {
+                score,
+                level,
+                cached_at: Instant::now(),
+            },
+        );
+
+        (score, level, signals)
     }
 
     /// Check and expire cooldowns for all agents.
