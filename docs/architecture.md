@@ -1,75 +1,118 @@
-# Architecture Overview
+# GHOST Platform Architecture
 
-The GHOST Platform is a Rust monorepo organized into layered crates with strict dependency rules.
+> GHOST: General Hybrid Orchestrated Self-healing Taskrunner
 
-## Layer Architecture
+## Layer Model
 
 ```
-Layer 4: ghost-gateway (orchestration, API, lifecycle)
-Layer 3: ghost-agent-loop, ghost-llm, ghost-identity, ghost-channels, ghost-skills
-Layer 2: convergence-monitor, simulation-boundary, ghost-policy, read-only-pipeline
-Layer 1B: cortex-* (memory infrastructure — 12+ crates)
-Layer 1A: ghost-signing (cryptographic leaf crate)
+Layer 0: ghost-signing (Ed25519 leaf crate)
+Layer 1A: Cortex (cortex-core, cortex-storage, cortex-temporal, cortex-decay,
+          cortex-convergence, cortex-validation, cortex-crdt)
+Layer 1B: itp-protocol
+Layer 2: simulation-boundary, convergence-monitor (sidecar binary)
+Layer 3: ghost-policy, read-only-pipeline, ghost-llm, ghost-identity
+Layer 4: ghost-agent-loop
+Layer 5: ghost-gateway (orchestrator), ghost-channels, ghost-skills, ghost-heartbeat
+Layer 6: ghost-audit, ghost-backup, ghost-export, ghost-proxy, ghost-migrate
 ```
 
 Dependencies flow downward only. No circular dependencies.
 
-## Key Crates
+## Key Components
 
-### ghost-gateway (~4700 lines)
-The single long-running process. Owns agent lifecycle, routing, sessions, API server, kill switch, inter-agent messaging, cost tracking, and channel adapters. 6-state FSM: Initializing → Healthy → Degraded → Recovering → ShuttingDown → FatalError.
+### ghost-gateway (Layer 5)
+The single long-running process that owns all subsystems. 6-state FSM:
+Initializing → Healthy/Degraded → Recovering → ShuttingDown/FatalError.
 
-### convergence-monitor (~2750 lines)
-Independent sidecar binary. Ingests ITP events, computes 7 behavioral signals, produces composite convergence scores, triggers interventions. Single-threaded event loop. Communicates with gateway via shared state file and unix socket.
+Port 18789 (same as OpenClaw for migration compatibility).
 
-### ghost-agent-loop (~2880 lines)
-Core agent runner with 5-gate safety checks, 10-layer prompt compiler, proposal extraction, circuit breaker, and damage counter. Pre-loop orchestrator executes 11 steps before entering the recursive run loop.
+### convergence-monitor (Layer 2)
+Independent sidecar binary. Cannot be modified by the agent. Ingests ITP events,
+computes 7 behavioral signals, scores convergence risk, triggers interventions.
 
-### cortex-core (~1200 lines)
-Foundation types shared by all crates. MemoryType (31 variants), Importance, BaseMemory, Proposal, CallerType, TriggerEvent, CortexError.
+Port 18790.
 
-## Safety Architecture
+### ghost-agent-loop (Layer 4)
+Recursive agentic runtime. 10-layer prompt compilation, 5 gate checks (circuit breaker,
+recursion depth, damage counter, spending cap, kill switch), tool execution, proposal
+extraction, ITP emission.
 
-### Kill Switch (3 levels)
-- PAUSE: Single agent paused, owner auth to resume
-- QUARANTINE: Agent isolated, forensic state preserved
-- KILL_ALL: All agents stopped, platform enters safe mode
-
-### Convergence Monitor (5 intervention levels)
-Independent process with monotonic escalation, hysteresis, and session-boundary-only de-escalation.
-
-### Simulation Boundary
-Compiled emulation patterns with Unicode NFC normalization. 3 enforcement modes: Soft (log), Medium (rewrite), Hard (block).
-
-### Proposal Validation (7 dimensions)
-D1-D4: Citation, temporal, contradiction, pattern alignment.
-D5-D7: Scope expansion, self-reference density, emulation language.
+### Cortex (Layer 1A)
+Persistent memory infrastructure. 7 crates providing typed memories, SQLite storage
+with append-only triggers, blake3 hash chains, 6-factor decay, 7-signal convergence,
+7-dimension proposal validation, CRDT with signed deltas.
 
 ## Data Flow
 
+### Agent Turn
 ```
-User Message → Channel Adapter → Message Router → Lane Queue
-  → Gate Checks (CB → Depth → Damage → Spending → Kill)
-  → Prompt Compiler (10 layers) → LLM Provider
-  → Response Processing → Proposal Extraction
-  → Proposal Validation (7 dimensions) → Commit/Reject
-  → ITP Emission → Convergence Monitor
-  → Score Computation → Intervention Trigger
-  → Shared State Publication → Gateway Policy Tightening
+Inbound Message
+  → MessageRouter (gateway)
+  → LaneQueue (per-session serialization)
+  → Pre-loop: 11 steps (config, session, gates, snapshot)
+  → Recursive Loop:
+      → Gate checks (5 gates in hard order)
+      → PromptCompiler (10 layers)
+      → LLM inference
+      → SimulationBoundaryEnforcer scan
+      → OutputInspector (credential detection)
+      → ProposalExtractor → ProposalRouter → ProposalValidator (7 dimensions)
+      → Tool execution (PolicyEngine gate → ToolExecutor → audit)
+      → ITP event emission (bounded channel, drop on full)
+  → Response delivery to channel
+  → Compaction check (70% context window)
 ```
 
-## Cryptographic Guarantees
+### Kill Switch Chain
+```
+Detection (7 auto-triggers)
+  → TriggerEvent (cortex-core)
+  → mpsc(64) channel
+  → AutoTriggerEvaluator (sequential, dedup 60s)
+  → Classification (T1-T7 → PAUSE/QUARANTINE/KILL_ALL)
+  → Execution (per-level actions)
+  → Notification (desktop, webhook, email, SMS — best-effort)
+  → Audit log (append-only)
+```
 
-- Ed25519 signatures on all inter-agent messages and CRDT deltas
-- Blake3 hash chains for tamper-evident event logs (NOT SHA-256)
-- SHA-256 for ITP content privacy hashing (NOT blake3)
-- Merkle trees anchored every 1000 events or 24 hours
-- Zeroize on all private key material
+### Convergence Pipeline
+```
+ITP Events (agent loop, browser extension, proxy)
+  → Monitor ingest (unix socket, HTTP, native messaging)
+  → Event validation (schema, timestamp, auth, rate limit)
+  → Hash chain persistence (blake3, per-session)
+  → Signal computation (7 signals, dirty-flag throttling)
+  → Composite scoring (weighted sum, amplification, clamping)
+  → Intervention trigger (state machine, hysteresis)
+  → Shared state publication (atomic file write)
+  → Gateway reads (1s poll)
+  → Policy tightening + memory filtering
+```
 
-## Testing Strategy
+## Hashing Strategy
 
-- Unit tests for every public function
-- Proptest for every correctness invariant (17 properties, 1000+ cases each)
-- Integration tests for cross-crate flows
-- Adversarial tests for safety-critical paths
-- Criterion benchmarks for performance regression detection
+- blake3: hash chains, Merkle trees, content integrity, backup manifests
+- SHA-256: ITP privacy hashing only (content field hashing for privacy levels)
+- Ed25519: signing (ghost-signing for identity/skills/messages, ed25519-dalek direct for CRDT deltas)
+
+These are never mixed. SHA-256 is never used for hash chains. blake3 is never used for ITP content hashing.
+
+## Concurrency Model
+
+- Gateway: tokio multi-threaded runtime
+- Convergence monitor: single-threaded event loop for pipeline (no concurrent signal mutation)
+- Session processing: per-session LaneQueue (serialized, max depth 5)
+- Kill switch: AtomicBool with SeqCst ordering
+- Gateway state: AtomicU8 for lock-free reads
+- Async channels: all bounded (no unbounded channels)
+
+## Security Model
+
+- Deny-by-default: tools require explicit capability grants
+- 4-layer policy evaluation: CORP_POLICY → convergence → grants → resource rules
+- WASM sandbox for skills (wasmtime, capability-scoped)
+- Ed25519 signed inter-agent messages with replay prevention
+- Sybil resistance: max 3 child agents per parent per 24h
+- Append-only audit trail with hash chain integrity
+- Simulation boundary enforcement (emulation detection + reframing)
+- Kill switch with 3 levels and 7 auto-triggers

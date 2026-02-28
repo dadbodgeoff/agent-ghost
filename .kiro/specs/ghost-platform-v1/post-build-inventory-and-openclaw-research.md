@@ -1369,3 +1369,68 @@ tail of integrations. This preserves local-first while providing escape hatch fo
   at provider's revocation endpoint.
 - Kill switch integration: QUARANTINE/KILL_ALL → all OAuth reference IDs become non-functional
   (broker refuses to decrypt/execute). Tokens remain encrypted on disk for forensic review.
+**Per-Provider Configuration** (in ghost.yml):
+```yaml
+oauth:
+  providers:
+    google:
+      client_id: ${GOOGLE_CLIENT_ID}
+      client_secret: ${GOOGLE_CLIENT_SECRET}  # or keychain ref
+      scopes:
+        gmail: ["https://www.googleapis.com/auth/gmail.readonly"]
+        calendar: ["https://www.googleapis.com/auth/calendar"]
+      auth_url: https://accounts.google.com/o/oauth2/v2/auth
+      token_url: https://oauth2.googleapis.com/token
+      revoke_url: https://oauth2.googleapis.com/revoke
+    github:
+      client_id: ${GITHUB_CLIENT_ID}
+      client_secret: ${GITHUB_CLIENT_SECRET}
+      scopes:
+        repo: ["repo", "read:user"]
+      auth_url: https://github.com/login/oauth/authorize
+      token_url: https://github.com/login/oauth/access_token
+    slack:
+      client_id: ${SLACK_CLIENT_ID}
+      client_secret: ${SLACK_CLIENT_SECRET}
+      scopes:
+        bot: ["chat:write", "channels:read", "users:read"]
+      auth_url: https://slack.com/oauth/v2/authorize
+      token_url: https://slack.com/api/oauth.v2.access
+```
+
+**Effort Estimate**: ~3-4 weeks for ghost-oauth with 4 core providers (Google, GitHub, Slack,
+Microsoft). Additional providers ~2-3 days each. Composio adapter ~1 week.
+
+---
+
+### Research Summary: Effort Estimates for All 6 Items
+
+| Item | Scope | Effort | Priority |
+|------|-------|--------|----------|
+| 1. OS Keychain / Secrets | ghost-secrets crate, 3 providers | 1-2 weeks | High (security) |
+| 2. Prompt Injection Defense | Spotlighting + Plan-Then-Execute + Dual LLM | 3-4 weeks | High (security) |
+| 3. Agent Network (ghost-mesh) | A2A protocol + EigenTrust + cascade breakers | 4-6 weeks | Medium (feature) |
+| 4. Network Egress Policy | ghost-egress crate, eBPF + pf + proxy fallback | 2-3 weeks | High (security) |
+| 5. Mobile Companion Apps | PWA first, then Tauri 2.0 iOS/Android | 2-3 days (PWA) + 3-4 weeks (native) | Low (UX) |
+| 6. OAuth Brokering | ghost-oauth crate, PKCE flows, 4 providers | 3-4 weeks | Medium (feature) |
+
+**Total estimated effort for all 6 items: ~16-22 weeks** (roughly one full development cycle
+equivalent to the v1 build itself).
+
+**Recommended priority order**:
+1. OS Keychain (Item 1) — foundational, other items depend on it (OAuth token storage)
+2. Network Egress (Item 4) — critical security gap, relatively contained scope
+3. Prompt Injection (Item 2) — highest security impact, Spotlighting alone is quick win
+4. OAuth Brokering (Item 6) — enables real-world utility (Gmail, GitHub, Calendar access)
+5. Agent Network (Item 3) — enables multi-user/multi-host scenarios
+6. Mobile Apps (Item 5) — PWA is quick, native can wait until user demand justifies it
+
+*Sources: [keyring crate](https://crates.io/crates/keyring),
+[Microsoft Spotlighting](https://arxiv.org/abs/2403.14720),
+[FIDES Information Flow Control](https://arxiv.org/abs/2501.15560),
+[Design Patterns for Securing LLM Agents](https://arxiv.org/abs/2501.07992),
+[Google A2A Protocol](https://google.github.io/A2A),
+[EigenTrust Algorithm](https://nlp.stanford.edu/pubs/eigentrust.pdf),
+[Aya eBPF Framework](https://aya-rs.dev),
+[Tauri 2.0 Mobile](https://v2.tauri.app/blog/tauri-20/).
+Content was rephrased for compliance with licensing restrictions.*

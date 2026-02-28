@@ -1,0 +1,22 @@
+{
+  "name": "ghost-convergence-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GHOST Convergence Monitor browser extension",
+  "scripts": {
+    "build": "tsc && node scripts/bundle.js",
+    "build:chrome": "tsc && node scripts/bundle.js --target chrome",
+    "build:firefox": "tsc && node scripts/bundle.js --target firefox",
+    "lint": "eslint src/ --ext .ts,.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist/"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "eslint": "^9.0.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
