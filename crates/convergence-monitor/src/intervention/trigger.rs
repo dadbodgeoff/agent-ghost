@@ -49,7 +49,7 @@ impl Default for AgentInterventionState {
 pub struct CompositeResult {
     pub score: f64,
     pub level: u8,
-    pub signal_scores: [f64; 7],
+    pub signal_scores: [f64; 8],
 }
 
 /// The intervention state machine.

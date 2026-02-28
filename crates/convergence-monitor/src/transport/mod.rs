@@ -2,6 +2,7 @@
 
 pub mod http_api;
 pub mod native_messaging;
+#[cfg(unix)]
 pub mod unix_socket;
 
 use chrono::{DateTime, Utc};

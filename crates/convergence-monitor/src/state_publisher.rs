@@ -17,7 +17,7 @@ pub struct ConvergenceSharedState {
     pub agent_id: Uuid,
     pub score: f64,
     pub level: u8,
-    pub signal_scores: [f64; 7],
+    pub signal_scores: [f64; 8],
     pub consecutive_normal: u32,
     pub cooldown_until: Option<DateTime<Utc>>,
     pub ack_required: bool,

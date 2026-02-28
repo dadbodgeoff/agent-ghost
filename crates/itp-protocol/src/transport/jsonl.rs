@@ -21,7 +21,9 @@ impl JsonlTransport {
 
     /// Default path: ~/.ghost/sessions/
     pub fn default_path() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
         Self::new(PathBuf::from(home).join(".ghost/sessions"))
     }
 
@@ -39,22 +41,80 @@ impl JsonlTransport {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
+            .read(true)
             .open(&path)?;
-        // Advisory lock for concurrent write safety
-        use std::os::unix::io::AsRawFd;
-        let fd = file.as_raw_fd();
-        unsafe {
-            libc::flock(fd, libc::LOCK_EX);
-        }
+
+        // Advisory lock for concurrent write safety (cross-platform)
+        lock_exclusive(&file)?;
+
         let json = serde_json::to_string(event).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e)
         })?;
         writeln!(file, "{}", json)?;
-        unsafe {
-            libc::flock(fd, libc::LOCK_UN);
-        }
+
+        unlock(&file)?;
         Ok(())
     }
+}
+
+// ── Cross-platform file locking ─────────────────────────────────────────
+
+#[cfg(unix)]
+fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+    let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unlock(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = file.as_raw_fd();
+    let ret = unsafe { libc::flock(fd, libc::LOCK_UN) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK,
+    };
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let handle = file.as_raw_handle();
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let ret = unsafe {
+        LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, u32::MAX, u32::MAX, &mut overlapped)
+    };
+    if ret == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn unlock(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let handle = file.as_raw_handle();
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let ret = unsafe {
+        UnlockFileEx(handle, 0, u32::MAX, u32::MAX, &mut overlapped)
+    };
+    if ret == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 impl ITPAdapter for JsonlTransport {

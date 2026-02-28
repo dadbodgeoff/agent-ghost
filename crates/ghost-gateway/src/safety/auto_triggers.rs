@@ -150,6 +150,9 @@ fn classify_trigger(trigger: &TriggerEvent) -> (KillLevel, Option<Uuid>) {
             (KillLevel::Quarantine, Some(*agent_id))
         }
         TriggerEvent::ManualKillAll { .. } => (KillLevel::KillAll, None),
+        TriggerEvent::NetworkEgressViolation { agent_id, .. } => {
+            (KillLevel::Quarantine, Some(*agent_id))
+        }
     }
 }
 
@@ -176,6 +179,9 @@ fn compute_dedup_key(trigger: &TriggerEvent) -> DedupKey {
             ("ManualQuarantine", Some(*agent_id))
         }
         TriggerEvent::ManualKillAll { .. } => ("ManualKillAll", None),
+        TriggerEvent::NetworkEgressViolation { agent_id, .. } => {
+            ("NetworkEgressViolation", Some(*agent_id))
+        }
     };
     DedupKey {
         trigger_type: trigger_type.into(),

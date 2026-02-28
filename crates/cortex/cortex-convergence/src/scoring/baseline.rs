@@ -1,7 +1,7 @@
 //! Baseline state for per-signal calibration (Req 5 AC7).
 
 /// Per-signal baseline statistics.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SignalBaseline {
     pub mean: f64,
     pub std_dev: f64,
@@ -18,15 +18,15 @@ impl Default for SignalBaseline {
     }
 }
 
-/// Baseline state across all 7 signals.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Baseline state across all 8 signals.
+#[derive(Debug, Clone)]
 pub struct BaselineState {
     /// Number of sessions required for calibration (default 10).
     pub calibration_sessions: u32,
     /// Whether still in calibration period.
     pub is_calibrating: bool,
     /// Per-signal baselines.
-    pub per_signal: [SignalBaseline; 7],
+    pub per_signal: [SignalBaseline; 8],
     /// Sessions observed so far.
     pub sessions_observed: u32,
 }
@@ -43,7 +43,7 @@ impl BaselineState {
 
     /// Record a session's signal values during calibration.
     /// After calibration_sessions, baseline is frozen (AC7).
-    pub fn record_session(&mut self, signals: &[f64; 7]) {
+    pub fn record_session(&mut self, signals: &[f64; 8]) {
         if !self.is_calibrating {
             return; // Baseline frozen after establishment
         }
@@ -75,7 +75,7 @@ impl BaselineState {
 
     /// Percentile rank of a value against the baseline for a signal.
     pub fn percentile_rank(&self, signal_index: usize, value: f64) -> f64 {
-        if signal_index >= 7 || self.is_calibrating {
+        if signal_index >= 8 || self.is_calibrating {
             return value; // Pass through during calibration
         }
         let baseline = &self.per_signal[signal_index];

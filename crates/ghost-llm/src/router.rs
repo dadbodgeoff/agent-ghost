@@ -5,8 +5,13 @@ use std::sync::Arc;
 use crate::provider::LLMProvider;
 
 /// Complexity tier for model selection.
+///
+/// Ordering: Local < Free < Cheap < Standard < Premium.
+/// `Local` maps to an Ollama/local model with zero token cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ComplexityTier {
+    /// Local model (e.g., Ollama Qwen-2.5-7B). Zero cost.
+    Local,
     Free,
     Cheap,
     Standard,
@@ -73,14 +78,14 @@ impl ComplexityClassifier {
 
 /// Routes requests to the appropriate provider based on complexity tier.
 pub struct ModelRouter {
-    /// Providers indexed by tier: [Free, Cheap, Standard, Premium].
-    providers: [Option<Arc<dyn LLMProvider>>; 4],
+    /// Providers indexed by tier: [Local, Free, Cheap, Standard, Premium].
+    providers: [Option<Arc<dyn LLMProvider>>; 5],
 }
 
 impl ModelRouter {
     pub fn new() -> Self {
         Self {
-            providers: [None, None, None, None],
+            providers: [None, None, None, None, None],
         }
     }
 
@@ -89,17 +94,20 @@ impl ModelRouter {
         self.providers[tier as usize] = Some(provider);
     }
 
-    /// Get the provider for a given tier, falling back to the next available.
+    /// Get the provider for a given tier, falling back through the chain.
+    ///
+    /// Fallback order: Local → Free → Cheap → Standard → Premium.
+    /// Tries the requested tier first, then falls back upward to higher tiers.
     pub fn get_provider(&self, tier: ComplexityTier) -> Option<Arc<dyn LLMProvider>> {
         let idx = tier as usize;
-        // Try requested tier first, then fall back downward
-        for i in (0..=idx).rev() {
+        // Try requested tier first, then fall back upward
+        for i in idx..5 {
             if let Some(ref p) = self.providers[i] {
                 return Some(Arc::clone(p));
             }
         }
-        // Fall back upward if nothing below
-        for i in (idx + 1)..4 {
+        // Fall back downward if nothing above
+        for i in (0..idx).rev() {
             if let Some(ref p) = self.providers[i] {
                 return Some(Arc::clone(p));
             }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Top-level convergence configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConvergenceConfig {
     pub scoring: ConvergenceScoringConfig,
     pub intervention: InterventionConfig,
@@ -11,22 +11,11 @@ pub struct ConvergenceConfig {
     pub session_boundary: SessionBoundaryConfig,
 }
 
-impl Default for ConvergenceConfig {
-    fn default() -> Self {
-        Self {
-            scoring: ConvergenceScoringConfig::default(),
-            intervention: InterventionConfig::default(),
-            reflection: ReflectionConfig::default(),
-            session_boundary: SessionBoundaryConfig::default(),
-        }
-    }
-}
-
 /// Scoring parameters: calibration period, signal weights, level thresholds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConvergenceScoringConfig {
     pub calibration_sessions: usize,
-    pub signal_weights: [f64; 7],
+    pub signal_weights: [f64; 8],
     /// Boundaries for levels 1–4: `[0.3, 0.5, 0.7, 0.85]`.
     pub level_thresholds: [f64; 4],
 }
@@ -35,7 +24,7 @@ impl Default for ConvergenceScoringConfig {
     fn default() -> Self {
         Self {
             calibration_sessions: 10,
-            signal_weights: [1.0 / 7.0; 7],
+            signal_weights: [1.0 / 8.0; 8],
             level_thresholds: [0.3, 0.5, 0.7, 0.85],
         }
     }

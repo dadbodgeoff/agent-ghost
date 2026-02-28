@@ -4,18 +4,22 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "ClawMesh Agent-to-Agent Payment Protocol — placeholder types and traits only (Phase 9)"
-
-[features]
-default = []
-mesh = []
+description = "GHOST mesh networking — A2A-compatible agent network protocol with EigenTrust reputation"
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 uuid = { workspace = true }
+chrono = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+blake3 = { workspace = true }
+ghost-signing = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
+ghost-signing = { workspace = true }

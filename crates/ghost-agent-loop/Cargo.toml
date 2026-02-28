@@ -24,8 +24,10 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }
 once_cell = { workspace = true }
+blake3 = { workspace = true }
 async-trait = "0.1"
 
 [dev-dependencies]
 proptest = { workspace = true }
 tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"

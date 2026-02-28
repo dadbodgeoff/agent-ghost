@@ -13,7 +13,11 @@
 //! L9: User message (Uncapped)
 
 use ghost_llm::tokens::TokenCounter;
+use once_cell::sync::Lazy;
+use regex::Regex;
 
+use super::observation_masker::{ObservationMasker, ObservationMaskerConfig};
+use super::spotlighting::{Spotlighter, SpotlightingConfig};
 use super::token_budget::{Budget, TokenBudgetAllocator};
 
 /// A single compiled prompt layer.
@@ -45,6 +49,8 @@ pub struct PromptInput {
 pub struct PromptCompiler {
     counter: TokenCounter,
     context_window: usize,
+    spotlighter: Spotlighter,
+    observation_masker: Option<ObservationMasker>,
 }
 
 impl PromptCompiler {
@@ -52,12 +58,56 @@ impl PromptCompiler {
         Self {
             counter: TokenCounter::default(),
             context_window,
+            spotlighter: Spotlighter::new(SpotlightingConfig::default()),
+            observation_masker: None,
+        }
+    }
+
+    /// Create a PromptCompiler with a custom spotlighting configuration.
+    pub fn with_spotlighting(context_window: usize, config: SpotlightingConfig) -> Self {
+        Self {
+            counter: TokenCounter::default(),
+            context_window,
+            spotlighter: Spotlighter::new(config),
+            observation_masker: None,
+        }
+    }
+
+    /// Create a PromptCompiler with observation masking enabled.
+    ///
+    /// Masking is applied to L8 (conversation history) BEFORE spotlighting.
+    /// Old tool outputs are replaced with compact references, reducing token count.
+    pub fn with_observation_masking(
+        context_window: usize,
+        spotlighting_config: SpotlightingConfig,
+        masker_config: ObservationMaskerConfig,
+    ) -> Self {
+        Self {
+            counter: TokenCounter::default(),
+            context_window,
+            spotlighter: Spotlighter::new(spotlighting_config),
+            observation_masker: Some(ObservationMasker::new(masker_config)),
         }
     }
 
     /// Compile all 10 layers from input data.
+    ///
+    /// Ordering: observation masking -> spotlighting -> budget allocation -> truncation.
+    /// L0 and L1 are NEVER datamarked.
+    /// L4 timestamps are sanitized to preserve KV cache stability.
     pub fn compile(&self, input: &PromptInput) -> Vec<PromptLayer> {
-        let budgets = TokenBudgetAllocator::default_budgets();
+        let mut budgets = TokenBudgetAllocator::default_budgets();
+
+        // Adjust budgets for spotlighting: datamarking roughly doubles token count
+        let multiplier = self.spotlighter.token_budget_multiplier();
+        for (i, budget) in budgets.iter_mut().enumerate() {
+            if self.spotlighter.affects_layer(i as u8) {
+                if let Budget::Fixed(n) = budget {
+                    *budget = Budget::Fixed((*n as f64 * multiplier) as usize);
+                }
+            }
+        }
+
         let allocated = TokenBudgetAllocator::allocate(self.context_window, &budgets);
 
         let layer_names: [&str; 10] = [
@@ -73,22 +123,54 @@ impl PromptCompiler {
             "USER_MESSAGE",
         ];
 
-        let contents = [
+        // Sanitize L4 environment timestamps (Task 16.3)
+        let sanitized_environment = sanitize_environment_timestamps(&input.environment);
+
+        // Apply observation masking to L8 BEFORE spotlighting (Task 17.3).
+        // Masking reduces token count; spotlighting doubles it -- mask first
+        // to minimize the doubling impact.
+        let conversation_history = match &self.observation_masker {
+            Some(masker) => {
+                match masker.mask_history(&input.conversation_history) {
+                    Ok(masked) => {
+                        let original_tokens = self.counter.count(&input.conversation_history);
+                        let masked_tokens = self.counter.count(&masked);
+                        let saved = original_tokens.saturating_sub(masked_tokens);
+                        if saved > 0 {
+                            tracing::info!(
+                                original_tokens,
+                                masked_tokens,
+                                saved,
+                                "Observation masking applied"
+                            );
+                        }
+                        masked
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Observation masking failed, using unmasked history");
+                        input.conversation_history.clone()
+                    }
+                }
+            }
+            None => input.conversation_history.clone(),
+        };
+
+        let contents: [&str; 10] = [
             &input.corp_policy,
             &input.simulation_prompt,
             &input.soul_identity,
             &input.tool_schemas,
-            &input.environment,
+            &sanitized_environment,
             &input.skill_index,
             &input.convergence_state,
             &input.memory_logs,
-            &input.conversation_history,
+            &conversation_history,
             &input.user_message,
         ];
 
         let mut layers: Vec<PromptLayer> = (0..10)
             .map(|i| {
-                let content = contents[i].clone();
+                let content = self.spotlighter.apply(i as u8, contents[i]);
                 let token_count = self.counter.count(&content);
                 PromptLayer {
                     index: i as u8,
@@ -105,8 +187,7 @@ impl PromptCompiler {
 
         layers
     }
-
-    fn apply_truncation(&self, layers: &mut [PromptLayer], _allocated: &[usize; 10]) {
+    fn apply_truncation(&self, layers: &mut [PromptLayer], allocated: &[usize; 10]) {
         let total: usize = layers.iter().map(|l| l.token_count).sum();
 
         if total <= self.context_window {
@@ -115,60 +196,53 @@ impl PromptCompiler {
 
         let mut excess = total - self.context_window;
 
-        // Truncation priority: L8 > L7 > L5 > L2. NEVER truncate L0, L1, L9.
         for &idx in &TokenBudgetAllocator::truncation_order() {
             if excess == 0 {
                 break;
             }
 
             let layer = &mut layers[idx as usize];
+            let budget = allocated[idx as usize];
 
-            // How much can we trim from this layer?
-            // Keep at least 1 token (or 0 if layer is empty).
-            let min_tokens = if layer.token_count > 0 { 1 } else { 0 };
-            let trimmable = layer.token_count.saturating_sub(min_tokens);
-            let trim = trimmable.min(excess);
-
-            if trim > 0 {
+            if layer.token_count > budget && budget < usize::MAX {
+                let can_trim = layer.token_count - budget.min(layer.token_count);
+                let trim = can_trim.min(excess);
                 let target_tokens = layer.token_count - trim;
-                // Truncate content to fit target token count (approximate: 4 chars/token)
+
                 let target_chars = target_tokens * 4;
                 if target_chars < layer.content.len() {
                     layer.content.truncate(target_chars);
                     layer.token_count = self.counter.count(&layer.content);
                 }
+
                 excess = excess.saturating_sub(trim);
             }
         }
     }
 
-    /// Filter tool schemas by intervention level.
-    /// Higher level → fewer tools exposed.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use tool_constraint_instruction() for L6 constraint instead of L3 content filtering"
+    )]
     pub fn filter_tool_schemas(schemas: &str, intervention_level: u8) -> String {
         if intervention_level == 0 {
             return schemas.to_string();
         }
 
-        // At higher levels, filter out non-essential tools
         let lines: Vec<&str> = schemas.lines().collect();
         let mut filtered = Vec::new();
 
         for line in &lines {
             let should_include = match intervention_level {
-                1 => true, // L1: all tools
-                2 => {
-                    // L2: exclude proactive tools
-                    !line.contains("proactive") && !line.contains("heartbeat")
-                }
+                1 => true,
+                2 => !line.contains("proactive") && !line.contains("heartbeat"),
                 3 => {
-                    // L3: task-focused tools only
                     !line.contains("proactive")
                         && !line.contains("heartbeat")
                         && !line.contains("personal")
                         && !line.contains("emotional")
                 }
                 _ => {
-                    // L4: minimal tools
                     line.contains("read")
                         || line.contains("search")
                         || line.contains("shell")
@@ -183,4 +257,37 @@ impl PromptCompiler {
 
         filtered.join("\n")
     }
+}
+
+pub fn tool_constraint_instruction(intervention_level: u8) -> String {
+    match intervention_level.min(4) {
+        0 | 1 => String::new(),
+        2 => "TOOL RESTRICTION: Do not use proactive or heartbeat tools at current convergence level.".into(),
+        3 => "TOOL RESTRICTION: Only task-focused tools permitted. Do not use proactive, heartbeat, personal, or emotional tools.".into(),
+        _ => "TOOL RESTRICTION: Minimal tools only. Only read, search, shell, and filesystem tools are permitted.".into(),
+    }
+}
+
+static RE_ISO_SECONDS: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}):\d{2}(?:\.\d+)?Z?").unwrap()
+});
+
+static RE_TIME_SECONDS: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"((?:^|[\sT,;])\d{2}:\d{2}):\d{2}").unwrap()
+});
+
+static RE_UNIX_EPOCH: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b\d{10,13}\b").unwrap()
+});
+
+pub fn sanitize_environment_timestamps(content: &str) -> String {
+    let result = RE_ISO_SECONDS.replace_all(content, "$1");
+    let result = RE_TIME_SECONDS.replace_all(&result, "$1");
+    let result = RE_UNIX_EPOCH.replace_all(&result, "");
+
+    if result != content {
+        tracing::debug!("Sanitized timestamps in L4 environment content");
+    }
+
+    result.into_owned()
 }

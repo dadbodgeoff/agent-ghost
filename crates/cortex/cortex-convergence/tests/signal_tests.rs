@@ -1,4 +1,4 @@
-//! Tests for cortex-convergence: 7 signals, sliding windows, composite scoring,
+//! Tests for cortex-convergence: 8 signals, sliding windows, composite scoring,
 //! baseline, profiles, and convergence-aware filtering.
 
 use cortex_convergence::signals::*;
@@ -9,6 +9,7 @@ use cortex_convergence::signals::vocabulary_convergence::VocabularyConvergenceSi
 use cortex_convergence::signals::goal_boundary_erosion::GoalBoundaryErosionSignal;
 use cortex_convergence::signals::initiative_balance::InitiativeBalanceSignal;
 use cortex_convergence::signals::disengagement_resistance::DisengagementResistanceSignal;
+use cortex_convergence::signals::behavioral_anomaly::BehavioralAnomalySignal;
 use cortex_convergence::windows::sliding_window::*;
 use cortex_convergence::scoring::baseline::BaselineState;
 use cortex_convergence::scoring::composite::*;
@@ -51,6 +52,7 @@ fn all_signals_produce_values_in_0_1() {
         Box::new(GoalBoundaryErosionSignal::new()),
         Box::new(InitiativeBalanceSignal),
         Box::new(DisengagementResistanceSignal),
+        Box::new(BehavioralAnomalySignal::new()),
     ];
 
     let input = SignalInput {
@@ -69,6 +71,7 @@ fn all_signals_produce_values_in_0_1() {
         existing_goal_tokens: vec!["help".into(), "code".into()],
         proposed_goal_tokens: vec!["help".into(), "write".into()],
         message_index: 0,
+        tool_call_names: vec![],
     };
 
     for signal in &signals {
@@ -161,6 +164,28 @@ fn s4_returns_zero_with_empty_vocab() {
     assert!((s4.compute(&input) - 0.0).abs() < 1e-10);
 }
 
+// ── S8: behavioral anomaly ──────────────────────────────────────────────
+
+#[test]
+fn s8_id_and_name() {
+    let s8 = BehavioralAnomalySignal::new();
+    assert_eq!(s8.id(), 8);
+    assert_eq!(s8.name(), "behavioral_anomaly");
+}
+
+#[test]
+fn s8_requires_minimal_privacy() {
+    let s8 = BehavioralAnomalySignal::new();
+    assert_eq!(s8.requires_privacy_level(), PrivacyLevel::Minimal);
+}
+
+#[test]
+fn s8_returns_zero_during_calibration() {
+    let s8 = BehavioralAnomalySignal::new();
+    let input = default_input();
+    assert_eq!(s8.compute(&input), 0.0);
+}
+
 // ── Sliding window tests ────────────────────────────────────────────────
 
 #[test]
@@ -204,10 +229,10 @@ fn baseline_is_calibrating_for_first_10_sessions() {
     let mut baseline = BaselineState::default();
     assert!(baseline.is_calibrating);
     for _ in 0..9 {
-        baseline.record_session(&[0.5; 7]);
+        baseline.record_session(&[0.5; 8]);
         assert!(baseline.is_calibrating);
     }
-    baseline.record_session(&[0.5; 7]);
+    baseline.record_session(&[0.5; 8]);
     assert!(!baseline.is_calibrating, "should stop calibrating after 10 sessions");
 }
 
@@ -215,12 +240,12 @@ fn baseline_is_calibrating_for_first_10_sessions() {
 fn baseline_frozen_after_establishment() {
     let mut baseline = BaselineState::default();
     for _ in 0..10 {
-        baseline.record_session(&[0.5; 7]);
+        baseline.record_session(&[0.5; 8]);
     }
     assert!(!baseline.is_calibrating);
     let mean_before = baseline.per_signal[0].mean;
     // Try to update after establishment
-    baseline.record_session(&[1.0; 7]);
+    baseline.record_session(&[1.0; 8]);
     assert!(
         (baseline.per_signal[0].mean - mean_before).abs() < 1e-10,
         "baseline should not change after establishment"
@@ -234,7 +259,7 @@ fn baseline_frozen_after_establishment() {
 fn all_signals_zero_score_zero_level_zero() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default(); // calibrating → pass-through
-    let result = scorer.score(&[0.0; 7], &baseline, None, None);
+    let result = scorer.score(&[0.0; 8], &baseline, None, None);
     assert!((result.score - 0.0).abs() < 1e-10);
     assert_eq!(result.level, 0);
 }
@@ -243,7 +268,7 @@ fn all_signals_zero_score_zero_level_zero() {
 fn all_signals_one_score_one_level_four() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default();
-    let result = scorer.score(&[1.0; 7], &baseline, None, None);
+    let result = scorer.score(&[1.0; 8], &baseline, None, None);
     assert!((result.score - 1.0).abs() < 1e-10);
     assert_eq!(result.level, 4);
 }
@@ -253,7 +278,7 @@ fn critical_override_session_duration_6h() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default();
     // S1 = 1.0 (6h), all others 0
-    let signals = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let signals = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(result.level >= 2, "session >6h should force minimum level 2, got {}", result.level);
     assert!(result.critical_override);
@@ -264,7 +289,7 @@ fn critical_override_inter_session_gap_short() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default();
     // S2 = 1.0 (0 gap), all others 0
-    let signals = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let signals = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(result.level >= 2, "gap <5min should force minimum level 2, got {}", result.level);
 }
@@ -274,7 +299,7 @@ fn critical_override_vocab_convergence_high() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default();
     // S4 = 0.86 (>0.85), all others 0
-    let signals = [0.0, 0.0, 0.0, 0.86, 0.0, 0.0, 0.0];
+    let signals = [0.0, 0.0, 0.0, 0.86, 0.0, 0.0, 0.0, 0.0];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(result.level >= 2, "vocab >0.85 should force minimum level 2, got {}", result.level);
 }
@@ -294,12 +319,12 @@ fn score_boundaries() {
         (0.69, 2),
         (0.70, 3),
         (0.84, 3),
-        (0.85, 4),
+        (0.86, 4),
     ];
 
     for (score_val, expected_level) in &test_cases {
         // Create signals that produce the target score (during calibration, pass-through)
-        let signals = [*score_val; 7];
+        let signals = [*score_val; 8];
         let result = scorer.score(&signals, &baseline, None, None);
         assert_eq!(
             result.level, *expected_level,
@@ -315,7 +340,7 @@ fn score_boundaries() {
 fn meso_amplification_still_clamped() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default();
-    let signals = [0.95; 7];
+    let signals = [0.95; 8];
     let meso_data = vec![0.8, 0.85, 0.9, 0.95]; // increasing trend
     let result = scorer.score(&signals, &baseline, Some(&meso_data), None);
     assert!(result.score <= 1.0, "score after meso amplification should be <= 1.0");
@@ -343,7 +368,6 @@ fn filter_score_0_35_filters_attachment_indicators() {
         make_memory(MemoryType::Procedural),
     ];
     let filtered = ConvergenceAwareFilter::filter(memories, 0.35);
-    // Tier 1 (0.3-0.5): reduced emotional — AttachmentIndicator removed
     assert_eq!(filtered.len(), 3);
     assert!(
         !filtered.iter().any(|m| matches!(m.memory_type, MemoryType::AttachmentIndicator)),
@@ -363,7 +387,6 @@ fn filter_score_0_8_returns_minimal() {
         make_memory(MemoryType::Episodic),
     ];
     let filtered = ConvergenceAwareFilter::filter(memories, 0.8);
-    // Tier 3 (0.7+): only Core, Procedural, Semantic, Reference
     assert_eq!(filtered.len(), 4);
     for m in &filtered {
         assert!(
@@ -378,7 +401,6 @@ fn filter_score_0_8_returns_minimal() {
 #[test]
 fn standard_profile_has_differentiated_weights() {
     let scorer = ConvergenceProfile::Standard.scorer();
-    // Standard profile should NOT have equal weights
     let all_equal = scorer.weights.iter().all(|&w| (w - scorer.weights[0]).abs() < 1e-10);
     assert!(!all_equal, "standard profile should have differentiated weights");
 }
@@ -390,13 +412,26 @@ fn research_profile_has_different_thresholds() {
     assert_ne!(standard.thresholds, research.thresholds);
 }
 
+#[test]
+fn all_profiles_have_8_weights() {
+    for profile in &[
+        ConvergenceProfile::Standard,
+        ConvergenceProfile::Research,
+        ConvergenceProfile::Companion,
+        ConvergenceProfile::Productivity,
+    ] {
+        let scorer = profile.scorer();
+        assert_eq!(scorer.weights.len(), 8, "{:?} should have 8 weights", profile);
+    }
+}
+
 // ── Adversarial tests ───────────────────────────────────────────────────
 
 #[test]
 fn all_signals_nan_no_panic() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default();
-    let signals = [f64::NAN; 7];
+    let signals = [f64::NAN; 8];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(!result.score.is_nan(), "NaN signals should not produce NaN score");
     assert!(result.score >= 0.0 && result.score <= 1.0);
@@ -406,7 +441,7 @@ fn all_signals_nan_no_panic() {
 fn negative_signal_values_clamped() {
     let scorer = CompositeScorer::default();
     let baseline = BaselineState::default();
-    let signals = [-0.5; 7];
+    let signals = [-0.5; 8];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(result.score >= 0.0, "negative signals should be clamped");
 }
@@ -421,6 +456,7 @@ fn empty_session_history_signals_return_zero() {
         Box::new(GoalBoundaryErosionSignal::new()),
         Box::new(InitiativeBalanceSignal),
         Box::new(DisengagementResistanceSignal),
+        Box::new(BehavioralAnomalySignal::new()),
     ];
     let input = default_input();
     for signal in &signals {
@@ -430,6 +466,27 @@ fn empty_session_history_signals_return_zero() {
             "signal {} with empty input produced {}", signal.name(), val
         );
     }
+}
+
+// ── 8-signal composite scoring ──────────────────────────────────────────
+
+#[test]
+fn composite_scorer_with_8_signals() {
+    let scorer = CompositeScorer::default();
+    let baseline = BaselineState::default();
+    let signals = [0.5; 8];
+    let result = scorer.score(&signals, &baseline, None, None);
+    assert!((0.0..=1.0).contains(&result.score));
+    assert_eq!(result.signal_scores.len(), 8);
+}
+
+#[test]
+fn from_7_weights_produces_valid_8_weight_scorer() {
+    let scorer = CompositeScorer::from_7_weights([1.0 / 7.0; 7], [0.3, 0.5, 0.7, 0.85]);
+    assert_eq!(scorer.weights.len(), 8);
+    let total: f64 = scorer.weights.iter().sum();
+    // Total should be approximately 1.0
+    assert!((total - 1.0).abs() < 0.01, "weights should sum to ~1.0, got {}", total);
 }
 
 // ── Proptest ────────────────────────────────────────────────────────────
@@ -449,10 +506,11 @@ mod proptests {
             s4 in 0.0f64..=1.0,
             s5 in 0.0f64..=1.0,
             s6 in 0.0f64..=1.0,
+            s7 in 0.0f64..=1.0,
         ) {
             let scorer = CompositeScorer::default();
             let baseline = BaselineState::default();
-            let signals = [s0, s1, s2, s3, s4, s5, s6];
+            let signals = [s0, s1, s2, s3, s4, s5, s6, s7];
             let result = scorer.score(&signals, &baseline, None, None);
             prop_assert!(result.score >= 0.0 && result.score <= 1.0,
                 "score {} out of bounds for signals {:?}", result.score, signals);
@@ -467,10 +525,11 @@ mod proptests {
             s4 in 0.0f64..=1.0,
             s5 in 0.0f64..=1.0,
             s6 in 0.0f64..=1.0,
+            s7 in 0.0f64..=1.0,
         ) {
             let scorer = CompositeScorer::default();
             let baseline = BaselineState::default();
-            let signals = [s0, s1, s2, s3, s4, s5, s6];
+            let signals = [s0, s1, s2, s3, s4, s5, s6, s7];
             let meso = vec![0.5, 0.6, 0.7, 0.8];
             let result = scorer.score(&signals, &baseline, Some(&meso), None);
             prop_assert!(result.score >= 0.0 && result.score <= 1.0);
@@ -485,11 +544,12 @@ mod proptests {
             s4 in 0.0f64..=1.0,
             s5 in 0.0f64..=1.0,
             s6 in 0.0f64..=1.0,
+            s7 in 0.0f64..=1.0,
         ) {
             let scorer = CompositeScorer::default();
             let mut baseline = BaselineState::new(1);
-            baseline.record_session(&[0.1; 7]); // establish baseline
-            let signals = [s0, s1, s2, s3, s4, s5, s6];
+            baseline.record_session(&[0.1; 8]); // establish baseline
+            let signals = [s0, s1, s2, s3, s4, s5, s6, s7];
             let meso = vec![0.5, 0.6, 0.7, 0.8];
             let macro_data = vec![0.3, 0.4, 0.5];
             let result = scorer.score(&signals, &baseline, Some(&meso), Some(&macro_data));
@@ -497,7 +557,7 @@ mod proptests {
         }
 
         #[test]
-        fn all_7_signals_produce_values_in_0_1(
+        fn all_8_signals_produce_values_in_0_1(
             duration in 0.0f64..50000.0,
             gap in proptest::option::of(0.0f64..200000.0),
             latency in proptest::collection::vec(0.0f64..20000.0, 0..10),
@@ -535,6 +595,7 @@ mod proptests {
                 existing_goal_tokens: vec![],
                 proposed_goal_tokens: vec![],
                 message_index: 0,
+                tool_call_names: vec![],
             };
 
             let signals_impl: Vec<Box<dyn Signal>> = vec![
@@ -545,6 +606,7 @@ mod proptests {
                 Box::new(GoalBoundaryErosionSignal::new()),
                 Box::new(InitiativeBalanceSignal),
                 Box::new(DisengagementResistanceSignal),
+                Box::new(BehavioralAnomalySignal::new()),
             ];
 
             for signal in &signals_impl {

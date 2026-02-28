@@ -5,18 +5,31 @@
 ## Layer Model
 
 ```
-Layer 0: ghost-signing (Ed25519 leaf crate)
+Layer 0: ghost-signing (Ed25519 leaf crate), ghost-secrets (credential storage leaf crate)
 Layer 1A: Cortex (cortex-core, cortex-storage, cortex-temporal, cortex-decay,
           cortex-convergence, cortex-validation, cortex-crdt)
 Layer 1B: itp-protocol
 Layer 2: simulation-boundary, convergence-monitor (sidecar binary)
-Layer 3: ghost-policy, read-only-pipeline, ghost-llm, ghost-identity
-Layer 4: ghost-agent-loop
-Layer 5: ghost-gateway (orchestrator), ghost-channels, ghost-skills, ghost-heartbeat
+Layer 3: ghost-policy, read-only-pipeline, ghost-llm, ghost-identity,
+         ghost-egress (network egress), ghost-oauth (OAuth brokering)
+Layer 4: ghost-agent-loop (with spotlighting, plan-then-execute, quarantined LLM)
+Layer 5: ghost-gateway (orchestrator), ghost-channels, ghost-skills, ghost-heartbeat,
+         ghost-mesh (A2A agent networking with EigenTrust)
 Layer 6: ghost-audit, ghost-backup, ghost-export, ghost-proxy, ghost-migrate
 ```
 
 Dependencies flow downward only. No circular dependencies.
+
+### Post-v1 Additions
+
+- `ghost-secrets` (Layer 0): Cross-platform credential storage with env, OS keychain,
+  and HashiCorp Vault backends. Leaf crate — no ghost-*/cortex-* dependencies.
+- `ghost-egress` (Layer 3): Per-agent network egress allowlisting with proxy, eBPF,
+  and pf backends. Violation events feed into AutoTriggerEvaluator.
+- `ghost-oauth` (Layer 3): OAuth 2.0 brokering with PKCE. Agents use opaque ref IDs,
+  never see raw tokens. Kill switch integration revokes all connections.
+- `ghost-mesh` (Layer 5): A2A-compatible agent networking with EigenTrust reputation,
+  cascade circuit breakers, and memory poisoning defense.
 
 ## Key Components
 

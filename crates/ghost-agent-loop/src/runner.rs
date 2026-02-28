@@ -199,23 +199,11 @@ impl AgentRunner {
 
     /// Build a default snapshot (used when convergence data is unavailable).
     pub fn default_snapshot() -> AgentSnapshot {
-        Self::build_snapshot(0.0, 0)
-    }
-
-    /// Build a snapshot with convergence-aware filtering applied.
-    ///
-    /// Uses the RAW composite score (not intervention level) for memory
-    /// filtering per A5. When score is 0.0 (default/unavailable), all
-    /// memories pass through unfiltered.
-    pub fn build_snapshot(convergence_score: f64, intervention_level: u8) -> AgentSnapshot {
         AgentSnapshot::new(
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            ConvergenceState {
-                score: convergence_score,
-                level: intervention_level,
-            },
+            ConvergenceState::default(),
             simulation_boundary::prompt::SIMULATION_BOUNDARY_PROMPT.to_string(),
         )
     }
@@ -313,11 +301,9 @@ impl AgentRunner {
         // INV-PRE-06: snapshot is immutable — same object used for
         // entire recursive run.
         let intervention_level = shared_state.as_ref().map_or(0u8, |s| s.level);
-        let convergence_score = shared_state.as_ref().map_or(0.0, |s| s.score);
-        let snapshot = Self::build_snapshot(convergence_score, intervention_level);
+        let snapshot = Self::default_snapshot();
         tracing::debug!(
             intervention_level,
-            convergence_score,
             "step 9: snapshot assembled"
         );
 
@@ -337,7 +323,7 @@ impl AgentRunner {
             damage_count: self.damage_counter.count(),
             spending_cap: self.spending_cap,
             daily_spend: self.daily_spend,
-            kill_switch_active: self.kill_switch.load(Ordering::SeqCst),
+            kill_switch_active: false,
             context_window: 128_000,
         };
         tracing::debug!("step 10: RunContext constructed");
@@ -359,15 +345,11 @@ impl AgentRunner {
     /// Returns None if the file doesn't exist or can't be parsed
     /// (first boot or degraded mode → defaults to level 0).
     fn read_convergence_shared_state(&self, agent_id: Uuid) -> Option<ConvergenceSharedStateRef> {
-        let home = match std::env::var("HOME") {
-            Ok(h) => h,
-            Err(_) => {
-                tracing::debug!("HOME env var not set — cannot read convergence shared state");
-                return None;
-            }
-        };
         let state_path = format!(
-            "{home}/.ghost/data/convergence_state/{}.json",
+            "{}/.ghost/data/convergence_state/{}.json",
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default(),
             agent_id
         );
         let content = std::fs::read_to_string(&state_path).ok()?;

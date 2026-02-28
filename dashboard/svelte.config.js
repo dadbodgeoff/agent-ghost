@@ -8,6 +8,9 @@ const config = {
       assets: 'build',
       fallback: 'index.html',
     }),
+    serviceWorker: {
+      register: false, // We register manually in +layout.svelte for more control.
+    },
   },
 };
 

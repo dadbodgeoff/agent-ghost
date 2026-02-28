@@ -20,7 +20,7 @@ pub struct ConvergenceMetrics {
     /// Total boundary violations (counter).
     violation_count: AtomicU64,
     /// Per-signal latest values (gauge).
-    signals: RwLock<BTreeMap<String, [f64; 7]>>,
+    signals: RwLock<BTreeMap<String, [f64; 8]>>,
 }
 
 /// Serializable metrics snapshot.
@@ -30,7 +30,7 @@ pub struct MetricsSnapshot {
     pub levels: BTreeMap<String, u8>,
     pub intervention_count: u64,
     pub violation_count: u64,
-    pub signals: BTreeMap<String, [f64; 7]>,
+    pub signals: BTreeMap<String, [f64; 8]>,
 }
 
 impl ConvergenceMetrics {
@@ -69,7 +69,7 @@ impl ConvergenceMetrics {
     }
 
     /// Update signal values for an agent.
-    pub fn set_signals(&self, agent_id: &str, signals: [f64; 7]) {
+    pub fn set_signals(&self, agent_id: &str, signals: [f64; 8]) {
         if let Ok(mut s) = self.signals.write() {
             s.insert(agent_id.to_string(), signals);
         }
@@ -144,7 +144,7 @@ mod tests {
         m.set_level("agent-1", 2);
         m.inc_interventions();
         m.inc_violations();
-        m.set_signals("agent-1", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]);
+        m.set_signals("agent-1", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.0]);
 
         let snap = m.snapshot();
         assert_eq!(snap.scores["agent-1"], 0.42);

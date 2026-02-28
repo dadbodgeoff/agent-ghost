@@ -13,3 +13,6 @@ pub mod fallback;
 pub mod cost;
 pub mod tokens;
 pub mod streaming;
+pub mod auth;
+pub mod quarantine;
+pub mod proxy;

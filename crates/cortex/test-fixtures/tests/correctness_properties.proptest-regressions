@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0b8bf74db4548b1eb7033219ce1ee032c3335008e9d678d276aae5c90c3e3ec9 # shrinks to event = SpendingCapExceeded { agent_id: 00000000-0000-0000-0000-000000000000, daily_total: 936.5460195416235, cap: 50.0, overage: 886.5460195416235, detected_at: 2024-01-01T00:00:00Z }

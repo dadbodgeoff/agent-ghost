@@ -35,6 +35,8 @@ pub struct GhostConfig {
     pub security: SecurityConfig,
     #[serde(default)]
     pub models: ModelsConfig,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,9 +74,90 @@ pub struct AgentConfig {
     pub isolation: IsolationMode,
     #[serde(default)]
     pub template: Option<String>,
+    /// Per-agent network egress control (Phase 11).
+    #[serde(default)]
+    pub network: Option<NetworkEgressGatewayConfig>,
 }
 
 fn default_spending_cap() -> f64 { 5.0 }
+
+/// Per-agent network egress configuration in ghost.yml (Phase 11).
+///
+/// Maps to `ghost_egress::AgentEgressConfig` at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkEgressGatewayConfig {
+    /// Policy mode: "allowlist", "blocklist", or "unrestricted".
+    #[serde(default = "default_egress_policy")]
+    pub egress_policy: String,
+    /// Domains allowed when policy is allowlist. Supports wildcards: `*.slack.com`.
+    #[serde(default = "default_egress_allowed_domains")]
+    pub allowed_domains: Vec<String>,
+    /// Domains blocked when policy is blocklist.
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    /// Whether to log violation events.
+    #[serde(default = "default_true_config")]
+    pub log_violations: bool,
+    /// Whether to emit a TriggerEvent on violation.
+    #[serde(default)]
+    pub alert_on_violation: bool,
+    /// Number of violations in window before QUARANTINE.
+    #[serde(default = "default_egress_violation_threshold")]
+    pub violation_threshold: u32,
+    /// Time window (minutes) for violation counting.
+    #[serde(default = "default_egress_violation_window")]
+    pub violation_window_minutes: u32,
+}
+
+impl Default for NetworkEgressGatewayConfig {
+    fn default() -> Self {
+        Self {
+            egress_policy: default_egress_policy(),
+            allowed_domains: default_egress_allowed_domains(),
+            blocked_domains: Vec::new(),
+            log_violations: true,
+            alert_on_violation: false,
+            violation_threshold: default_egress_violation_threshold(),
+            violation_window_minutes: default_egress_violation_window(),
+        }
+    }
+}
+
+fn default_egress_policy() -> String { "unrestricted".into() }
+
+fn default_egress_allowed_domains() -> Vec<String> {
+    ghost_egress::config::DEFAULT_ALLOWED_DOMAINS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn default_true_config() -> bool { true }
+
+fn default_egress_violation_threshold() -> u32 { 5 }
+
+fn default_egress_violation_window() -> u32 { 10 }
+
+/// Convert gateway config to ghost-egress config.
+pub fn build_egress_config(
+    network: &NetworkEgressGatewayConfig,
+) -> ghost_egress::AgentEgressConfig {
+    let policy = match network.egress_policy.as_str() {
+        "allowlist" => ghost_egress::EgressPolicyMode::Allowlist,
+        "blocklist" => ghost_egress::EgressPolicyMode::Blocklist,
+        _ => ghost_egress::EgressPolicyMode::Unrestricted,
+    };
+
+    ghost_egress::AgentEgressConfig {
+        policy,
+        allowed_domains: network.allowed_domains.clone(),
+        blocked_domains: network.blocked_domains.clone(),
+        log_violations: network.log_violations,
+        alert_on_violation: network.alert_on_violation,
+        violation_threshold: network.violation_threshold,
+        violation_window_minutes: network.violation_window_minutes,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -146,6 +229,118 @@ pub struct ProviderConfig {
     pub api_key_env: Option<String>,
 }
 
+/// Secrets infrastructure configuration (Phase 10).
+///
+/// Defaults to `env` provider if not specified (backward compatible).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretsConfig {
+    /// Provider backend: "env", "keychain", or "vault".
+    #[serde(default = "default_secrets_provider")]
+    pub provider: String,
+    /// Keychain-specific settings.
+    #[serde(default)]
+    pub keychain: Option<KeychainSecretsConfig>,
+    /// Vault-specific settings.
+    #[serde(default)]
+    pub vault: Option<VaultSecretsConfig>,
+}
+
+impl Default for SecretsConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_secrets_provider(),
+            keychain: None,
+            vault: None,
+        }
+    }
+}
+
+fn default_secrets_provider() -> String {
+    "env".into()
+}
+
+/// Keychain provider settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeychainSecretsConfig {
+    #[serde(default = "default_keychain_service")]
+    pub service_name: String,
+}
+
+fn default_keychain_service() -> String {
+    "ghost-platform".into()
+}
+
+/// Vault provider settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultSecretsConfig {
+    pub endpoint: String,
+    #[serde(default = "default_vault_mount")]
+    pub mount: String,
+    /// Env var name containing the Vault token (bootstrap problem).
+    #[serde(default = "default_vault_token_env")]
+    pub token_env: String,
+}
+
+fn default_vault_mount() -> String {
+    "secret".into()
+}
+
+fn default_vault_token_env() -> String {
+    "VAULT_TOKEN".into()
+}
+
+/// Build a `SecretProvider` from the parsed `SecretsConfig`.
+pub fn build_secret_provider(
+    config: &SecretsConfig,
+) -> Result<Box<dyn ghost_secrets::SecretProvider>, ConfigError> {
+    match config.provider.as_str() {
+        "env" => Ok(Box::new(ghost_secrets::EnvProvider)),
+        #[cfg(feature = "keychain")]
+        "keychain" => {
+            let service = config
+                .keychain
+                .as_ref()
+                .map(|k| k.service_name.as_str())
+                .unwrap_or("ghost-platform");
+            Ok(Box::new(ghost_secrets::KeychainProvider::new(service)))
+        }
+        #[cfg(not(feature = "keychain"))]
+        "keychain" => Err(ConfigError::ValidationError(
+            "keychain provider requested but 'keychain' feature is not enabled".into(),
+        )),
+        "vault" => {
+            #[cfg(feature = "vault")]
+            {
+                let vault_cfg = config.vault.as_ref().ok_or_else(|| {
+                    ConfigError::ValidationError(
+                        "secrets.provider is 'vault' but secrets.vault section is missing".into(),
+                    )
+                })?;
+                let token_value = std::env::var(&vault_cfg.token_env).map_err(|_| {
+                    ConfigError::EnvVarNotFound(vault_cfg.token_env.clone())
+                })?;
+                let token = ghost_secrets::SecretString::from(token_value);
+                let provider = ghost_secrets::VaultProvider::new(
+                    &vault_cfg.endpoint,
+                    &vault_cfg.mount,
+                    token,
+                )
+                .map_err(|e| ConfigError::ValidationError(format!("Vault provider init: {e}")))?;
+                Ok(Box::new(provider))
+            }
+            #[cfg(not(feature = "vault"))]
+            {
+                Err(ConfigError::ValidationError(
+                    "vault provider requested but 'vault' feature is not enabled".into(),
+                ))
+            }
+        }
+        other => Err(ConfigError::ValidationError(format!(
+            "unknown secrets provider: '{other}' (expected 'env', 'keychain', or 'vault')"
+        ))),
+    }
+}
+
 impl GhostConfig {
     /// Load configuration from a file path, with env var substitution.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -207,6 +402,7 @@ impl Default for GhostConfig {
             convergence: ConvergenceGatewayConfig::default(),
             security: SecurityConfig::default(),
             models: ModelsConfig::default(),
+            secrets: SecretsConfig::default(),
         }
     }
 }
@@ -234,5 +430,8 @@ fn dirs_path(path: &str) -> PathBuf {
 }
 
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from)
 }

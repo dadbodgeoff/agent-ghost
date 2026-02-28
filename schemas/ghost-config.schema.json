@@ -23,7 +23,53 @@
           "spending_cap": { "type": "number", "minimum": 0, "default": 5.0 },
           "capabilities": { "type": "array", "items": { "type": "string" } },
           "isolation": { "type": "string", "enum": ["inprocess", "process", "container"], "default": "inprocess" },
-          "template": { "type": "string" }
+          "template": { "type": "string" },
+          "network": {
+            "type": "object",
+            "description": "Per-agent network egress control (Phase 11)",
+            "properties": {
+              "egress_policy": {
+                "type": "string",
+                "enum": ["allowlist", "blocklist", "unrestricted"],
+                "default": "unrestricted",
+                "description": "Egress policy mode: allowlist (only listed domains), blocklist (all except listed), or unrestricted (no filtering)"
+              },
+              "allowed_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Domains allowed when policy is 'allowlist'. Supports wildcards: *.slack.com",
+                "default": ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "api.mistral.ai", "api.groq.com"]
+              },
+              "blocked_domains": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Domains blocked when policy is 'blocklist'. Supports wildcards."
+              },
+              "log_violations": {
+                "type": "boolean",
+                "default": true,
+                "description": "Whether to log egress policy violations"
+              },
+              "alert_on_violation": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether to emit a TriggerEvent on violation"
+              },
+              "violation_threshold": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 5,
+                "description": "Number of violations in window before QUARANTINE"
+              },
+              "violation_window_minutes": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 10,
+                "description": "Time window (minutes) for violation counting"
+              }
+            },
+            "additionalProperties": false
+          }
         },
         "additionalProperties": true
       }
@@ -146,6 +192,54 @@
         "backup_dir": { "type": "string" }
       },
       "additionalProperties": true
+    },
+    "secrets": {
+      "type": "object",
+      "description": "Secrets infrastructure configuration. Defaults to env provider.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["env", "keychain", "vault"],
+          "default": "env",
+          "description": "Secret provider backend: env (environment variables), keychain (OS-native credential storage), or vault (HashiCorp Vault KV v2)"
+        },
+        "keychain": {
+          "type": "object",
+          "description": "Keychain provider settings (only used when provider is 'keychain')",
+          "properties": {
+            "service_name": {
+              "type": "string",
+              "default": "ghost-platform",
+              "description": "OS keychain service name for credential storage"
+            }
+          },
+          "additionalProperties": false
+        },
+        "vault": {
+          "type": "object",
+          "description": "HashiCorp Vault settings (only used when provider is 'vault')",
+          "required": ["endpoint"],
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "format": "uri",
+              "description": "Vault server URL (e.g. https://vault.example.com)"
+            },
+            "mount": {
+              "type": "string",
+              "default": "secret",
+              "description": "KV v2 mount path"
+            },
+            "token_env": {
+              "type": "string",
+              "default": "VAULT_TOKEN",
+              "description": "Environment variable name containing the Vault token"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": true

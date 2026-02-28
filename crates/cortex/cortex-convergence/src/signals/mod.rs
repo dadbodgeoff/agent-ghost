@@ -1,4 +1,4 @@
-//! 7 convergence signals (Req 5 AC1).
+//! 8 convergence signals (Req 5 AC1).
 
 pub mod session_duration;
 pub mod inter_session_gap;
@@ -7,6 +7,7 @@ pub mod vocabulary_convergence;
 pub mod goal_boundary_erosion;
 pub mod initiative_balance;
 pub mod disengagement_resistance;
+pub mod behavioral_anomaly;
 
 /// Privacy level for signal computation (mirrors itp-protocol).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -56,4 +57,6 @@ pub struct SignalInput {
     pub proposed_goal_tokens: Vec<String>,
     /// Message index within session (for throttling).
     pub message_index: u64,
+    /// Tool call names in current session (for S8 behavioral anomaly).
+    pub tool_call_names: Vec<String>,
 }

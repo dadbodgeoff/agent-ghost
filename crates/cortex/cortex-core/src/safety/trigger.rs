@@ -21,7 +21,7 @@ pub enum ExfilType {
 
 /// Unified trigger event sent to the `AutoTriggerEvaluator`.
 ///
-/// 7 automatic variants + 3 manual variants = 10 total.
+/// 8 automatic variants + 3 manual variants = 11 total.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TriggerEvent {
     // ── Automatic triggers (T1–T7) ──────────────────────────────────
@@ -88,6 +88,16 @@ pub enum TriggerEvent {
         threshold: f64,
         /// Sub-scores keyed by metric name (BTreeMap for deterministic serialization).
         sub_scores: BTreeMap<String, f64>,
+        detected_at: DateTime<Utc>,
+    },
+
+    /// T8: Network egress policy violation (Phase 11).
+    NetworkEgressViolation {
+        agent_id: Uuid,
+        domain: String,
+        policy_mode: String,
+        violation_count: u32,
+        threshold: u32,
         detected_at: DateTime<Utc>,
     },
 

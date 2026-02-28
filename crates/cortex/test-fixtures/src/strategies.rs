@@ -71,9 +71,10 @@ pub fn convergence_score_strategy() -> impl Strategy<Value = f64> {
     (0u32..=10000).prop_map(|v| v as f64 / 10000.0)
 }
 
-/// 7 signals each in [0.0, 1.0].
-pub fn signal_array_strategy() -> impl Strategy<Value = [f64; 7]> {
+/// 8 signals each in [0.0, 1.0].
+pub fn signal_array_strategy() -> impl Strategy<Value = [f64; 8]> {
     [
+        convergence_score_strategy(),
         convergence_score_strategy(),
         convergence_score_strategy(),
         convergence_score_strategy(),
@@ -186,7 +187,7 @@ pub fn proposal_operation_strategy() -> impl Strategy<Value = ProposalOperation>
     ]
 }
 
-/// All 10 TriggerEvent variants with random payloads.
+/// All 11 TriggerEvent variants with random payloads.
 pub fn trigger_event_strategy() -> impl Strategy<Value = TriggerEvent> {
     prop_oneof![
         // T1: SoulDrift
@@ -201,17 +202,14 @@ pub fn trigger_event_strategy() -> impl Strategy<Value = TriggerEvent> {
             }
         ),
         // T2: SpendingCapExceeded
-        // Use simple integer values to ensure JSON round-trip fidelity.
         (uuid_strategy(), 0u32..1000, datetime_strategy()).prop_map(
-            |(agent_id, total_int, detected_at)| {
-                let total = total_int as f64;
-                let cap = 50.0;
-                let overage = if total > cap { total - cap } else { 0.0 };
+            |(agent_id, total_cents, detected_at)| {
+                let total = total_cents as f64;
                 TriggerEvent::SpendingCapExceeded {
                     agent_id,
                     daily_total: total,
-                    cap,
-                    overage,
+                    cap: 50.0,
+                    overage: (total - 50.0).max(0.0),
                     detected_at,
                 }
             }
@@ -268,6 +266,17 @@ pub fn trigger_event_strategy() -> impl Strategy<Value = TriggerEvent> {
                 health_score: score,
                 threshold: 0.3,
                 sub_scores: BTreeMap::new(),
+                detected_at,
+            }
+        ),
+        // T8: NetworkEgressViolation (Phase 11)
+        (uuid_strategy(), 1u32..20, datetime_strategy()).prop_map(
+            |(agent_id, count, detected_at)| TriggerEvent::NetworkEgressViolation {
+                agent_id,
+                domain: "evil.example.com".into(),
+                policy_mode: "allowlist".into(),
+                violation_count: count,
+                threshold: 5,
                 detected_at,
             }
         ),
@@ -339,4 +348,227 @@ pub fn kill_state_strategy() -> impl Strategy<Value = (u8, BTreeMap<String, u8>)
 /// Random gateway state transition sequences for FSM validation.
 pub fn gateway_state_transition_strategy() -> impl Strategy<Value = Vec<u8>> {
     proptest::collection::vec(0u8..6, 1..20)
+}
+
+// ── Post-v1 strategies (Phase 15) ───────────────────────────────────────
+
+use ghost_egress::config::{AgentEgressConfig, EgressPolicyMode};
+use ghost_mesh::trust::local_trust::InteractionOutcome;
+use ghost_mesh::types::{AgentCard, MeshTask, TaskStatus};
+use ghost_oauth::types::OAuthRefId;
+use secrecy::SecretString;
+
+/// Random AgentEgressConfig with valid domain patterns.
+pub fn egress_config_strategy() -> impl Strategy<Value = AgentEgressConfig> {
+    (
+        egress_policy_mode_strategy(),
+        proptest::collection::vec(domain_pattern_strategy(), 0..8),
+        proptest::collection::vec(domain_pattern_strategy(), 0..4),
+        proptest::bool::ANY,
+        proptest::bool::ANY,
+        1u32..20,
+        1u32..60,
+    )
+        .prop_map(
+            |(policy, allowed, blocked, log_violations, alert, threshold, window)| {
+                AgentEgressConfig {
+                    policy,
+                    allowed_domains: allowed,
+                    blocked_domains: blocked,
+                    log_violations,
+                    alert_on_violation: alert,
+                    violation_threshold: threshold,
+                    violation_window_minutes: window,
+                }
+            },
+        )
+}
+
+/// Random EgressPolicyMode.
+fn egress_policy_mode_strategy() -> impl Strategy<Value = EgressPolicyMode> {
+    prop_oneof![
+        Just(EgressPolicyMode::Allowlist),
+        Just(EgressPolicyMode::Blocklist),
+        Just(EgressPolicyMode::Unrestricted),
+    ]
+}
+
+/// Random domain string or wildcard pattern.
+pub fn domain_pattern_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        "[a-z]{3,10}\\.[a-z]{2,4}".prop_map(|s| s),
+        "[a-z]{3,8}\\.[a-z]{3,8}\\.[a-z]{2,4}".prop_map(|s| s),
+        "[a-z]{3,10}\\.[a-z]{2,4}".prop_map(|s| format!("*.{s}")),
+    ]
+}
+
+/// Random OAuthRefId (UUID-based).
+pub fn oauth_ref_id_strategy() -> impl Strategy<Value = OAuthRefId> {
+    uuid_strategy().prop_map(OAuthRefId::from_uuid)
+}
+
+/// Random TokenSet with valid expiry and scopes.
+///
+/// Note: TokenSet contains `SecretString` which is not `Arbitrary`.
+/// We generate deterministic test tokens (never real credentials).
+pub fn token_set_strategy() -> impl Strategy<Value = ghost_oauth::types::TokenSet> {
+    (
+        "[a-zA-Z0-9]{32,64}",                                // access_token
+        proptest::option::of("[a-zA-Z0-9]{32,64}"),           // refresh_token
+        datetime_strategy(),                                   // expires_at
+        proptest::collection::vec("[a-z.]{4,20}", 0..5),      // scopes
+    )
+        .prop_map(|(access, refresh, expires_at, scopes)| ghost_oauth::types::TokenSet {
+            access_token: SecretString::from(access),
+            refresh_token: refresh.map(SecretString::from),
+            expires_at,
+            scopes,
+        })
+}
+
+/// Random AgentCard with valid Ed25519 signature.
+pub fn agent_card_strategy() -> impl Strategy<Value = AgentCard> {
+    (
+        "[a-z]{3,12}",                                         // name
+        "[a-zA-Z0-9 ]{10,50}",                                // description
+        proptest::collection::vec("[a-z_]{3,15}", 1..5),       // capabilities
+        proptest::collection::vec("[a-z/]{5,20}", 0..3),       // input_types
+        proptest::collection::vec("[a-z/]{5,20}", 0..3),       // output_types
+        "[a-z]{5,15}".prop_map(|s| format!("http://{s}.local:8080")), // endpoint_url
+        prop_oneof![
+            Just("standard".to_string()),
+            Just("research".to_string()),
+            Just("companion".to_string()),
+        ],
+        convergence_score_strategy(),                          // trust_score
+        "[a-f0-9]{16}",                                        // sybil_lineage_hash
+        "[0-9]\\.[0-9]\\.[0-9]",                              // version
+        datetime_strategy(),                                    // signed_at
+    )
+        .prop_map(
+            |(name, description, capabilities, input_types, output_types, endpoint_url, profile, trust_score, lineage, version, signed_at)| {
+                let (signing_key, _) = ghost_signing::generate_keypair();
+                let vk = signing_key.verifying_key();
+                let public_key = vk.to_bytes().to_vec();
+
+                let mut card = AgentCard {
+                    name,
+                    description,
+                    capabilities,
+                    input_types,
+                    output_types,
+                    auth_schemes: vec!["bearer".to_string()],
+                    endpoint_url,
+                    public_key,
+                    convergence_profile: profile,
+                    trust_score,
+                    sybil_lineage_hash: lineage,
+                    version,
+                    signed_at,
+                    signature: Vec::new(),
+                };
+                card.sign(&signing_key);
+                card
+            },
+        )
+}
+
+/// Random MeshTask with valid status.
+pub fn mesh_task_strategy() -> impl Strategy<Value = MeshTask> {
+    (
+        uuid_strategy(),  // initiator
+        uuid_strategy(),  // target
+        datetime_strategy(),
+        datetime_strategy(),
+        0u64..3600,       // timeout
+        0u32..4,          // delegation_depth
+    )
+        .prop_map(|(initiator, target, created, updated, timeout, depth)| MeshTask {
+            id: Uuid::new_v4(),
+            initiator_agent_id: initiator,
+            target_agent_id: target,
+            status: TaskStatus::Submitted,
+            input: serde_json::json!({"task": "test"}),
+            output: None,
+            created_at: created,
+            updated_at: updated,
+            timeout,
+            delegation_depth: depth,
+            metadata: BTreeMap::new(),
+        })
+}
+
+/// Random InteractionOutcome.
+pub fn interaction_outcome_strategy() -> impl Strategy<Value = InteractionOutcome> {
+    prop_oneof![
+        Just(InteractionOutcome::TaskCompleted),
+        Just(InteractionOutcome::TaskFailed),
+        Just(InteractionOutcome::PolicyViolation),
+        Just(InteractionOutcome::SignatureFailure),
+        Just(InteractionOutcome::Timeout),
+    ]
+}
+
+/// Random ToolCallPlan (sequence of tool calls).
+pub fn tool_call_plan_strategy() -> impl Strategy<Value = ghost_agent_loop::tools::plan_validator::ToolCallPlan> {
+    proptest::collection::vec(
+        (
+            "[a-z_]{3,15}",                    // id
+            "[a-z_]{3,20}",                    // name
+        ),
+        0..8,
+    )
+    .prop_map(|calls| {
+        let llm_calls: Vec<ghost_llm::provider::LLMToolCall> = calls
+            .into_iter()
+            .map(|(id, name)| ghost_llm::provider::LLMToolCall {
+                id,
+                name,
+                arguments: serde_json::json!({}),
+            })
+            .collect();
+        ghost_agent_loop::tools::plan_validator::ToolCallPlan::new(llm_calls)
+    })
+}
+
+/// Random SpotlightingConfig.
+pub fn spotlighting_config_strategy() -> impl Strategy<Value = ghost_agent_loop::context::spotlighting::SpotlightingConfig> {
+    use ghost_agent_loop::context::spotlighting::{SpotlightMode, SpotlightingConfig};
+
+    (
+        proptest::bool::ANY,
+        prop_oneof![Just('^'), Just('~'), Just('|'), Just('#')],
+        proptest::collection::vec(0u8..10, 0..4),
+        prop_oneof![
+            Just(SpotlightMode::Datamarking),
+            Just(SpotlightMode::Delimiting),
+            Just(SpotlightMode::Off),
+        ],
+    )
+        .prop_map(|(enabled, marker, layers, mode)| SpotlightingConfig {
+            enabled,
+            marker,
+            layers,
+            mode,
+        })
+}
+
+/// 8 signals each in [0.0, 1.0] (updated from 7 for post-v1 behavioral anomaly S8).
+pub fn signal_array_8_strategy() -> impl Strategy<Value = [f64; 8]> {
+    signal_array_strategy()
+}
+
+/// Random local trust values for N agents (trust matrix).
+pub fn trust_matrix_strategy() -> impl Strategy<Value = BTreeMap<(Uuid, Uuid), f64>> {
+    proptest::collection::vec(
+        (uuid_strategy(), uuid_strategy(), convergence_score_strategy()),
+        0..20,
+    )
+    .prop_map(|entries| {
+        entries
+            .into_iter()
+            .filter(|(a, b, _)| a != b) // No self-trust.
+            .map(|(a, b, v)| ((a, b), v))
+            .collect()
+    })
 }

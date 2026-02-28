@@ -11,7 +11,7 @@ fn calibrated_baseline() -> BaselineState {
     let mut baseline = BaselineState::new(10);
     for i in 0..10 {
         let v = (i as f64) / 10.0;
-        baseline.record_session(&[v, v, v, v, v, v, v]);
+        baseline.record_session(&[v, v, v, v, v, v, v, v]);
     }
     assert!(!baseline.is_calibrating);
     baseline
@@ -23,14 +23,11 @@ fn calibrated_baseline() -> BaselineState {
 fn all_zero_signals_produce_zero_score() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [0.0f64; 7];
+    let signals = [0.0f64; 8];
     let result = scorer.score(&signals, &baseline, None, None);
-    // With a calibrated baseline, zero signals get a low percentile rank
-    // but not necessarily exactly 0.0 (depends on baseline distribution).
-    // The key invariant is that the score is in [0.0, 1.0] and low.
     assert!(
-        result.score < 0.3,
-        "All-zero signals should produce a low score, got {}",
+        result.score <= 0.15,
+        "All-zero signals should produce score near 0.0 (at baseline floor), got {}",
         result.score
     );
 }
@@ -39,7 +36,7 @@ fn all_zero_signals_produce_zero_score() {
 fn all_one_signals_produce_max_score() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [1.0f64; 7];
+    let signals = [1.0f64; 8];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         result.score >= 0.90,
@@ -52,7 +49,7 @@ fn all_one_signals_produce_max_score() {
 fn nan_signals_produce_safe_output() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [f64::NAN; 7];
+    let signals = [f64::NAN; 8];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         !result.score.is_nan(),
@@ -69,7 +66,7 @@ fn nan_signals_produce_safe_output() {
 fn negative_signals_clamped() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [-0.5f64; 7];
+    let signals = [-0.5f64; 8];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         (0.0..=1.0).contains(&result.score),
@@ -82,7 +79,7 @@ fn negative_signals_clamped() {
 fn signals_above_one_clamped() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [1.5f64; 7];
+    let signals = [1.5f64; 8];
     let result = scorer.score(&signals, &baseline, None, None);
     assert!(
         (0.0..=1.0).contains(&result.score),
@@ -100,11 +97,11 @@ fn score_boundary_level_thresholds() {
     let baseline = BaselineState::new(10);
 
     // All-zero → level 0
-    let r = scorer.score(&[0.0; 7], &baseline, None, None);
+    let r = scorer.score(&[0.0; 8], &baseline, None, None);
     assert_eq!(r.level, 0, "Score {} should be level 0", r.score);
 
     // All-one → level 4
-    let r = scorer.score(&[1.0; 7], &baseline, None, None);
+    let r = scorer.score(&[1.0; 8], &baseline, None, None);
     assert_eq!(r.level, 4, "Score {} should be level 4", r.score);
 }
 
@@ -117,14 +114,14 @@ fn baseline_frozen_after_calibration() {
     // Feed 10 calibration sessions
     for i in 0..10 {
         let v = (i as f64) * 0.1;
-        baseline.record_session(&[v, v, v, v, v, v, v]);
+        baseline.record_session(&[v, v, v, v, v, v, v, v]);
     }
     assert!(!baseline.is_calibrating, "Should be calibrated after 10 sessions");
 
     let mean_before = baseline.per_signal[0].mean;
 
     // Attempt to update after establishment — should be ignored
-    baseline.record_session(&[1.0; 7]);
+    baseline.record_session(&[1.0; 8]);
     let mean_after = baseline.per_signal[0].mean;
 
     assert!(
@@ -147,7 +144,7 @@ fn baseline_calibrating_during_first_10_sessions() {
 fn meso_amplification_still_bounded() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [0.95f64; 7];
+    let signals = [0.95f64; 8];
     let meso_data = vec![0.3, 0.5, 0.7, 0.9]; // positive slope → 1.1x
     let result = scorer.score(&signals, &baseline, Some(&meso_data), None);
     assert!(
@@ -161,8 +158,8 @@ fn meso_amplification_still_bounded() {
 fn macro_amplification_still_bounded() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [0.95f64; 7];
-    let result = scorer.score(&signals, &baseline, None, Some(&[1.0; 7]));
+    let signals = [0.95f64; 8];
+    let result = scorer.score(&signals, &baseline, None, Some(&[1.0; 8]));
     assert!(
         (0.0..=1.0).contains(&result.score),
         "Macro-amplified score should be in [0.0, 1.0], got {}",
@@ -174,9 +171,9 @@ fn macro_amplification_still_bounded() {
 fn both_amplifications_still_bounded() {
     let scorer = CompositeScorer::default();
     let baseline = calibrated_baseline();
-    let signals = [0.95f64; 7];
+    let signals = [0.95f64; 8];
     let meso_data = vec![0.3, 0.5, 0.7, 0.9];
-    let result = scorer.score(&signals, &baseline, Some(&meso_data), Some(&[1.0; 7]));
+    let result = scorer.score(&signals, &baseline, Some(&meso_data), Some(&[1.0; 8]));
     assert!(
         (0.0..=1.0).contains(&result.score),
         "Both amplifications should still produce score in [0.0, 1.0], got {}",

@@ -14,8 +14,8 @@ pub struct SignalComputer {
 }
 
 struct SignalCache {
-    values: [f64; 7],
-    dirty: [bool; 7],
+    values: [f64; 8],
+    dirty: [bool; 8],
     last_computed: Instant,
 }
 
@@ -28,10 +28,10 @@ impl SignalComputer {
 
     /// Mark a signal as dirty for an agent (input data changed).
     pub fn mark_dirty(&mut self, agent_id: Uuid, signal_index: usize) {
-        if signal_index < 7 {
+        if signal_index < 8 {
             let entry = self.cache.entry(agent_id).or_insert_with(|| SignalCache {
-                values: [0.0; 7],
-                dirty: [true; 7],
+                values: [0.0; 8],
+                dirty: [true; 8],
                 last_computed: Instant::now(),
             });
             entry.dirty[signal_index] = true;
@@ -39,15 +39,15 @@ impl SignalComputer {
     }
 
     /// Compute signals for an agent, only recomputing dirty ones.
-    /// Returns the full 7-signal array.
-    pub fn compute(&mut self, agent_id: Uuid) -> [f64; 7] {
+    /// Returns the full 8-signal array.
+    pub fn compute(&mut self, agent_id: Uuid) -> [f64; 8] {
         let entry = self.cache.entry(agent_id).or_insert_with(|| SignalCache {
-            values: [0.0; 7],
-            dirty: [true; 7],
+            values: [0.0; 8],
+            dirty: [true; 8],
             last_computed: Instant::now(),
         });
 
-        for i in 0..7 {
+        for i in 0..8 {
             if entry.dirty[i] {
                 // In production, each signal would compute from actual data.
                 // Signal stubs: return cached value (real impl in cortex-convergence).
@@ -61,10 +61,10 @@ impl SignalComputer {
 
     /// Set a signal value directly (used when receiving computed signals).
     pub fn set_signal(&mut self, agent_id: Uuid, signal_index: usize, value: f64) {
-        if signal_index < 7 {
+        if signal_index < 8 {
             let entry = self.cache.entry(agent_id).or_insert_with(|| SignalCache {
-                values: [0.0; 7],
-                dirty: [true; 7],
+                values: [0.0; 8],
+                dirty: [true; 8],
                 last_computed: Instant::now(),
             });
             entry.values[signal_index] = value.clamp(0.0, 1.0);

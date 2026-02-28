@@ -9,6 +9,7 @@ use thiserror::Error;
 use crate::config::GhostConfig;
 use crate::gateway::{Gateway, GatewaySharedState, GatewayState};
 use crate::health::MonitorConnection;
+use ghost_egress::EgressPolicy;
 
 /// Exit codes per sysexits.h convention.
 pub const EX_CONFIG: i32 = 78;
@@ -67,6 +68,10 @@ impl GatewayBootstrap {
         let config = Self::step1_load_config(config_path)?;
         tracing::info!("Step 1: Configuration loaded");
 
+        // Step 1b: Build SecretProvider from secrets config (Phase 10)
+        let _secret_provider = Self::build_secrets(&config)?;
+        tracing::info!("Step 1b: SecretProvider initialized (provider: {})", config.secrets.provider);
+
         // Step 2: Run database migrations
         Self::step2_run_migrations(&config)?;
         tracing::info!("Step 2: Database migrations complete");
@@ -78,6 +83,10 @@ impl GatewayBootstrap {
         // Step 4: Initialize agent registry + channel adapters
         Self::step4_init_agents_channels(&config)?;
         tracing::info!("Step 4: Agents and channels initialized");
+
+        // Step 4b: Apply network egress policies per agent (Phase 11)
+        Self::step4b_apply_egress_policies(&config)?;
+        tracing::info!("Step 4b: Network egress policies applied");
 
         // Step 5: Start API server
         Self::step5_start_api(&config)?;
@@ -193,11 +202,156 @@ impl GatewayBootstrap {
         // API server startup is handled by the Gateway::run() event loop
         Ok(())
     }
+
+    /// Apply network egress policies per agent based on isolation mode (Phase 11).
+    ///
+    /// Policy selection:
+    /// - InProcess → ProxyEgressPolicy (can't do per-thread filtering)
+    /// - Process → EbpfEgressPolicy on Linux, PfEgressPolicy on macOS, ProxyEgressPolicy fallback
+    /// - Container → Docker network policy (existing, no change needed)
+    ///
+    /// When ProxyEgressPolicy is active, the proxy URL is registered in
+    /// `ghost_llm::proxy::ProxyRegistry` so the agent's reqwest client
+    /// routes LLM API calls through the proxy.
+    fn step4b_apply_egress_policies(config: &GhostConfig) -> Result<(), BootstrapError> {
+        let proxy_registry = ghost_llm::proxy::ProxyRegistry::new();
+
+        for agent in &config.agents {
+            let network_config = match &agent.network {
+                Some(nc) => nc.clone(),
+                None => {
+                    tracing::debug!(
+                        agent = %agent.name,
+                        "No network egress config — defaulting to Unrestricted"
+                    );
+                    continue;
+                }
+            };
+
+            let egress_config = crate::config::build_egress_config(&network_config);
+
+            // Skip if unrestricted (backward compat — no policy to apply).
+            if egress_config.policy == ghost_egress::EgressPolicyMode::Unrestricted {
+                tracing::debug!(
+                    agent = %agent.name,
+                    "Egress policy is Unrestricted — no enforcement needed"
+                );
+                continue;
+            }
+
+            // Select backend based on isolation mode.
+            match agent.isolation {
+                crate::config::IsolationMode::InProcess => {
+                    // Can't do per-thread filtering — use proxy.
+                    let policy = ghost_egress::ProxyEgressPolicy::new();
+                    let agent_uuid = uuid::Uuid::new_v4(); // In production, use agent's registered UUID.
+                    policy.apply(&agent_uuid, &egress_config).map_err(|e| {
+                        BootstrapError::AgentInit(format!(
+                            "egress policy for '{}': {e}",
+                            agent.name
+                        ))
+                    })?;
+                    // Register proxy URL for ghost-llm reqwest client.
+                    if let Some(url) = policy.proxy_url(&agent_uuid) {
+                        proxy_registry.register(agent_uuid, &url);
+                    }
+                    tracing::info!(
+                        agent = %agent.name,
+                        backend = "proxy",
+                        "Egress policy applied (InProcess → Proxy)"
+                    );
+                }
+                crate::config::IsolationMode::Process => {
+                    // Platform-specific: eBPF on Linux, pf on macOS, proxy fallback.
+                    #[cfg(all(target_os = "linux", feature = "ebpf"))]
+                    {
+                        let policy = ghost_egress::EbpfEgressPolicy::new();
+                        let agent_uuid = uuid::Uuid::new_v4();
+                        policy.apply(&agent_uuid, &egress_config).map_err(|e| {
+                            BootstrapError::AgentInit(format!(
+                                "egress policy for '{}': {e}",
+                                agent.name
+                            ))
+                        })?;
+                        // If eBPF fell back to proxy, register the proxy URL.
+                        if let Some(url) = policy.proxy_fallback().proxy_url(&agent_uuid) {
+                            proxy_registry.register(agent_uuid, &url);
+                        }
+                        tracing::info!(
+                            agent = %agent.name,
+                            backend = "ebpf",
+                            "Egress policy applied (Process → eBPF)"
+                        );
+                    }
+                    #[cfg(all(target_os = "macos", feature = "pf"))]
+                    {
+                        let policy = ghost_egress::PfEgressPolicy::new();
+                        let agent_uuid = uuid::Uuid::new_v4();
+                        policy.apply(&agent_uuid, &egress_config).map_err(|e| {
+                            BootstrapError::AgentInit(format!(
+                                "egress policy for '{}': {e}",
+                                agent.name
+                            ))
+                        })?;
+                        // If pf fell back to proxy, register the proxy URL.
+                        if let Some(url) = policy.proxy_fallback().proxy_url(&agent_uuid) {
+                            proxy_registry.register(agent_uuid, &url);
+                        }
+                        tracing::info!(
+                            agent = %agent.name,
+                            backend = "pf",
+                            "Egress policy applied (Process → pf)"
+                        );
+                    }
+                    #[cfg(not(any(
+                        all(target_os = "linux", feature = "ebpf"),
+                        all(target_os = "macos", feature = "pf")
+                    )))]
+                    {
+                        let policy = ghost_egress::ProxyEgressPolicy::new();
+                        let agent_uuid = uuid::Uuid::new_v4();
+                        policy.apply(&agent_uuid, &egress_config).map_err(|e| {
+                            BootstrapError::AgentInit(format!(
+                                "egress policy for '{}': {e}",
+                                agent.name
+                            ))
+                        })?;
+                        // Register proxy URL for ghost-llm reqwest client.
+                        if let Some(url) = policy.proxy_url(&agent_uuid) {
+                            proxy_registry.register(agent_uuid, &url);
+                        }
+                        tracing::info!(
+                            agent = %agent.name,
+                            backend = "proxy",
+                            "Egress policy applied (Process → Proxy fallback)"
+                        );
+                    }
+                }
+                crate::config::IsolationMode::Container => {
+                    // Container isolation uses Docker network policies — no ghost-egress needed.
+                    tracing::info!(
+                        agent = %agent.name,
+                        "Container isolation — Docker network policy handles egress"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Build the SecretProvider from the secrets config section (Phase 10).
+    /// Returns a boxed SecretProvider that can be passed to AuthProfileManager.
+    fn build_secrets(
+        config: &GhostConfig,
+    ) -> Result<Box<dyn ghost_secrets::SecretProvider>, BootstrapError> {
+        crate::config::build_secret_provider(&config.secrets)
+            .map_err(|e| BootstrapError::Config(format!("secrets provider: {e}")))
+    }
 }
 
 fn shellexpand_tilde(path: &str) -> String {
     if path.starts_with("~/") {
-        if let Ok(home) = std::env::var("HOME") {
+        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
             return format!("{}{}", home, &path[1..]);
         }
     }

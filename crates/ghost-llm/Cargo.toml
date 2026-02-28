@@ -8,6 +8,7 @@ description = "LLM provider abstraction, model routing, fallback chains, and cos
 
 [dependencies]
 cortex-core = { workspace = true }
+ghost-secrets = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -16,8 +17,10 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
-rand = "0.8"
+reqwest = { workspace = true }
+rand.workspace = true
 
 [dev-dependencies]
 proptest = { workspace = true }
 tokio = { version = "1", features = ["full", "test-util"] }
+tracing-subscriber = { workspace = true }

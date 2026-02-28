@@ -13,6 +13,13 @@ path = "src/main.rs"
 name = "ghost_gateway"
 path = "src/lib.rs"
 
+[features]
+default = ["keychain"]
+keychain = ["ghost-secrets/keychain"]
+vault = ["ghost-secrets/vault"]
+ebpf = ["ghost-egress/ebpf"]
+pf = ["ghost-egress/pf"]
+
 [dependencies]
 # Workspace crates
 cortex-core = { workspace = true }
@@ -23,6 +30,7 @@ cortex-validation = { workspace = true }
 ghost-signing = { workspace = true }
 ghost-policy = { workspace = true }
 ghost-llm = { workspace = true }
+ghost-secrets = { workspace = true }
 ghost-identity = { workspace = true }
 ghost-agent-loop = { workspace = true }
 itp-protocol = { workspace = true }
@@ -35,6 +43,8 @@ ghost-audit = { workspace = true }
 ghost-backup = { workspace = true }
 ghost-export = { workspace = true }
 ghost-migrate = { workspace = true }
+ghost-oauth = { workspace = true }
+ghost-egress = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

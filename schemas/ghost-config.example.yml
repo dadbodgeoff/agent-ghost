@@ -17,6 +17,20 @@ agents:
       - "memory_write"
     isolation: inprocess
     template: "personal"
+    # Network egress control (Phase 11)
+    # Defaults to 'unrestricted' if not specified (backward compatible).
+    # network:
+    #   egress_policy: allowlist
+    #   allowed_domains:
+    #     - api.anthropic.com
+    #     - api.openai.com
+    #     - "*.slack.com"
+    #   blocked_domains:
+    #     - "*.pastebin.com"
+    #   log_violations: true
+    #   alert_on_violation: true
+    #   violation_threshold: 5
+    #   violation_window_minutes: 10
 
 channels:
   - channel_type: cli
@@ -75,3 +89,14 @@ backup:
   interval: "daily"
   retention_count: 7
   backup_dir: "~/.ghost/backups"
+
+# Secrets infrastructure (Phase 10)
+# Defaults to 'env' if not specified (backward compatible).
+secrets:
+  provider: env  # env | keychain | vault
+  # keychain:
+  #   service_name: "ghost-platform"
+  # vault:
+  #   endpoint: "https://vault.example.com"
+  #   mount: "secret"
+  #   token_env: "VAULT_TOKEN"

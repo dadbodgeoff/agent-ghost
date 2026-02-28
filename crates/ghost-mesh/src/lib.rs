@@ -1,23 +1,17 @@
-//! ClawMesh Agent-to-Agent Payment Protocol (Phase 9 — Deferred).
+//! # ghost-mesh
 //!
-//! This crate defines trait boundaries and type stubs for the ClawMesh
-//! inter-agent payment protocol. No runtime implementation is provided.
+//! A2A-compatible agent network protocol with EigenTrust reputation,
+//! cascade circuit breakers, and memory poisoning defense.
 //!
-//! # Feature Gate
-//!
-//! This crate is feature-gated behind `mesh`. Enable it in dependents with:
-//!
-//! ```toml
-//! ghost-mesh = { workspace = true, features = ["mesh"] }
-//! ```
+//! GHOST agents can discover, delegate to, and collaborate with other
+//! GHOST and A2A agents. All inter-agent communication is signed with
+//! Ed25519 (via ghost-signing).
 
+pub mod discovery;
+pub mod error;
 pub mod protocol;
+pub mod safety;
 pub mod traits;
+pub mod transport;
+pub mod trust;
 pub mod types;
-
-pub use protocol::{MeshMessage, MeshProtocol};
-pub use traits::{IMeshLedger, IMeshProvider, MeshError};
-pub use types::{
-    MeshEscrow, MeshInvoice, MeshReceipt, MeshSettlement, MeshTransaction, MeshWallet,
-    SettlementStatus,
-};

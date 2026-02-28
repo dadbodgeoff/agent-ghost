@@ -28,11 +28,11 @@ pub struct MonitorConfig {
     pub max_provisional_sessions: u32,
     /// Health check interval (default 30 seconds).
     pub health_check_interval: Duration,
-    /// Signal weights for composite scoring (7 weights, default equal 1/7).
+    /// Signal weights for composite scoring (8 weights, default equal 1/8).
     /// Order: S1 session_duration, S2 inter_session_gap, S3 response_latency,
     /// S4 vocabulary_convergence, S5 goal_boundary_erosion, S6 initiative_balance,
-    /// S7 disengagement_resistance.
-    pub signal_weights: [f64; 7],
+    /// S7 disengagement_resistance, S8 behavioral_anomaly.
+    pub signal_weights: [f64; 8],
 }
 
 impl Default for MonitorConfig {
@@ -49,7 +49,7 @@ impl Default for MonitorConfig {
             score_cache_ttl: Duration::from_secs(30),
             max_provisional_sessions: 3,
             health_check_interval: Duration::from_secs(30),
-            signal_weights: [1.0 / 7.0; 7],
+            signal_weights: [1.0 / 8.0; 8],
         }
     }
 }

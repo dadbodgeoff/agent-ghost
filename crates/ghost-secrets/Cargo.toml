@@ -1,0 +1,33 @@
+[package]
+name = "ghost-secrets"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+description = "Cross-platform credential storage — leaf crate with zero ghost-*/cortex-* dependencies"
+
+[features]
+default = ["keychain"]
+keychain = ["dep:keyring"]
+vault = ["dep:reqwest", "dep:serde_json", "dep:tokio"]
+
+[dependencies]
+secrecy = { version = "0.10", features = ["serde"] }
+zeroize = { version = "1", features = ["derive"] }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+# Keychain (feature-gated)
+keyring = { version = "3", optional = true }
+
+# Vault (feature-gated)
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+
+[dev-dependencies]
+proptest = "1"
+toml = "0.8"
+serde_json = "1"
+tokio = { version = "1", features = ["full", "test-util"] }

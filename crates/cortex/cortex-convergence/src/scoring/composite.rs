@@ -33,21 +33,23 @@ impl Default for CriticalThresholds {
 pub struct CompositeResult {
     pub score: f64,
     pub level: u8,
-    pub signal_scores: [f64; 7],
+    pub signal_scores: [f64; 8],
     pub meso_amplified: bool,
     pub macro_amplified: bool,
     pub critical_override: bool,
 }
 
 /// Composite scorer with configurable weights and thresholds.
+///
+/// Supports 8 signals: S1-S7 (original) + S8 (behavioral anomaly).
 pub struct CompositeScorer {
-    pub weights: [f64; 7],
+    pub weights: [f64; 8],
     pub thresholds: [f64; 4],
     pub critical: CriticalThresholds,
 }
 
 impl CompositeScorer {
-    pub fn new(weights: [f64; 7], thresholds: [f64; 4]) -> Self {
+    pub fn new(weights: [f64; 8], thresholds: [f64; 4]) -> Self {
         Self {
             weights,
             thresholds,
@@ -55,21 +57,36 @@ impl CompositeScorer {
         }
     }
 
-    /// Score 7 signals into a composite result.
+    /// Create from legacy 7-signal weights, adding S8 with default weight.
+    ///
+    /// Redistributes weights to accommodate S8: each original weight is
+    /// scaled by 7/8, and S8 gets 1/8.
+    pub fn from_7_weights(weights_7: [f64; 7], thresholds: [f64; 4]) -> Self {
+        let scale = 7.0 / 8.0;
+        let s8_weight = weights_7.iter().sum::<f64>() / 8.0;
+        let mut weights_8 = [0.0; 8];
+        for i in 0..7 {
+            weights_8[i] = weights_7[i] * scale;
+        }
+        weights_8[7] = s8_weight;
+        Self::new(weights_8, thresholds)
+    }
+
+    /// Score 8 signals into a composite result.
     pub fn score(
         &self,
-        signals: &[f64; 7],
+        signals: &[f64; 8],
         baseline: &BaselineState,
         meso_data: Option<&[f64]>,
         macro_data: Option<&[f64]>,
     ) -> CompositeResult {
         // Handle NaN: replace with 0.0
-        let clean: [f64; 7] = std::array::from_fn(|i| {
+        let clean: [f64; 8] = std::array::from_fn(|i| {
             if signals[i].is_nan() { 0.0 } else { signals[i].clamp(0.0, 1.0) }
         });
 
         // Normalize via percentile ranking against baseline (AC3)
-        let normalized: [f64; 7] = std::array::from_fn(|i| {
+        let normalized: [f64; 8] = std::array::from_fn(|i| {
             baseline.percentile_rank(i, clean[i])
         });
 
@@ -100,7 +117,7 @@ impl CompositeScorer {
         // Macro amplification: 1.15x if any z-score > 2.0 (AC5)
         let macro_amplified = if let Some(_macro_data) = macro_data {
             !baseline.is_calibrating
-                && (0..7).any(|i| {
+                && (0..8).any(|i| {
                     let z = sliding_window::z_score_from_baseline(
                         clean[i],
                         baseline.per_signal[i].mean,
@@ -151,11 +168,8 @@ impl CompositeScorer {
         }
     }
 
-    fn check_critical_override(&self, signals: &[f64; 7]) -> bool {
+    fn check_critical_override(&self, signals: &[f64; 8]) -> bool {
         // S1 (session duration) > threshold (normalized, so >1.0 means >6h)
-        // Since S1 is normalized to [0,1] where 1.0 = 6h, we check raw input
-        // But we only have normalized signals here. The critical check uses
-        // the raw signal values, so we check if S1 >= 1.0 (at or beyond 6h)
         signals[0] >= 1.0
             // S2 (inter-session gap) — high value means short gap
             || signals[1] >= 1.0
@@ -166,7 +180,7 @@ impl CompositeScorer {
 
 impl Default for CompositeScorer {
     fn default() -> Self {
-        Self::new([1.0 / 7.0; 7], DEFAULT_THRESHOLDS)
+        Self::new([1.0 / 8.0; 8], DEFAULT_THRESHOLDS)
     }
 }
 

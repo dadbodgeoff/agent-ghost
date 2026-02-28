@@ -5,6 +5,7 @@ use std::time::Duration;
 use ghost_llm::provider::LLMToolCall;
 use thiserror::Error;
 
+use super::plan_validator::{PlanValidator, PlanValidationResult, ToolCallPlan};
 use super::registry::ToolRegistry;
 
 #[derive(Debug, Error)]
@@ -32,11 +33,37 @@ pub struct ToolResult {
 /// Executes tool calls with timeout enforcement and audit logging.
 pub struct ToolExecutor {
     default_timeout: Duration,
+    plan_validator: PlanValidator,
 }
 
 impl ToolExecutor {
     pub fn new(default_timeout: Duration) -> Self {
-        Self { default_timeout }
+        Self {
+            default_timeout,
+            plan_validator: PlanValidator::default(),
+        }
+    }
+
+    /// Create a ToolExecutor with a custom PlanValidator.
+    pub fn with_plan_validator(default_timeout: Duration, plan_validator: PlanValidator) -> Self {
+        Self {
+            default_timeout,
+            plan_validator,
+        }
+    }
+
+    /// Validate a plan of tool calls before executing any of them.
+    ///
+    /// This runs AFTER PolicyEngine individual checks. If the plan is denied,
+    /// none of the tool calls are executed.
+    pub fn validate_plan(&self, calls: &[LLMToolCall]) -> PlanValidationResult {
+        let plan = ToolCallPlan::new(calls.to_vec());
+        self.plan_validator.validate(&plan)
+    }
+
+    /// Record a tool denial for escalation tracking.
+    pub fn record_denial(&mut self, tool_name: &str) {
+        self.plan_validator.record_denial(tool_name);
     }
 
     /// Execute a tool call.

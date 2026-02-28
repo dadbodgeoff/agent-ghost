@@ -1143,3 +1143,230 @@ mod proptests {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Phase 16 — KV Cache Optimization
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── Task 16.2: Tool constraint instruction (L3→L6 move) ────────────────
+
+#[test]
+fn tool_constraint_level_0_empty() {
+    use ghost_agent_loop::context::prompt_compiler::tool_constraint_instruction;
+    assert_eq!(tool_constraint_instruction(0), "");
+}
+
+#[test]
+fn tool_constraint_level_1_empty() {
+    use ghost_agent_loop::context::prompt_compiler::tool_constraint_instruction;
+    assert_eq!(tool_constraint_instruction(1), "");
+}
+
+#[test]
+fn tool_constraint_level_2_contains_proactive_heartbeat() {
+    use ghost_agent_loop::context::prompt_compiler::tool_constraint_instruction;
+    let s = tool_constraint_instruction(2);
+    assert!(s.contains("proactive"));
+    assert!(s.contains("heartbeat"));
+}
+
+#[test]
+fn tool_constraint_level_3_contains_task_focused() {
+    use ghost_agent_loop::context::prompt_compiler::tool_constraint_instruction;
+    let s = tool_constraint_instruction(3);
+    assert!(s.contains("task-focused"));
+}
+
+#[test]
+fn tool_constraint_level_4_contains_minimal() {
+    use ghost_agent_loop::context::prompt_compiler::tool_constraint_instruction;
+    let s = tool_constraint_instruction(4);
+    assert!(s.contains("Minimal tools only"));
+}
+
+#[test]
+fn tool_constraint_level_above_4_clamped() {
+    use ghost_agent_loop::context::prompt_compiler::tool_constraint_instruction;
+    assert_eq!(tool_constraint_instruction(5), tool_constraint_instruction(4));
+    assert_eq!(tool_constraint_instruction(255), tool_constraint_instruction(4));
+}
+
+#[test]
+fn l3_content_identical_regardless_of_intervention_level() {
+    // L3 should contain ALL tool schemas — no filtering.
+    // Compile with level 0 and level 3, compare L3 content.
+    let compiler = PromptCompiler::new(128_000);
+    let input = PromptInput {
+        tool_schemas: "shell\nfilesystem\nweb_search\nproactive\nheartbeat\npersonal".into(),
+        ..Default::default()
+    };
+    let layers = compiler.compile(&input);
+    // L3 always contains all schemas (no filtering in compile anymore)
+    assert!(layers[3].content.contains("proactive"));
+    assert!(layers[3].content.contains("heartbeat"));
+    assert!(layers[3].content.contains("personal"));
+}
+
+// ── Task 16.3: Timestamp sanitization ───────────────────────────────────
+
+#[test]
+fn sanitize_iso_with_seconds() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    assert_eq!(
+        sanitize_environment_timestamps("2026-02-28T14:30:45Z"),
+        "2026-02-28T14:30"
+    );
+}
+
+#[test]
+fn sanitize_iso_with_milliseconds() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    assert_eq!(
+        sanitize_environment_timestamps("2026-02-28T14:30:45.123Z"),
+        "2026-02-28T14:30"
+    );
+}
+
+#[test]
+fn sanitize_time_with_seconds() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    let result = sanitize_environment_timestamps("Current time: 14:30:45");
+    assert!(result.contains("14:30"));
+    assert!(!result.contains(":45"));
+}
+
+#[test]
+fn sanitize_date_only_unchanged() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    assert_eq!(
+        sanitize_environment_timestamps("Date: 2026-02-28"),
+        "Date: 2026-02-28"
+    );
+}
+
+#[test]
+fn sanitize_no_timestamps_unchanged() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    let content = "Operating System: macOS, Shell: zsh";
+    assert_eq!(sanitize_environment_timestamps(content), content);
+}
+
+#[test]
+fn sanitize_multiple_timestamps() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    let content = "Start: 2026-02-28T14:30:45Z End: 2026-02-28T15:00:30Z";
+    let result = sanitize_environment_timestamps(content);
+    assert!(!result.contains(":45"));
+    assert!(!result.contains(":30Z"));
+    assert!(result.contains("14:30"));
+    assert!(result.contains("15:00"));
+}
+
+#[test]
+fn sanitize_version_string_not_mangled() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    // Version "1.2.3" should NOT be treated as a timestamp
+    let content = "Node version: 1.2.3";
+    let result = sanitize_environment_timestamps(content);
+    assert!(result.contains("1.2.3"), "version mangled: {}", result);
+}
+
+#[test]
+fn sanitize_l4_in_compile_strips_seconds() {
+    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
+    let compiler = PromptCompiler::new(128_000);
+    let input = PromptInput {
+        environment: "Time: 2026-02-28T14:30:45Z".into(),
+        ..Default::default()
+    };
+    let layers = compiler.compile(&input);
+    assert!(layers[4].content.contains("14:30"));
+    assert!(!layers[4].content.contains(":45"));
+}
+
+// ── Task 16.4: Spotlighting L1 template ─────────────────────────────────
+
+#[test]
+fn l1_template_with_spotlighting_prepends_instruction() {
+    use ghost_agent_loop::context::spotlighting::{Spotlighter, SpotlightingConfig};
+    let config = SpotlightingConfig::default();
+    let spotlighter = Spotlighter::new(config);
+    let result = spotlighter.l1_template("You are a simulation.");
+    assert!(result.contains("DATA only"));
+    assert!(result.contains("You are a simulation."));
+    // Instruction comes first
+    assert!(result.find("DATA only").unwrap() < result.find("You are a simulation.").unwrap());
+}
+
+#[test]
+fn l1_template_disabled_returns_base() {
+    use ghost_agent_loop::context::spotlighting::{Spotlighter, SpotlightingConfig};
+    let config = SpotlightingConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let spotlighter = Spotlighter::new(config);
+    assert_eq!(spotlighter.l1_template("base prompt"), "base prompt");
+}
+
+#[test]
+fn compile_no_longer_modifies_l1() {
+    // L1 output should equal L1 input — no post-assembly mutation
+    let compiler = PromptCompiler::new(128_000);
+    let input = PromptInput {
+        simulation_prompt: "EXACT_L1_CONTENT".into(),
+        ..Default::default()
+    };
+    let layers = compiler.compile(&input);
+    assert_eq!(layers[1].content, "EXACT_L1_CONTENT");
+}
+
+#[test]
+fn stable_prefix_cache_hit_across_turns_l1_stable() {
+    use ghost_agent_loop::context::stable_prefix::StablePrefixCache;
+    use ghost_agent_loop::context::stable_prefix::PrefixValidation;
+    use ghost_agent_loop::context::spotlighting::{Spotlighter, SpotlightingConfig};
+
+    // Simulate session init: bake spotlighting into L1 once
+    let spotlighter = Spotlighter::new(SpotlightingConfig::default());
+    let l1 = spotlighter.l1_template("You are a simulation.");
+
+    let cache = StablePrefixCache::new();
+    let input1 = PromptInput {
+        simulation_prompt: l1.clone(),
+        convergence_state: "turn 1 state".into(),
+        conversation_history: "turn 1 history".into(),
+        user_message: "turn 1 msg".into(),
+        ..Default::default()
+    };
+    let input2 = PromptInput {
+        simulation_prompt: l1,
+        convergence_state: "turn 2 state DIFFERENT".into(),
+        conversation_history: "turn 2 history DIFFERENT".into(),
+        user_message: "turn 2 msg DIFFERENT".into(),
+        ..Default::default()
+    };
+
+    assert_eq!(cache.validate(&input1), PrefixValidation::FirstTurn);
+    assert_eq!(cache.validate(&input2), PrefixValidation::CacheHit);
+}
+
+#[test]
+fn spotlighting_still_applied_to_l7_l8() {
+    use ghost_agent_loop::context::spotlighting::{SpotlightingConfig, SpotlightMode};
+
+    let config = SpotlightingConfig::default();
+    let compiler = PromptCompiler::with_spotlighting(128_000, config);
+    let input = PromptInput {
+        memory_logs: "Hello".into(),
+        conversation_history: "World".into(),
+        ..Default::default()
+    };
+    let layers = compiler.compile(&input);
+    // L7 and L8 should be datamarked
+    assert_eq!(layers[7].content, "H^e^l^l^o");
+    assert_eq!(layers[8].content, "W^o^r^l^d");
+    // L0 and L9 should NOT be datamarked
+    assert!(!layers[0].content.contains('^'));
+    assert!(!layers[9].content.contains('^'));
+}

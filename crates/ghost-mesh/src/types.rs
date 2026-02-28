@@ -1,139 +1,375 @@
-//! ClawMesh type definitions.
-//!
-//! All types are stubs for trait boundary definition.
-//! No runtime implementation — Phase 9 deferred.
+//! Core mesh types: AgentCard, MeshTask, TaskStatus, MeshMessage,
+//! DelegationRequest, DelegationResponse, and payment stubs.
+
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Status of a settlement between agents.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SettlementStatus {
-    /// Settlement is pending processing.
-    Pending,
-    /// Settlement has been completed successfully.
-    Completed,
-    /// Settlement failed.
-    Failed,
-    /// Settlement is under dispute.
-    Disputed,
-    /// Settlement was cancelled before completion.
-    Cancelled,
-}
+use crate::error::MeshError;
 
-/// A transaction in the mesh payment network.
+// ── AgentCard ───────────────────────────────────────────────────────────
+
+/// An agent's public identity card, served at `/.well-known/agent.json`.
+/// Signed with the agent's Ed25519 key via ghost-signing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeshTransaction {
-    /// Unique transaction identifier (UUIDv7, time-ordered).
-    pub id: Uuid,
-    /// Agent ID of the sender.
-    pub from_agent_id: String,
-    /// Agent ID of the receiver.
-    pub to_agent_id: String,
-    /// Amount in the smallest unit of the payment currency.
-    pub amount: u64,
-    /// ISO 4217 currency code or token identifier.
-    pub currency: String,
-    /// Human-readable description of the transaction purpose.
+pub struct AgentCard {
+    pub name: String,
     pub description: String,
-    /// When the transaction was created.
-    pub created_at: DateTime<Utc>,
-    /// Current settlement status.
-    pub status: SettlementStatus,
+    pub capabilities: Vec<String>,
+    pub input_types: Vec<String>,
+    pub output_types: Vec<String>,
+    pub auth_schemes: Vec<String>,
+    pub endpoint_url: String,
+    /// Ed25519 public key bytes (32 bytes, base64-encoded via serde).
+    pub public_key: Vec<u8>,
+    pub convergence_profile: String,
+    pub trust_score: f64,
+    pub sybil_lineage_hash: String,
+    pub version: String,
+    pub signed_at: DateTime<Utc>,
+    /// Ed25519 signature over canonical_bytes() (64 bytes).
+    pub signature: Vec<u8>,
 }
 
-/// An invoice issued by one agent to another for services rendered.
+impl AgentCard {
+    /// Compute canonical bytes for signing. Deterministic field ordering.
+    /// Signature field is excluded (it's what we're computing).
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(self.name.as_bytes());
+        buf.extend_from_slice(self.description.as_bytes());
+        for cap in &self.capabilities {
+            buf.extend_from_slice(cap.as_bytes());
+        }
+        for it in &self.input_types {
+            buf.extend_from_slice(it.as_bytes());
+        }
+        for ot in &self.output_types {
+            buf.extend_from_slice(ot.as_bytes());
+        }
+        for auth in &self.auth_schemes {
+            buf.extend_from_slice(auth.as_bytes());
+        }
+        buf.extend_from_slice(self.endpoint_url.as_bytes());
+        buf.extend_from_slice(&self.public_key);
+        buf.extend_from_slice(self.convergence_profile.as_bytes());
+        buf.extend_from_slice(&self.trust_score.to_le_bytes());
+        buf.extend_from_slice(self.sybil_lineage_hash.as_bytes());
+        buf.extend_from_slice(self.version.as_bytes());
+        buf.extend_from_slice(self.signed_at.to_rfc3339().as_bytes());
+        buf
+    }
+
+    /// Sign this card with the given signing key.
+    pub fn sign(&mut self, key: &ghost_signing::SigningKey) {
+        let canonical = self.canonical_bytes();
+        let sig = ghost_signing::sign(&canonical, key);
+        self.signature = sig.to_bytes().to_vec();
+    }
+
+    /// Verify the card's signature against its public key.
+    pub fn verify_signature(&self) -> bool {
+        let Some(vk) = self.verifying_key() else {
+            return false;
+        };
+        let Some(sig) = ghost_signing::Signature::from_bytes(&self.signature) else {
+            return false;
+        };
+        let canonical = self.canonical_bytes();
+        ghost_signing::verify(&canonical, &sig, &vk)
+    }
+
+    /// Extract the verifying key from the public_key bytes.
+    fn verifying_key(&self) -> Option<ghost_signing::VerifyingKey> {
+        if self.public_key.len() != 32 {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&self.public_key);
+        ghost_signing::VerifyingKey::from_bytes(&bytes)
+    }
+}
+
+impl PartialEq for AgentCard {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.endpoint_url == other.endpoint_url
+            && self.public_key == other.public_key
+            && self.version == other.version
+    }
+}
+
+impl Eq for AgentCard {}
+
+// ── TaskStatus ──────────────────────────────────────────────────────────
+
+/// Task lifecycle states following A2A protocol conventions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskStatus {
+    Submitted,
+    Working,
+    InputRequired(String),
+    Completed,
+    Failed(String),
+    Canceled,
+}
+
+impl TaskStatus {
+    /// Check if a transition from `self` to `to` is valid.
+    pub fn can_transition_to(&self, to: &TaskStatus) -> bool {
+        matches!(
+            (self, to),
+            // Forward transitions
+            (TaskStatus::Submitted, TaskStatus::Working)
+                | (TaskStatus::Working, TaskStatus::Completed)
+                | (TaskStatus::Working, TaskStatus::Failed(_))
+                | (TaskStatus::Working, TaskStatus::InputRequired(_))
+                | (TaskStatus::InputRequired(_), TaskStatus::Working)
+                // Any state can be canceled
+                | (TaskStatus::Submitted, TaskStatus::Canceled)
+                | (TaskStatus::Working, TaskStatus::Canceled)
+                | (TaskStatus::InputRequired(_), TaskStatus::Canceled)
+        )
+    }
+
+    /// Attempt a transition, returning an error if invalid.
+    pub fn transition_to(&self, to: TaskStatus) -> Result<TaskStatus, MeshError> {
+        if self.can_transition_to(&to) {
+            Ok(to)
+        } else {
+            Err(MeshError::InvalidTransition {
+                from: format!("{:?}", self),
+                to: format!("{:?}", to),
+            })
+        }
+    }
+
+    /// Returns true if this is a terminal state.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            TaskStatus::Completed | TaskStatus::Failed(_) | TaskStatus::Canceled
+        )
+    }
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskStatus::Submitted => write!(f, "submitted"),
+            TaskStatus::Working => write!(f, "working"),
+            TaskStatus::InputRequired(msg) => write!(f, "input-required: {msg}"),
+            TaskStatus::Completed => write!(f, "completed"),
+            TaskStatus::Failed(reason) => write!(f, "failed: {reason}"),
+            TaskStatus::Canceled => write!(f, "canceled"),
+        }
+    }
+}
+
+// ── MeshTask ────────────────────────────────────────────────────────────
+
+/// A task delegated between agents via the mesh protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshTask {
+    pub id: Uuid,
+    pub initiator_agent_id: Uuid,
+    pub target_agent_id: Uuid,
+    pub status: TaskStatus,
+    pub input: serde_json::Value,
+    pub output: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Timeout in seconds. 0 = no timeout.
+    pub timeout: u64,
+    /// Delegation chain depth (incremented on each hop).
+    pub delegation_depth: u32,
+    /// Metadata for GHOST-specific extensions.
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+impl MeshTask {
+    /// Create a new task in Submitted state.
+    pub fn new(
+        initiator_agent_id: Uuid,
+        target_agent_id: Uuid,
+        input: serde_json::Value,
+        timeout: u64,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            initiator_agent_id,
+            target_agent_id,
+            status: TaskStatus::Submitted,
+            input,
+            output: None,
+            created_at: now,
+            updated_at: now,
+            timeout,
+            delegation_depth: 0,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    /// Transition the task to a new status.
+    pub fn transition(&mut self, to: TaskStatus) -> Result<(), MeshError> {
+        let new_status = self.status.transition_to(to)?;
+        self.status = new_status;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+}
+
+impl PartialEq for MeshTask {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for MeshTask {}
+
+// ── MeshMessage (JSON-RPC 2.0) ──────────────────────────────────────────
+
+/// JSON-RPC 2.0 envelope for mesh protocol messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshMessage {
+    pub jsonrpc: String,
+    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<serde_json::Value>,
+    /// JSON-RPC 2.0 error object (present in error responses).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<JsonRpcError>,
+    /// JSON-RPC 2.0 result (present in success responses).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+}
+
+/// JSON-RPC 2.0 error object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+impl MeshMessage {
+    /// Create a JSON-RPC 2.0 request.
+    pub fn request(method: &str, params: serde_json::Value, id: serde_json::Value) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            params: Some(params),
+            id: Some(id),
+            error: None,
+            result: None,
+        }
+    }
+
+    /// Create a JSON-RPC 2.0 success response.
+    pub fn success(id: serde_json::Value, result: serde_json::Value) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            method: String::new(),
+            params: None,
+            id: Some(id),
+            error: None,
+            result: Some(result),
+        }
+    }
+
+    /// Create a JSON-RPC 2.0 error response.
+    pub fn error_response(id: serde_json::Value, code: i32, message: &str) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            method: String::new(),
+            params: None,
+            id: Some(id),
+            error: Some(JsonRpcError {
+                code,
+                message: message.to_string(),
+                data: None,
+            }),
+            result: None,
+        }
+    }
+
+    /// Validate that this message conforms to JSON-RPC 2.0 structure.
+    pub fn is_valid_jsonrpc(&self) -> bool {
+        if self.jsonrpc != "2.0" {
+            return false;
+        }
+        // Request: must have method and id
+        if !self.method.is_empty() && self.id.is_some() && self.params.is_some() {
+            return true;
+        }
+        // Response: must have id and either result or error
+        if self.id.is_some() && (self.result.is_some() || self.error.is_some()) {
+            return true;
+        }
+        // Notification: method present, no id
+        if !self.method.is_empty() && self.id.is_none() {
+            return true;
+        }
+        false
+    }
+}
+
+// ── DelegationRequest / DelegationResponse ──────────────────────────────
+
+/// A request from one agent to delegate a task to another.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationRequest {
+    pub task_description: String,
+    pub required_capabilities: Vec<String>,
+    pub max_cost: f64,
+    pub timeout: u64,
+}
+
+/// Response to a delegation request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationResponse {
+    pub accepted: bool,
+    pub estimated_cost: f64,
+    pub estimated_duration: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
+}
+
+// ── Payment stubs (kept from Phase 9 placeholder) ───────────────────────
+
+/// Placeholder for mesh payment protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshPayment {
+    pub id: Uuid,
+    pub from_agent: Uuid,
+    pub to_agent: Uuid,
+    pub amount: f64,
+    pub currency: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Placeholder for mesh invoice.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshInvoice {
-    /// Unique invoice identifier (UUIDv7, time-ordered).
     pub id: Uuid,
-    /// Agent ID of the invoicing party.
-    pub issuer_agent_id: String,
-    /// Agent ID of the party being invoiced.
-    pub payer_agent_id: String,
-    /// Requested amount.
-    pub amount: u64,
-    /// ISO 4217 currency code or token identifier.
+    pub task_id: Uuid,
+    pub amount: f64,
     pub currency: String,
-    /// Line-item description of services.
-    pub description: String,
-    /// When the invoice was issued.
     pub issued_at: DateTime<Utc>,
-    /// When the invoice expires (payment deadline).
-    pub expires_at: Option<DateTime<Utc>>,
-    /// Whether the invoice has been paid.
-    pub paid: bool,
+    pub due_at: DateTime<Utc>,
 }
 
-/// A receipt proving a completed payment.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeshReceipt {
-    /// Unique receipt identifier (UUIDv7, time-ordered).
-    pub id: Uuid,
-    /// The transaction this receipt covers.
-    pub transaction_id: Uuid,
-    /// The invoice this receipt settles (if any).
-    pub invoice_id: Option<Uuid>,
-    /// Amount paid.
-    pub amount: u64,
-    /// ISO 4217 currency code or token identifier.
-    pub currency: String,
-    /// When the receipt was issued.
-    pub issued_at: DateTime<Utc>,
-}
-
-/// An agent's wallet in the mesh network.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeshWallet {
-    /// Unique wallet identifier.
-    pub id: Uuid,
-    /// Agent ID that owns this wallet.
-    pub agent_id: String,
-    /// Current available balance.
-    pub balance: u64,
-    /// ISO 4217 currency code or token identifier.
-    pub currency: String,
-    /// When the wallet was created.
-    pub created_at: DateTime<Utc>,
-}
-
-/// An escrow holding funds during a multi-step transaction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MeshEscrow {
-    /// Unique escrow identifier.
-    pub id: Uuid,
-    /// The transaction this escrow secures.
-    pub transaction_id: Uuid,
-    /// Amount held in escrow.
-    pub amount: u64,
-    /// ISO 4217 currency code or token identifier.
-    pub currency: String,
-    /// Agent ID of the depositor.
-    pub depositor_agent_id: String,
-    /// Agent ID of the beneficiary.
-    pub beneficiary_agent_id: String,
-    /// When the escrow was created.
-    pub created_at: DateTime<Utc>,
-    /// When the escrow expires (auto-refund deadline).
-    pub expires_at: Option<DateTime<Utc>>,
-    /// Current settlement status of the escrow.
-    pub status: SettlementStatus,
-}
-
-/// A settlement record for a completed transaction.
+/// Placeholder for mesh settlement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshSettlement {
-    /// Unique settlement identifier.
     pub id: Uuid,
-    /// The transaction being settled.
-    pub transaction_id: Uuid,
-    /// Final settled amount.
-    pub amount: u64,
-    /// ISO 4217 currency code or token identifier.
-    pub currency: String,
-    /// When the settlement was finalized.
+    pub invoice_id: Uuid,
+    pub payment_id: Uuid,
     pub settled_at: DateTime<Utc>,
-    /// Final status.
-    pub status: SettlementStatus,
 }

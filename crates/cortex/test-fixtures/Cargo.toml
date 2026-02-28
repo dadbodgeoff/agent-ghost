@@ -12,6 +12,11 @@ cortex-core = { workspace = true }
 cortex-temporal = { workspace = true }
 itp-protocol = { workspace = true }
 ghost-signing = { workspace = true }
+ghost-egress = { workspace = true }
+ghost-oauth = { workspace = true }
+ghost-mesh = { workspace = true }
+ghost-llm = { workspace = true }
+ghost-agent-loop = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -27,6 +32,9 @@ blake3 = { workspace = true }
 # Crypto
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
+
+# Secrets (for TokenSet strategy)
+secrecy = { workspace = true }
 
 # Testing
 proptest = { workspace = true }

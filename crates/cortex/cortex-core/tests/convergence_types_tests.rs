@@ -118,7 +118,7 @@ fn reflection_config_defaults_match_spec() {
 fn scoring_config_defaults_match_spec() {
     let cfg = cortex_core::config::ConvergenceScoringConfig::default();
     assert_eq!(cfg.calibration_sessions, 10);
-    assert_eq!(cfg.signal_weights, [1.0 / 7.0; 7]);
+    assert_eq!(cfg.signal_weights, [1.0 / 8.0; 8]);
     assert_eq!(cfg.level_thresholds, [0.3, 0.5, 0.7, 0.85]);
 }
 
@@ -355,6 +355,11 @@ fn trigger_event_has_all_10_variants() {
             agent_id: id, health_score: 0.2, threshold: 0.3,
             sub_scores: BTreeMap::new(), detected_at: now,
         },
+        // T8: Network egress violation (Phase 11).
+        TriggerEvent::NetworkEgressViolation {
+            agent_id: id, domain: "evil.com".into(), policy_mode: "allowlist".into(),
+            violation_count: 5, threshold: 5, detected_at: now,
+        },
         TriggerEvent::ManualPause {
             agent_id: id, reason: "test".into(), initiated_by: "owner".into(),
         },
@@ -365,7 +370,7 @@ fn trigger_event_has_all_10_variants() {
             reason: "test".into(), initiated_by: "owner".into(),
         },
     ];
-    assert_eq!(events.len(), 10);
+    assert_eq!(events.len(), 11);
     // Verify all 10 variants serialize and deserialize correctly.
     for event in &events {
         let json = serde_json::to_string(event).unwrap();

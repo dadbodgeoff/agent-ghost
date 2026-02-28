@@ -22,6 +22,7 @@ use crate::pipeline::window_manager::WindowManager;
 use crate::session::registry::SessionRegistry;
 use crate::state_publisher::{ConvergenceSharedState, StatePublisher};
 use crate::transport::http_api::{self, HttpApiState};
+#[cfg(unix)]
 use crate::transport::unix_socket::UnixSocketTransport;
 use crate::transport::{EventType, IngestEvent};
 use crate::validation::{EventValidator, RateLimiter};
@@ -244,14 +245,21 @@ impl ConvergenceMonitor {
             axum::serve(listener, router).await.ok();
         });
 
-        // ── Start Unix socket transport ─────────────────────────────
-        let socket_transport =
-            UnixSocketTransport::new(self.config.socket_path.clone(), ingest_tx.clone());
-        tokio::spawn(async move {
-            if let Err(e) = socket_transport.run().await {
-                tracing::error!("unix socket transport error: {e}");
-            }
-        });
+        // ── Start Unix socket transport (Unix only) ────────────────
+        #[cfg(unix)]
+        {
+            let socket_transport =
+                UnixSocketTransport::new(self.config.socket_path.clone(), ingest_tx.clone());
+            tokio::spawn(async move {
+                if let Err(e) = socket_transport.run().await {
+                    tracing::error!("unix socket transport error: {e}");
+                }
+            });
+        }
+        #[cfg(not(unix))]
+        {
+            tracing::info!("unix socket transport not available on this platform — using HTTP API only");
+        }
 
         tracing::info!("convergence monitor running");
 
