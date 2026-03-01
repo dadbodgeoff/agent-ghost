@@ -58,7 +58,7 @@ pub enum EscapeType {
 }
 
 /// Result of a WASM skill execution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExecutionResult {
     /// Skill completed successfully.
     Success { output: serde_json::Value, elapsed: Duration },

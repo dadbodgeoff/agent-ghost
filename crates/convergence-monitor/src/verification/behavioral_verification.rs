@@ -4,8 +4,10 @@
 //! High similarity (>0.85) indicates the agent changed surface behavior
 //! without genuine intent shift → amplify convergence score.
 
+use serde::{Deserialize, Serialize};
+
 /// Result of a post-redirect behavioral verification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
     /// Cosine similarity between pre- and post-redirect embeddings.
     pub similarity: f64,

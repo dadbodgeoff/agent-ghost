@@ -279,7 +279,7 @@ mod agent_templates {
         let t = AgentTemplate::researcher();
         assert_eq!(t.name, "researcher");
         assert_eq!(t.spending_cap, 20.0);
-        assert!(t.capabilities.contains(&"web_browse".to_string()));
+        assert!(t.capabilities.contains(&"web_fetch".to_string()));
     }
 
     #[test]
@@ -1010,17 +1010,16 @@ mod message_router {
 mod auth {
     use ghost_gateway::auth::token_auth::validate_token;
     use ghost_gateway::auth::auth_profiles::AuthProfileManager;
+    use std::sync::Mutex;
+    use once_cell::sync::Lazy;
     use uuid::Uuid;
 
-    // NOTE: These tests use GHOST_TOKEN env var which is process-global.
-    // They must run serially to avoid race conditions. The test binary
-    // runs them in a single module so they are serialized by default,
-    // but we add explicit set/check/remove within each test.
+    /// Mutex to serialize tests that mutate the GHOST_TOKEN env var.
+    static TOKEN_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn token_auth_no_token_set() {
-        // When GHOST_TOKEN is not set, auth is disabled
-        // Save and restore to avoid interfering with other tests
+        let _lock = TOKEN_MUTEX.lock().unwrap();
         let saved = std::env::var("GHOST_TOKEN").ok();
         std::env::remove_var("GHOST_TOKEN");
         let result = validate_token("anything");
@@ -1032,6 +1031,7 @@ mod auth {
 
     #[test]
     fn token_auth_valid() {
+        let _lock = TOKEN_MUTEX.lock().unwrap();
         let saved = std::env::var("GHOST_TOKEN").ok();
         std::env::set_var("GHOST_TOKEN", "test_secret_valid_123");
         let result = validate_token("test_secret_valid_123");
@@ -1044,6 +1044,7 @@ mod auth {
 
     #[test]
     fn token_auth_invalid() {
+        let _lock = TOKEN_MUTEX.lock().unwrap();
         let saved = std::env::var("GHOST_TOKEN").ok();
         std::env::set_var("GHOST_TOKEN", "test_secret_invalid_456");
         let result = validate_token("wrong_token");
@@ -1359,7 +1360,7 @@ mod compaction {
     fn prune_tool_results() {
         let mut history = vec![
             r#"{"role": "user", "content": "hello"}"#.into(),
-            r#"{"role": "tool_result", "content": "result"}"#.into(),
+            r#"{"type": "tool_result", "content": "result"}"#.into(),
             r#"{"role": "assistant", "content": "hi"}"#.into(),
         ];
         let result = SessionCompactor::prune_tool_results(&mut history);

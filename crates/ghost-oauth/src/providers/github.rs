@@ -85,9 +85,8 @@ impl OAuthProvider for GitHubOAuthProvider {
             .send()
             .map_err(|e| OAuthError::FlowFailed(format!("token exchange: {e}")))?;
 
-        // GitHub returns a slightly different format — parse manually
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = resp.text().map_err(|e| OAuthError::FlowFailed(format!("failed to read response body: {e}")))?;
 
         if !status.is_success() {
             return Err(OAuthError::FlowFailed(format!("HTTP {status}: {body}")));

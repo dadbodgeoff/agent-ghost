@@ -45,6 +45,8 @@ ghost-export = { workspace = true }
 ghost-migrate = { workspace = true }
 ghost-oauth = { workspace = true }
 ghost-egress = { workspace = true }
+ghost-kill-gates = { workspace = true }
+ghost-mesh = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -89,6 +91,9 @@ tracing-subscriber = { workspace = true }
 
 # Regex
 regex = { workspace = true }
+
+# Base64
+base64 = { workspace = true }
 
 # Futures
 futures = "0.3"

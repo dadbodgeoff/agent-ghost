@@ -1,4 +1,5 @@
 //! Phase 5 tests for ghost-heartbeat (Task 5.9).
+//! Updated for Task 20.4: tiered heartbeat with interval_for_state().
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -8,15 +9,16 @@ use chrono::Utc;
 use uuid::Uuid;
 
 // ═══════════════════════════════════════════════════════════════════════
-// Task 5.9 — Heartbeat Engine
+// Task 5.9 + Task 20.4 — Heartbeat Engine (Tiered)
 // ═══════════════════════════════════════════════════════════════════════
 
 mod heartbeat {
     use super::*;
     use ghost_heartbeat::heartbeat::{
-        heartbeat_session_key, interval_for_level, HeartbeatConfig,
+        heartbeat_session_key, HeartbeatConfig,
         HeartbeatEngine, HEARTBEAT_MESSAGE,
     };
+    use ghost_heartbeat::tiers::interval_for_state;
 
     fn make_engine() -> HeartbeatEngine {
         HeartbeatEngine::new(
@@ -54,33 +56,40 @@ mod heartbeat {
         );
     }
 
+    // Task 20.4: interval_for_state() tests — SPEEDS UP at higher levels
     #[test]
-    fn l0_interval_30min() {
-        let interval = interval_for_level(30, 0).unwrap();
-        assert_eq!(interval, Duration::from_secs(30 * 60));
+    fn stable_state_120s() {
+        // score_delta < 0.01, consecutive_stable >= 3, level 0 → 120s
+        let interval = interval_for_state(0.005, 3, 0);
+        assert_eq!(interval, Duration::from_secs(120));
     }
 
     #[test]
-    fn l1_interval_30min() {
-        let interval = interval_for_level(30, 1).unwrap();
-        assert_eq!(interval, Duration::from_secs(30 * 60));
+    fn active_state_30s() {
+        // score moving, level 0 → 30s
+        let interval = interval_for_state(0.03, 0, 0);
+        assert_eq!(interval, Duration::from_secs(30));
     }
 
     #[test]
-    fn l2_interval_60min() {
-        let interval = interval_for_level(30, 2).unwrap();
-        assert_eq!(interval, Duration::from_secs(60 * 60));
+    fn escalated_state_15s() {
+        // level >= 2 → 15s
+        let interval = interval_for_state(0.06, 0, 2);
+        assert_eq!(interval, Duration::from_secs(15));
     }
 
     #[test]
-    fn l3_interval_120min() {
-        let interval = interval_for_level(30, 3).unwrap();
-        assert_eq!(interval, Duration::from_secs(120 * 60));
+    fn critical_l4_not_disabled_5s() {
+        // KEY FIX from Task 20.4: L4 is NOT disabled — uses 5s Tier0 binary pings
+        let interval = interval_for_state(0.005, 3, 4);
+        assert_eq!(interval, Duration::from_secs(5));
     }
 
     #[test]
-    fn l4_disabled() {
-        assert!(interval_for_level(30, 4).is_none());
+    fn l3_escalated_15s() {
+        // Level 3 (>= 2) → 15s
+        let interval = interval_for_state(0.0, 0, 3);
+        assert_eq!(interval, Duration::from_secs(15));
     }
 
     #[test]
@@ -122,6 +131,22 @@ mod heartbeat {
         engine.record_beat(0.10);
         assert!(engine.last_beat.is_some());
         assert!((engine.total_cost - 0.10).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn record_beat_with_score_tracks_tiered_state() {
+        let mut engine = make_engine();
+        engine.record_beat_with_score(0.01, 0.5);
+        assert_eq!(engine.tiered_state.last_score, Some(0.5));
+        engine.record_beat_with_score(0.01, 0.5);
+        assert_eq!(engine.tiered_state.consecutive_stable, 2);
+    }
+
+    #[test]
+    fn l4_should_fire_not_disabled() {
+        // Task 20.4: L4 must NOT return false (disabled). It should fire.
+        let engine = make_engine();
+        assert!(engine.should_fire(4));
     }
 }
 

@@ -35,7 +35,7 @@ fn default_true() -> bool {
 }
 
 /// Runtime state for a cron job.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CronJobState {
     pub def: CronJobDef,
     pub last_run: Option<DateTime<Utc>>,

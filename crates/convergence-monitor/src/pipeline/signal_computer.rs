@@ -47,12 +47,24 @@ impl SignalComputer {
             last_computed: Instant::now(),
         });
 
+        let mut recomputed_count = 0u32;
         for i in 0..8 {
             if entry.dirty[i] {
                 // In production, each signal would compute from actual data.
                 // Signal stubs: return cached value (real impl in cortex-convergence).
+                // The cached value is set via `set_signal()` when the convergence
+                // monitor receives computed signals from the cortex pipeline.
                 entry.dirty[i] = false;
+                recomputed_count += 1;
             }
+        }
+
+        if recomputed_count > 0 {
+            tracing::debug!(
+                agent_id = %agent_id,
+                recomputed = recomputed_count,
+                "signal computation pass (stub — using cached values from set_signal)"
+            );
         }
 
         entry.last_computed = Instant::now();

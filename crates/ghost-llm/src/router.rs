@@ -103,15 +103,31 @@ impl ModelRouter {
         // Try requested tier first, then fall back upward
         for i in idx..5 {
             if let Some(ref p) = self.providers[i] {
+                if i != idx {
+                    tracing::debug!(
+                        requested = ?tier,
+                        resolved_idx = i,
+                        "model router: requested tier unavailable, fell back to higher tier"
+                    );
+                }
                 return Some(Arc::clone(p));
             }
         }
         // Fall back downward if nothing above
         for i in (0..idx).rev() {
             if let Some(ref p) = self.providers[i] {
+                tracing::debug!(
+                    requested = ?tier,
+                    resolved_idx = i,
+                    "model router: no higher tier available, fell back to lower tier"
+                );
                 return Some(Arc::clone(p));
             }
         }
+        tracing::warn!(
+            requested = ?tier,
+            "model router: no providers configured — returning None"
+        );
         None
     }
 }

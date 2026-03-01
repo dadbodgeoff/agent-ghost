@@ -324,9 +324,25 @@ impl EgressPolicy for PfEgressPolicy {
             } else {
                 // Flush the pf anchor.
                 let cmd_args = Self::build_anchor_flush_command(&state.anchor);
-                let _ = Command::new(&cmd_args[0])
-                    .args(&cmd_args[1..])
-                    .output();
+                match Command::new(&cmd_args[0]).args(&cmd_args[1..]).output() {
+                    Ok(out) if !out.status.success() => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            anchor = %state.anchor,
+                            stderr = %String::from_utf8_lossy(&out.stderr),
+                            "pf anchor flush failed"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            anchor = %state.anchor,
+                            error = %e,
+                            "pf anchor flush command failed"
+                        );
+                    }
+                    _ => {}
+                }
                 tracing::info!(
                     agent_id = %agent_id,
                     anchor = %state.anchor,

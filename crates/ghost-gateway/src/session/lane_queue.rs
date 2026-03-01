@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 /// A single lane queue for one session.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LaneQueue {
     queue: VecDeque<QueuedRequest>,
     depth_limit: usize,

@@ -73,6 +73,7 @@ impl EscalationManager {
         _reason: &str,
     ) -> Result<(), String> {
         if config.sms_webhook_url.is_none() {
+            tracing::debug!("SMS notification skipped — no sms_webhook_url configured");
             return Ok(());
         }
         // In production: HTTP POST to SMS webhook
@@ -86,6 +87,7 @@ impl EscalationManager {
         _reason: &str,
     ) -> Result<(), String> {
         if config.email_smtp.is_none() {
+            tracing::debug!("email notification skipped — no email_smtp configured");
             return Ok(());
         }
         // In production: send via lettre SMTP
@@ -99,6 +101,7 @@ impl EscalationManager {
         _reason: &str,
     ) -> Result<(), String> {
         if config.generic_webhook_url.is_none() {
+            tracing::debug!("webhook notification skipped — no generic_webhook_url configured");
             return Ok(());
         }
         // In production: HTTP POST to generic webhook

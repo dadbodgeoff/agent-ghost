@@ -34,7 +34,16 @@ impl<T: Serialize> SignedDelta<T> {
     fn canonical_bytes(delta: &T, author: Uuid, timestamp: DateTime<Utc>) -> Vec<u8> {
         let mut buf = Vec::new();
         // Delta JSON (deterministic via serde_json)
-        let delta_json = serde_json::to_vec(delta).unwrap_or_default();
+        let delta_json = match serde_json::to_vec(delta) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "CRITICAL: failed to serialize delta for canonical bytes — signature will be computed over empty payload"
+                );
+                Vec::new()
+            }
+        };
         buf.extend_from_slice(&delta_json);
         buf.push(b'|');
         buf.extend_from_slice(author.as_bytes());

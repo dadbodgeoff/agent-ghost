@@ -455,6 +455,7 @@ pub fn agent_card_strategy() -> impl Strategy<Value = AgentCard> {
                     name,
                     description,
                     capabilities,
+                    capability_flags: 0,
                     input_types,
                     output_types,
                     auth_schemes: vec!["bearer".to_string()],

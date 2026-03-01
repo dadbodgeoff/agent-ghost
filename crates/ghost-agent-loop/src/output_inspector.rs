@@ -39,7 +39,7 @@ static CREDENTIAL_PATTERNS: Lazy<Vec<(&str, Regex)>> = Lazy::new(|| {
 });
 
 /// Result of output inspection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InspectionResult {
     /// No credential patterns found — pass through.
     Clean,

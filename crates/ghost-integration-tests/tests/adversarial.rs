@@ -15,3 +15,7 @@ mod compaction_under_load;
 mod credential_exfil_patterns;
 #[path = "adversarial/convergence_manipulation.rs"]
 mod convergence_manipulation;
+#[path = "adversarial/kill_gate_adversarial.rs"]
+mod kill_gate_adversarial;
+#[path = "adversarial/orchestrator_adversarial.rs"]
+mod orchestrator_adversarial;

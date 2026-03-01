@@ -24,14 +24,14 @@ pub struct HttpApiState {
 }
 
 /// Health response.
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
     pub uptime_seconds: u64,
 }
 
 /// Score response.
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreResponse {
     pub agent_id: Uuid,
     pub score: f64,
@@ -39,7 +39,7 @@ pub struct ScoreResponse {
 }
 
 /// Batch event request.
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchEventRequest {
     pub events: Vec<IngestEvent>,
 }

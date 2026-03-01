@@ -46,3 +46,17 @@ mod compaction_lifecycle;
 mod gateway_shutdown;
 #[path = "integration/safety_critical_edge_cases.rs"]
 mod safety_critical_edge_cases;
+#[path = "integration/distributed_kill_gates.rs"]
+mod distributed_kill_gates;
+#[path = "integration/orchestrator_fix_verification.rs"]
+mod orchestrator_fix_verification;
+
+// Phase 15 e2e integration tests (Task 22.3)
+#[path = "integration/secrets_e2e.rs"]
+mod secrets_e2e;
+#[path = "integration/egress_e2e.rs"]
+mod egress_e2e;
+#[path = "integration/oauth_e2e.rs"]
+mod oauth_e2e;
+#[path = "integration/mesh_e2e.rs"]
+mod mesh_e2e;

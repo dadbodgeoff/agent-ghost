@@ -15,6 +15,7 @@ read-only-pipeline = { workspace = true }
 simulation-boundary = { workspace = true }
 itp-protocol = { workspace = true }
 cortex-validation = { workspace = true }
+ghost-kill-gates = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -25,7 +26,9 @@ tracing = { workspace = true }
 regex = { workspace = true }
 once_cell = { workspace = true }
 blake3 = { workspace = true }
+cortex-convergence = { workspace = true }
 async-trait = "0.1"
+reqwest = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

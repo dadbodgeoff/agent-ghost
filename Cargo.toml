@@ -36,6 +36,7 @@ members = [
     "crates/ghost-oauth",
     "crates/ghost-egress",
     "crates/ghost-mesh",
+    "crates/ghost-kill-gates",
     "crates/ghost-integration-tests",
 ]
 
@@ -132,6 +133,7 @@ ghost-secrets = { path = "crates/ghost-secrets", default-features = false }
 ghost-oauth = { path = "crates/ghost-oauth" }
 ghost-egress = { path = "crates/ghost-egress" }
 ghost-mesh = { path = "crates/ghost-mesh" }
+ghost-kill-gates = { path = "crates/ghost-kill-gates" }
 
 # Secrets
 secrecy = { version = "0.10", features = ["serde"] }

@@ -55,7 +55,7 @@ impl Default for KillSwitchState {
 }
 
 /// Kill switch check result.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KillCheckResult {
     Ok,
     AgentPaused(Uuid),

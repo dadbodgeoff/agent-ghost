@@ -84,7 +84,8 @@ impl OAuthProvider for SlackOAuthProvider {
             .map_err(|e| OAuthError::FlowFailed(format!("token exchange: {e}")))?;
 
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = resp.text()
+            .map_err(|e| OAuthError::FlowFailed(format!("failed to read response body: {e}")))?;
 
         if !status.is_success() {
             return Err(OAuthError::FlowFailed(format!("HTTP {status}: {body}")));
@@ -143,7 +144,8 @@ impl OAuthProvider for SlackOAuthProvider {
             .map_err(|e| OAuthError::RefreshFailed(format!("refresh: {e}")))?;
 
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = resp.text()
+            .map_err(|e| OAuthError::RefreshFailed(format!("failed to read response body: {e}")))?;
 
         if !status.is_success() {
             return Err(OAuthError::RefreshFailed(format!("HTTP {status}: {body}")));

@@ -88,6 +88,9 @@ fn calibration_period_requires_10_sessions() {
 // ── Task 3.1: Score-to-level mapping ────────────────────────────────────
 
 fn score_to_level(score: f64) -> u8 {
+    if score.is_nan() {
+        return 0;
+    }
     if score < 0.3 {
         0
     } else if score < 0.5 {

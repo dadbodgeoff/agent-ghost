@@ -126,17 +126,46 @@ impl Gateway {
         Self { shared_state }
     }
 
-    /// Run the gateway event loop until shutdown.
+    /// Run the gateway event loop with the API server until shutdown.
     pub async fn run(self) -> Result<(), GatewayError> {
-        tracing::info!(state = ?self.shared_state.current_state(), "Gateway running");
+        self.run_with_router(None, None).await
+    }
 
-        // Wait for shutdown signal
-        tokio::signal::ctrl_c()
-            .await
-            .map_err(|e| GatewayError::ShutdownError(e.to_string()))?;
+    /// Run the gateway with an optional pre-built router and bind address.
+    pub async fn run_with_router(
+        self,
+        router: Option<axum::Router>,
+        bind_addr: Option<&str>,
+    ) -> Result<(), GatewayError> {
+        let addr = bind_addr.unwrap_or("127.0.0.1:18789");
 
-        tracing::info!("Received shutdown signal");
-        self.shared_state.transition_to(GatewayState::ShuttingDown)?;
+        if let Some(router) = router {
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| GatewayError::BootstrapFailed(format!("bind failed: {e}")))?;
+
+            tracing::info!(addr = %addr, "Gateway API server listening");
+
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    tokio::signal::ctrl_c().await.ok();
+                    tracing::info!("Received shutdown signal");
+                })
+                .await
+                .map_err(|e| GatewayError::ShutdownError(e.to_string()))?;
+        } else {
+            tracing::info!(state = ?self.shared_state.current_state(), "Gateway running (no API server)");
+            tokio::signal::ctrl_c()
+                .await
+                .map_err(|e| GatewayError::ShutdownError(e.to_string()))?;
+            tracing::info!("Received shutdown signal");
+        }
+
+        // Only transition if not already shutting down.
+        let current = self.shared_state.current_state();
+        if current != GatewayState::ShuttingDown {
+            self.shared_state.transition_to(GatewayState::ShuttingDown)?;
+        }
 
         Ok(())
     }

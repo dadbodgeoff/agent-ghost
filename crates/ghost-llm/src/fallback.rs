@@ -145,6 +145,23 @@ impl FallbackChain {
             // Track which auth profile we're using for this provider.
             let mut profile_index: usize = 0;
 
+            // Apply initial auth profile if available
+            if !profiles.is_empty() {
+                let profile = &profiles[profile_index];
+                provider.update_auth(&profile.api_key, profile.org_id.as_deref());
+                tracing::debug!(
+                    provider = provider.name(),
+                    profile_index,
+                    total_profiles = profiles.len(),
+                    "applied initial auth profile"
+                );
+            } else {
+                tracing::debug!(
+                    provider = provider.name(),
+                    "no auth profiles configured — using provider defaults"
+                );
+            }
+
             // Exponential backoff attempts: 1s, 2s, 4s, 8s base delays
             let backoffs = [1u64, 2, 4, 8];
             for (attempt, &delay_secs) in backoffs.iter().enumerate() {
@@ -161,6 +178,9 @@ impl FallbackChain {
                         // Rotate to next auth profile for this provider
                         if !profiles.is_empty() {
                             profile_index = (profile_index + 1) % profiles.len();
+                            // Apply the rotated auth profile to the provider
+                            let profile = &profiles[profile_index];
+                            provider.update_auth(&profile.api_key, profile.org_id.as_deref());
                             tracing::warn!(
                                 provider = provider.name(),
                                 attempt,
@@ -213,5 +233,22 @@ impl FallbackChain {
 impl Default for FallbackChain {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl FallbackChain {
+    /// Get the token pricing from the first available (non-open-circuit) provider.
+    /// Falls back to zero pricing if no providers are configured.
+    pub fn current_pricing(&self) -> crate::provider::TokenPricing {
+        for (provider, _, cb) in &self.providers {
+            if cb.state() != CBState::Open {
+                return provider.token_pricing();
+            }
+        }
+        // All providers are circuit-broken or none configured.
+        crate::provider::TokenPricing {
+            input_per_1k: 0.0,
+            output_per_1k: 0.0,
+        }
     }
 }

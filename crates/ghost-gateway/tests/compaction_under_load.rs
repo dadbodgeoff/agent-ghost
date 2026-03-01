@@ -122,9 +122,9 @@ fn compact_produces_valid_block() {
 fn prune_removes_tool_results() {
     let mut history = vec![
         "user message".to_string(),
-        r#"{"tool_result": "some output"}"#.to_string(),
+        r#"{"type": "tool_result", "content": "some output"}"#.to_string(),
         "agent response".to_string(),
-        r#"{"tool_result": "another output"}"#.to_string(),
+        r#"{"type": "tool_result", "content": "another output"}"#.to_string(),
     ];
     let result = SessionCompactor::prune_tool_results(&mut history);
     assert_eq!(result.results_pruned, 2, "Should prune 2 tool_result entries");

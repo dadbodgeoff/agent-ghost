@@ -18,7 +18,7 @@ const ANOMALY_THRESHOLD: u32 = 3;
 const RATE_LIMIT_RESET_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// Verification result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum VerifyResult {
     Accepted,
     RejectedSignature(String),
@@ -49,6 +49,8 @@ pub struct MessageDispatcher {
     grace_keys: BTreeMap<Uuid, (Vec<u8>, Instant)>,
     /// Last rate limit counter reset time.
     last_rate_reset: Instant,
+    /// Per-sender last seen UUIDv7 nonce for monotonicity check (AC4).
+    last_nonce: BTreeMap<Uuid, Uuid>,
 }
 
 impl MessageDispatcher {
@@ -61,6 +63,7 @@ impl MessageDispatcher {
             offline_queues: BTreeMap::new(),
             grace_keys: BTreeMap::new(),
             last_rate_reset: Instant::now(),
+            last_nonce: BTreeMap::new(),
         }
     }
 
@@ -97,9 +100,21 @@ impl MessageDispatcher {
     }
 
     fn check_replay(&mut self, msg: &AgentMessage) -> bool {
-        // Timestamp freshness
+        // Timestamp freshness — reject messages older than REPLAY_WINDOW
         let age = chrono::Utc::now() - msg.timestamp;
         if age > chrono::Duration::seconds(REPLAY_WINDOW.as_secs() as i64) {
+            return false;
+        }
+
+        // Reject future-dated messages: a negative age means the
+        // timestamp is in the future. Allow a small clock-skew
+        // tolerance (30s) but reject anything beyond that.
+        if age < chrono::Duration::seconds(-30) {
+            tracing::warn!(
+                sender = %msg.sender,
+                timestamp = %msg.timestamp,
+                "rejected future-dated message (clock skew > 30s)"
+            );
             return false;
         }
 
@@ -107,6 +122,24 @@ impl MessageDispatcher {
         if self.seen_nonces.contains(&msg.nonce) {
             return false;
         }
+
+        // UUIDv7 monotonicity check (AC4): nonce must be strictly
+        // greater than the last seen nonce from this sender. UUIDv7
+        // encodes a timestamp in the high bits, so lexicographic
+        // comparison enforces temporal monotonicity.
+        if let Some(last) = self.last_nonce.get(&msg.sender) {
+            if msg.nonce <= *last {
+                tracing::warn!(
+                    sender = %msg.sender,
+                    nonce = %msg.nonce,
+                    last_nonce = %last,
+                    "UUIDv7 monotonicity violation — replay rejected"
+                );
+                return false;
+            }
+        }
+        self.last_nonce.insert(msg.sender, msg.nonce);
+
         self.seen_nonces.insert(msg.nonce);
         true
     }
@@ -129,7 +162,8 @@ impl MessageDispatcher {
 
     /// Reset rate limit counters hourly. Without this, agents are
     /// permanently rate-limited after reaching the per-hour threshold.
-    /// Also cleans expired nonces to prevent unbounded memory growth.
+    /// Also cleans expired nonces and last_nonce tracking to prevent
+    /// unbounded memory growth.
     fn maybe_reset_rate_limits(&mut self) {
         if self.last_rate_reset.elapsed() >= RATE_LIMIT_RESET_INTERVAL {
             self.agent_counts.clear();
@@ -142,6 +176,12 @@ impl MessageDispatcher {
             // window (5min) is much shorter than the reset interval (1h),
             // so any nonce older than 1h is well past the replay window.
             self.seen_nonces.clear();
+            // Clear last_nonce tracking — without this, the map grows
+            // unboundedly as new senders appear over time. Clearing on
+            // the hourly reset is safe because UUIDv7 monotonicity is a
+            // per-window check, and the replay window (5min) is well
+            // within the reset interval (1h).
+            self.last_nonce.clear();
         }
     }
 
@@ -216,7 +256,22 @@ impl MessageDispatcher {
                 q.into_iter()
                     .filter(|msg| {
                         let age = now - msg.timestamp;
-                        age <= chrono::Duration::seconds(REPLAY_WINDOW.as_secs() as i64)
+                        // Reject expired messages (older than REPLAY_WINDOW)
+                        if age > chrono::Duration::seconds(REPLAY_WINDOW.as_secs() as i64) {
+                            return false;
+                        }
+                        // Reject future-dated messages (same guard as check_replay):
+                        // a negative age means the timestamp is in the future.
+                        // Allow 30s clock-skew tolerance.
+                        if age < chrono::Duration::seconds(-30) {
+                            tracing::warn!(
+                                sender = %msg.sender,
+                                timestamp = %msg.timestamp,
+                                "deliver_queued: rejected future-dated message (clock skew > 30s)"
+                            );
+                            return false;
+                        }
+                        true
                     })
                     .collect()
             })

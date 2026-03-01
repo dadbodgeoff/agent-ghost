@@ -17,6 +17,7 @@ fn make_agent_card(signing_key: &ghost_signing::SigningKey) -> AgentCard {
         name: "test-agent".to_string(),
         description: "A test agent for unit tests".to_string(),
         capabilities: vec!["code-review".to_string(), "testing".to_string()],
+        capability_flags: 0,
         input_types: vec!["text/plain".to_string()],
         output_types: vec!["application/json".to_string()],
         auth_schemes: vec!["ed25519".to_string()],

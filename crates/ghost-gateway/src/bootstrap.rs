@@ -43,7 +43,7 @@ impl BootstrapError {
 pub struct GatewayBootstrap;
 
 impl GatewayBootstrap {
-    pub async fn run(config_path: Option<&str>) -> Result<Gateway, BootstrapError> {
+    pub async fn run(config_path: Option<&str>) -> Result<(Gateway, GhostConfig), BootstrapError> {
         let shared_state = GatewaySharedState::new();
 
         // Pre-step: Check kill_state.json on startup (AC13)
@@ -88,6 +88,14 @@ impl GatewayBootstrap {
         Self::step4b_apply_egress_policies(&config)?;
         tracing::info!("Step 4b: Network egress policies applied");
 
+        // Step 4c: Initialize mesh networking if enabled (Task 22.1)
+        let mesh_router = Self::step4c_init_mesh(&config)?;
+        if mesh_router.is_some() {
+            tracing::info!("Step 4c: Mesh networking initialized (A2A endpoints active)");
+        } else {
+            tracing::debug!("Step 4c: Mesh networking disabled");
+        }
+
         // Step 5: Start API server
         Self::step5_start_api(&config)?;
         tracing::info!("Step 5: API server started");
@@ -111,7 +119,7 @@ impl GatewayBootstrap {
             }
         }
 
-        Ok(Gateway::new(shared_state))
+        Ok((Gateway::new(shared_state), config))
     }
 
     fn step1_load_config(config_path: Option<&str>) -> Result<GhostConfig, BootstrapError> {
@@ -199,8 +207,56 @@ impl GatewayBootstrap {
     }
 
     fn step5_start_api(_config: &GhostConfig) -> Result<(), BootstrapError> {
-        // API server startup is handled by the Gateway::run() event loop
+        // API server startup is handled by the Gateway::run_with_router() event loop.
+        // Route construction happens in build_router(), called by run().
         Ok(())
+    }
+
+    /// Build the axum Router with all API routes mounted.
+    pub fn build_router(config: &GhostConfig) -> axum::Router {
+        use axum::routing::{delete, get, post};
+
+        let app = axum::Router::new()
+            // Health
+            .route("/api/health", get(crate::api::health::health_handler))
+            .route("/api/ready", get(crate::api::health::ready_handler))
+            // Agents
+            .route("/api/agents", get(crate::api::agents::list_agents))
+            // Audit
+            .route("/api/audit", get(crate::api::audit::query_audit))
+            .route("/api/audit/aggregation", get(crate::api::audit::audit_aggregation))
+            .route("/api/audit/export", get(crate::api::audit::audit_export))
+            // Convergence
+            .route("/api/convergence/scores", get(crate::api::convergence::get_scores))
+            // Goals
+            .route("/api/goals/:id/approve", post(crate::api::goals::approve_goal))
+            .route("/api/goals/:id/reject", post(crate::api::goals::reject_goal))
+            // Sessions
+            .route("/api/sessions", get(crate::api::sessions::list_sessions))
+            // Safety
+            .route("/api/safety/kill-all", post(crate::api::safety::kill_all))
+            .route("/api/safety/pause/:agent_id", post(crate::api::safety::pause_agent))
+            .route("/api/safety/resume/:agent_id", post(crate::api::safety::resume_agent))
+            .route("/api/safety/quarantine/:agent_id", post(crate::api::safety::quarantine_agent))
+            .route("/api/safety/status", get(crate::api::safety::safety_status))
+            // WebSocket
+            .route("/api/ws", get(crate::api::websocket::ws_handler))
+            // OAuth
+            .route("/api/oauth/providers", get(crate::api::oauth_routes::list_providers))
+            .route("/api/oauth/connect", post(crate::api::oauth_routes::connect))
+            .route("/api/oauth/callback", get(crate::api::oauth_routes::callback))
+            .route("/api/oauth/connections", get(crate::api::oauth_routes::list_connections))
+            .route("/api/oauth/connections/:ref_id", delete(crate::api::oauth_routes::disconnect))
+            // Middleware
+            .layer(tower_http::cors::CorsLayer::permissive())
+            .layer(tower_http::trace::TraceLayer::new_for_http());
+
+        tracing::info!(
+            routes = "health, ready, agents, audit, convergence, goals, sessions, safety, ws, oauth",
+            "API router built"
+        );
+
+        app
     }
 
     /// Apply network egress policies per agent based on isolation mode (Phase 11).
@@ -347,13 +403,88 @@ impl GatewayBootstrap {
         crate::config::build_secret_provider(&config.secrets)
             .map_err(|e| BootstrapError::Config(format!("secrets provider: {e}")))
     }
+
+    /// Initialize mesh networking if enabled (Task 22.1).
+    /// Returns the mesh axum Router to merge into the main router, or None if disabled.
+    fn step4c_init_mesh(
+        config: &GhostConfig,
+    ) -> Result<Option<axum::Router>, BootstrapError> {
+        if !config.mesh.enabled {
+            return Ok(None);
+        }
+
+        // Decode known agent public keys from base64
+        let mut known_keys = Vec::new();
+        for agent in &config.mesh.known_agents {
+            use base64::Engine;
+            let key_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&agent.public_key)
+                .map_err(|e| {
+                    BootstrapError::Config(format!(
+                        "mesh: invalid public key for agent '{}': {e}",
+                        agent.name
+                    ))
+                })?;
+            if key_bytes.len() != 32 {
+                return Err(BootstrapError::Config(format!(
+                    "mesh: public key for agent '{}' must be 32 bytes (got {})",
+                    agent.name,
+                    key_bytes.len()
+                )));
+            }
+            tracing::info!(
+                agent = %agent.name,
+                endpoint = %agent.endpoint,
+                "Registered known mesh agent"
+            );
+            known_keys.push(key_bytes);
+        }
+
+        // Build a placeholder AgentCard for this gateway.
+        // In production, this would be loaded from the agent's signing key.
+        let card = ghost_mesh::types::AgentCard {
+            name: "ghost-gateway".to_string(),
+            description: "GHOST platform gateway".to_string(),
+            capabilities: Vec::new(),
+            capability_flags: 0,
+            input_types: vec!["text".to_string()],
+            output_types: vec!["text".to_string()],
+            auth_schemes: vec!["ed25519".to_string()],
+            endpoint_url: format!(
+                "http://{}:{}",
+                config.gateway.bind, config.gateway.port
+            ),
+            public_key: Vec::new(), // Populated from signing key in production
+            convergence_profile: "standard".to_string(),
+            trust_score: 1.0,
+            sybil_lineage_hash: String::new(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            signed_at: chrono::Utc::now(),
+            signature: Vec::new(),
+        };
+
+        let state = std::sync::Arc::new(std::sync::Mutex::new(
+            ghost_mesh::transport::a2a_server::A2AServerState::new(card),
+        ));
+
+        let router = crate::api::mesh_routes::mesh_router(state, known_keys);
+        Ok(Some(router))
+    }
 }
 
 fn shellexpand_tilde(path: &str) -> String {
     if path.starts_with("~/") {
-        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-            return format!("{}{}", home, &path[1..]);
+        match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            Ok(home) => format!("{}{}", home, &path[1..]),
+            Err(_) => {
+                tracing::warn!(
+                    path = %path,
+                    "HOME/USERPROFILE not set — tilde expansion failed, using path as-is"
+                );
+                path.to_string()
+            }
         }
+    } else {
+        path.to_string()
     }
-    path.to_string()
 }

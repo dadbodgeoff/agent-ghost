@@ -47,8 +47,16 @@ impl A2ADispatcher {
     }
 
     /// Get the agent card (for `GET /.well-known/agent.json`).
-    pub fn agent_card(&self) -> AgentCard {
-        self.state.lock().unwrap().agent_card.clone()
+    ///
+    /// Returns `None` if the state mutex is poisoned.
+    pub fn agent_card(&self) -> Option<AgentCard> {
+        match self.state.lock() {
+            Ok(state) => Some(state.agent_card.clone()),
+            Err(e) => {
+                tracing::error!(error = %e, "A2A server state mutex poisoned in agent_card()");
+                None
+            }
+        }
     }
 
     /// Dispatch a JSON-RPC 2.0 request to the appropriate handler.
@@ -83,7 +91,17 @@ impl A2ADispatcher {
 
         let initiator = Uuid::new_v4(); // In production, extracted from auth
         let target = {
-            let state = self.state.lock().unwrap();
+            let state = match self.state.lock() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "A2A server state mutex poisoned in tasks/send");
+                    return MeshMessage::error_response(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        "server state unavailable",
+                    );
+                }
+            };
             // Derive a stable target ID from the agent card's public key hash.
             let hash = blake3::hash(&state.agent_card.public_key);
             let bytes: [u8; 16] = hash.as_bytes()[..16].try_into().unwrap();
@@ -97,8 +115,28 @@ impl A2ADispatcher {
             300, // default timeout
         );
 
-        let task_json = serde_json::to_value(&task).unwrap_or_default();
-        self.state.lock().unwrap().tasks.insert(task.id, task);
+        let task_json = match serde_json::to_value(&task) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to serialize task for response");
+                return MeshMessage::error_response(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("task serialization failed: {e}"),
+                );
+            }
+        };
+        match self.state.lock() {
+            Ok(mut state) => { state.tasks.insert(task.id, task); }
+            Err(e) => {
+                tracing::error!(error = %e, "A2A server state mutex poisoned inserting task");
+                return MeshMessage::error_response(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "server state unavailable",
+                );
+            }
+        }
 
         MeshMessage::success(id, task_json)
     }
@@ -119,11 +157,30 @@ impl A2ADispatcher {
             );
         };
 
-        let state = self.state.lock().unwrap();
+        let state = match self.state.lock() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "A2A server state mutex poisoned in tasks/get");
+                return MeshMessage::error_response(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "server state unavailable",
+                );
+            }
+        };
         match state.tasks.get(&task_id) {
             Some(task) => {
-                let task_json = serde_json::to_value(task).unwrap_or_default();
-                MeshMessage::success(id, task_json)
+                match serde_json::to_value(task) {
+                    Ok(task_json) => MeshMessage::success(id, task_json),
+                    Err(e) => {
+                        tracing::error!(task_id = %task_id, error = %e, "failed to serialize task");
+                        MeshMessage::error_response(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            &format!("task serialization failed: {e}"),
+                        )
+                    }
+                }
             }
             None => MeshMessage::error_response(
                 id,
@@ -149,7 +206,17 @@ impl A2ADispatcher {
             );
         };
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = match self.state.lock() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "A2A server state mutex poisoned in tasks/cancel");
+                return MeshMessage::error_response(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "server state unavailable",
+                );
+            }
+        };
         match state.tasks.get_mut(&task_id) {
             Some(task) => {
                 if task.status.is_terminal() {
@@ -161,8 +228,17 @@ impl A2ADispatcher {
                 }
                 match task.transition(TaskStatus::Canceled) {
                     Ok(()) => {
-                        let task_json = serde_json::to_value(&*task).unwrap_or_default();
-                        MeshMessage::success(id, task_json)
+                        match serde_json::to_value(&*task) {
+                            Ok(task_json) => MeshMessage::success(id, task_json),
+                            Err(e) => {
+                                tracing::error!(task_id = %task_id, error = %e, "failed to serialize canceled task");
+                                MeshMessage::error_response(
+                                    id,
+                                    error_codes::INTERNAL_ERROR,
+                                    &format!("task serialization failed: {e}"),
+                                )
+                            }
+                        }
                     }
                     Err(e) => MeshMessage::error_response(
                         id,

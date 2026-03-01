@@ -26,3 +26,9 @@ mod inter_agent_messaging;
 mod kill_switch_chain;
 mod multi_agent_scenarios;
 mod proposal_lifecycle;
+
+// Phase 15 e2e integration tests (Task 22.3)
+mod secrets_e2e;
+mod egress_e2e;
+mod oauth_e2e;
+mod mesh_e2e;

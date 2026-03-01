@@ -210,7 +210,12 @@ impl TokenStore {
                 );
                 // Try to store it; if the provider is read-only, that's OK —
                 // we'll use the generated key for this session.
-                let _ = self.secret_provider.set_secret(VAULT_KEY_NAME, &key_str);
+                if let Err(e) = self.secret_provider.set_secret(VAULT_KEY_NAME, &key_str) {
+                    tracing::warn!(
+                        error = %e,
+                        "could not persist OAuth vault key (provider may be read-only) — key valid for this session only"
+                    );
+                }
                 tracing::info!("auto-generated OAuth vault key");
                 Ok(SecretString::from(key_str))
             }

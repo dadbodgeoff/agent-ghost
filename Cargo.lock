@@ -503,6 +503,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "toml",
+ "tracing",
  "uuid",
 ]
 
@@ -1090,9 +1091,11 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
+ "cortex-convergence",
  "cortex-core",
  "cortex-validation",
  "ghost-identity",
+ "ghost-kill-gates",
  "ghost-llm",
  "ghost-policy",
  "itp-protocol",
@@ -1100,6 +1103,7 @@ dependencies = [
  "proptest",
  "read-only-pipeline",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "simulation-boundary",
@@ -1150,6 +1154,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "proptest",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1197,6 +1202,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "blake3",
  "chrono",
  "clap",
@@ -1216,7 +1222,9 @@ dependencies = [
  "ghost-export",
  "ghost-heartbeat",
  "ghost-identity",
+ "ghost-kill-gates",
  "ghost-llm",
+ "ghost-mesh",
  "ghost-migrate",
  "ghost-oauth",
  "ghost-policy",
@@ -1251,6 +1259,7 @@ dependencies = [
  "blake3",
  "chrono",
  "cortex-core",
+ "ghost-agent-loop",
  "proptest",
  "serde",
  "serde_json",
@@ -1283,6 +1292,8 @@ dependencies = [
 name = "ghost-integration-tests"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
  "blake3",
  "chrono",
  "cortex-convergence",
@@ -1297,15 +1308,43 @@ dependencies = [
  "cortex-validation",
  "criterion",
  "ghost-agent-loop",
+ "ghost-egress",
  "ghost-gateway",
+ "ghost-heartbeat",
+ "ghost-kill-gates",
+ "ghost-llm",
+ "ghost-mesh",
+ "ghost-oauth",
  "ghost-policy",
+ "ghost-secrets",
  "ghost-signing",
  "itp-protocol",
  "proptest",
  "read-only-pipeline",
+ "reqwest",
+ "secrecy",
  "serde_json",
  "simulation-boundary",
+ "tempfile",
  "tokio",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "ghost-kill-gates"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "cortex-core",
+ "ghost-signing",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1450,6 +1489,7 @@ dependencies = [
 name = "ghost-skills"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "chrono",
  "cortex-core",
  "ghost-signing",

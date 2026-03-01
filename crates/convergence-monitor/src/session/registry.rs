@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// State of a tracked session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     pub session_id: Uuid,
     pub agent_id: Uuid,
@@ -17,7 +18,7 @@ pub struct SessionState {
 }
 
 /// Provisional tracking for unknown agents (Req 9 AC10).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ProvisionalAgent {
     session_count: u32,
     first_seen: DateTime<Utc>,
@@ -132,5 +133,20 @@ impl SessionRegistry {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Get all agent IDs that have at least one active session.
+    pub fn all_active_agent_ids(&self) -> Vec<Uuid> {
+        self.agent_sessions
+            .iter()
+            .filter(|(_, sids)| {
+                sids.iter().any(|sid| {
+                    self.sessions
+                        .get(sid)
+                        .map_or(false, |s| s.is_active)
+                })
+            })
+            .map(|(agent_id, _)| *agent_id)
+            .collect()
     }
 }

@@ -21,10 +21,10 @@ mod adapter_trait {
         let adapters: Vec<Box<dyn ChannelAdapter>> = vec![
             Box::new(CliAdapter::new()),
             Box::new(WebSocketAdapter::loopback()),
-            Box::new(TelegramAdapter::new()),
-            Box::new(DiscordAdapter::new()),
-            Box::new(SlackAdapter::new()),
-            Box::new(WhatsAppAdapter::new()),
+            Box::new(TelegramAdapter::new("test-token")),
+            Box::new(DiscordAdapter::new("test-token")),
+            Box::new(SlackAdapter::new("bot-token", "app-token")),
+            Box::new(WhatsAppAdapter::new_sidecar()),
         ];
         assert_eq!(adapters.len(), 6);
     }
@@ -33,27 +33,27 @@ mod adapter_trait {
     fn channel_types() {
         assert_eq!(CliAdapter::new().channel_type(), "cli");
         assert_eq!(WebSocketAdapter::loopback().channel_type(), "websocket");
-        assert_eq!(TelegramAdapter::new().channel_type(), "telegram");
-        assert_eq!(DiscordAdapter::new().channel_type(), "discord");
-        assert_eq!(SlackAdapter::new().channel_type(), "slack");
-        assert_eq!(WhatsAppAdapter::new().channel_type(), "whatsapp");
+        assert_eq!(TelegramAdapter::new("t").channel_type(), "telegram");
+        assert_eq!(DiscordAdapter::new("t").channel_type(), "discord");
+        assert_eq!(SlackAdapter::new("b", "a").channel_type(), "slack");
+        assert_eq!(WhatsAppAdapter::new_sidecar().channel_type(), "whatsapp");
     }
 
     #[test]
     fn streaming_support() {
         assert!(!CliAdapter::new().supports_streaming());
         assert!(WebSocketAdapter::loopback().supports_streaming());
-        assert!(TelegramAdapter::new().supports_streaming());
+        assert!(TelegramAdapter::new("t").supports_streaming());
     }
 
     #[test]
     fn editing_support() {
         assert!(!CliAdapter::new().supports_editing());
         assert!(WebSocketAdapter::loopback().supports_editing());
-        assert!(TelegramAdapter::new().supports_editing());
-        assert!(DiscordAdapter::new().supports_editing());
-        assert!(SlackAdapter::new().supports_editing());
-        assert!(!WhatsAppAdapter::new().supports_editing());
+        assert!(TelegramAdapter::new("t").supports_editing());
+        assert!(DiscordAdapter::new("t").supports_editing());
+        assert!(SlackAdapter::new("b", "a").supports_editing());
+        assert!(!WhatsAppAdapter::new_sidecar().supports_editing());
     }
 }
 
@@ -109,7 +109,7 @@ mod whatsapp_adapter {
 
     #[test]
     fn sidecar_restart_within_limit() {
-        let mut adapter = WhatsAppAdapter::new();
+        let mut adapter = WhatsAppAdapter::new_sidecar();
         assert!(adapter.restart_sidecar()); // 1st
         assert!(adapter.restart_sidecar()); // 2nd
         assert!(adapter.restart_sidecar()); // 3rd
@@ -117,7 +117,7 @@ mod whatsapp_adapter {
 
     #[test]
     fn sidecar_restart_exceeds_limit() {
-        let mut adapter = WhatsAppAdapter::new();
+        let mut adapter = WhatsAppAdapter::new_sidecar();
         adapter.restart_sidecar(); // 1
         adapter.restart_sidecar(); // 2
         adapter.restart_sidecar(); // 3

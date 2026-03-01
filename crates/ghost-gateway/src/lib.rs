@@ -15,6 +15,7 @@ pub mod health;
 pub mod itp_buffer;
 pub mod itp_router;
 pub mod messaging;
+pub mod periodic;
 pub mod safety;
 pub mod session;
 pub mod shutdown;

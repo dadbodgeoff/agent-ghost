@@ -145,7 +145,7 @@ fn tight_budget_no_panic() {
 fn prune_tool_results() {
     let mut history: Vec<String> = vec![
         "Run the tests".to_string(),
-        r#"{"tool_result": "All 42 tests passed"}"#.to_string(),
+        r#"{"type": "tool_result", "content": "All 42 tests passed"}"#.to_string(),
         "Tests passed!".to_string(),
     ];
 
@@ -165,11 +165,19 @@ fn prune_tool_results() {
 fn prune_preserves_non_tool_messages() {
     let mut history: Vec<String> = vec![
         "Important question".to_string(),
-        r#"{"tool_result": "Tool output data"}"#.to_string(),
+        r#"{"type": "tool_result", "content": "Tool output data"}"#.to_string(),
         "Follow-up question".to_string(),
     ];
 
-    let original_non_tool_count = history.iter().filter(|m| !m.contains("\"tool_result\"")).count();
+    let original_non_tool_count = history.iter()
+        .filter(|m| {
+            serde_json::from_str::<serde_json::Value>(m)
+                .ok()
+                .and_then(|v| v.get("type")?.as_str().map(|t| t == "tool_result"))
+                .unwrap_or(false)
+                == false
+        })
+        .count();
     SessionCompactor::prune_tool_results(&mut history);
 
     let remaining_count = history.len();

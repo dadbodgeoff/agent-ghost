@@ -112,9 +112,24 @@ impl AgentMessage {
         buf.extend_from_slice(self.id.as_bytes());
         buf.extend_from_slice(self.sender.as_bytes());
         buf.extend_from_slice(self.recipient.as_bytes());
-        buf.extend_from_slice(&serde_json::to_vec(&self.payload).unwrap_or_default());
+        // Serialization of payload/context MUST NOT silently produce empty bytes —
+        // that would change the canonical representation and produce wrong signatures.
+        // If serialization fails, it's a bug in the message construction.
+        match serde_json::to_vec(&self.payload) {
+            Ok(bytes) => buf.extend_from_slice(&bytes),
+            Err(e) => {
+                tracing::error!(error = %e, "canonical_bytes: payload serialization failed — signature will be invalid");
+                buf.extend_from_slice(b"<serialization_error>");
+            }
+        }
         // BTreeMap is already sorted by key
-        buf.extend_from_slice(&serde_json::to_vec(&self.context).unwrap_or_default());
+        match serde_json::to_vec(&self.context) {
+            Ok(bytes) => buf.extend_from_slice(&bytes),
+            Err(e) => {
+                tracing::error!(error = %e, "canonical_bytes: context serialization failed — signature will be invalid");
+                buf.extend_from_slice(b"<serialization_error>");
+            }
+        }
         buf.extend_from_slice(self.nonce.as_bytes());
         buf.extend_from_slice(self.timestamp.to_rfc3339().as_bytes());
         buf

@@ -60,7 +60,9 @@ impl UnixSocketTransport {
 
                     match serde_json::from_slice::<IngestEvent>(&buf) {
                         Ok(event) => {
-                            let _ = tx.try_send(event);
+                            if tx.try_send(event).is_err() {
+                                tracing::warn!("unix socket: ingest channel full — event dropped (AC4)");
+                            }
                         }
                         Err(e) => {
                             tracing::warn!("malformed event: {e}");

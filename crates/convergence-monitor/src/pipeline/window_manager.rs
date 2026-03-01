@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Sliding window granularities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowLevel {
     /// Current session.
     Micro,

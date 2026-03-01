@@ -194,9 +194,11 @@ fn compaction_user_message_mimics_compaction_block() {
 #[test]
 fn compaction_zero_context_window_no_panic() {
     let compactor = SessionCompactor::new(CompactionConfig::default());
-    // f64 division by zero → infinity, which is >= 0.70
+    // Zero context window is a degenerate case — should_compact returns false
+    // with a warning log rather than dividing by zero (which would produce
+    // Infinity >= 0.70 = true, triggering compaction on invalid data).
     let result = compactor.should_compact(100, 0);
-    assert!(result, "should_compact(100, 0) should handle zero context window");
+    assert!(!result, "should_compact(100, 0) should return false for zero context window");
 }
 
 /// Compaction pass 0 is a valid boundary condition.
@@ -213,14 +215,26 @@ fn compaction_pass_zero_boundary() {
 #[test]
 fn compaction_spending_cap_nan_bypass() {
     let compactor = SessionCompactor::new(CompactionConfig::default());
-    // NaN + 0.0 > 100.0 is false (NaN comparisons always false)
+    // NaN cost must now be rejected — our fix guards against NaN bypass
     let nan_result = compactor.check_spending_cap(f64::NAN, 0.0, 100.0);
-    if nan_result.is_ok() {
-        eprintln!(
-            "SPENDING CAP BYPASS: NaN cost passed spending cap check. \
-             A broken cost estimator could allow unlimited spending."
-        );
-    }
+    assert!(
+        nan_result.is_err(),
+        "SPENDING CAP BYPASS: NaN cost must be rejected to prevent unlimited spending"
+    );
+
+    // NaN in current_spend must also be rejected
+    let nan_spend = compactor.check_spending_cap(10.0, f64::NAN, 100.0);
+    assert!(
+        nan_spend.is_err(),
+        "SPENDING CAP BYPASS: NaN current_spend must be rejected"
+    );
+
+    // NaN in spending_cap must also be rejected
+    let nan_cap = compactor.check_spending_cap(10.0, 0.0, f64::NAN);
+    assert!(
+        nan_cap.is_err(),
+        "SPENDING CAP BYPASS: NaN spending_cap must be rejected"
+    );
 
     // Infinity cost must definitely fail
     let inf_result = compactor.check_spending_cap(f64::INFINITY, 0.0, 100.0);

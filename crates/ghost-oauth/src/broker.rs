@@ -193,7 +193,14 @@ impl OAuthBroker {
         // Best-effort revocation at provider
         if let Some(provider) = provider {
             if let Ok(ts) = self.token_store.load_token(ref_id, &meta.provider_name) {
-                let _ = provider.revoke_token(ts.access_token.expose_secret());
+                if let Err(e) = provider.revoke_token(ts.access_token.expose_secret()) {
+                    tracing::warn!(
+                        provider = %meta.provider_name,
+                        ref_id = %ref_id,
+                        error = %e,
+                        "provider-side token revocation failed (best-effort, continuing with local cleanup)"
+                    );
+                }
             }
         }
 
@@ -223,7 +230,14 @@ impl OAuthBroker {
         for (provider_name, ref_id) in &all {
             if let Some(provider) = self.providers.get(provider_name) {
                 if let Ok(ts) = self.token_store.load_token(ref_id, provider_name) {
-                    let _ = provider.revoke_token(ts.access_token.expose_secret());
+                    if let Err(e) = provider.revoke_token(ts.access_token.expose_secret()) {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            ref_id = %ref_id,
+                            error = %e,
+                            "provider-side token revocation failed during revoke_all (best-effort)"
+                        );
+                    }
                 }
             }
             if let Err(e) = self.token_store.delete_token(ref_id, provider_name) {

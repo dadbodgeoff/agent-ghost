@@ -1,8 +1,16 @@
 //! LLM provider trait and response types (Req 21 AC1).
 
+use std::sync::RwLock;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Default HTTP timeout for cloud providers.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longer timeout for local inference (Ollama).
+const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Errors from LLM providers.
 #[derive(Debug, Error)]
@@ -24,7 +32,7 @@ pub enum LLMError {
 }
 
 /// A tool call requested by the LLM.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LLMToolCall {
     pub id: String,
     pub name: String,
@@ -32,7 +40,7 @@ pub struct LLMToolCall {
 }
 
 /// LLM response variants (A22.3).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LLMResponse {
     /// Pure text response.
     Text(String),
@@ -73,7 +81,7 @@ pub struct ToolSchema {
 }
 
 /// Usage statistics from a completion.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageStats {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
@@ -81,7 +89,7 @@ pub struct UsageStats {
 }
 
 /// Result of a completion call.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompletionResult {
     pub response: LLMResponse,
     pub usage: UsageStats,
@@ -89,7 +97,7 @@ pub struct CompletionResult {
 }
 
 /// Cost per token for a model.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TokenPricing {
     pub input_per_1k: f64,
     pub output_per_1k: f64,
@@ -116,16 +124,331 @@ pub trait LLMProvider: Send + Sync {
 
     /// Cost per token for the current model.
     fn token_pricing(&self) -> TokenPricing;
+
+    /// Update the auth credentials at runtime (used by FallbackChain
+    /// for auth profile rotation on 401/429). Default is no-op for
+    /// providers that don't support runtime auth changes.
+    fn update_auth(&self, _api_key: &str, _org_id: Option<&str>) {}
 }
 
-// ── Concrete provider stubs ─────────────────────────────────────────────
-// Full HTTP implementations deferred — these are structural stubs that
-// satisfy the trait and allow the agent loop to compile and test.
+// ── Shared helpers ──────────────────────────────────────────────────────
+
+/// Build a reqwest client with the given timeout.
+fn build_client(timeout: Duration) -> Result<reqwest::Client, LLMError> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| LLMError::Other(format!("HTTP client build error: {e}")))
+}
+
+/// Map HTTP status codes to LLMError.
+fn map_http_error(status: reqwest::StatusCode, body: &str, headers: &reqwest::header::HeaderMap) -> LLMError {
+    match status.as_u16() {
+        401 | 403 => LLMError::AuthFailed(format!("{status}: {body}")),
+        429 => {
+            let retry_after = headers
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
+            LLMError::RateLimited { retry_after_secs: retry_after }
+        }
+        529 => LLMError::Unavailable(format!("overloaded: {body}")),
+        500..=599 => LLMError::Unavailable(format!("{status}: {body}")),
+        _ => LLMError::Other(format!("{status}: {body}")),
+    }
+}
+
+// ── OpenAI-format shared helper ─────────────────────────────────────────
+// Used by OpenAIProvider, OllamaProvider, and OpenAICompatProvider.
+
+/// Build OpenAI-format messages array from ChatMessage slice.
+fn openai_format_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    messages.iter().map(|m| {
+        let role = match m.role {
+            MessageRole::System => "system",
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            MessageRole::Tool => "tool",
+        };
+        let mut msg = serde_json::json!({
+            "role": role,
+            "content": m.content,
+        });
+        if let Some(ref tc) = m.tool_calls {
+            let calls: Vec<serde_json::Value> = tc.iter().map(|c| {
+                serde_json::json!({
+                    "id": c.id,
+                    "type": "function",
+                    "function": {
+                        "name": c.name,
+                        "arguments": if c.arguments.is_string() {
+                            c.arguments.clone()
+                        } else {
+                            serde_json::Value::String(c.arguments.to_string())
+                        },
+                    }
+                })
+            }).collect();
+            msg["tool_calls"] = serde_json::Value::Array(calls);
+        }
+        if let Some(ref id) = m.tool_call_id {
+            msg["tool_call_id"] = serde_json::Value::String(id.clone());
+        }
+        msg
+    }).collect()
+}
+
+/// Build OpenAI-format tools array from ToolSchema slice.
+fn openai_format_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+    tools.iter().map(|t| {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            }
+        })
+    }).collect()
+}
+
+/// Parse an OpenAI-format response body into CompletionResult.
+fn parse_openai_response(body: &serde_json::Value, model_fallback: &str) -> Result<CompletionResult, LLMError> {
+    let model = body["model"].as_str().unwrap_or(model_fallback).to_string();
+
+    let usage = if let Some(u) = body.get("usage") {
+        let pt = u["prompt_tokens"].as_u64().unwrap_or(0) as usize;
+        let ct = u["completion_tokens"].as_u64().unwrap_or(0) as usize;
+        UsageStats {
+            prompt_tokens: pt,
+            completion_tokens: ct,
+            total_tokens: pt + ct,
+        }
+    } else {
+        UsageStats::default()
+    };
+
+    let choice = body["choices"]
+        .as_array()
+        .and_then(|c| c.first())
+        .ok_or_else(|| LLMError::InvalidResponse("no choices in response".into()))?;
+
+    let message = &choice["message"];
+    let content = message["content"].as_str().map(|s| s.to_string());
+    let tool_calls_raw = message.get("tool_calls").and_then(|v| v.as_array());
+
+    let tool_calls: Vec<LLMToolCall> = tool_calls_raw
+        .map(|arr| {
+            arr.iter().filter_map(|tc| {
+                let id = tc["id"].as_str()?.to_string();
+                let name = tc["function"]["name"].as_str()?.to_string();
+                let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                let arguments = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                Some(LLMToolCall { id, name, arguments })
+            }).collect()
+        })
+        .unwrap_or_default();
+
+    let has_tool_calls = !tool_calls.is_empty();
+    let has_text = content.as_ref().map_or(false, |t| !t.is_empty());
+
+    let response = match (has_text, has_tool_calls) {
+        (true, false) => LLMResponse::Text(content.unwrap()),
+        (false, true) => LLMResponse::ToolCalls(tool_calls),
+        (true, true) => LLMResponse::Mixed { text: content.unwrap(), tool_calls },
+        (false, false) => LLMResponse::Empty,
+    };
+
+    Ok(CompletionResult { response, usage, model })
+}
+
+/// Shared OpenAI-format completion call.
+async fn openai_format_complete(
+    url: &str,
+    model: &str,
+    api_key: Option<&str>,
+    messages: &[ChatMessage],
+    tools: &[ToolSchema],
+    timeout: Duration,
+) -> Result<CompletionResult, LLMError> {
+    let client = build_client(timeout)?;
+
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": openai_format_messages(messages),
+    });
+    if !tools.is_empty() {
+        body["tools"] = serde_json::Value::Array(openai_format_tools(tools));
+    }
+
+    let mut req = client.post(url).json(&body);
+    if let Some(key) = api_key {
+        req = req.header("authorization", format!("Bearer {key}"));
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        if e.is_timeout() {
+            LLMError::Timeout(timeout.as_secs())
+        } else {
+            LLMError::Other(format!("HTTP request failed: {e}"))
+        }
+    })?;
+
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let resp_body: serde_json::Value = resp.json().await
+        .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
+
+    if !status.is_success() {
+        let error_msg = resp_body["error"]["message"]
+            .as_str()
+            .unwrap_or(&resp_body.to_string())
+            .to_string();
+        return Err(map_http_error(status, &error_msg, &headers));
+    }
+
+    parse_openai_response(&resp_body, model)
+}
+
+// ── Anthropic Claude provider ───────────────────────────────────────────
 
 /// Anthropic Claude provider.
 pub struct AnthropicProvider {
     pub model: String,
-    pub api_key: String,
+    pub api_key: RwLock<String>,
+}
+
+impl AnthropicProvider {
+    /// Build the Anthropic messages array from ChatMessage slice.
+    /// System messages are separated out (Anthropic uses a top-level `system` param).
+    fn build_messages(messages: &[ChatMessage]) -> (Option<String>, Vec<serde_json::Value>) {
+        let mut system_parts: Vec<String> = Vec::new();
+        let mut api_messages: Vec<serde_json::Value> = Vec::new();
+
+        for m in messages {
+            match m.role {
+                MessageRole::System => {
+                    system_parts.push(m.content.clone());
+                }
+                MessageRole::User => {
+                    api_messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": m.content,
+                    }));
+                }
+                MessageRole::Assistant => {
+                    if let Some(ref tc) = m.tool_calls {
+                        // Assistant message with tool_use blocks.
+                        let mut content_blocks: Vec<serde_json::Value> = Vec::new();
+                        if !m.content.is_empty() {
+                            content_blocks.push(serde_json::json!({
+                                "type": "text",
+                                "text": m.content,
+                            }));
+                        }
+                        for call in tc {
+                            content_blocks.push(serde_json::json!({
+                                "type": "tool_use",
+                                "id": call.id,
+                                "name": call.name,
+                                "input": call.arguments,
+                            }));
+                        }
+                        api_messages.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": content_blocks,
+                        }));
+                    } else {
+                        api_messages.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": m.content,
+                        }));
+                    }
+                }
+                MessageRole::Tool => {
+                    // Tool results → tool_result content block in a user message.
+                    let tool_call_id = m.tool_call_id.clone().unwrap_or_default();
+                    api_messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": m.content,
+                        }],
+                    }));
+                }
+            }
+        }
+
+        let system = if system_parts.is_empty() {
+            None
+        } else {
+            Some(system_parts.join("\n\n"))
+        };
+
+        (system, api_messages)
+    }
+
+    /// Build Anthropic tools array from ToolSchema slice.
+    fn build_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+        tools.iter().map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "input_schema": t.parameters,
+            })
+        }).collect()
+    }
+
+    /// Parse Anthropic response content blocks into LLMResponse.
+    fn parse_response(body: &serde_json::Value) -> Result<(LLMResponse, UsageStats), LLMError> {
+        let usage = if let Some(u) = body.get("usage") {
+            let pt = u["input_tokens"].as_u64().unwrap_or(0) as usize;
+            let ct = u["output_tokens"].as_u64().unwrap_or(0) as usize;
+            UsageStats {
+                prompt_tokens: pt,
+                completion_tokens: ct,
+                total_tokens: pt + ct,
+            }
+        } else {
+            UsageStats::default()
+        };
+
+        let content = body["content"]
+            .as_array()
+            .ok_or_else(|| LLMError::InvalidResponse("no content array in response".into()))?;
+
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<LLMToolCall> = Vec::new();
+
+        for block in content {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(t) = block["text"].as_str() {
+                        text_parts.push(t.to_string());
+                    }
+                }
+                Some("tool_use") => {
+                    let id = block["id"].as_str().unwrap_or("").to_string();
+                    let name = block["name"].as_str().unwrap_or("").to_string();
+                    let arguments = block.get("input").cloned().unwrap_or(serde_json::json!({}));
+                    tool_calls.push(LLMToolCall { id, name, arguments });
+                }
+                _ => {} // Skip unknown block types.
+            }
+        }
+
+        let text = text_parts.join("");
+        let response = match (text.is_empty(), tool_calls.is_empty()) {
+            (true, true) => LLMResponse::Empty,
+            (false, true) => LLMResponse::Text(text),
+            (true, false) => LLMResponse::ToolCalls(tool_calls),
+            (false, false) => LLMResponse::Mixed { text, tool_calls },
+        };
+
+        Ok((response, usage))
+    }
 }
 
 #[async_trait]
@@ -134,15 +457,61 @@ impl LLMProvider for AnthropicProvider {
 
     async fn complete(
         &self,
-        _messages: &[ChatMessage],
-        _tools: &[ToolSchema],
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        // Stub: real implementation calls Anthropic Messages API
-        Ok(CompletionResult {
-            response: LLMResponse::Empty,
-            usage: UsageStats::default(),
-            model: self.model.clone(),
-        })
+        let api_key = self.api_key.read()
+            .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
+            .clone();
+
+        let client = build_client(DEFAULT_TIMEOUT)?;
+        let (system, api_messages) = Self::build_messages(messages);
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 4096,
+            "messages": api_messages,
+        });
+        if let Some(sys) = system {
+            body["system"] = serde_json::Value::String(sys);
+        }
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(Self::build_tools(tools));
+        }
+
+        let resp = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    LLMError::Timeout(DEFAULT_TIMEOUT.as_secs())
+                } else {
+                    LLMError::Other(format!("HTTP request failed: {e}"))
+                }
+            })?;
+
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let resp_body: serde_json::Value = resp.json().await
+            .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
+
+        if !status.is_success() {
+            let error_msg = resp_body["error"]["message"]
+                .as_str()
+                .unwrap_or(&resp_body.to_string())
+                .to_string();
+            return Err(map_http_error(status, &error_msg, &headers));
+        }
+
+        let (response, usage) = Self::parse_response(&resp_body)?;
+        let model = resp_body["model"].as_str().unwrap_or(&self.model).to_string();
+
+        Ok(CompletionResult { response, usage, model })
     }
 
     fn supports_streaming(&self) -> bool { true }
@@ -150,12 +519,20 @@ impl LLMProvider for AnthropicProvider {
     fn token_pricing(&self) -> TokenPricing {
         TokenPricing { input_per_1k: 0.003, output_per_1k: 0.015 }
     }
+
+    fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
+        if let Ok(mut key) = self.api_key.write() {
+            *key = api_key.to_string();
+        }
+    }
 }
+
+// ── OpenAI provider ─────────────────────────────────────────────────────
 
 /// OpenAI provider.
 pub struct OpenAIProvider {
     pub model: String,
-    pub api_key: String,
+    pub api_key: RwLock<String>,
 }
 
 #[async_trait]
@@ -164,14 +541,21 @@ impl LLMProvider for OpenAIProvider {
 
     async fn complete(
         &self,
-        _messages: &[ChatMessage],
-        _tools: &[ToolSchema],
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        Ok(CompletionResult {
-            response: LLMResponse::Empty,
-            usage: UsageStats::default(),
-            model: self.model.clone(),
-        })
+        let api_key = self.api_key.read()
+            .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
+            .clone();
+
+        openai_format_complete(
+            "https://api.openai.com/v1/chat/completions",
+            &self.model,
+            Some(&api_key),
+            messages,
+            tools,
+            DEFAULT_TIMEOUT,
+        ).await
     }
 
     fn supports_streaming(&self) -> bool { true }
@@ -179,12 +563,148 @@ impl LLMProvider for OpenAIProvider {
     fn token_pricing(&self) -> TokenPricing {
         TokenPricing { input_per_1k: 0.005, output_per_1k: 0.015 }
     }
+
+    fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
+        if let Ok(mut key) = self.api_key.write() {
+            *key = api_key.to_string();
+        }
+    }
 }
+
+// ── Google Gemini provider ──────────────────────────────────────────────
 
 /// Google Gemini provider.
 pub struct GeminiProvider {
     pub model: String,
-    pub api_key: String,
+    pub api_key: RwLock<String>,
+}
+
+impl GeminiProvider {
+    /// Build Gemini contents array from ChatMessage slice.
+    /// System messages use the `systemInstruction` field.
+    fn build_contents(messages: &[ChatMessage]) -> (Option<serde_json::Value>, Vec<serde_json::Value>) {
+        let mut system_parts: Vec<String> = Vec::new();
+        let mut contents: Vec<serde_json::Value> = Vec::new();
+
+        for m in messages {
+            match m.role {
+                MessageRole::System => {
+                    system_parts.push(m.content.clone());
+                }
+                MessageRole::User => {
+                    contents.push(serde_json::json!({
+                        "role": "user",
+                        "parts": [{"text": m.content}],
+                    }));
+                }
+                MessageRole::Assistant => {
+                    let mut parts: Vec<serde_json::Value> = Vec::new();
+                    if !m.content.is_empty() {
+                        parts.push(serde_json::json!({"text": m.content}));
+                    }
+                    if let Some(ref tc) = m.tool_calls {
+                        for call in tc {
+                            parts.push(serde_json::json!({
+                                "functionCall": {
+                                    "name": call.name,
+                                    "args": call.arguments,
+                                }
+                            }));
+                        }
+                    }
+                    contents.push(serde_json::json!({
+                        "role": "model",
+                        "parts": parts,
+                    }));
+                }
+                MessageRole::Tool => {
+                    // Tool results → functionResponse part.
+                    let name = m.tool_call_id.clone().unwrap_or_else(|| "unknown".into());
+                    contents.push(serde_json::json!({
+                        "role": "user",
+                        "parts": [{
+                            "functionResponse": {
+                                "name": name,
+                                "response": {"result": m.content},
+                            }
+                        }],
+                    }));
+                }
+            }
+        }
+
+        let system_instruction = if system_parts.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!({
+                "parts": [{"text": system_parts.join("\n\n")}],
+            }))
+        };
+
+        (system_instruction, contents)
+    }
+
+    /// Build Gemini tools array from ToolSchema slice.
+    fn build_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+        let declarations: Vec<serde_json::Value> = tools.iter().map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            })
+        }).collect();
+        vec![serde_json::json!({"functionDeclarations": declarations})]
+    }
+
+    /// Parse Gemini response into LLMResponse.
+    fn parse_response(body: &serde_json::Value) -> Result<(LLMResponse, UsageStats), LLMError> {
+        let usage = if let Some(u) = body.get("usageMetadata") {
+            let pt = u["promptTokenCount"].as_u64().unwrap_or(0) as usize;
+            let ct = u["candidatesTokenCount"].as_u64().unwrap_or(0) as usize;
+            UsageStats {
+                prompt_tokens: pt,
+                completion_tokens: ct,
+                total_tokens: pt + ct,
+            }
+        } else {
+            UsageStats::default()
+        };
+
+        let parts = body["candidates"]
+            .as_array()
+            .and_then(|c| c.first())
+            .and_then(|c| c["content"]["parts"].as_array());
+
+        let parts = match parts {
+            Some(p) => p,
+            None => return Ok((LLMResponse::Empty, usage)),
+        };
+
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tool_calls: Vec<LLMToolCall> = Vec::new();
+
+        for part in parts {
+            if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                text_parts.push(t.to_string());
+            }
+            if let Some(fc) = part.get("functionCall") {
+                let name = fc["name"].as_str().unwrap_or("").to_string();
+                let arguments = fc.get("args").cloned().unwrap_or(serde_json::json!({}));
+                let id = format!("gemini-{}", uuid::Uuid::now_v7());
+                tool_calls.push(LLMToolCall { id, name, arguments });
+            }
+        }
+
+        let text = text_parts.join("");
+        let response = match (text.is_empty(), tool_calls.is_empty()) {
+            (true, true) => LLMResponse::Empty,
+            (false, true) => LLMResponse::Text(text),
+            (true, false) => LLMResponse::ToolCalls(tool_calls),
+            (false, false) => LLMResponse::Mixed { text, tool_calls },
+        };
+
+        Ok((response, usage))
+    }
 }
 
 #[async_trait]
@@ -193,14 +713,60 @@ impl LLMProvider for GeminiProvider {
 
     async fn complete(
         &self,
-        _messages: &[ChatMessage],
-        _tools: &[ToolSchema],
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        Ok(CompletionResult {
-            response: LLMResponse::Empty,
-            usage: UsageStats::default(),
-            model: self.model.clone(),
-        })
+        let api_key = self.api_key.read()
+            .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
+            .clone();
+
+        let client = build_client(DEFAULT_TIMEOUT)?;
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            self.model, api_key
+        );
+
+        let (system_instruction, contents) = Self::build_contents(messages);
+
+        let mut body = serde_json::json!({
+            "contents": contents,
+        });
+        if let Some(si) = system_instruction {
+            body["systemInstruction"] = si;
+        }
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(Self::build_tools(tools));
+        }
+
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    LLMError::Timeout(DEFAULT_TIMEOUT.as_secs())
+                } else {
+                    LLMError::Other(format!("HTTP request failed: {e}"))
+                }
+            })?;
+
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let resp_body: serde_json::Value = resp.json().await
+            .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
+
+        if !status.is_success() {
+            let error_msg = resp_body["error"]["message"]
+                .as_str()
+                .unwrap_or(&resp_body.to_string())
+                .to_string();
+            return Err(map_http_error(status, &error_msg, &headers));
+        }
+
+        let (response, usage) = Self::parse_response(&resp_body)?;
+        Ok(CompletionResult { response, usage, model: self.model.clone() })
     }
 
     fn supports_streaming(&self) -> bool { true }
@@ -208,9 +774,18 @@ impl LLMProvider for GeminiProvider {
     fn token_pricing(&self) -> TokenPricing {
         TokenPricing { input_per_1k: 0.00025, output_per_1k: 0.0005 }
     }
+
+    fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
+        if let Ok(mut key) = self.api_key.write() {
+            *key = api_key.to_string();
+        }
+    }
 }
 
+// ── Ollama local provider ───────────────────────────────────────────────
+
 /// Ollama local provider.
+/// Uses OpenAI-compatible format. 120s timeout for local inference.
 pub struct OllamaProvider {
     pub model: String,
     pub base_url: String,
@@ -222,14 +797,14 @@ impl LLMProvider for OllamaProvider {
 
     async fn complete(
         &self,
-        _messages: &[ChatMessage],
-        _tools: &[ToolSchema],
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        Ok(CompletionResult {
-            response: LLMResponse::Empty,
-            usage: UsageStats::default(),
-            model: self.model.clone(),
-        })
+        // Ollama exposes an OpenAI-compatible endpoint at /v1/chat/completions.
+        // The native /api/chat uses a different format; we use the compat endpoint
+        // so openai_format_complete works without translation.
+        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        openai_format_complete(&url, &self.model, None, messages, tools, LOCAL_TIMEOUT).await
     }
 
     fn supports_streaming(&self) -> bool { true }
@@ -239,10 +814,12 @@ impl LLMProvider for OllamaProvider {
     }
 }
 
+// ── OpenAI-compatible provider ──────────────────────────────────────────
+
 /// OpenAI-compatible provider (e.g., vLLM, LiteLLM, Together).
 pub struct OpenAICompatProvider {
     pub model: String,
-    pub api_key: String,
+    pub api_key: RwLock<String>,
     pub base_url: String,
     pub context_window_size: usize,
 }
@@ -253,19 +830,26 @@ impl LLMProvider for OpenAICompatProvider {
 
     async fn complete(
         &self,
-        _messages: &[ChatMessage],
-        _tools: &[ToolSchema],
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        Ok(CompletionResult {
-            response: LLMResponse::Empty,
-            usage: UsageStats::default(),
-            model: self.model.clone(),
-        })
+        let api_key = self.api_key.read()
+            .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
+            .clone();
+
+        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        openai_format_complete(&url, &self.model, Some(&api_key), messages, tools, DEFAULT_TIMEOUT).await
     }
 
     fn supports_streaming(&self) -> bool { true }
     fn context_window(&self) -> usize { self.context_window_size }
     fn token_pricing(&self) -> TokenPricing {
         TokenPricing { input_per_1k: 0.001, output_per_1k: 0.002 }
+    }
+
+    fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
+        if let Ok(mut key) = self.api_key.write() {
+            *key = api_key.to_string();
+        }
     }
 }

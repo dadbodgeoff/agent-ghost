@@ -64,7 +64,13 @@ pub async fn ws_handler(
 
 async fn handle_socket(mut socket: WebSocket) {
     // Send initial ping
-    let ping = serde_json::to_string(&WsEvent::Ping).unwrap_or_default();
+    let ping = match serde_json::to_string(&WsEvent::Ping) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize WebSocket ping");
+            return;
+        }
+    };
     if socket.send(Message::Text(ping)).await.is_err() {
         return;
     }
@@ -76,7 +82,13 @@ async fn handle_socket(mut socket: WebSocket) {
         tokio::select! {
             // Keepalive ping every 30s
             _ = interval.tick() => {
-                let ping = serde_json::to_string(&WsEvent::Ping).unwrap_or_default();
+                let ping = match serde_json::to_string(&WsEvent::Ping) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to serialize WebSocket ping");
+                        break;
+                    }
+                };
                 if socket.send(Message::Text(ping)).await.is_err() {
                     break;
                 }

@@ -101,6 +101,14 @@ pub enum TriggerEvent {
         detected_at: DateTime<Utc>,
     },
 
+    /// T9: Distributed kill gate event (propagated from remote node).
+    DistributedKillGate {
+        origin_node_id: Uuid,
+        reason: String,
+        gate_chain_hash: String,
+        detected_at: DateTime<Utc>,
+    },
+
     // ── Manual triggers ─────────────────────────────────────────────
 
     ManualPause {

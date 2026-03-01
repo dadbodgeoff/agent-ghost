@@ -31,7 +31,7 @@ pub enum NotificationTarget {
 }
 
 /// Notification payload.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationPayload {
     pub subject: String,
     pub body: String,
@@ -57,20 +57,47 @@ impl NotificationDispatcher {
                     url: c.address.clone(),
                     timeout_secs: 5,
                 },
-                "email" => NotificationTarget::Email {
-                    smtp_host: c.smtp_host.clone().unwrap_or_default(),
-                    smtp_port: c.smtp_port.unwrap_or(587),
-                    from: c.from.clone().unwrap_or_default(),
-                    to: c.address.clone(),
-                    timeout_secs: 10,
-                },
-                "sms" => NotificationTarget::Sms {
-                    api_url: c.api_url.clone().unwrap_or_default(),
-                    to: c.address.clone(),
-                    from: c.from.clone().unwrap_or_default(),
-                    timeout_secs: 5,
-                },
-                _ => NotificationTarget::Desktop,
+                "email" => {
+                    let smtp_host = c.smtp_host.clone().unwrap_or_else(|| {
+                        tracing::warn!(address = %c.address, "email notification missing smtp_host — notification will likely fail");
+                        String::new()
+                    });
+                    let from = c.from.clone().unwrap_or_else(|| {
+                        tracing::warn!(address = %c.address, "email notification missing from address — notification will likely fail");
+                        String::new()
+                    });
+                    NotificationTarget::Email {
+                        smtp_host,
+                        smtp_port: c.smtp_port.unwrap_or(587),
+                        from,
+                        to: c.address.clone(),
+                        timeout_secs: 10,
+                    }
+                }
+                "sms" => {
+                    let api_url = c.api_url.clone().unwrap_or_else(|| {
+                        tracing::warn!(address = %c.address, "SMS notification missing api_url — notification will likely fail");
+                        String::new()
+                    });
+                    let from = c.from.clone().unwrap_or_else(|| {
+                        tracing::warn!(address = %c.address, "SMS notification missing from number — notification will likely fail");
+                        String::new()
+                    });
+                    NotificationTarget::Sms {
+                        api_url,
+                        to: c.address.clone(),
+                        from,
+                        timeout_secs: 5,
+                    }
+                }
+                unknown => {
+                    tracing::warn!(
+                        channel = %unknown,
+                        address = %c.address,
+                        "unknown notification channel type — defaulting to Desktop"
+                    );
+                    NotificationTarget::Desktop
+                }
             })
             .collect();
         Self { targets }

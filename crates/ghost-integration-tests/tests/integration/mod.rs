@@ -22,7 +22,15 @@ mod convergence_full_pipeline;
 mod gateway_shutdown;
 mod gateway_state_machine;
 mod safety_critical_edge_cases;
+mod distributed_kill_gates;
 mod inter_agent_messaging;
 mod kill_switch_chain;
 mod multi_agent_scenarios;
 mod proposal_lifecycle;
+mod orchestrator_fix_verification;
+
+// Phase 15 e2e integration tests (Task 22.3)
+mod secrets_e2e;
+mod egress_e2e;
+mod oauth_e2e;
+mod mesh_e2e;

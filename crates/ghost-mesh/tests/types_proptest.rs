@@ -35,6 +35,7 @@ fn arbitrary_agent_card() -> impl Strategy<Value = AgentCard> {
                 name,
                 description: desc,
                 capabilities: caps,
+                capability_flags: 0,
                 input_types: vec!["text/plain".to_string()],
                 output_types: vec!["application/json".to_string()],
                 auth_schemes: vec!["ed25519".to_string()],
@@ -84,5 +85,51 @@ proptest! {
         let json = serde_json::to_string(&status).unwrap();
         let deserialized: TaskStatus = serde_json::from_str(&json).unwrap();
         prop_assert_eq!(status, deserialized);
+    }
+
+    /// Task 22.2: For 500 random MeshTask pairs, delta round-trip produces identical task.
+    #[test]
+    fn delta_round_trip_preserves_task(
+        task_a in arbitrary_mesh_task(),
+        new_status in arbitrary_task_status(),
+    ) {
+        let mut task_b = task_a.clone();
+        task_b.status = new_status;
+        task_b.updated_at = Utc::now();
+
+        let delta = task_b.compute_delta(&task_a);
+        let mut reconstructed = task_a.clone();
+        reconstructed.apply_delta(&delta);
+
+        prop_assert_eq!(reconstructed.status, task_b.status);
+        prop_assert_eq!(reconstructed.updated_at, task_b.updated_at);
+    }
+
+    /// Task 22.2: For 500 random capability sets, bitfield round-trip preserves all capabilities.
+    #[test]
+    fn capability_bitfield_round_trip(
+        caps in prop::collection::vec(
+            prop_oneof![
+                Just("code_execution".to_string()),
+                Just("web_search".to_string()),
+                Just("file_operations".to_string()),
+                Just("api_calls".to_string()),
+                Just("data_analysis".to_string()),
+                Just("image_generation".to_string()),
+            ],
+            0..6,
+        ),
+    ) {
+        let flags = AgentCard::capabilities_from_strings(&caps);
+        // Every capability in the input should be matched by the bitfield.
+        for cap in &caps {
+            let single_flag = AgentCard::capabilities_from_strings(&[cap.clone()]);
+            prop_assert!(
+                (flags & single_flag) == single_flag,
+                "capability '{}' not preserved in bitfield {:#b}",
+                cap,
+                flags,
+            );
+        }
     }
 }

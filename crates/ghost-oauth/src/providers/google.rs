@@ -147,7 +147,8 @@ pub(crate) fn parse_token_response(
     resp: reqwest::blocking::Response,
 ) -> Result<TokenSet, OAuthError> {
     let status = resp.status();
-    let body = resp.text().unwrap_or_default();
+    let body = resp.text()
+        .map_err(|e| OAuthError::FlowFailed(format!("failed to read response body: {e}")))?;
 
     if !status.is_success() {
         return Err(OAuthError::FlowFailed(format!(
@@ -227,7 +228,8 @@ pub(crate) fn execute_bearer_request(
             (k.to_string(), v.to_str().unwrap_or("").to_string())
         })
         .collect();
-    let body = resp.text().unwrap_or_default();
+    let body = resp.text()
+        .map_err(|e| OAuthError::ProviderError(format!("failed to read API response body: {e}")))?;
 
     Ok(ApiResponse { status, headers, body })
 }

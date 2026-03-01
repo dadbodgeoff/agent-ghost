@@ -31,7 +31,7 @@ impl Default for ShutdownConfig {
 }
 
 /// Result of the shutdown sequence.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ShutdownResult {
     pub steps_completed: u8,
     pub forced: bool,

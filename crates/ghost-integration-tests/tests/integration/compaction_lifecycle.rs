@@ -126,13 +126,16 @@ fn compaction_aborts_on_shutdown() {
 }
 
 /// Tool result pruning frees tokens.
+///
+/// The implementation uses JSON deserialization: a message is a tool_result
+/// if it deserializes as a JSON object with `"type": "tool_result"`.
 #[test]
 fn tool_result_pruning() {
     let mut history: Vec<String> = vec![
         "User question".into(),
-        r#"{"tool_result": "output data from tool execution"}"#.into(),
+        r#"{"type": "tool_result", "content": "output data from tool execution"}"#.into(),
         "Agent response".into(),
-        r#"{"tool_result": "more tool output"}"#.into(),
+        r#"{"type": "tool_result", "content": "more tool output"}"#.into(),
     ];
 
     let result = SessionCompactor::prune_tool_results(&mut history);

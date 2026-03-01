@@ -1,7 +1,9 @@
 //! Token budget allocation (A2.6).
 
+use serde::{Deserialize, Serialize};
+
 /// Budget type for a prompt layer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Budget {
     /// No limit — layer is never truncated.
     Uncapped,
@@ -12,7 +14,7 @@ pub enum Budget {
 }
 
 /// Per-layer budget allocation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerBudget {
     pub layer_index: u8,
     pub budget: Budget,

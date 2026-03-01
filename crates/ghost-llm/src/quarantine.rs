@@ -97,6 +97,7 @@ impl Default for QuarantineConfig {
                 "web_fetch".into(),
                 "email_read".into(),
                 "api_response".into(),
+                "http_request".into(),
             ],
             compress_all_tool_outputs: true,
             compression_mode: CompressionMode::default(),
@@ -140,6 +141,31 @@ impl CompressionStats {
             (compressed_tokens as f64 * VOCAB_SIZE.log2()) / original_tokens as f64
         };
 
+        // NaN/Inf guard: clamp non-finite results to safe defaults
+        let compression_ratio = if compression_ratio.is_nan() || compression_ratio.is_infinite() {
+            tracing::warn!(
+                original_tokens,
+                compressed_tokens,
+                raw_ratio = %compression_ratio,
+                "non-finite compression_ratio — clamping to 1.0"
+            );
+            1.0
+        } else {
+            compression_ratio
+        };
+
+        let bits_per_token = if bits_per_token.is_nan() || bits_per_token.is_infinite() {
+            tracing::warn!(
+                original_tokens,
+                compressed_tokens,
+                raw_bpt = %bits_per_token,
+                "non-finite bits_per_token — clamping to 0.0"
+            );
+            0.0
+        } else {
+            bits_per_token
+        };
+
         Self {
             original_tokens,
             compressed_tokens,
@@ -162,7 +188,7 @@ pub fn extraction_prompt_for_tool_type(tool_type: &str) -> &'static str {
             "Extract relevant facts, data points, key findings, and actionable \
              information. Remove navigation, ads, and boilerplate."
         }
-        "api_call" | "api_response" | "shell" | "shell_execute" => {
+        "api_call" | "api_response" | "http_request" | "shell" | "shell_execute" => {
             "Extract status, key fields, error messages, and actionable data. \
              Summarize large output tables into key rows."
         }

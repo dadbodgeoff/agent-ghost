@@ -5,3 +5,4 @@ pub mod executor;
 pub mod builtin;
 pub mod oauth_tools;
 pub mod plan_validator;
+pub mod skill_matcher;

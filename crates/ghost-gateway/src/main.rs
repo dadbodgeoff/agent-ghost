@@ -57,8 +57,9 @@ async fn main() {
         Commands::Serve => {
             let result = GatewayBootstrap::run(cli_args.config.as_deref()).await;
             match result {
-                Ok(gateway) => {
-                    if let Err(e) = gateway.run().await {
+                Ok((gateway, config)) => {
+                    let router = GatewayBootstrap::build_router(&config);
+                    if let Err(e) = gateway.run_with_router(Some(router), None).await {
                         tracing::error!(error = %e, "Gateway exited with error");
                         std::process::exit(70); // EX_SOFTWARE
                     }

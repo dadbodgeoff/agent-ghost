@@ -21,6 +21,7 @@ fn make_signed_card(name: &str) -> (AgentCard, ghost_signing::SigningKey) {
         name: name.to_string(),
         description: format!("Test agent: {name}"),
         capabilities: vec!["testing".to_string()],
+        capability_flags: 0,
         input_types: vec!["text/plain".to_string()],
         output_types: vec!["application/json".to_string()],
         auth_schemes: vec!["ed25519".to_string()],
@@ -49,7 +50,7 @@ fn agent_card_served_from_dispatcher() {
     let (card, _sk) = make_signed_card("test-agent");
     let dispatcher = make_dispatcher(card.clone());
 
-    let served = dispatcher.agent_card();
+    let served = dispatcher.agent_card().expect("agent_card should return Some in test");
     assert_eq!(served.name, card.name);
     assert_eq!(served.endpoint_url, card.endpoint_url);
     assert_eq!(served.public_key, card.public_key);
@@ -142,7 +143,7 @@ fn dispatcher_routes_tasks_cancel() {
 fn agent_card_signature_verified_on_serve() {
     let (card, _sk) = make_signed_card("verified-agent");
     let dispatcher = make_dispatcher(card);
-    let served = dispatcher.agent_card();
+    let served = dispatcher.agent_card().expect("agent_card should return Some in test");
     assert!(
         served.verify_signature(),
         "served AgentCard must pass signature verification"

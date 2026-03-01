@@ -18,6 +18,7 @@ use crate::intervention::cooldown::CooldownManager;
 use crate::intervention::escalation::EscalationManager;
 use crate::intervention::trigger::{CompositeResult, InterventionStateMachine};
 use crate::pipeline::signal_computer::SignalComputer;
+use crate::pipeline::signal_scheduler::{ComputeTrigger, SignalScheduler};
 use crate::pipeline::window_manager::WindowManager;
 use crate::session::registry::SessionRegistry;
 use crate::state_publisher::{ConvergenceSharedState, StatePublisher};
@@ -29,9 +30,11 @@ use crate::validation::{EventValidator, RateLimiter};
 
 // ── Score cache (AC14: 30s TTL) ─────────────────────────────────────────
 
+#[derive(Debug, Clone)]
 struct CachedScore {
     score: f64,
     level: u8,
+    signal_scores: [f64; 8],
     cached_at: Instant,
 }
 
@@ -40,6 +43,7 @@ struct CachedScore {
 pub struct ConvergenceMonitor {
     config: MonitorConfig,
     signal_computer: SignalComputer,
+    signal_scheduler: SignalScheduler,
     window_manager: WindowManager,
     intervention: InterventionStateMachine,
     cooldown: CooldownManager,
@@ -51,9 +55,14 @@ pub struct ConvergenceMonitor {
     /// Per-agent calibration session count (AC5).
     calibration_counts: BTreeMap<Uuid, u32>,
     /// Score cache with TTL (AC14).
+    /// Stores score, level, AND signal_scores so the cache path never
+    /// publishes zeroed signals.
     score_cache: BTreeMap<Uuid, CachedScore>,
     /// Per-session hash chain: session_id → last event hash (AC4).
     hash_chains: BTreeMap<Uuid, [u8; 32]>,
+    /// Reusable SQLite connection — avoids opening a new connection per
+    /// event, critical for the 10K events/sec throughput target.
+    db_conn: Option<rusqlite::Connection>,
 }
 
 impl ConvergenceMonitor {
@@ -66,6 +75,7 @@ impl ConvergenceMonitor {
         Ok(Self {
             config,
             signal_computer: SignalComputer::new(),
+            signal_scheduler: SignalScheduler::new(),
             window_manager: WindowManager::new(),
             intervention: InterventionStateMachine::new(),
             cooldown: CooldownManager::new(),
@@ -77,6 +87,7 @@ impl ConvergenceMonitor {
             calibration_counts: BTreeMap::new(),
             score_cache: BTreeMap::new(),
             hash_chains: BTreeMap::new(),
+            db_conn: None,
         })
     }
 
@@ -183,13 +194,29 @@ impl ConvergenceMonitor {
                 Ok((agent_id_str, count))
             }) {
                 for row in cal_rows {
-                    if let Ok((agent_id_str, count)) = row {
-                        if let Ok(agent_id) = Uuid::parse_str(&agent_id_str) {
-                            self.calibration_counts.insert(agent_id, count);
+                    match row {
+                        Ok((agent_id_str, count)) => {
+                            match Uuid::parse_str(&agent_id_str) {
+                                Ok(agent_id) => {
+                                    self.calibration_counts.insert(agent_id, count);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        agent_id = %agent_id_str,
+                                        "skipping calibration count for invalid agent_id"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "skipping malformed calibration count row");
                         }
                     }
                 }
             }
+        } else {
+            tracing::warn!("failed to query calibration counts — calibration state may be inaccurate");
         }
 
         // Restore last known scores into cache (stale but conservative)
@@ -204,17 +231,45 @@ impl ConvergenceMonitor {
                 Ok((agent_id_str, score, level))
             }) {
                 for row in score_rows {
-                    if let Ok((agent_id_str, score, level)) = row {
-                        if let Ok(agent_id) = Uuid::parse_str(&agent_id_str) {
-                            self.score_cache.insert(agent_id, CachedScore {
-                                score,
-                                level,
-                                cached_at: Instant::now(),
-                            });
+                    match row {
+                        Ok((agent_id_str, score, level)) => {
+                            match Uuid::parse_str(&agent_id_str) {
+                                Ok(agent_id) => {
+                                    // Guard against NaN/Inf scores from corrupted DB
+                                    let safe_score = if score.is_nan() || score.is_infinite() {
+                                        tracing::warn!(
+                                            agent_id = %agent_id,
+                                            raw_score = %score,
+                                            "non-finite score in DB — clamping to 0.0"
+                                        );
+                                        0.0
+                                    } else {
+                                        score.clamp(0.0, 1.0)
+                                    };
+                                    self.score_cache.insert(agent_id, CachedScore {
+                                        score: safe_score,
+                                        level,
+                                        signal_scores: [0.0; 8], // Stale cache from DB — signals unknown
+                                        cached_at: Instant::now(),
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        agent_id = %agent_id_str,
+                                        "skipping score cache for invalid agent_id"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "skipping malformed score cache row");
                         }
                     }
                 }
             }
+        } else {
+            tracing::warn!("failed to query convergence scores — score cache will be empty");
         }
 
         tracing::info!(restored = restored_count, "state reconstruction complete");
@@ -242,7 +297,9 @@ impl ConvergenceMonitor {
                 .await
                 .expect("failed to bind HTTP listener");
             tracing::info!("HTTP API listening on port {http_port}");
-            axum::serve(listener, router).await.ok();
+            if let Err(e) = axum::serve(listener, router).await {
+                tracing::error!(error = %e, "HTTP API server exited with error");
+            }
         });
 
         // ── Start Unix socket transport (Unix only) ────────────────
@@ -272,6 +329,16 @@ impl ConvergenceMonitor {
         let mut cooldown_interval = tokio::time::interval(
             tokio::time::Duration::from_secs(60),
         );
+        // Task 19.2: 5-minute and 15-minute timer ticks for signal scheduling.
+        // 15-min timer offset by 150s (2.5 min) to avoid thundering herd.
+        let mut signal_5min_interval = tokio::time::interval(
+            tokio::time::Duration::from_secs(300),
+        );
+        let mut signal_15min_interval = tokio::time::interval(
+            tokio::time::Duration::from_secs(900),
+        );
+        // Stagger the 15-min timer by 2.5 minutes
+        signal_15min_interval.reset_after(tokio::time::Duration::from_secs(150));
 
         loop {
             tokio::select! {
@@ -285,6 +352,14 @@ impl ConvergenceMonitor {
                 _ = cooldown_interval.tick() => {
                     // Check and expire cooldowns for all agents
                     self.check_cooldowns();
+                }
+                _ = signal_5min_interval.tick() => {
+                    tracing::debug!("5-minute signal scheduler tick");
+                    self.handle_timer_tick(ComputeTrigger::Timer5Min);
+                }
+                _ = signal_15min_interval.tick() => {
+                    tracing::debug!("15-minute signal scheduler tick");
+                    self.handle_timer_tick(ComputeTrigger::Timer15Min);
                 }
                 _ = tokio::signal::ctrl_c() => {
                     tracing::info!("shutdown signal received");
@@ -376,10 +451,16 @@ impl ConvergenceMonitor {
                     .calibration_counts
                     .entry(event.agent_id)
                     .or_insert(0) += 1;
+
+                // Task 19.2: session boundary — mark all signals dirty, reset counter
+                self.signal_scheduler.record_session_boundary(event.agent_id);
             }
             EventType::SessionEnd => {
                 self.sessions.end_session(event.session_id);
                 self.window_manager.record_session_end(event.agent_id);
+
+                // Task 19.2: session boundary — mark all signals dirty, reset counter
+                self.signal_scheduler.record_session_boundary(event.agent_id);
 
                 // Lock config during active sessions, unlock on end (A8)
                 if self.sessions.active_sessions(&event.agent_id).is_empty() {
@@ -389,6 +470,9 @@ impl ConvergenceMonitor {
             _ => {
                 self.sessions
                     .record_event(event.session_id, event.timestamp);
+
+                // Task 19.2: record message for signal scheduling
+                self.signal_scheduler.record_message(event.agent_id);
             }
         }
 
@@ -412,9 +496,8 @@ impl ConvergenceMonitor {
         // hash chain (step 4) and session lifecycle updated (step 5).
         let (score, level, signals) = if let Some(cached) = self.score_cache.get(&event.agent_id) {
             if cached.cached_at.elapsed() < self.config.score_cache_ttl {
-                // Use cached score — skip expensive signal computation
-                // Signals unavailable from cache; use zeroed placeholder
-                (cached.score, cached.level, [0.0; 8])
+                // Use cached score AND cached signals — never publish zeroed placeholders
+                (cached.score, cached.level, cached.signal_scores)
             } else {
                 self.compute_score(event.agent_id)
             }
@@ -492,14 +575,28 @@ impl ConvergenceMonitor {
         let signals = self.signal_computer.compute(agent_id);
 
         // ── Step 9: Composite score (weighted, with amplification) ───
-        let weighted_sum: f64 = signals.iter().zip(self.config.signal_weights.iter())
+        // NaN guard: treat any NaN signal as 0.0 to prevent NaN
+        // propagation through weighted_sum → base_score → persistence.
+        // Without this, NaN passes through clamp(0.0, 1.0) unchanged
+        // and gets persisted to the database and published to shared state.
+        let sanitized_signals: [f64; 8] = {
+            let mut s = signals;
+            for v in s.iter_mut() {
+                if v.is_nan() {
+                    *v = 0.0;
+                }
+            }
+            s
+        };
+
+        let weighted_sum: f64 = sanitized_signals.iter().zip(self.config.signal_weights.iter())
             .map(|(s, w)| s * w)
             .sum();
         let weight_total: f64 = self.config.signal_weights.iter().sum();
         let base_score = if weight_total > 0.0 {
             weighted_sum / weight_total
         } else {
-            signals.iter().sum::<f64>() / 8.0
+            sanitized_signals.iter().sum::<f64>() / 8.0
         };
 
         // Apply amplification rules
@@ -529,12 +626,13 @@ impl ConvergenceMonitor {
             level = 2;
         }
 
-        // Cache the score
+        // Cache the score and signals
         self.score_cache.insert(
             agent_id,
             CachedScore {
                 score,
                 level,
+                signal_scores: signals,
                 cached_at: Instant::now(),
             },
         );
@@ -557,14 +655,63 @@ impl ConvergenceMonitor {
         }
     }
 
+    /// Handle a timer tick (5-min or 15-min) for signal scheduling (Task 19.2).
+    ///
+    /// For all active agents, compute signals whose tier matches the trigger.
+    /// Timer ticks are independent of event ingestion — they fire even if
+    /// no events are received.
+    fn handle_timer_tick(&mut self, trigger: ComputeTrigger) {
+        let active_agents: Vec<Uuid> = self.sessions.all_active_agent_ids();
+        for agent_id in active_agents {
+            let mut computed = Vec::new();
+            for i in 0..8 {
+                if self.signal_scheduler.should_compute(agent_id, i, &trigger) {
+                    computed.push(i);
+                    self.signal_scheduler.mark_computed(agent_id, i);
+                }
+            }
+            if !computed.is_empty() {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    trigger = ?trigger,
+                    signals = ?computed,
+                    "timer-triggered signal computation"
+                );
+            }
+        }
+    }
+
+    /// Get or create the reusable SQLite connection.
+    ///
+    /// If the cached connection is stale (e.g., disk full, corruption),
+    /// drops it and creates a fresh one. A single DB error does NOT
+    /// permanently break the monitor.
+    fn get_db_conn(&mut self) -> anyhow::Result<&rusqlite::Connection> {
+        // Probe the existing connection with a cheap no-op query.
+        // If it fails, drop it so we reconnect below.
+        if let Some(ref conn) = self.db_conn {
+            if conn.execute_batch("SELECT 1").is_err() {
+                tracing::warn!("cached SQLite connection is stale — reconnecting");
+                self.db_conn = None;
+            }
+        }
+
+        if self.db_conn.is_none() {
+            let conn = rusqlite::Connection::open(&self.config.db_path)?;
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+            self.db_conn = Some(conn);
+        }
+        Ok(self.db_conn.as_ref().unwrap())
+    }
+
     /// Persist an ITP event to the database with hash chain linkage (AC4).
     fn persist_itp_event(
-        &self,
+        &mut self,
         event: &IngestEvent,
         event_hash: &[u8; 32],
         previous_hash: &[u8; 32],
     ) -> anyhow::Result<()> {
-        let conn = rusqlite::Connection::open(&self.config.db_path)?;
+        let conn = self.get_db_conn()?;
         conn.execute(
             "INSERT INTO itp_events (session_id, agent_id, event_type, payload, \
              timestamp, event_hash, previous_hash) \
@@ -585,12 +732,12 @@ impl ConvergenceMonitor {
     /// Persist a convergence score to the database (Step 10, Req 9 AC6).
     /// Score MUST be persisted BEFORE any intervention action is taken.
     fn persist_convergence_score(
-        &self,
+        &mut self,
         agent_id: Uuid,
         score: f64,
         level: u8,
     ) -> anyhow::Result<()> {
-        let conn = rusqlite::Connection::open(&self.config.db_path)?;
+        let conn = self.get_db_conn()?;
         conn.execute(
             "INSERT INTO convergence_scores (agent_id, score, level, recorded_at) \
              VALUES (?1, ?2, ?3, ?4)",
@@ -609,7 +756,11 @@ impl ConvergenceMonitor {
 
 /// Map composite score to intervention level.
 ///
+/// NaN is treated as safe (L0) — a corrupted signal must never
+/// escalate to L4 and trigger external notifications.
+///
 /// ```text
+/// NaN         → L0 (safe default)
 /// [0.0, 0.3)  → L0 (passive)
 /// [0.3, 0.5)  → L1 (soft notification)
 /// [0.5, 0.7)  → L2 (active intervention)
@@ -617,6 +768,10 @@ impl ConvergenceMonitor {
 /// [0.85, 1.0] → L4 (external escalation)
 /// ```
 fn score_to_level(score: f64) -> u8 {
+    if score.is_nan() {
+        tracing::warn!("score_to_level received NaN — defaulting to L0 (safe)");
+        return 0;
+    }
     if score < 0.3 {
         0
     } else if score < 0.5 {

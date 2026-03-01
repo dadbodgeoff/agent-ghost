@@ -9,6 +9,7 @@ license.workspace = true
 cortex-core = { workspace = true }
 ghost-signing = { workspace = true }
 
+blake3 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

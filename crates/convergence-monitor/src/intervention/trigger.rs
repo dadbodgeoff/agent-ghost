@@ -45,7 +45,7 @@ impl Default for AgentInterventionState {
 }
 
 /// Composite scoring result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompositeResult {
     pub score: f64,
     pub level: u8,

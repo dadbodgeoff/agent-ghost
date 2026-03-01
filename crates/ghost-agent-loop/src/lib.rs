@@ -10,6 +10,7 @@
 //! GATE 1.5: damage counter
 //! GATE 2: spending cap
 //! GATE 3: kill switch
+//! GATE 3.5: distributed kill gate (when enabled)
 
 pub mod runner;
 pub use runner::FlushExecutor;

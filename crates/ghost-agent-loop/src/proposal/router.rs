@@ -8,9 +8,11 @@ use cortex_core::memory::BaseMemory;
 use cortex_core::models::proposal::{ProposalDecision, ProposalOperation};
 use cortex_core::traits::convergence::{Proposal, ProposalContext};
 use ghost_policy::feedback::DenialFeedback;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Score cache entry with TTL (Req 33 AC8).
+#[derive(Debug, Clone)]
 struct CachedScore {
     score: f64,
     level: u8,
@@ -18,7 +20,7 @@ struct CachedScore {
 }
 
 /// Pending proposal record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingProposal {
     pub proposal: Proposal,
     pub decision: ProposalDecision,

@@ -71,7 +71,7 @@ impl AutoTriggerEvaluator {
         // Classify and execute
         let (level, agent_id) = classify_trigger(&trigger);
         tracing::info!(
-            trigger = ?std::mem::discriminant(&trigger),
+            trigger = ?trigger,
             level = ?level,
             agent_id = ?agent_id,
             "Trigger classified"
@@ -153,6 +153,7 @@ fn classify_trigger(trigger: &TriggerEvent) -> (KillLevel, Option<Uuid>) {
         TriggerEvent::NetworkEgressViolation { agent_id, .. } => {
             (KillLevel::Quarantine, Some(*agent_id))
         }
+        TriggerEvent::DistributedKillGate { .. } => (KillLevel::KillAll, None),
     }
 }
 
@@ -182,6 +183,7 @@ fn compute_dedup_key(trigger: &TriggerEvent) -> DedupKey {
         TriggerEvent::NetworkEgressViolation { agent_id, .. } => {
             ("NetworkEgressViolation", Some(*agent_id))
         }
+        TriggerEvent::DistributedKillGate { .. } => ("DistributedKillGate", None),
     };
     DedupKey {
         trigger_type: trigger_type.into(),

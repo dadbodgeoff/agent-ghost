@@ -120,21 +120,29 @@ fn unlock(file: &std::fs::File) -> std::io::Result<()> {
 impl ITPAdapter for JsonlTransport {
     fn on_session_start(&self, event: &SessionStartEvent) {
         let itp = ITPEvent::SessionStart(event.clone());
-        let _ = self.append_event(&event.session_id, &itp);
+        if let Err(e) = self.append_event(&event.session_id, &itp) {
+            tracing::error!(session_id = %event.session_id, error = %e, "failed to persist ITP SessionStart event");
+        }
     }
 
     fn on_message(&self, event: &InteractionMessageEvent) {
         let itp = ITPEvent::InteractionMessage(event.clone());
-        let _ = self.append_event(&event.session_id, &itp);
+        if let Err(e) = self.append_event(&event.session_id, &itp) {
+            tracing::error!(session_id = %event.session_id, error = %e, "failed to persist ITP InteractionMessage event");
+        }
     }
 
     fn on_session_end(&self, event: &SessionEndEvent) {
         let itp = ITPEvent::SessionEnd(event.clone());
-        let _ = self.append_event(&event.session_id, &itp);
+        if let Err(e) = self.append_event(&event.session_id, &itp) {
+            tracing::error!(session_id = %event.session_id, error = %e, "failed to persist ITP SessionEnd event");
+        }
     }
 
     fn on_agent_state(&self, event: &AgentStateSnapshotEvent) {
         let itp = ITPEvent::AgentStateSnapshot(event.clone());
-        let _ = self.append_event(&event.session_id, &itp);
+        if let Err(e) = self.append_event(&event.session_id, &itp) {
+            tracing::error!(session_id = %event.session_id, error = %e, "failed to persist ITP AgentStateSnapshot event");
+        }
     }
 }

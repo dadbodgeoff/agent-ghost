@@ -37,6 +37,9 @@ pub struct GhostConfig {
     pub models: ModelsConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    /// Mesh networking configuration (Task 22.1). Disabled by default.
+    #[serde(default)]
+    pub mesh: MeshConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,6 +292,47 @@ fn default_vault_token_env() -> String {
     "VAULT_TOKEN".into()
 }
 
+/// Mesh networking configuration (Task 22.1).
+/// Disabled by default — opt-in via `mesh.enabled: true` in ghost.yml.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshConfig {
+    /// Whether mesh networking is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Known agents for discovery and delegation.
+    #[serde(default)]
+    pub known_agents: Vec<KnownAgent>,
+    /// Minimum trust score required for delegation (default 0.3).
+    #[serde(default = "default_min_trust")]
+    pub min_trust_for_delegation: f64,
+    /// Maximum delegation chain depth (default 3).
+    #[serde(default = "default_max_delegation_depth")]
+    pub max_delegation_depth: u32,
+}
+
+impl Default for MeshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            known_agents: Vec::new(),
+            min_trust_for_delegation: default_min_trust(),
+            max_delegation_depth: default_max_delegation_depth(),
+        }
+    }
+}
+
+fn default_min_trust() -> f64 { 0.3 }
+fn default_max_delegation_depth() -> u32 { 3 }
+
+/// A known agent for mesh discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownAgent {
+    pub name: String,
+    pub endpoint: String,
+    /// Base64-encoded Ed25519 public key.
+    pub public_key: String,
+}
+
 /// Build a `SecretProvider` from the parsed `SecretsConfig`.
 pub fn build_secret_provider(
     config: &SecretsConfig,
@@ -403,6 +447,7 @@ impl Default for GhostConfig {
             security: SecurityConfig::default(),
             models: ModelsConfig::default(),
             secrets: SecretsConfig::default(),
+            mesh: MeshConfig::default(),
         }
     }
 }

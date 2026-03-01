@@ -15,6 +15,7 @@
 use ghost_llm::tokens::TokenCounter;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use super::memory_compressor::MemoryCompressor;
 use super::observation_masker::{ObservationMasker, ObservationMaskerConfig};
@@ -22,7 +23,7 @@ use super::spotlighting::{Spotlighter, SpotlightingConfig};
 use super::token_budget::{Budget, TokenBudgetAllocator};
 
 /// A single compiled prompt layer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptLayer {
     pub index: u8,
     pub name: &'static str,
@@ -32,7 +33,7 @@ pub struct PromptLayer {
 }
 
 /// Input data for prompt compilation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PromptInput {
     pub corp_policy: String,
     pub simulation_prompt: String,
@@ -49,7 +50,7 @@ pub struct PromptInput {
 /// Statistics from a prompt compilation pass.
 ///
 /// Tracks token savings from each optimization stage (Task 18.4).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompilationStats {
     /// L7 token count before compression.
     pub l7_original_tokens: usize,

@@ -68,6 +68,11 @@ impl SessionManager {
     pub fn touch(&mut self, session_id: Uuid) {
         if let Some(ctx) = self.sessions.get_mut(&session_id) {
             ctx.last_activity = Utc::now();
+        } else {
+            tracing::debug!(
+                session_id = %session_id,
+                "touch() called for unknown session — no-op"
+            );
         }
     }
 
@@ -93,10 +98,24 @@ impl SessionManager {
             .map(|(id, _)| *id)
             .collect();
 
-        for id in to_remove {
-            if let Some(ctx) = self.sessions.remove(&id) {
+        if !to_remove.is_empty() {
+            tracing::info!(
+                count = to_remove.len(),
+                max_idle_secs = max_idle.num_seconds(),
+                "pruning idle sessions"
+            );
+        }
+
+        for id in &to_remove {
+            if let Some(ctx) = self.sessions.remove(id) {
+                tracing::debug!(
+                    session_id = %id,
+                    agent_id = %ctx.agent_id,
+                    last_activity = %ctx.last_activity,
+                    "pruned idle session"
+                );
                 if let Some(agent_sessions) = self.agent_sessions.get_mut(&ctx.agent_id) {
-                    agent_sessions.retain(|s| *s != id);
+                    agent_sessions.retain(|s| s != id);
                 }
             }
         }

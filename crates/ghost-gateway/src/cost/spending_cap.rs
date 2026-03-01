@@ -53,20 +53,25 @@ impl SpendingCapEnforcer {
         let current = self.cost_tracker.get_daily_total(agent_id);
         if current > cap {
             if let Some(sender) = &self.trigger_sender {
-                let _ = sender.try_send(TriggerEvent::SpendingCapExceeded {
+                if sender.try_send(TriggerEvent::SpendingCapExceeded {
                     agent_id,
                     daily_total: current,
                     cap,
                     overage: current - cap,
                     detected_at: chrono::Utc::now(),
-                });
+                }).is_err() {
+                    tracing::error!(
+                        agent_id = %agent_id,
+                        "trigger channel full — SpendingCapExceeded event dropped (AC13)"
+                    );
+                }
             }
         }
     }
 }
 
 /// Spending cap exceeded error.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SpendingCapError {
     pub agent_id: Uuid,
     pub daily_total: f64,

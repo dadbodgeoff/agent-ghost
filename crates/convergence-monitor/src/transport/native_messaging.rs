@@ -41,7 +41,9 @@ impl NativeMessagingTransport {
 
             match serde_json::from_slice::<IngestEvent>(&buf) {
                 Ok(event) => {
-                    let _ = self.ingest_tx.try_send(event);
+                    if self.ingest_tx.try_send(event).is_err() {
+                        tracing::warn!("native messaging: ingest channel full — event dropped (AC4)");
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("malformed native message: {e}");

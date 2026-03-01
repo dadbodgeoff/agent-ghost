@@ -1,10 +1,12 @@
 //! Health checking and monitor connection management (Req 15 AC5-AC9).
+//!
+//! All state transitions go through `GatewaySharedState::transition_to()`
+//! to enforce the 6-state FSM. Direct AtomicU8 writes are FORBIDDEN.
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::gateway::GatewayState;
+use crate::gateway::{GatewayError, GatewaySharedState, GatewayState};
 
 /// Connection state to the convergence monitor.
 #[derive(Debug, Clone)]
@@ -34,17 +36,20 @@ impl Default for MonitorHealthConfig {
 }
 
 /// Periodic health checker for the convergence monitor.
+///
+/// Uses `GatewaySharedState` for all transitions — never writes to
+/// AtomicU8 directly, ensuring FSM validation is always enforced.
 pub struct MonitorHealthChecker {
     pub config: MonitorHealthConfig,
-    pub gateway_state: Arc<AtomicU8>,
+    pub shared_state: Arc<GatewaySharedState>,
     pub consecutive_failures: u32,
 }
 
 impl MonitorHealthChecker {
-    pub fn new(config: MonitorHealthConfig, gateway_state: Arc<AtomicU8>) -> Self {
+    pub fn new(config: MonitorHealthConfig, shared_state: Arc<GatewaySharedState>) -> Self {
         Self {
             config,
-            gateway_state,
+            shared_state,
             consecutive_failures: 0,
         }
     }
@@ -81,29 +86,54 @@ impl MonitorHealthChecker {
         }
     }
 
+    /// Transition to Degraded via validated FSM path.
+    ///
+    /// Handles both Healthy → Degraded and Recovering → Degraded.
+    /// If the gateway is in Recovering state and the monitor goes down
+    /// again, we must transition back to Degraded (the FSM allows it).
     fn maybe_transition_to_degraded(&self) {
         if self.consecutive_failures >= self.config.failure_threshold {
-            let current = self.gateway_state.load(Ordering::Acquire);
-            if current == GatewayState::Healthy as u8 {
-                self.gateway_state
-                    .store(GatewayState::Degraded as u8, Ordering::Release);
-                tracing::error!(
-                    "CRITICAL: Convergence monitor unreachable. Transitioning to DEGRADED."
-                );
+            let current = self.shared_state.current_state();
+            if current == GatewayState::Healthy || current == GatewayState::Recovering {
+                if let Err(e) = self.shared_state.transition_to(GatewayState::Degraded) {
+                    tracing::error!(
+                        error = %e,
+                        from = ?current,
+                        "Failed to transition to DEGRADED — FSM rejected"
+                    );
+                } else {
+                    tracing::error!(
+                        from = ?current,
+                        "CRITICAL: Convergence monitor unreachable. Transitioned to DEGRADED."
+                    );
+                }
             }
         }
+    }
+
+    /// Public wrapper for testing `maybe_transition_to_degraded`.
+    /// Production code calls the private method via `check_once`.
+    #[doc(hidden)]
+    pub fn maybe_transition_to_degraded_public(&self) {
+        self.maybe_transition_to_degraded();
     }
 }
 
 /// Recovery coordinator: syncs state after monitor reconnection.
+///
+/// Uses `GatewaySharedState` for all transitions — never writes to
+/// AtomicU8 directly, ensuring FSM validation is always enforced.
 pub struct RecoveryCoordinator {
-    pub gateway_state: Arc<AtomicU8>,
+    pub shared_state: Arc<GatewaySharedState>,
     pub monitor_address: String,
 }
 
 impl RecoveryCoordinator {
     /// Attempt recovery: 3 stability checks, replay buffered events, transition to Healthy.
-    pub async fn attempt_recovery(&self) -> bool {
+    ///
+    /// FSM path: Recovering → Healthy (on success) or Recovering → Degraded (on failure).
+    /// Both transitions are validated by `GatewaySharedState::transition_to()`.
+    pub async fn attempt_recovery(&self) -> Result<bool, GatewayError> {
         // 3 stability checks, 5s apart
         for i in 1..=3 {
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -117,17 +147,15 @@ impl RecoveryCoordinator {
                 .unwrap_or(false);
             if !ok {
                 tracing::warn!(check = i, "Recovery stability check failed, aborting");
-                // Back to Degraded
-                self.gateway_state
-                    .store(GatewayState::Degraded as u8, Ordering::Release);
-                return false;
+                // Back to Degraded via validated FSM transition
+                self.shared_state.transition_to(GatewayState::Degraded)?;
+                return Ok(false);
             }
         }
 
-        // Transition to Healthy
-        self.gateway_state
-            .store(GatewayState::Healthy as u8, Ordering::Release);
+        // Transition to Healthy via validated FSM transition
+        self.shared_state.transition_to(GatewayState::Healthy)?;
         tracing::info!("Recovery complete. State: HEALTHY");
-        true
+        Ok(true)
     }
 }

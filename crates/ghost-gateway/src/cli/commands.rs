@@ -13,7 +13,9 @@ pub fn run_backup(output: Option<&str>) {
         });
 
     if let Some(parent) = output_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(error = %e, path = %parent.display(), "failed to create backup directory");
+        }
     }
 
     let passphrase = std::env::var("GHOST_BACKUP_KEY").unwrap_or_default();

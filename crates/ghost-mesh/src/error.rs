@@ -42,4 +42,7 @@ pub enum MeshError {
 
     #[error("memory poisoning detected: {reason}")]
     MemoryPoisoningDetected { reason: String },
+
+    #[error("kill gate closed on target node {node_id}")]
+    KillGateClosed { node_id: Uuid },
 }

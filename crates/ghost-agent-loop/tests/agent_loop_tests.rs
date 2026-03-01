@@ -43,6 +43,7 @@ fn gate_checks_execute_in_exact_order() {
             "damage_counter",
             "spending_cap",
             "kill_switch",
+            "kill_gate",
         ]
     );
 }

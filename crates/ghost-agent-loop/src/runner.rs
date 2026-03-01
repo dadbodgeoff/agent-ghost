@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use read_only_pipeline::snapshot::{AgentSnapshot, ConvergenceState};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -30,7 +30,7 @@ use crate::tools::registry::ToolRegistry;
 
 /// Lightweight reference to convergence shared state read from the
 /// atomic state file published by the convergence monitor.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConvergenceSharedStateRef {
     pub level: u8,
     pub score: f64,
@@ -49,6 +49,8 @@ pub enum RunError {
     SpendingCapExceeded { spent: f64, cap: f64 },
     #[error("kill switch active")]
     KillSwitchActive,
+    #[error("distributed kill gate closed")]
+    KillGateClosed,
     #[error("cooldown active")]
     CooldownActive,
     #[error("session boundary violation")]
@@ -60,7 +62,7 @@ pub enum RunError {
 }
 
 /// Result of a single agent run.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
     pub output: Option<String>,
     pub tool_calls_made: u32,
@@ -71,7 +73,7 @@ pub struct RunResult {
 }
 
 /// Tracks gate check execution order for testing.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct GateCheckLog {
     pub checks: Vec<&'static str>,
 }
@@ -88,6 +90,8 @@ pub struct AgentRunner {
     pub prompt_compiler: PromptCompiler,
     /// External kill switch flag (SeqCst ordering).
     pub kill_switch: Arc<AtomicBool>,
+    /// Distributed kill gate (optional — None when running single-node).
+    pub kill_gate: Option<Arc<ghost_kill_gates::gate::KillGate>>,
     /// Maximum recursion depth (default 10).
     pub max_recursion_depth: u32,
     /// Spending cap.
@@ -108,6 +112,7 @@ impl AgentRunner {
             itp_emitter: None,
             prompt_compiler: PromptCompiler::new(context_window),
             kill_switch: Arc::new(AtomicBool::new(false)),
+            kill_gate: None,
             max_recursion_depth: 10,
             spending_cap: 10.0,
             daily_spend: 0.0,
@@ -154,7 +159,9 @@ impl AgentRunner {
         // GATE 2: Spending cap
         log.checks.push("spending_cap");
         let total_spend = self.daily_spend + ctx.total_cost;
-        if total_spend > self.spending_cap {
+        // NaN guard: NaN + anything = NaN, and NaN > cap = false,
+        // which would silently bypass the spending cap.
+        if total_spend.is_nan() || total_spend.is_infinite() || total_spend > self.spending_cap {
             return Err(RunError::SpendingCapExceeded {
                 spent: total_spend,
                 cap: self.spending_cap,
@@ -165,6 +172,14 @@ impl AgentRunner {
         log.checks.push("kill_switch");
         if self.kill_switch.load(Ordering::SeqCst) {
             return Err(RunError::KillSwitchActive);
+        }
+
+        // GATE 3.5: Distributed kill gate (when enabled)
+        log.checks.push("kill_gate");
+        if let Some(ref gate) = self.kill_gate {
+            if gate.is_closed() {
+                return Err(RunError::KillGateClosed);
+            }
         }
 
         Ok(())
@@ -341,19 +356,389 @@ impl AgentRunner {
         Ok(ctx)
     }
 
+    /// Run the recursive agentic loop.
+    ///
+    /// Each iteration: check gates → compile prompt → call LLM → process response.
+    /// Tool calls loop back (append results, re-prompt). Text responses exit.
+    ///
+    /// Key invariants:
+    /// - `ctx.snapshot` is immutable for the entire run (INV-PRE-06)
+    /// - Gate checks happen EVERY iteration
+    /// - `recursion_depth` increments per tool-call round-trip
+    /// - `total_cost` accumulates across iterations
+    /// - Kill switch is checked every iteration (GATE 3)
+    pub async fn run_turn(
+        &mut self,
+        ctx: &mut RunContext,
+        fallback_chain: &mut crate::runner::LLMFallbackChain,
+        user_message: &str,
+    ) -> Result<RunResult, RunError> {
+        use crate::output_inspector::InspectionResult;
+        use crate::proposal::extractor::ProposalExtractor;
+        use crate::tools::plan_validator::PlanValidationResult;
+        use ghost_llm::provider::{ChatMessage, LLMResponse, MessageRole};
+
+        // Build initial conversation with user message.
+        let mut conversation: Vec<ChatMessage> = Vec::new();
+
+        // Compile prompt layers to get system message.
+        let prompt_input = crate::context::prompt_compiler::PromptInput {
+            user_message: user_message.to_string(),
+            ..Default::default()
+        };
+        let (layers, _stats) = self.prompt_compiler.compile(&prompt_input);
+
+        // L0 (CORP_POLICY) + L1 (SIMULATION_BOUNDARY) as system message.
+        let system_content: String = layers.iter()
+            .filter(|l| l.index <= 1)
+            .map(|l| l.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !system_content.is_empty() {
+            conversation.push(ChatMessage {
+                role: MessageRole::System,
+                content: system_content,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        // User message.
+        conversation.push(ChatMessage {
+            role: MessageRole::User,
+            content: user_message.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        // Get tool schemas filtered by intervention level.
+        let tool_schemas = self.tool_registry.schemas_filtered(ctx.intervention_level);
+
+        let mut result = RunResult {
+            output: None,
+            tool_calls_made: 0,
+            proposals_extracted: 0,
+            total_tokens: 0,
+            total_cost: 0.0,
+            halted_by: None,
+        };
+
+        loop {
+            // ── GATE CHECKS (every iteration) ───────────────────────
+            let mut gate_log = GateCheckLog::default();
+            if let Err(e) = self.check_gates(ctx, &mut gate_log) {
+                tracing::warn!(error = %e, "gate check failed — halting loop");
+                result.halted_by = Some(e.to_string());
+                result.total_tokens = ctx.total_tokens;
+                result.total_cost = ctx.total_cost;
+                return if result.output.is_some() {
+                    Ok(result)
+                } else {
+                    Err(e)
+                };
+            }
+
+            // ── LLM CALL ────────────────────────────────────────────
+            let completion = fallback_chain
+                .complete(&conversation, &tool_schemas)
+                .await
+                .map_err(|e| {
+                    self.circuit_breaker.record_failure();
+                    RunError::LLMError(e.to_string())
+                })?;
+
+            // Record success + update context.
+            self.circuit_breaker.record_success();
+            ctx.total_tokens += completion.usage.total_tokens;
+            let pricing = fallback_chain_pricing(fallback_chain);
+            let call_cost = (completion.usage.prompt_tokens as f64 * pricing.input_per_1k / 1000.0)
+                + (completion.usage.completion_tokens as f64 * pricing.output_per_1k / 1000.0);
+            ctx.total_cost += call_cost;
+
+            // ── PROCESS RESPONSE ────────────────────────────────────
+            match completion.response {
+                LLMResponse::Empty => {
+                    result.total_tokens = ctx.total_tokens;
+                    result.total_cost = ctx.total_cost;
+                    return Ok(result);
+                }
+
+                LLMResponse::Text(text) => {
+                    // Inspect for credential exfiltration.
+                    let inspection = self.output_inspector.scan(&text, ctx.agent_id);
+                    let final_text = match inspection {
+                        InspectionResult::KillAll { pattern_name, trigger: _ } => {
+                            self.kill_switch.store(true, Ordering::SeqCst);
+                            tracing::error!(pattern = %pattern_name, "KILL ALL — credential exfiltration detected");
+                            result.halted_by = Some("credential_exfiltration".into());
+                            result.total_tokens = ctx.total_tokens;
+                            result.total_cost = ctx.total_cost;
+                            return Err(RunError::CredentialExfiltration);
+                        }
+                        InspectionResult::Warning { redacted_text, .. } => redacted_text,
+                        InspectionResult::Clean => text,
+                    };
+
+                    // Extract proposals.
+                    let proposals = ProposalExtractor::extract(&final_text, ctx.agent_id, ctx.session_id);
+                    result.proposals_extracted += proposals.len() as u32;
+                    ctx.proposal_count += proposals.len() as u32;
+
+                    // Route proposals through ProposalRouter (Req 33).
+                    for proposal in proposals {
+                        use cortex_core::models::proposal::ProposalDecision;
+                        self.proposal_router.check_superseding(&proposal);
+                        if self.proposal_router.is_resubmission(&proposal) {
+                            self.proposal_router.record_decision(
+                                proposal,
+                                ProposalDecision::AutoRejected,
+                                false,
+                            );
+                        } else if let Some(decision) = self.proposal_router.reflection_precheck(
+                            &proposal,
+                            &cortex_core::config::ReflectionConfig::default(),
+                        ) {
+                            self.proposal_router.record_decision(proposal, decision, false);
+                        } else {
+                            // Auto-approve at low intervention levels, require review at high.
+                            let decision = if ctx.intervention_level <= 1 {
+                                ProposalDecision::AutoApproved
+                            } else {
+                                ProposalDecision::HumanReviewRequired
+                            };
+                            self.proposal_router.record_decision(proposal, decision, false);
+                        }
+                    }
+
+                    result.output = Some(final_text);
+                    result.total_tokens = ctx.total_tokens;
+                    result.total_cost = ctx.total_cost;
+                    return Ok(result);
+                }
+
+                LLMResponse::ToolCalls(calls) => {
+                    // Validate plan.
+                    if let PlanValidationResult::Deny(reason) = self.tool_executor.validate_plan(&calls) {
+                        tracing::warn!(reason = %reason, "tool plan denied");
+                        self.tool_executor.record_denial(&calls[0].name);
+                        // Feed denial back to LLM.
+                        conversation.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: String::new(),
+                            tool_calls: Some(calls.clone()),
+                            tool_call_id: None,
+                        });
+                        for call in &calls {
+                            conversation.push(ChatMessage {
+                                role: MessageRole::Tool,
+                                content: format!("ERROR: Tool plan denied — {reason}"),
+                                tool_calls: None,
+                                tool_call_id: Some(call.id.clone()),
+                            });
+                        }
+                        ctx.recursion_depth += 1;
+                        continue;
+                    }
+
+                    // Execute each tool call.
+                    conversation.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: String::new(),
+                        tool_calls: Some(calls.clone()),
+                        tool_call_id: None,
+                    });
+
+                    for call in &calls {
+                        let tool_result = self.tool_executor
+                            .execute(call, &self.tool_registry)
+                            .await;
+
+                        let output = match tool_result {
+                            Ok(tr) => {
+                                result.tool_calls_made += 1;
+                                ctx.tool_call_count += 1;
+                                // Track destructive tools in damage counter.
+                                if call.name == "write_file" || call.name == "shell" {
+                                    self.damage_counter.increment();
+                                }
+                                tr.output
+                            }
+                            Err(e) => format!("ERROR: {e}"),
+                        };
+
+                        conversation.push(ChatMessage {
+                            role: MessageRole::Tool,
+                            content: output,
+                            tool_calls: None,
+                            tool_call_id: Some(call.id.clone()),
+                        });
+                    }
+
+                    ctx.recursion_depth += 1;
+                    continue;
+                }
+
+                LLMResponse::Mixed { text, tool_calls } => {
+                    // Process text portion (inspect + extract proposals).
+                    let inspection = self.output_inspector.scan(&text, ctx.agent_id);
+                    match inspection {
+                        InspectionResult::KillAll { pattern_name, trigger: _ } => {
+                            self.kill_switch.store(true, Ordering::SeqCst);
+                            tracing::error!(pattern = %pattern_name, "KILL ALL — credential exfiltration in mixed response");
+                            result.halted_by = Some("credential_exfiltration".into());
+                            result.total_tokens = ctx.total_tokens;
+                            result.total_cost = ctx.total_cost;
+                            return Err(RunError::CredentialExfiltration);
+                        }
+                        InspectionResult::Warning { redacted_text, .. } => {
+                            result.output = Some(redacted_text);
+                        }
+                        InspectionResult::Clean => {
+                            result.output = Some(text.clone());
+                        }
+                    }
+
+                    let proposals = ProposalExtractor::extract(&text, ctx.agent_id, ctx.session_id);
+                    result.proposals_extracted += proposals.len() as u32;
+                    ctx.proposal_count += proposals.len() as u32;
+
+                    // Route proposals through ProposalRouter (Req 33).
+                    for proposal in proposals {
+                        use cortex_core::models::proposal::ProposalDecision;
+                        self.proposal_router.check_superseding(&proposal);
+                        if self.proposal_router.is_resubmission(&proposal) {
+                            self.proposal_router.record_decision(
+                                proposal,
+                                ProposalDecision::AutoRejected,
+                                false,
+                            );
+                        } else if let Some(decision) = self.proposal_router.reflection_precheck(
+                            &proposal,
+                            &cortex_core::config::ReflectionConfig::default(),
+                        ) {
+                            self.proposal_router.record_decision(proposal, decision, false);
+                        } else {
+                            let decision = if ctx.intervention_level <= 1 {
+                                ProposalDecision::AutoApproved
+                            } else {
+                                ProposalDecision::HumanReviewRequired
+                            };
+                            self.proposal_router.record_decision(proposal, decision, false);
+                        }
+                    }
+
+                    // Process tool calls (same as ToolCalls branch).
+                    if let PlanValidationResult::Deny(reason) = self.tool_executor.validate_plan(&tool_calls) {
+                        tracing::warn!(reason = %reason, "tool plan denied in mixed response");
+                        self.tool_executor.record_denial(&tool_calls[0].name);
+                        conversation.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: text,
+                            tool_calls: Some(tool_calls.clone()),
+                            tool_call_id: None,
+                        });
+                        for call in &tool_calls {
+                            conversation.push(ChatMessage {
+                                role: MessageRole::Tool,
+                                content: format!("ERROR: Tool plan denied — {reason}"),
+                                tool_calls: None,
+                                tool_call_id: Some(call.id.clone()),
+                            });
+                        }
+                        ctx.recursion_depth += 1;
+                        continue;
+                    }
+
+                    conversation.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: text,
+                        tool_calls: Some(tool_calls.clone()),
+                        tool_call_id: None,
+                    });
+
+                    for call in &tool_calls {
+                        let tool_result = self.tool_executor
+                            .execute(call, &self.tool_registry)
+                            .await;
+
+                        let output = match tool_result {
+                            Ok(tr) => {
+                                result.tool_calls_made += 1;
+                                ctx.tool_call_count += 1;
+                                if call.name == "write_file" || call.name == "shell" {
+                                    self.damage_counter.increment();
+                                }
+                                tr.output
+                            }
+                            Err(e) => format!("ERROR: {e}"),
+                        };
+
+                        conversation.push(ChatMessage {
+                            role: MessageRole::Tool,
+                            content: output,
+                            tool_calls: None,
+                            tool_call_id: Some(call.id.clone()),
+                        });
+                    }
+
+                    ctx.recursion_depth += 1;
+                    continue;
+                }
+            }
+        }
+    }
+
     /// Read convergence shared state from the atomic state file.
-    /// Returns None if the file doesn't exist or can't be parsed
-    /// (first boot or degraded mode → defaults to level 0).
+    /// Returns None if the file doesn't exist (first boot) — logs a debug message.
+    /// Returns None if the file can't be parsed (corrupted) — logs a warning.
+    /// Defaults to level 0 when None (degraded mode).
     fn read_convergence_shared_state(&self, agent_id: Uuid) -> Option<ConvergenceSharedStateRef> {
+        let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            Ok(h) => h,
+            Err(_) => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    "HOME/USERPROFILE not set — cannot read convergence shared state, defaulting to level 0"
+                );
+                return None;
+            }
+        };
         let state_path = format!(
             "{}/.ghost/data/convergence_state/{}.json",
-            std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_default(),
-            agent_id
+            home, agent_id
         );
-        let content = std::fs::read_to_string(&state_path).ok()?;
-        serde_json::from_str(&content).ok()
+        let content = match std::fs::read_to_string(&state_path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    path = %state_path,
+                    "convergence state file not found — first boot or monitor not running, defaulting to level 0"
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    path = %state_path,
+                    error = %e,
+                    "failed to read convergence state file — defaulting to level 0"
+                );
+                return None;
+            }
+        };
+        match serde_json::from_str(&content) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    path = %state_path,
+                    error = %e,
+                    "failed to parse convergence state file (corrupted?) — defaulting to level 0"
+                );
+                None
+            }
+        }
     }
 }
 
@@ -367,5 +752,16 @@ pub trait FlushExecutor: Send + Sync {
         agent_id: Uuid,
         session_id: Uuid,
         memories_to_flush: Vec<serde_json::Value>,
-    ) -> Result<(), String>;
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Type alias for the LLM fallback chain used by `run_turn`.
+pub type LLMFallbackChain = ghost_llm::fallback::FallbackChain;
+
+/// Extract pricing from the first available provider in the fallback chain.
+/// Falls back to zero pricing if no providers are available.
+fn fallback_chain_pricing(
+    chain: &LLMFallbackChain,
+) -> ghost_llm::provider::TokenPricing {
+    chain.current_pricing()
 }

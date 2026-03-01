@@ -56,7 +56,13 @@ impl BackupScheduler {
 
     /// Run a single backup cycle: create backup, enforce retention.
     pub fn run_once(&self) -> BackupResult<PathBuf> {
-        let passphrase = std::env::var(&self.config.passphrase_env).unwrap_or_default();
+        let passphrase = std::env::var(&self.config.passphrase_env).unwrap_or_else(|_| {
+            tracing::warn!(
+                env_var = %self.config.passphrase_env,
+                "backup passphrase env var not set — using empty passphrase (backup will NOT be encrypted)"
+            );
+            String::new()
+        });
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         let filename = format!("ghost_{}.ghost-backup", timestamp);
         let output_path = self.config.backup_dir.join(&filename);
@@ -96,7 +102,9 @@ impl BackupScheduler {
         // Remove oldest beyond retention
         while backups.len() > self.config.retention_count {
             if let Some(oldest) = backups.first() {
-                let _ = std::fs::remove_file(oldest);
+                if let Err(e) = std::fs::remove_file(oldest) {
+                    tracing::warn!(path = %oldest.display(), error = %e, "failed to remove old backup during retention enforcement");
+                }
                 backups.remove(0);
             }
         }

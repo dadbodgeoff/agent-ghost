@@ -4,10 +4,10 @@ use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Query parameters for audit log queries.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditQueryParams {
     pub time_start: Option<String>,
     pub time_end: Option<String>,
@@ -85,7 +85,7 @@ pub async fn audit_export(Query(params): Query<AuditExportParams>) -> impl IntoR
     )
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditExportParams {
     pub format: Option<String>,
     pub agent_id: Option<String>,
