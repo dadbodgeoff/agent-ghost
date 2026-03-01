@@ -3,10 +3,14 @@
 //! Pushes convergence score updates, intervention level changes,
 //! kill switch activations, and proposal decisions to connected clients.
 
+use std::sync::Arc;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
+
+use crate::state::AppState;
 
 /// Query parameters for WebSocket connection (token auth).
 #[derive(Debug, Deserialize)]
@@ -43,27 +47,34 @@ pub enum WsEvent {
         decision: String,
         agent_id: String,
     },
+    /// Agent state changed (created, deleted, lifecycle transition).
+    AgentStateChange {
+        agent_id: String,
+        new_state: String,
+    },
     /// Heartbeat to keep connection alive.
     Ping,
 }
 
 /// GET /api/ws — WebSocket upgrade with token auth via query param.
 pub async fn ws_handler(
+    State(state): State<Arc<AppState>>,
     ws: WebSocketUpgrade,
     Query(params): Query<WsQueryParams>,
 ) -> impl IntoResponse {
-    // Validate token from query param
+    // Validate token from query param.
     if let Some(token) = &params.token {
         if !crate::auth::token_auth::validate_token(token) {
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
     }
 
-    ws.on_upgrade(handle_socket).into_response()
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
-async fn handle_socket(mut socket: WebSocket) {
-    // Send initial ping
+async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    // Send initial ping.
     let ping = match serde_json::to_string(&WsEvent::Ping) {
         Ok(s) => s,
         Err(e) => {
@@ -75,12 +86,13 @@ async fn handle_socket(mut socket: WebSocket) {
         return;
     }
 
-    // Keepalive + event forwarding loop
+    // Subscribe to the broadcast channel for real-time events.
+    let mut event_rx = state.event_tx.subscribe();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
     loop {
         tokio::select! {
-            // Keepalive ping every 30s
+            // Keepalive ping every 30s.
             _ = interval.tick() => {
                 let ping = match serde_json::to_string(&WsEvent::Ping) {
                     Ok(s) => s,
@@ -93,7 +105,28 @@ async fn handle_socket(mut socket: WebSocket) {
                     break;
                 }
             }
-            // Handle incoming messages from client
+            // Forward broadcast events to this WebSocket client.
+            event = event_rx.recv() => {
+                match event {
+                    Ok(ws_event) => {
+                        let json = match serde_json::to_string(&ws_event) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to serialize WebSocket event");
+                                continue;
+                            }
+                        };
+                        if socket.send(Message::Text(json)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "WebSocket client lagged behind broadcast");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // Handle incoming messages from client.
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {

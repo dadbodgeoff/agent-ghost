@@ -196,6 +196,7 @@ mod agent_registry {
             channel_bindings: vec![format!("cli:{name}")],
             capabilities: vec!["memory_read".into()],
             spending_cap: 5.0,
+            template: None,
         }
     }
 

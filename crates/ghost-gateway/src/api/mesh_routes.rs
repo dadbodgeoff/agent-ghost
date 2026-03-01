@@ -28,15 +28,27 @@ pub struct MeshRouteState {
     pub dispatcher: Arc<A2ADispatcher>,
     /// Known agent public keys for signature verification (agent_name → pubkey bytes).
     pub known_keys: Arc<Vec<Vec<u8>>>,
+    /// Optional DB connection for delegation state persistence.
+    pub db: Option<Arc<Mutex<rusqlite::Connection>>>,
 }
 
 /// Build the mesh router with A2A endpoints.
 ///
 /// Returns `None` if mesh is disabled (no routes registered).
 pub fn mesh_router(state: Arc<Mutex<A2AServerState>>, known_keys: Vec<Vec<u8>>) -> axum::Router {
+    mesh_router_with_db(state, known_keys, None)
+}
+
+/// Build the mesh router with A2A endpoints and optional DB for delegation persistence.
+pub fn mesh_router_with_db(
+    state: Arc<Mutex<A2AServerState>>,
+    known_keys: Vec<Vec<u8>>,
+    db: Option<Arc<Mutex<rusqlite::Connection>>>,
+) -> axum::Router {
     let route_state = MeshRouteState {
         dispatcher: Arc::new(A2ADispatcher::new(state)),
         known_keys: Arc::new(known_keys),
+        db,
     };
 
     axum::Router::new()
@@ -124,7 +136,71 @@ async fn handle_a2a(
 
     // Dispatch
     let response = state.dispatcher.dispatch(&msg);
+
+    // Persist delegation state transitions for delegation-related methods.
+    if let Some(ref db) = state.db {
+        persist_delegation_from_message(&msg, db);
+    }
+
     (StatusCode::OK, Json(response))
+}
+
+/// Persist delegation state transitions based on the incoming A2A message.
+fn persist_delegation_from_message(
+    msg: &MeshMessage,
+    db: &Arc<Mutex<rusqlite::Connection>>,
+) {
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to lock DB for delegation persistence");
+            return;
+        }
+    };
+    let params = match &msg.params {
+        Some(p) => p,
+        None => return,
+    };
+    let method = msg.method.as_str();
+    match method {
+        "tasks/send" | "tasks/sendSubscribe" => {
+            // New task = new delegation offer.
+            let id = uuid::Uuid::now_v7().to_string();
+            let delegation_id = params.get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id);
+            let sender = params.get("sender_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let recipient = params.get("recipient_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("self");
+            let task = params.get("task")
+                .or_else(|| params.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("a2a_task");
+            let event_hash = blake3::hash(id.as_bytes());
+            if let Err(e) = cortex_storage::queries::delegation_state_queries::insert_delegation(
+                &conn, &id, delegation_id, sender, recipient, task,
+                &msg.id.as_ref().map(|v| v.to_string()).unwrap_or_default(),
+                event_hash.as_bytes(), &[0u8; 32],
+            ) {
+                tracing::warn!(error = %e, "failed to persist delegation offer from A2A");
+            }
+        }
+        "tasks/cancel" => {
+            // Cancel = transition to Rejected (lookup by delegation_id since task_id
+            // from A2A params corresponds to delegation_id, not the internal row id).
+            if let Some(task_id) = params.get("task_id").and_then(|v| v.as_str()) {
+                if let Err(e) = cortex_storage::queries::delegation_state_queries::transition_by_delegation_id(
+                    &conn, task_id, "Rejected", None, None, None, Some("canceled via A2A"),
+                ) {
+                    tracing::warn!(error = %e, task_id = %task_id, "failed to persist delegation cancel");
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Verify an Ed25519 signature over the request body against known agent keys.

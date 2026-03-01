@@ -58,7 +58,9 @@ async fn main() {
             let result = GatewayBootstrap::run(cli_args.config.as_deref()).await;
             match result {
                 Ok((gateway, config)) => {
-                    let router = GatewayBootstrap::build_router(&config);
+                    let app_state = gateway.app_state.clone()
+                        .expect("AppState must be set after bootstrap");
+                    let router = GatewayBootstrap::build_router(&config, app_state, gateway.mesh_router.clone());
                     if let Err(e) = gateway.run_with_router(Some(router), None).await {
                         tracing::error!(error = %e, "Gateway exited with error");
                         std::process::exit(70); // EX_SOFTWARE

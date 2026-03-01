@@ -109,10 +109,16 @@ impl DomainMatcher {
             format!("^{}$", escaped)
         };
 
-        Regex::new(&regex_str).ok().map(|regex| CompiledPattern {
-            original: pattern.to_string(),
-            regex,
-        })
+        match Regex::new(&regex_str) {
+            Ok(regex) => Some(CompiledPattern {
+                original: pattern.to_string(),
+                regex,
+            }),
+            Err(e) => {
+                tracing::error!(pattern = %pattern, error = %e, "Invalid egress domain pattern — rule will not match");
+                None
+            }
+        }
     }
 }
 

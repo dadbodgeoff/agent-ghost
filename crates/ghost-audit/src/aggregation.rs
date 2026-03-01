@@ -20,7 +20,7 @@ pub struct CountByKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregationResult {
     pub violations_per_day: Vec<CountByKey>,
-    pub top_violation_types: Vec<CountByKey>,
+    pub violations_by_severity: Vec<CountByKey>,
     pub policy_denials_by_tool: Vec<CountByKey>,
     pub boundary_violations_by_pattern: Vec<CountByKey>,
     pub total_entries: u64,
@@ -40,7 +40,7 @@ impl<'a> AuditAggregation<'a> {
     pub fn summarize(&self, agent_id: Option<&str>) -> AuditResult<AggregationResult> {
         Ok(AggregationResult {
             violations_per_day: self.violations_per_day(agent_id)?,
-            top_violation_types: self.top_violation_types(agent_id)?,
+            violations_by_severity: self.violations_by_severity(agent_id)?,
             policy_denials_by_tool: self.policy_denials_by_tool(agent_id)?,
             boundary_violations_by_pattern: self.boundary_violations_by_pattern(agent_id)?,
             total_entries: self.total_entries(agent_id)?,
@@ -48,7 +48,9 @@ impl<'a> AuditAggregation<'a> {
     }
 
     fn violations_per_day(&self, agent_id: Option<&str>) -> AuditResult<Vec<CountByKey>> {
-        let (where_clause, param) = agent_filter(agent_id);
+        // event_type = 'violation' is a hardcoded literal, so agent_id
+        // is always the first (and only) parameterized placeholder.
+        let (where_clause, param) = agent_filter(agent_id, 1);
         let sql = format!(
             "SELECT DATE(timestamp) as day, COUNT(*) as cnt
              FROM audit_log
@@ -59,8 +61,11 @@ impl<'a> AuditAggregation<'a> {
         self.query_count_by_key(&sql, param.as_deref())
     }
 
-    fn top_violation_types(&self, agent_id: Option<&str>) -> AuditResult<Vec<CountByKey>> {
-        let (where_clause, param) = agent_filter(agent_id);
+    /// Returns violation counts grouped by severity level (F12 fix:
+    /// renamed from top_violation_types — the query groups by severity,
+    /// not by violation type).
+    fn violations_by_severity(&self, agent_id: Option<&str>) -> AuditResult<Vec<CountByKey>> {
+        let (where_clause, param) = agent_filter(agent_id, 1);
         let sql = format!(
             "SELECT severity, COUNT(*) as cnt
              FROM audit_log
@@ -72,7 +77,7 @@ impl<'a> AuditAggregation<'a> {
     }
 
     fn policy_denials_by_tool(&self, agent_id: Option<&str>) -> AuditResult<Vec<CountByKey>> {
-        let (where_clause, param) = agent_filter(agent_id);
+        let (where_clause, param) = agent_filter(agent_id, 1);
         let sql = format!(
             "SELECT COALESCE(tool_name, 'unknown') as tool, COUNT(*) as cnt
              FROM audit_log
@@ -87,7 +92,7 @@ impl<'a> AuditAggregation<'a> {
         &self,
         agent_id: Option<&str>,
     ) -> AuditResult<Vec<CountByKey>> {
-        let (where_clause, param) = agent_filter(agent_id);
+        let (where_clause, param) = agent_filter(agent_id, 1);
         let sql = format!(
             "SELECT details, COUNT(*) as cnt
              FROM audit_log
@@ -99,7 +104,7 @@ impl<'a> AuditAggregation<'a> {
     }
 
     fn total_entries(&self, agent_id: Option<&str>) -> AuditResult<u64> {
-        let (where_clause, param) = agent_filter(agent_id);
+        let (where_clause, param) = agent_filter(agent_id, 1);
         let sql = format!(
             "SELECT COUNT(*) FROM audit_log WHERE 1=1 {}",
             where_clause
@@ -146,10 +151,16 @@ impl<'a> AuditAggregation<'a> {
     }
 }
 
-fn agent_filter(agent_id: Option<&str>) -> (String, Option<String>) {
+/// Build an agent_id filter clause with explicit parameter index (F4 fix).
+///
+/// The `next_param_idx` argument specifies which `?N` placeholder to use,
+/// making this safe to compose with other parameterized conditions.
+/// Currently all callers pass `1` because the event_type filters are
+/// hardcoded literals, but this is now future-proof.
+fn agent_filter(agent_id: Option<&str>, next_param_idx: usize) -> (String, Option<String>) {
     match agent_id {
         Some(id) => (
-            "AND agent_id = ?1".to_string(),
+            format!("AND agent_id = ?{next_param_idx}"),
             Some(id.to_string()),
         ),
         None => (String::new(), None),

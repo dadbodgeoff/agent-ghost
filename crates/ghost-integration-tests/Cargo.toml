@@ -35,13 +35,20 @@ ghost-secrets = { workspace = true }
 ghost-oauth = { workspace = true }
 ghost-egress = { workspace = true }
 ghost-mesh = { workspace = true }
+cortex-crdt = { workspace = true }
+ghost-proxy = { workspace = true }
+ghost-export = { workspace = true }
+cortex-storage = { workspace = true }
 
 # External deps used in tests/benches
 async-trait = { workspace = true }
 axum = { workspace = true }
 blake3 = { workspace = true }
 chrono = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }

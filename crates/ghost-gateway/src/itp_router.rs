@@ -30,9 +30,14 @@ impl ITPEventRouter {
                 self.send_to_monitor(&event_json).await;
             }
             GatewayState::Degraded => {
-                if let Ok(mut buf) = self.buffer.lock() {
-                    buf.push(event_json);
-                }
+                let mut buf = match self.buffer.lock() {
+                    Ok(buf) => buf,
+                    Err(poisoned) => {
+                        tracing::error!("ITP buffer Mutex poisoned during route — recovering");
+                        poisoned.into_inner()
+                    }
+                };
+                buf.push(event_json);
             }
             _ => {
                 // ShuttingDown, FatalError, Initializing — drop
@@ -42,11 +47,14 @@ impl ITPEventRouter {
 
     /// Drain buffered events for replay during recovery.
     pub fn drain_buffer(&self) -> Vec<String> {
-        if let Ok(mut buf) = self.buffer.lock() {
-            buf.drain_all().into_iter().map(|e| e.json).collect()
-        } else {
-            Vec::new()
-        }
+        let mut buf = match self.buffer.lock() {
+            Ok(buf) => buf,
+            Err(poisoned) => {
+                tracing::error!("ITP buffer Mutex poisoned during drain — recovering");
+                poisoned.into_inner()
+            }
+        };
+        buf.drain_all().into_iter().map(|e| e.json).collect()
     }
 
     async fn send_to_monitor(&self, event_json: &str) {
@@ -68,18 +76,28 @@ impl ITPEventRouter {
                     status = %resp.status(),
                     "monitor rejected ITP event — buffering"
                 );
-                if let Ok(mut buf) = self.buffer.lock() {
-                    buf.push(event_json.to_string());
-                }
+                let mut buf = match self.buffer.lock() {
+                    Ok(buf) => buf,
+                    Err(poisoned) => {
+                        tracing::error!("ITP buffer Mutex poisoned during fallback buffer — recovering");
+                        poisoned.into_inner()
+                    }
+                };
+                buf.push(event_json.to_string());
             }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "failed to send ITP event to monitor — buffering"
                 );
-                if let Ok(mut buf) = self.buffer.lock() {
-                    buf.push(event_json.to_string());
-                }
+                let mut buf = match self.buffer.lock() {
+                    Ok(buf) => buf,
+                    Err(poisoned) => {
+                        tracing::error!("ITP buffer Mutex poisoned during fallback buffer — recovering");
+                        poisoned.into_inner()
+                    }
+                };
+                buf.push(event_json.to_string());
             }
         }
     }

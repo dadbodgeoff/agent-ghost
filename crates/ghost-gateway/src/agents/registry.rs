@@ -34,6 +34,8 @@ pub struct RegisteredAgent {
     pub channel_bindings: Vec<String>,
     pub capabilities: Vec<String>,
     pub spending_cap: f64,
+    /// Optional template name for agent initialization (Finding #16).
+    pub template: Option<String>,
 }
 
 /// Agent registry for the gateway.
@@ -77,8 +79,26 @@ impl AgentRegistry {
         self.agents_by_id.get(&id)
     }
 
+    pub fn lookup_by_id_mut(&mut self, id: Uuid) -> Option<&mut RegisteredAgent> {
+        self.agents_by_id.get_mut(&id)
+    }
+
     pub fn all_agents(&self) -> Vec<&RegisteredAgent> {
         self.agents_by_id.values().collect()
+    }
+
+    /// Remove an agent from the registry.
+    /// Returns the removed agent, or None if not found.
+    pub fn unregister(&mut self, id: Uuid) -> Option<RegisteredAgent> {
+        if let Some(agent) = self.agents_by_id.remove(&id) {
+            self.name_to_id.remove(&agent.name);
+            for binding in &agent.channel_bindings {
+                self.channel_to_id.remove(binding);
+            }
+            Some(agent)
+        } else {
+            None
+        }
     }
 
     pub fn transition_state(

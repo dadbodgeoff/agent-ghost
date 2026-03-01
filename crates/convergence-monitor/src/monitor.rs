@@ -184,92 +184,108 @@ impl ConvergenceMonitor {
         }
 
         // Restore calibration counts
-        if let Ok(mut cal_stmt) = conn.prepare(
-            "SELECT agent_id, COUNT(*) FROM itp_events \
-             WHERE event_type = 'SessionStart' GROUP BY agent_id"
+        match conn.prepare(
+            "SELECT sender, COUNT(*) FROM itp_events \
+             WHERE event_type = 'SessionStart' GROUP BY sender"
         ) {
-            if let Ok(cal_rows) = cal_stmt.query_map([], |row| {
-                let agent_id_str: String = row.get(0)?;
-                let count: u32 = row.get(1)?;
-                Ok((agent_id_str, count))
-            }) {
-                for row in cal_rows {
-                    match row {
-                        Ok((agent_id_str, count)) => {
-                            match Uuid::parse_str(&agent_id_str) {
-                                Ok(agent_id) => {
-                                    self.calibration_counts.insert(agent_id, count);
+            Ok(mut cal_stmt) => {
+                match cal_stmt.query_map([], |row| {
+                    let agent_id_str: String = row.get(0)?;
+                    let count: u32 = row.get(1)?;
+                    Ok((agent_id_str, count))
+                }) {
+                    Ok(cal_rows) => {
+                        for row in cal_rows {
+                            match row {
+                                Ok((agent_id_str, count)) => {
+                                    match Uuid::parse_str(&agent_id_str) {
+                                        Ok(agent_id) => {
+                                            self.calibration_counts.insert(agent_id, count);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                agent_id = %agent_id_str,
+                                                "skipping calibration count for invalid agent_id"
+                                            );
+                                        }
+                                    }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        agent_id = %agent_id_str,
-                                        "skipping calibration count for invalid agent_id"
-                                    );
+                                    tracing::warn!(error = %e, "skipping malformed calibration count row");
                                 }
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "skipping malformed calibration count row");
-                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to query calibration counts — calibration state may be inaccurate");
                     }
                 }
             }
-        } else {
-            tracing::warn!("failed to query calibration counts — calibration state may be inaccurate");
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to prepare calibration count query — calibration state may be inaccurate");
+            }
         }
 
         // Restore last known scores into cache (stale but conservative)
-        if let Ok(mut score_stmt) = conn.prepare(
-            "SELECT agent_id, score, level FROM convergence_scores \
+        match conn.prepare(
+            "SELECT agent_id, composite_score, level FROM convergence_scores \
              WHERE rowid IN (SELECT MAX(rowid) FROM convergence_scores GROUP BY agent_id)"
         ) {
-            if let Ok(score_rows) = score_stmt.query_map([], |row| {
-                let agent_id_str: String = row.get(0)?;
-                let score: f64 = row.get(1)?;
-                let level: u8 = row.get(2)?;
-                Ok((agent_id_str, score, level))
-            }) {
-                for row in score_rows {
-                    match row {
-                        Ok((agent_id_str, score, level)) => {
-                            match Uuid::parse_str(&agent_id_str) {
-                                Ok(agent_id) => {
-                                    // Guard against NaN/Inf scores from corrupted DB
-                                    let safe_score = if score.is_nan() || score.is_infinite() {
-                                        tracing::warn!(
-                                            agent_id = %agent_id,
-                                            raw_score = %score,
-                                            "non-finite score in DB — clamping to 0.0"
-                                        );
-                                        0.0
-                                    } else {
-                                        score.clamp(0.0, 1.0)
-                                    };
-                                    self.score_cache.insert(agent_id, CachedScore {
-                                        score: safe_score,
-                                        level,
-                                        signal_scores: [0.0; 8], // Stale cache from DB — signals unknown
-                                        cached_at: Instant::now(),
-                                    });
+            Ok(mut score_stmt) => {
+                match score_stmt.query_map([], |row| {
+                    let agent_id_str: String = row.get(0)?;
+                    let score: f64 = row.get(1)?;
+                    let level: u8 = row.get(2)?;
+                    Ok((agent_id_str, score, level))
+                }) {
+                    Ok(score_rows) => {
+                        for row in score_rows {
+                            match row {
+                                Ok((agent_id_str, score, level)) => {
+                                    match Uuid::parse_str(&agent_id_str) {
+                                        Ok(agent_id) => {
+                                            // Guard against NaN/Inf scores from corrupted DB
+                                            let safe_score = if score.is_nan() || score.is_infinite() {
+                                                tracing::warn!(
+                                                    agent_id = %agent_id,
+                                                    raw_score = %score,
+                                                    "non-finite score in DB — clamping to 0.0"
+                                                );
+                                                0.0
+                                            } else {
+                                                score.clamp(0.0, 1.0)
+                                            };
+                                            self.score_cache.insert(agent_id, CachedScore {
+                                                score: safe_score,
+                                                level,
+                                                signal_scores: [0.0; 8], // Stale cache from DB — signals unknown
+                                                cached_at: Instant::now(),
+                                            });
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                agent_id = %agent_id_str,
+                                                "skipping score cache for invalid agent_id"
+                                            );
+                                        }
+                                    }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        agent_id = %agent_id_str,
-                                        "skipping score cache for invalid agent_id"
-                                    );
+                                    tracing::warn!(error = %e, "skipping malformed score cache row");
                                 }
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "skipping malformed score cache row");
-                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to query convergence scores — score cache will be empty");
                     }
                 }
             }
-        } else {
-            tracing::warn!("failed to query convergence scores — score cache will be empty");
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to prepare convergence score query — score cache will be empty");
+            }
         }
 
         tracing::info!(restored = restored_count, "state reconstruction complete");
@@ -508,7 +524,15 @@ impl ConvergenceMonitor {
         // ── Step 10: Persist score BEFORE intervention ──────────────
         // Audit trail completeness (Req 9 AC6): score is persisted
         // before any intervention action is taken.
-        if let Err(e) = self.persist_convergence_score(event.agent_id, score, level) {
+        if let Err(e) = self.persist_convergence_score(
+            event.agent_id,
+            score,
+            level,
+            event.session_id,
+            &signals,
+            &event_hash,
+            &previous_hash,
+        ) {
             tracing::error!(
                 agent_id = %event.agent_id,
                 error = %e,
@@ -523,6 +547,9 @@ impl ConvergenceMonitor {
             signal_scores: signals,
         };
 
+        let previous_level = self.intervention.get_state(&event.agent_id)
+            .map_or(0u8, |s| s.level);
+
         if let Some(action) = self.intervention.evaluate(&result, event.agent_id) {
             tracing::info!(
                 agent_id = %event.agent_id,
@@ -531,6 +558,34 @@ impl ConvergenceMonitor {
                 level,
                 "intervention triggered"
             );
+
+            // Persist intervention state after every evaluation that triggers an action.
+            if let Err(e) = self.persist_intervention_state(event.agent_id) {
+                tracing::error!(
+                    agent_id = %event.agent_id,
+                    error = %e,
+                    "failed to persist intervention state"
+                );
+            }
+
+            // Persist to intervention_history (append-only audit trail).
+            if let Err(e) = self.persist_intervention_history(
+                event.agent_id,
+                event.session_id,
+                level,
+                previous_level,
+                score,
+                &signals,
+                &format!("{action:?}"),
+                &event_hash,
+                &previous_hash,
+            ) {
+                tracing::error!(
+                    agent_id = %event.agent_id,
+                    error = %e,
+                    "failed to persist intervention history"
+                );
+            }
 
             // Dispatch escalation notifications for L3+ (best-effort, parallel)
             match &action {
@@ -645,12 +700,20 @@ impl ConvergenceMonitor {
         // Iterate all agents with active cooldowns and check expiry.
         // Expired cooldowns are cleared so scoring can resume.
         let now = chrono::Utc::now();
-        for (_agent_id, state) in self.intervention.states_mut() {
+        let mut expired_agents = Vec::new();
+        for (agent_id, state) in self.intervention.states_mut() {
             if let Some(until) = state.cooldown_until {
                 if now >= until {
                     state.cooldown_until = None;
-                    tracing::info!(agent_id = %_agent_id, "cooldown expired");
+                    tracing::info!(agent_id = %agent_id, "cooldown expired");
+                    expired_agents.push(*agent_id);
                 }
+            }
+        }
+        // Persist state for agents whose cooldown expired.
+        for agent_id in expired_agents {
+            if let Err(e) = self.persist_intervention_state(agent_id) {
+                tracing::error!(agent_id = %agent_id, error = %e, "failed to persist intervention state after cooldown expiry");
             }
         }
     }
@@ -712,16 +775,26 @@ impl ConvergenceMonitor {
         previous_hash: &[u8; 32],
     ) -> anyhow::Result<()> {
         let conn = self.get_db_conn()?;
+        let id = Uuid::now_v7().to_string();
+        let payload_str = event.payload.to_string();
+        let content_hash = blake3::hash(payload_str.as_bytes()).to_hex().to_string();
+        let content_length = payload_str.len() as i64;
         conn.execute(
-            "INSERT INTO itp_events (session_id, agent_id, event_type, payload, \
-             timestamp, event_hash, previous_hash) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO itp_events (id, session_id, event_type, sender, \
+             timestamp, sequence_number, content_hash, content_length, privacy_level, \
+             event_hash, previous_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, \
+             (SELECT COALESCE(MAX(sequence_number), -1) + 1 FROM itp_events WHERE session_id = ?2), \
+             ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
+                id,
                 event.session_id.to_string(),
-                event.agent_id.to_string(),
                 format!("{:?}", event.event_type),
-                event.payload.to_string(),
+                event.agent_id.to_string(),
                 event.timestamp.to_rfc3339(),
+                content_hash,
+                content_length,
+                "standard",
                 event_hash.as_slice(),
                 previous_hash.as_slice(),
             ],
@@ -736,16 +809,96 @@ impl ConvergenceMonitor {
         agent_id: Uuid,
         score: f64,
         level: u8,
+        session_id: Uuid,
+        signal_scores: &[f64; 8],
+        event_hash: &[u8; 32],
+        previous_hash: &[u8; 32],
     ) -> anyhow::Result<()> {
         let conn = self.get_db_conn()?;
+        let id = Uuid::now_v7().to_string();
+        let signal_json = serde_json::to_string(signal_scores)?;
         conn.execute(
-            "INSERT INTO convergence_scores (agent_id, score, level, recorded_at) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO convergence_scores (id, agent_id, session_id, composite_score, \
+             signal_scores, level, profile, computed_at, event_hash, previous_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                id,
+                agent_id.to_string(),
+                session_id.to_string(),
+                score,
+                signal_json,
+                level as i32,
+                "standard",
+                Utc::now().to_rfc3339(),
+                event_hash.as_slice(),
+                previous_hash.as_slice(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Persist the current intervention state for an agent to SQLite.
+    /// Uses INSERT OR REPLACE (upsert) since intervention_state has one row per agent.
+    fn persist_intervention_state(
+        &mut self,
+        agent_id: Uuid,
+    ) -> anyhow::Result<()> {
+        let state = self.intervention.get_state(&agent_id);
+        let state = match state {
+            Some(s) => s.clone(),
+            None => return Ok(()), // No state to persist
+        };
+        let conn = self.get_db_conn()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO intervention_state \
+             (agent_id, level, consecutive_normal, cooldown_until, \
+              ack_required, hysteresis_count, de_escalation_credits, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
             rusqlite::params![
                 agent_id.to_string(),
-                score,
-                level,
-                Utc::now().to_rfc3339(),
+                state.level as i32,
+                state.consecutive_normal as i32,
+                state.cooldown_until.map(|t| t.to_rfc3339()),
+                state.ack_required,
+                state.hysteresis_count as i32,
+                state.de_escalation_credits as i32,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Persist an intervention level transition to intervention_history (append-only).
+    fn persist_intervention_history(
+        &mut self,
+        agent_id: Uuid,
+        session_id: Uuid,
+        level: u8,
+        previous_level: u8,
+        trigger_score: f64,
+        signal_scores: &[f64; 8],
+        action_type: &str,
+        event_hash: &[u8; 32],
+        previous_hash: &[u8; 32],
+    ) -> anyhow::Result<()> {
+        let conn = self.get_db_conn()?;
+        let id = Uuid::now_v7().to_string();
+        let trigger_signals = serde_json::to_string(signal_scores)?;
+        conn.execute(
+            "INSERT INTO intervention_history (id, agent_id, session_id, intervention_level, \
+             previous_level, trigger_score, trigger_signals, action_type, \
+             event_hash, previous_hash) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                id,
+                agent_id.to_string(),
+                session_id.to_string(),
+                level as i32,
+                previous_level as i32,
+                trigger_score,
+                trigger_signals,
+                action_type,
+                event_hash.as_slice(),
+                previous_hash.as_slice(),
             ],
         )?;
         Ok(())

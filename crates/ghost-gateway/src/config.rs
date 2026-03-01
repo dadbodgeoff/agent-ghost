@@ -420,11 +420,18 @@ impl GhostConfig {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        let mut seen_names = std::collections::BTreeSet::new();
         for agent in &self.agents {
             if agent.name.is_empty() {
                 return Err(ConfigError::ValidationError(
                     "Agent name cannot be empty".into(),
                 ));
+            }
+            if !seen_names.insert(&agent.name) {
+                return Err(ConfigError::ValidationError(format!(
+                    "Duplicate agent name: '{}'",
+                    agent.name
+                )));
             }
             if agent.spending_cap < 0.0 {
                 return Err(ConfigError::ValidationError(format!(
@@ -432,6 +439,11 @@ impl GhostConfig {
                     agent.name
                 )));
             }
+        }
+        if self.gateway.db_path.is_empty() {
+            return Err(ConfigError::ValidationError(
+                "gateway.db_path cannot be empty".into(),
+            ));
         }
         Ok(())
     }

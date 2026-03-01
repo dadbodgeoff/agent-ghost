@@ -24,21 +24,11 @@ pf = ["ghost-egress/pf"]
 # Workspace crates
 cortex-core = { workspace = true }
 cortex-storage = { workspace = true }
-cortex-temporal = { workspace = true }
-cortex-convergence = { workspace = true }
-cortex-validation = { workspace = true }
 ghost-signing = { workspace = true }
-ghost-policy = { workspace = true }
 ghost-llm = { workspace = true }
 ghost-secrets = { workspace = true }
 ghost-identity = { workspace = true }
 ghost-agent-loop = { workspace = true }
-itp-protocol = { workspace = true }
-simulation-boundary = { workspace = true }
-read-only-pipeline = { workspace = true }
-ghost-channels = { workspace = true }
-ghost-skills = { workspace = true }
-ghost-heartbeat = { workspace = true }
 ghost-audit = { workspace = true }
 ghost-backup = { workspace = true }
 ghost-export = { workspace = true }
@@ -70,9 +60,6 @@ tokio = { workspace = true }
 # SQLite
 rusqlite = { workspace = true }
 
-# Crypto
-ed25519-dalek = { workspace = true }
-
 # HTTP / Web
 axum = { workspace = true }
 tower = { workspace = true }
@@ -100,9 +87,6 @@ futures = "0.3"
 
 # Email (for notification dispatcher)
 lettre = { workspace = true }
-
-# Async trait
-async-trait = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

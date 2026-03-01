@@ -19,3 +19,19 @@ mod convergence_manipulation;
 mod kill_gate_adversarial;
 #[path = "adversarial/orchestrator_adversarial.rs"]
 mod orchestrator_adversarial;
+#[path = "adversarial/dual_signing_path_audit.rs"]
+mod dual_signing_path_audit;
+#[path = "adversarial/proxy_passthrough_stress.rs"]
+mod proxy_passthrough_stress;
+#[path = "adversarial/mesh_crdt_sybil_interaction.rs"]
+mod mesh_crdt_sybil_interaction;
+#[path = "adversarial/calibration_cold_start.rs"]
+mod calibration_cold_start;
+#[path = "adversarial/temporal_sybil_reregistration.rs"]
+mod temporal_sybil_reregistration;
+#[path = "adversarial/crdt_merge_conflict.rs"]
+mod crdt_merge_conflict;
+#[path = "adversarial/kill_gate_quorum_race.rs"]
+mod kill_gate_quorum_race;
+#[path = "adversarial/export_baseline_poisoning.rs"]
+mod export_baseline_poisoning;

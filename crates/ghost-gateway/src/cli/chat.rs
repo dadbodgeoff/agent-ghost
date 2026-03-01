@@ -118,6 +118,19 @@ pub async fn run_interactive_chat() {
     let mut runner = ghost_agent_loop::runner::AgentRunner::new(128_000);
     ghost_agent_loop::tools::executor::register_builtin_tools(&mut runner.tool_registry);
 
+    // Wire DB connection for proposal/violation/reflection persistence.
+    let db_path = crate::bootstrap::shellexpand_tilde("~/.ghost/data/ghost.db");
+    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+        if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;") {
+            tracing::warn!(error = %e, path = %db_path, "PRAGMA setup failed — DB may have degraded performance");
+        }
+        let db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        runner.db = Some(db);
+        tracing::info!(path = %db_path, "DB wired into AgentRunner for persistence");
+    } else {
+        tracing::warn!(path = %db_path, "Could not open DB — persistence disabled");
+    }
+
     // Configure filesystem tool with current working directory.
     if let Ok(cwd) = std::env::current_dir() {
         runner.tool_executor.set_workspace_root(cwd.clone());

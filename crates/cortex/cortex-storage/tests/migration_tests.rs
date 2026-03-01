@@ -424,5 +424,5 @@ fn v018_schema_version_updated() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 18, "Latest migration version should be 18");
+    assert_eq!(version, 19, "Latest migration version should be 19");
 }

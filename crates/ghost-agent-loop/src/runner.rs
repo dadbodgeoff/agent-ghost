@@ -98,6 +98,10 @@ pub struct AgentRunner {
     pub spending_cap: f64,
     /// Current daily spend.
     pub daily_spend: f64,
+    /// Optional DB connection for persisting proposals and audit entries.
+    pub db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
+    /// Optional cost recording callback: (agent_id, session_id, cost, is_compaction).
+    pub cost_recorder: Option<Arc<dyn Fn(Uuid, Uuid, f64, bool) + Send + Sync>>,
 }
 
 impl AgentRunner {
@@ -116,6 +120,8 @@ impl AgentRunner {
             max_recursion_depth: 10,
             spending_cap: 10.0,
             daily_spend: 0.0,
+            db: None,
+            cost_recorder: None,
         }
     }
 
@@ -209,6 +215,147 @@ impl AgentRunner {
             daily_spend: self.daily_spend,
             kill_switch_active: self.kill_switch.load(Ordering::SeqCst),
             context_window: 128_000,
+        }
+    }
+
+    /// Persist a proposal decision to the goal_proposals table.
+    fn persist_proposal(&self, proposal: &cortex_core::traits::convergence::Proposal, decision: &str) {
+        let db = match &self.db {
+            Some(db) => db,
+            None => return,
+        };
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to lock DB for proposal persistence");
+                return;
+            }
+        };
+        let id = proposal.id.to_string();
+        let agent_id = match &proposal.proposer {
+            cortex_core::traits::convergence::CallerType::Agent { agent_id } => agent_id.to_string(),
+            _ => "system".to_string(),
+        };
+        let session_id = proposal.session_id.to_string();
+        let content = proposal.content.to_string();
+        let cited = serde_json::to_string(&proposal.cited_memory_ids).unwrap_or_default();
+        let event_hash = blake3::hash(id.as_bytes());
+        if let Err(e) = cortex_storage::queries::goal_proposal_queries::insert_proposal(
+            &conn, &id, &agent_id, &session_id,
+            &format!("{:?}", proposal.proposer),
+            &format!("{:?}", proposal.operation),
+            &format!("{:?}", proposal.target_type),
+            &content, &cited, decision,
+            event_hash.as_bytes(), &[0u8; 32],
+        ) {
+            tracing::error!(error = %e, proposal_id = %id, "failed to persist proposal");
+        }
+    }
+
+    /// Record LLM cost via the cost_recorder callback.
+    fn record_cost(&self, agent_id: Uuid, session_id: Uuid, cost: f64, is_compaction: bool) {
+        if let Some(ref recorder) = self.cost_recorder {
+            recorder(agent_id, session_id, cost, is_compaction);
+        }
+    }
+
+    /// Persist a memory snapshot to the memory_snapshots table (Finding #8).
+    pub fn persist_memory_snapshot(&self, memory_id: &str, snapshot: &str) {
+        let db = match &self.db {
+            Some(db) => db,
+            None => return,
+        };
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to lock DB for memory snapshot persistence");
+                return;
+            }
+        };
+        let state_hash = blake3::hash(snapshot.as_bytes());
+        if let Err(e) = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+            &conn, memory_id, snapshot, Some(state_hash.as_bytes()),
+        ) {
+            tracing::error!(error = %e, memory_id = %memory_id, "failed to persist memory snapshot");
+        }
+    }
+
+    /// Persist a boundary violation to the boundary_violations table.
+    fn persist_boundary_violation(
+        &self,
+        session_id: Uuid,
+        violation_type: &str,
+        severity: f64,
+        pattern_name: &str,
+        action_taken: &str,
+    ) {
+        let db = match &self.db {
+            Some(db) => db,
+            None => return,
+        };
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to lock DB for boundary violation persistence");
+                return;
+            }
+        };
+        let id = Uuid::now_v7().to_string();
+        let sid = session_id.to_string();
+        let event_hash = blake3::hash(id.as_bytes());
+        if let Err(e) = cortex_storage::queries::boundary_violation_queries::insert_violation(
+            &conn, &id, &sid, violation_type, severity,
+            &blake3::hash(pattern_name.as_bytes()).to_hex()[..16],
+            pattern_name, action_taken, None, None,
+            event_hash.as_bytes(), &[0u8; 32],
+        ) {
+            tracing::error!(error = %e, "failed to persist boundary violation");
+        }
+    }
+
+    /// Persist a reflection entry to the reflection_entries table.
+    fn persist_reflection(
+        &self,
+        session_id: Uuid,
+        proposal: &cortex_core::traits::convergence::Proposal,
+    ) {
+        let db = match &self.db {
+            Some(db) => db,
+            None => return,
+        };
+        let conn = match db.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to lock DB for reflection persistence");
+                return;
+            }
+        };
+        let id = proposal.id.to_string();
+        let sid = session_id.to_string();
+        let chain_id = proposal.content.get("chain_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
+            .to_string();
+        let depth = proposal.content.get("depth")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let trigger_type = proposal.content.get("trigger_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("proposal")
+            .to_string();
+        let text = proposal.content.get("reflection_text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let ratio = proposal.content.get("self_reference_ratio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let event_hash = blake3::hash(id.as_bytes());
+        if let Err(e) = cortex_storage::queries::reflection_queries::insert_reflection(
+            &conn, &id, &sid, &chain_id, depth, &trigger_type,
+            &text, ratio, event_hash.as_bytes(), &[0u8; 32],
+        ) {
+            tracing::error!(error = %e, proposal_id = %id, "failed to persist reflection");
         }
     }
 
@@ -455,6 +602,9 @@ impl AgentRunner {
                 + (completion.usage.completion_tokens as f64 * pricing.output_per_1k / 1000.0);
             ctx.total_cost += call_cost;
 
+            // Record cost via callback.
+            self.record_cost(ctx.agent_id, ctx.session_id, call_cost, false);
+
             // ── PROCESS RESPONSE ────────────────────────────────────
             match completion.response {
                 LLMResponse::Empty => {
@@ -469,13 +619,23 @@ impl AgentRunner {
                     let final_text = match inspection {
                         InspectionResult::KillAll { pattern_name, trigger: _ } => {
                             self.kill_switch.store(true, Ordering::SeqCst);
+                            self.persist_boundary_violation(
+                                ctx.session_id, "credential_exfiltration", 1.0,
+                                &pattern_name, "kill_all",
+                            );
                             tracing::error!(pattern = %pattern_name, "KILL ALL — credential exfiltration detected");
                             result.halted_by = Some("credential_exfiltration".into());
                             result.total_tokens = ctx.total_tokens;
                             result.total_cost = ctx.total_cost;
                             return Err(RunError::CredentialExfiltration);
                         }
-                        InspectionResult::Warning { redacted_text, .. } => redacted_text,
+                        InspectionResult::Warning { pattern_name, redacted_text } => {
+                            self.persist_boundary_violation(
+                                ctx.session_id, "credential_pattern_match", 0.5,
+                                &pattern_name, "redacted",
+                            );
+                            redacted_text
+                        }
                         InspectionResult::Clean => text,
                     };
 
@@ -487,33 +647,30 @@ impl AgentRunner {
                     // Route proposals through ProposalRouter (Req 33).
                     for proposal in proposals {
                         use cortex_core::models::proposal::ProposalDecision;
+                        use cortex_core::models::proposal::ProposalOperation;
                         self.proposal_router.check_superseding(&proposal);
-                        if self.proposal_router.is_resubmission(&proposal) {
-                            self.proposal_router.record_decision(
-                                proposal,
-                                ProposalDecision::AutoRejected,
-                                false,
-                            );
-                        } else if let Some(decision) = self.proposal_router.reflection_precheck(
+                        let decision = if self.proposal_router.is_resubmission(&proposal) {
+                            ProposalDecision::AutoRejected
+                        } else if let Some(d) = self.proposal_router.reflection_precheck(
                             &proposal,
                             &cortex_core::config::ReflectionConfig::default(),
                         ) {
-                            self.proposal_router.record_decision(proposal, decision, false);
+                            d
+                        } else if ctx.intervention_level <= 1 {
+                            ProposalDecision::AutoApproved
                         } else {
-                            // Auto-approve at low intervention levels, require review at high.
-                            let decision = if ctx.intervention_level <= 1 {
-                                ProposalDecision::AutoApproved
-                            } else {
-                                ProposalDecision::HumanReviewRequired
-                            };
-                            self.proposal_router.record_decision(proposal, decision, false);
+                            ProposalDecision::HumanReviewRequired
+                        };
+                        // Persist to goal_proposals table.
+                        self.persist_proposal(&proposal, &format!("{decision:?}"));
+                        // Persist reflection entries when approved.
+                        if proposal.operation == ProposalOperation::ReflectionWrite
+                            && decision == ProposalDecision::AutoApproved
+                        {
+                            self.persist_reflection(ctx.session_id, &proposal);
                         }
+                        self.proposal_router.record_decision(proposal, decision, false);
                     }
-
-                    result.output = Some(final_text);
-                    result.total_tokens = ctx.total_tokens;
-                    result.total_cost = ctx.total_cost;
-                    return Ok(result);
                 }
 
                 LLMResponse::ToolCalls(calls) => {
@@ -584,13 +741,21 @@ impl AgentRunner {
                     match inspection {
                         InspectionResult::KillAll { pattern_name, trigger: _ } => {
                             self.kill_switch.store(true, Ordering::SeqCst);
+                            self.persist_boundary_violation(
+                                ctx.session_id, "credential_exfiltration", 1.0,
+                                &pattern_name, "kill_all",
+                            );
                             tracing::error!(pattern = %pattern_name, "KILL ALL — credential exfiltration in mixed response");
                             result.halted_by = Some("credential_exfiltration".into());
                             result.total_tokens = ctx.total_tokens;
                             result.total_cost = ctx.total_cost;
                             return Err(RunError::CredentialExfiltration);
                         }
-                        InspectionResult::Warning { redacted_text, .. } => {
+                        InspectionResult::Warning { pattern_name, redacted_text } => {
+                            self.persist_boundary_violation(
+                                ctx.session_id, "credential_pattern_match", 0.5,
+                                &pattern_name, "redacted",
+                            );
                             result.output = Some(redacted_text);
                         }
                         InspectionResult::Clean => {
@@ -605,26 +770,29 @@ impl AgentRunner {
                     // Route proposals through ProposalRouter (Req 33).
                     for proposal in proposals {
                         use cortex_core::models::proposal::ProposalDecision;
+                        use cortex_core::models::proposal::ProposalOperation;
                         self.proposal_router.check_superseding(&proposal);
-                        if self.proposal_router.is_resubmission(&proposal) {
-                            self.proposal_router.record_decision(
-                                proposal,
-                                ProposalDecision::AutoRejected,
-                                false,
-                            );
-                        } else if let Some(decision) = self.proposal_router.reflection_precheck(
+                        let decision = if self.proposal_router.is_resubmission(&proposal) {
+                            ProposalDecision::AutoRejected
+                        } else if let Some(d) = self.proposal_router.reflection_precheck(
                             &proposal,
                             &cortex_core::config::ReflectionConfig::default(),
                         ) {
-                            self.proposal_router.record_decision(proposal, decision, false);
+                            d
+                        } else if ctx.intervention_level <= 1 {
+                            ProposalDecision::AutoApproved
                         } else {
-                            let decision = if ctx.intervention_level <= 1 {
-                                ProposalDecision::AutoApproved
-                            } else {
-                                ProposalDecision::HumanReviewRequired
-                            };
-                            self.proposal_router.record_decision(proposal, decision, false);
+                            ProposalDecision::HumanReviewRequired
+                        };
+                        // Persist to goal_proposals table.
+                        self.persist_proposal(&proposal, &format!("{decision:?}"));
+                        // Persist reflection entries when approved.
+                        if proposal.operation == ProposalOperation::ReflectionWrite
+                            && decision == ProposalDecision::AutoApproved
+                        {
+                            self.persist_reflection(ctx.session_id, &proposal);
                         }
+                        self.proposal_router.record_decision(proposal, decision, false);
                     }
 
                     // Process tool calls (same as ToolCalls branch).

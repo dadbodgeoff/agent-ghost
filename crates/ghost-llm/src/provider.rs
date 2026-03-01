@@ -521,8 +521,9 @@ impl LLMProvider for AnthropicProvider {
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
-        if let Ok(mut key) = self.api_key.write() {
-            *key = api_key.to_string();
+        match self.api_key.write() {
+            Ok(mut key) => *key = api_key.to_string(),
+            Err(e) => tracing::error!(provider = "anthropic", error = %e, "Failed to update API key — RwLock poisoned"),
         }
     }
 }
@@ -565,8 +566,9 @@ impl LLMProvider for OpenAIProvider {
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
-        if let Ok(mut key) = self.api_key.write() {
-            *key = api_key.to_string();
+        match self.api_key.write() {
+            Ok(mut key) => *key = api_key.to_string(),
+            Err(e) => tracing::error!(provider = "openai", error = %e, "Failed to update API key — RwLock poisoned"),
         }
     }
 }
@@ -776,8 +778,9 @@ impl LLMProvider for GeminiProvider {
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
-        if let Ok(mut key) = self.api_key.write() {
-            *key = api_key.to_string();
+        match self.api_key.write() {
+            Ok(mut key) => *key = api_key.to_string(),
+            Err(e) => tracing::error!(provider = "gemini", error = %e, "Failed to update API key — RwLock poisoned"),
         }
     }
 }
@@ -848,8 +851,9 @@ impl LLMProvider for OpenAICompatProvider {
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
-        if let Ok(mut key) = self.api_key.write() {
-            *key = api_key.to_string();
+        match self.api_key.write() {
+            Ok(mut key) => *key = api_key.to_string(),
+            Err(e) => tracing::error!(provider = "openai_compat", error = %e, "Failed to update API key — RwLock poisoned"),
         }
     }
 }

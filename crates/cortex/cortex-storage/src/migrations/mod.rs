@@ -3,19 +3,21 @@
 pub mod v016_convergence_safety;
 pub mod v017_convergence_tables;
 pub mod v018_delegation_state;
+pub mod v019_intervention_state;
 
 use rusqlite::Connection;
 use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
 
-pub const LATEST_VERSION: u32 = 18;
+pub const LATEST_VERSION: u32 = 19;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 3] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 4] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
+    (19, "intervention_state", v019_intervention_state::migrate),
 ];
 
 /// Ensure the schema_version table exists and run pending migrations.
@@ -39,12 +41,31 @@ pub fn run_migrations(conn: &Connection) -> CortexResult<()> {
     for &(version, name, migrate_fn) in &MIGRATIONS {
         if version > current {
             tracing::info!(version, name, "running migration");
-            migrate_fn(conn)?;
-            conn.execute(
-                "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
-                rusqlite::params![version, name],
-            )
-            .map_err(|e| to_storage_err(e.to_string()))?;
+            // Wrap migration + version record in a transaction for atomicity.
+            // If the migration succeeds but the version INSERT fails (e.g., disk full),
+            // the entire migration is rolled back, preventing partial application
+            // that would cause ALTER TABLE failures on re-run.
+            conn.execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| to_storage_err(format!("begin transaction for v{version}: {e}")))?;
+            match migrate_fn(conn) {
+                Ok(()) => {
+                    conn.execute(
+                        "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
+                        rusqlite::params![version, name],
+                    )
+                    .map_err(|e| {
+                        // Rollback on version INSERT failure.
+                        let _ = conn.execute_batch("ROLLBACK");
+                        to_storage_err(format!("record migration v{version}: {e}"))
+                    })?;
+                    conn.execute_batch("COMMIT")
+                        .map_err(|e| to_storage_err(format!("commit migration v{version}: {e}")))?;
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(e);
+                }
+            }
         }
     }
 

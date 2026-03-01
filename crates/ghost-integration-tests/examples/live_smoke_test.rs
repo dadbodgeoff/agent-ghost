@@ -442,7 +442,11 @@ async fn test_gateway_api_endpoints() {
         }
     };
 
-    let router = GatewayBootstrap::build_router(&config);
+    let router = {
+        let app_state = gateway.app_state.clone()
+            .expect("AppState must be set after bootstrap");
+        GatewayBootstrap::build_router(&config, app_state, gateway.mesh_router.clone())
+    };
 
     // Start on a random port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

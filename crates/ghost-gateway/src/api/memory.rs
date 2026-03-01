@@ -1,41 +1,312 @@
 //! Memory API endpoints (Req 25 AC1-2).
+//!
+//! Phase 2: Wired to cortex-storage memory_snapshots table
+//! (created in v016_convergence_safety migration).
 
-use axum::extract::{Path, Query};
+use std::sync::Arc;
+
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
 
+use crate::state::AppState;
+
 /// Query parameters for memory listing.
 #[derive(Debug, Deserialize)]
 pub struct MemoryQueryParams {
     pub agent_id: Option<String>,
-    pub memory_type: Option<String>,
-    pub importance: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
 }
 
-/// GET /api/memory — list memories with filtering.
-pub async fn list_memories(Query(params): Query<MemoryQueryParams>) -> impl IntoResponse {
+/// GET /api/memory — list memory snapshots with optional agent_id filter.
+pub async fn list_memories(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<MemoryQueryParams>,
+) -> impl IntoResponse {
     let page = params.page.unwrap_or(1);
     let page_size = params.page_size.unwrap_or(50).min(200);
+    let offset = (page.saturating_sub(1)) * page_size;
+
+    let db = match state.db.lock() {
+        Ok(db) => db,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "database lock poisoned"})),
+            );
+        }
+    };
+
+    // Count total — use COUNT(DISTINCT ms.id) to avoid inflation from
+    // the 1:N JOIN between memory_snapshots and memory_events (F2 fix).
+    let total: u32 = match &params.agent_id {
+        Some(agent_id) => {
+            match db.query_row(
+                "SELECT COUNT(DISTINCT ms.id) FROM memory_snapshots ms \
+                 JOIN memory_events me ON ms.memory_id = me.memory_id \
+                 WHERE me.actor_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            ) {
+                Ok(count) => count,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("count query failed: {e}")})),
+                    );
+                }
+            }
+        }
+        None => {
+            match db.query_row("SELECT COUNT(*) FROM memory_snapshots", [], |row| row.get(0)) {
+                Ok(count) => count,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": format!("count query failed: {e}")})),
+                    );
+                }
+            }
+        }
+    };
+
+    // Fetch page.
+    let mut memories = Vec::new();
+    if let Some(ref agent_id) = params.agent_id {
+        let mut stmt = match db.prepare(
+            "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
+             FROM memory_snapshots ms \
+             JOIN memory_events me ON ms.memory_id = me.memory_id \
+             WHERE me.actor_id = ?1 \
+             GROUP BY ms.id \
+             ORDER BY ms.created_at DESC LIMIT ?2 OFFSET ?3",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("query prepare failed: {e}")})),
+                );
+            }
+        };
+        let rows = stmt.query_map(
+            rusqlite::params![agent_id, page_size, offset],
+            |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "memory_id": row.get::<_, String>(1)?,
+                    "snapshot": row.get::<_, String>(2)?,
+                    "created_at": row.get::<_, String>(3)?,
+                }))
+            },
+        );
+        match rows {
+            Ok(rows) => {
+                for row in rows {
+                    match row {
+                        Ok(r) => memories.push(r),
+                        Err(e) => tracing::warn!(error = %e, "skipping malformed memory row"),
+                    }
+                }
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("query failed: {e}")})),
+                );
+            }
+        };
+    } else {
+        let mut stmt = match db.prepare(
+            "SELECT id, memory_id, snapshot, created_at \
+             FROM memory_snapshots \
+             ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+        ) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("query prepare failed: {e}")})),
+                );
+            }
+        };
+        let rows = stmt.query_map(
+            rusqlite::params![page_size, offset],
+            |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "memory_id": row.get::<_, String>(1)?,
+                    "snapshot": row.get::<_, String>(2)?,
+                    "created_at": row.get::<_, String>(3)?,
+                }))
+            },
+        );
+        match rows {
+            Ok(rows) => {
+                for row in rows {
+                    match row {
+                        Ok(r) => memories.push(r),
+                        Err(e) => tracing::warn!(error = %e, "skipping malformed memory row"),
+                    }
+                }
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("query failed: {e}")})),
+                );
+            }
+        };
+    }
 
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "memories": [],
+            "memories": memories,
             "page": page,
             "page_size": page_size,
-            "total": 0,
+            "total": total,
         })),
     )
 }
 
-/// GET /api/memory/:id — get a specific memory.
-pub async fn get_memory(Path(id): Path<String>) -> impl IntoResponse {
+/// GET /api/memory/:id — get a specific memory snapshot by ID.
+pub async fn get_memory(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let db = match state.db.lock() {
+        Ok(db) => db,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "database lock poisoned"})),
+            );
+        }
+    };
+
+    // Try by memory_id first (TEXT), then by numeric id only if parseable (F1 fix).
+    let row = db
+        .query_row(
+            "SELECT id, memory_id, snapshot, created_at FROM memory_snapshots WHERE memory_id = ?1",
+            [&id],
+            |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "memory_id": row.get::<_, String>(1)?,
+                    "snapshot": row.get::<_, String>(2)?,
+                    "created_at": row.get::<_, String>(3)?,
+                }))
+            },
+        )
+        .or_else(|first_err| {
+            // Only fall through to numeric PK lookup on "not found" errors.
+            // Real DB errors (table missing, lock, etc.) should propagate.
+            if !matches!(first_err, rusqlite::Error::QueryReturnedNoRows) {
+                return Err(first_err);
+            }
+            // Only attempt numeric PK lookup if the id is a valid integer.
+            // memory_snapshots.id is INTEGER PRIMARY KEY AUTOINCREMENT —
+            // passing a non-numeric string would silently return 0 rows.
+            let numeric_id: i64 = id.parse().map_err(|_| {
+                rusqlite::Error::QueryReturnedNoRows
+            })?;
+            db.query_row(
+                "SELECT id, memory_id, snapshot, created_at FROM memory_snapshots WHERE id = ?1",
+                [numeric_id],
+                |row| {
+                    Ok(serde_json::json!({
+                        "id": row.get::<_, i64>(0)?,
+                        "memory_id": row.get::<_, String>(1)?,
+                        "snapshot": row.get::<_, String>(2)?,
+                        "created_at": row.get::<_, String>(3)?,
+                    }))
+                },
+            )
+        });
+
+    match row {
+        Ok(memory) => (StatusCode::OK, Json(memory)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "memory not found", "id": id})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("database error: {e}"), "id": id})),
+        ),
+    }
+}
+
+/// Request body for creating/updating a memory.
+#[derive(Debug, Deserialize)]
+pub struct WriteMemoryRequest {
+    pub memory_id: String,
+    pub event_type: String,
+    pub delta: String,
+    pub actor_id: String,
+    /// Optional full snapshot to persist alongside the event.
+    pub snapshot: Option<String>,
+}
+
+/// POST /api/memory — write a memory event (and optional snapshot).
+///
+/// Persists to memory_events, memory_snapshots, and memory_audit_log tables,
+/// closing the dead-write-path for all three tables.
+pub async fn write_memory(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<WriteMemoryRequest>,
+) -> impl IntoResponse {
+    let db = match state.db.lock() {
+        Ok(db) => db,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "database lock poisoned"})),
+            );
+        }
+    };
+
+    let event_hash = blake3::hash(body.memory_id.as_bytes());
+
+    // 1. Insert memory event.
+    if let Err(e) = cortex_storage::queries::memory_event_queries::insert_event(
+        &db, &body.memory_id, &body.event_type, &body.delta,
+        &body.actor_id, event_hash.as_bytes(), &[0u8; 32],
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("memory event insert failed: {e}")})),
+        );
+    }
+
+    // 2. Insert snapshot if provided.
+    if let Some(ref snapshot) = body.snapshot {
+        let state_hash = blake3::hash(snapshot.as_bytes());
+        if let Err(e) = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+            &db, &body.memory_id, snapshot, Some(state_hash.as_bytes()),
+        ) {
+            tracing::warn!(error = %e, memory_id = %body.memory_id, "snapshot insert failed (event was persisted)");
+        }
+    }
+
+    // 3. Audit log entry.
+    let details = format!("event_type={}, actor={}", body.event_type, body.actor_id);
+    if let Err(e) = cortex_storage::queries::memory_audit_queries::insert_audit(
+        &db, &body.memory_id, &body.event_type, Some(&details),
+    ) {
+        tracing::warn!(error = %e, memory_id = %body.memory_id, "audit log insert failed");
+    }
+
     (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({"error": "memory not found", "id": id})),
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "status": "ok",
+            "memory_id": body.memory_id,
+            "event_type": body.event_type,
+        })),
     )
 }

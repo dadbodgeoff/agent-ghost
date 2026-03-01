@@ -128,7 +128,7 @@ The aggregation engine computes dashboard-ready summaries from the audit data.
 | Aggregation | SQL Pattern | Use Case |
 |-------------|-------------|----------|
 | `violations_per_day` | `GROUP BY DATE(timestamp)` | Trend chart: "are violations increasing?" |
-| `top_violation_types` | `GROUP BY severity` | Bar chart: "what severity dominates?" |
+| `violations_by_severity` | `GROUP BY severity` | Bar chart: "what severity dominates?" |
 | `policy_denials_by_tool` | `GROUP BY tool_name` | Table: "which tools get denied most?" |
 | `boundary_violations_by_pattern` | `GROUP BY details` | Table: "what patterns trigger violations?" |
 | `total_entries` | `COUNT(*)` | Summary stat: total audit volume |

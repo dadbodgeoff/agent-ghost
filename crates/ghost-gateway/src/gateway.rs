@@ -118,12 +118,29 @@ impl Default for GatewaySharedState {
 
 /// The top-level gateway coordinator.
 pub struct Gateway {
-    pub shared_state: GatewaySharedState,
+    pub shared_state: Arc<GatewaySharedState>,
+    pub app_state: Option<Arc<crate::state::AppState>>,
+    pub mesh_router: Option<axum::Router>,
 }
 
 impl Gateway {
     pub fn new(shared_state: GatewaySharedState) -> Self {
-        Self { shared_state }
+        Self {
+            shared_state: Arc::new(shared_state),
+            app_state: None,
+            mesh_router: None,
+        }
+    }
+
+    pub fn new_with_state(
+        shared_state: Arc<GatewaySharedState>,
+        app_state: Arc<crate::state::AppState>,
+    ) -> Self {
+        Self {
+            shared_state,
+            app_state: Some(app_state),
+            mesh_router: None,
+        }
     }
 
     /// Run the gateway event loop with the API server until shutdown.

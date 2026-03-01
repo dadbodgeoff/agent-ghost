@@ -204,10 +204,20 @@ impl KillSwitch {
                     agent_id = %agent_id,
                     "Agent resumed from QUARANTINE — heightened monitoring for 24h"
                 );
+                self.log_audit(
+                    TriggerEvent::ManualPause { agent_id, reason: "quarantine_resume".into(), initiated_by: "api".into() },
+                    KillLevel::Normal,
+                    Some(agent_id),
+                );
                 state.per_agent.remove(&agent_id);
                 Ok(())
             }
             KillLevel::Pause => {
+                self.log_audit(
+                    TriggerEvent::ManualPause { agent_id, reason: "pause_resume".into(), initiated_by: "api".into() },
+                    KillLevel::Normal,
+                    Some(agent_id),
+                );
                 state.per_agent.remove(&agent_id);
                 Ok(())
             }
@@ -253,25 +263,34 @@ impl KillSwitch {
 
     /// Count quarantined agents (for T6 cascade check).
     pub fn quarantined_count(&self) -> usize {
-        match self.state.read() {
-            Ok(state) => state
-                .per_agent
-                .values()
-                .filter(|a| a.level == KillLevel::Quarantine)
-                .count(),
-            Err(_) => 0,
-        }
+        let state = match self.state.read() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                tracing::error!("kill switch RwLock poisoned in quarantined_count — recovering");
+                poisoned.into_inner()
+            }
+        };
+        state
+            .per_agent
+            .values()
+            .filter(|a| a.level == KillLevel::Quarantine)
+            .count()
     }
 
     fn log_audit(&self, trigger: TriggerEvent, action: KillLevel, agent_id: Option<Uuid>) {
-        if let Ok(mut log) = self.audit_log.write() {
-            log.push(AuditEntry {
-                timestamp: Utc::now(),
-                trigger,
-                action,
-                agent_id,
-            });
-        }
+        let mut log = match self.audit_log.write() {
+            Ok(log) => log,
+            Err(poisoned) => {
+                tracing::error!("kill switch audit_log RwLock poisoned — recovering to preserve audit trail");
+                poisoned.into_inner()
+            }
+        };
+        log.push(AuditEntry {
+            timestamp: Utc::now(),
+            trigger,
+            action,
+            agent_id,
+        });
     }
 }
 
