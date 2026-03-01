@@ -1,0 +1,257 @@
+/*
+ * GHOST ADE — Design Tokens
+ *
+ * Three-tier token system:
+ *   Tier 1: Primitive palette (raw values, never referenced directly)
+ *   Tier 2: Semantic tokens (intent-based, all component CSS uses these)
+ *   Tier 3: Component tokens (scoped overrides, defined per-component)
+ *
+ * Naming: --{category}-{property}-{variant}
+ * Ref: docs/DESIGN_SYSTEM.md §1–§7
+ */
+
+:root {
+  /* ═══════════════════════════════════════════════════════════════════
+     TIER 1: PRIMITIVE PALETTE
+     Raw color values. Components NEVER reference these directly.
+     ═══════════════════════════════════════════════════════════════════ */
+
+  /* ── Slate (Neutral) ── */
+  --ghost-slate-950: #0d0d1a;
+  --ghost-slate-900: #131325;
+  --ghost-slate-850: #1a1a2e;
+  --ghost-slate-800: #222240;
+  --ghost-slate-750: #2a2a4e;
+  --ghost-slate-700: #2a2a3e;
+  --ghost-slate-600: #3a3a52;
+  --ghost-slate-500: #555570;
+  --ghost-slate-400: #888;
+  --ghost-slate-300: #a1a1aa;
+  --ghost-slate-200: #c4c4cc;
+  --ghost-slate-100: #e0e0e0;
+  --ghost-slate-50:  #f0f0f5;
+
+  /* ── Indigo (Brand / Accent) ── */
+  --ghost-indigo-600: #6060cc;
+  --ghost-indigo-500: #8080dd;
+  --ghost-indigo-400: #a0a0ff;
+  --ghost-indigo-300: #b8b8ff;
+  --ghost-indigo-200: #d0d0ff;
+  --ghost-indigo-100: #e8e8ff;
+  --ghost-indigo-50:  #f0f0ff;
+
+  /* ── Severity Scale (L0–L4) ── */
+  --ghost-green-500:  #22c55e;
+  --ghost-green-400:  #4ade80;
+  --ghost-green-900:  #14532d;
+  --ghost-yellow-500: #eab308;
+  --ghost-yellow-400: #facc15;
+  --ghost-yellow-900: #422006;
+  --ghost-orange-500: #f97316;
+  --ghost-orange-400: #fb923c;
+  --ghost-orange-900: #431407;
+  --ghost-red-500:    #ef4444;
+  --ghost-red-400:    #f87171;
+  --ghost-red-900:    #450a0a;
+  --ghost-red-800:    #991b1b;
+  --ghost-red-700:    #b91c1c;
+  --ghost-red-950:    #2d0a0a;
+
+  /* ── Utility Colors ── */
+  --ghost-blue-500:   #3b82f6;
+  --ghost-blue-400:   #60a5fa;
+  --ghost-blue-900:   #1e3a5f;
+  --ghost-cyan-500:   #06b6d4;
+  --ghost-purple-500: #8b5cf6;
+  --ghost-pink-500:   #ec4899;
+
+  /* ═══════════════════════════════════════════════════════════════════
+     TIER 2: SEMANTIC TOKENS — DARK THEME (DEFAULT)
+     Intent-based aliases. All component CSS uses these.
+     ═══════════════════════════════════════════════════════════════════ */
+
+  /* ── Backgrounds ── */
+  --color-bg-base:       var(--ghost-slate-950);
+  --color-bg-elevated-1: var(--ghost-slate-900);
+  --color-bg-elevated-2: var(--ghost-slate-850);
+  --color-bg-elevated-3: var(--ghost-slate-800);
+  --color-bg-overlay:    rgba(0, 0, 0, 0.6);
+  --color-bg-inset:      #08081a;
+
+  /* ── Surfaces (interactive) ── */
+  --color-surface-hover:    var(--ghost-slate-800);
+  --color-surface-active:   var(--ghost-slate-750);
+  --color-surface-selected: var(--ghost-slate-750);
+  --color-surface-disabled: var(--ghost-slate-900);
+
+  /* ── Text ── */
+  --color-text-primary:   var(--ghost-slate-100);
+  --color-text-secondary: var(--ghost-slate-300);
+  --color-text-muted:     var(--ghost-slate-400);
+  --color-text-disabled:  var(--ghost-slate-500);
+  --color-text-inverse:   var(--ghost-slate-950);
+  --color-text-on-brand:  var(--ghost-slate-950);
+
+  /* ── Borders ── */
+  --color-border-default: var(--ghost-slate-700);
+  --color-border-subtle:  rgba(255, 255, 255, 0.06);
+  --color-border-strong:  var(--ghost-slate-600);
+  --color-border-brand:   var(--ghost-indigo-400);
+
+  /* ── Brand ── */
+  --color-brand-primary:  var(--ghost-indigo-400);
+  --color-brand-hover:    var(--ghost-indigo-500);
+  --color-brand-pressed:  var(--ghost-indigo-600);
+  --color-brand-subtle:   rgba(160, 160, 255, 0.1);
+
+  /* ── Severity (maps to intervention levels L0–L4) ── */
+  --color-severity-normal:      var(--ghost-green-500);
+  --color-severity-normal-bg:   var(--ghost-green-900);
+  --color-severity-soft:        var(--ghost-yellow-500);
+  --color-severity-soft-bg:     var(--ghost-yellow-900);
+  --color-severity-active:      var(--ghost-orange-500);
+  --color-severity-active-bg:   var(--ghost-orange-900);
+  --color-severity-hard:        var(--ghost-red-500);
+  --color-severity-hard-bg:     var(--ghost-red-900);
+  --color-severity-external:    var(--ghost-red-800);
+  --color-severity-external-bg: var(--ghost-red-950);
+
+  /* ── Interactive (buttons, inputs, controls) ── */
+  --color-interactive-primary:          var(--ghost-indigo-400);
+  --color-interactive-primary-hover:    var(--ghost-indigo-500);
+  --color-interactive-primary-text:     var(--ghost-slate-950);
+  --color-interactive-secondary:        transparent;
+  --color-interactive-secondary-border: var(--ghost-slate-600);
+  --color-interactive-secondary-hover:  var(--ghost-slate-800);
+  --color-interactive-danger:           var(--ghost-red-500);
+  --color-interactive-danger-hover:     var(--ghost-red-400);
+  --color-interactive-disabled-bg:      var(--ghost-slate-800);
+  --color-interactive-disabled-text:    var(--ghost-slate-500);
+
+  /* ── Focus ── */
+  --color-focus-ring: var(--ghost-indigo-400);
+  --shadow-focus-ring: 0 0 0 2px var(--ghost-slate-950), 0 0 0 4px var(--ghost-indigo-400);
+
+  /* ── Data Visualization ── */
+  --color-chart-1: var(--ghost-indigo-400);
+  --color-chart-2: var(--ghost-cyan-500);
+  --color-chart-3: var(--ghost-purple-500);
+  --color-chart-4: var(--ghost-pink-500);
+  --color-chart-5: var(--ghost-green-500);
+  --color-chart-6: var(--ghost-yellow-500);
+  --color-chart-7: var(--ghost-orange-500);
+
+
+  /* ═══════════════════════════════════════════════════════════════════
+     TYPOGRAPHY
+     ═══════════════════════════════════════════════════════════════════ */
+
+  --font-family-sans: 'Inter', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-family-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono',
+    'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+
+  /* Type scale (1.200 minor third, base 14px) */
+  --font-size-xs:   11px;
+  --font-size-sm:   12px;
+  --font-size-base: 14px;
+  --font-size-md:   16px;
+  --font-size-lg:   20px;
+  --font-size-xl:   24px;
+  --font-size-2xl:  36px;
+  --font-size-3xl:  48px;
+
+  /* Weights */
+  --font-weight-normal:   400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  /* Line heights */
+  --line-height-tight:  1.2;
+  --line-height-normal: 1.5;
+  --line-height-loose:  1.75;
+
+  /* Letter spacing */
+  --letter-spacing-tight:  -0.01em;
+  --letter-spacing-normal:  0;
+  --letter-spacing-wide:    0.05em;
+  --letter-spacing-wider:   0.1em;
+
+  /* ═══════════════════════════════════════════════════════════════════
+     SPACING (4px base unit)
+     ═══════════════════════════════════════════════════════════════════ */
+
+  --spacing-0:   0;
+  --spacing-0-5: 2px;
+  --spacing-1:   4px;
+  --spacing-2:   8px;
+  --spacing-3:   12px;
+  --spacing-4:   16px;
+  --spacing-5:   20px;
+  --spacing-6:   24px;
+  --spacing-8:   32px;
+  --spacing-10:  40px;
+  --spacing-12:  48px;
+  --spacing-16:  64px;
+
+  /* Layout */
+  --layout-sidebar-width:     200px;
+  --layout-sidebar-collapsed: 56px;
+  --layout-content-max-width: 1200px;
+  --layout-content-padding:   var(--spacing-6);
+  --layout-card-padding:      var(--spacing-5);
+  --layout-card-gap:          var(--spacing-4);
+  --layout-topbar-height:     48px;
+
+  /* ═══════════════════════════════════════════════════════════════════
+     BORDER RADIUS
+     ═══════════════════════════════════════════════════════════════════ */
+
+  --radius-sm:   4px;
+  --radius-md:   8px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-full: 9999px;
+
+  /* ═══════════════════════════════════════════════════════════════════
+     ELEVATION & SHADOWS (dark mode: minimal shadows)
+     ═══════════════════════════════════════════════════════════════════ */
+
+  --shadow-elevated-1: none;
+  --shadow-elevated-2: none;
+  --shadow-elevated-3: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-popover:    0 4px 16px rgba(0, 0, 0, 0.5);
+
+  /* ═══════════════════════════════════════════════════════════════════
+     MOTION & TRANSITIONS
+     ═══════════════════════════════════════════════════════════════════ */
+
+  --duration-fast:    100ms;
+  --duration-normal:  200ms;
+  --duration-slow:    300ms;
+  --duration-slower:  500ms;
+
+  --easing-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-in:      cubic-bezier(0.4, 0, 1, 1);
+  --easing-out:     cubic-bezier(0, 0, 0.2, 1);
+  --easing-spring:  cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ═══════════════════════════════════════════════════════════════════
+     RESPONSIVE BREAKPOINTS (used in @media queries)
+     ═══════════════════════════════════════════════════════════════════ */
+
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 1024px;
+  --breakpoint-lg: 1025px;
+}
+
+/* Reduced motion: respect user preference */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast:   0ms;
+    --duration-normal: 0ms;
+    --duration-slow:   50ms;
+    --duration-slower: 50ms;
+  }
+}

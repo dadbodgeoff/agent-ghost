@@ -26,6 +26,7 @@
     const token = getToken();
     const resp = await fetch(`${API_BASE}${path}`, {
       ...options,
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
@@ -57,7 +58,6 @@
         method: 'POST',
         body: JSON.stringify({ provider: name, scopes }),
       });
-      // Redirect to provider authorization page
       window.location.href = data.authorization_url;
     } catch (e: any) {
       error = `Connect failed: ${e.message}`;
@@ -75,11 +75,15 @@
 
   function statusColor(status: string): string {
     switch (status) {
-      case 'connected': return '#4caf50';
-      case 'expired': return '#ff9800';
-      case 'revoked': return '#f44336';
-      default: return '#888';
+      case 'connected': return 'var(--color-severity-normal)';
+      case 'expired':   return 'var(--color-severity-soft)';
+      case 'revoked':   return 'var(--color-severity-hard)';
+      default:          return 'var(--color-text-muted)';
     }
+  }
+
+  function statusLabel(status: string): string {
+    return status.charAt(0).toUpperCase() + status.slice(1);
   }
 
   function isConnected(providerName: string): boolean {
@@ -97,6 +101,11 @@
 
 {#if loading}
   <p class="loading">Loading...</p>
+{:else if providers.length === 0 && connections.length === 0}
+  <div class="empty-state">
+    <p>No OAuth providers configured.</p>
+    <p class="empty-hint">Add providers in your ghost.yml configuration.</p>
+  </div>
 {:else}
   <div class="section">
     <h2>Providers</h2>
@@ -105,10 +114,11 @@
         <div class="provider-header">
           <span class="provider-name">{provider.name}</span>
           {#if isConnected(provider.name)}
-            <span class="badge connected">Connected</span>
+            <span class="badge badge-connected" aria-label="Status: connected">Connected</span>
           {:else}
             <button
-              on:click={() => connectProvider(provider.name, Object.values(provider.scopes).flat())}
+              class="btn-connect"
+              onclick={() => connectProvider(provider.name, Object.values(provider.scopes).flat())}
               aria-label="Connect {provider.name}"
             >
               Connect
@@ -116,7 +126,7 @@
           {/if}
         </div>
         <div class="scopes">
-          {#each Object.entries(provider.scopes) as [group, scopeList]}
+          {#each Object.entries(provider.scopes) as [group]}
             <span class="scope-group">{group}</span>
           {/each}
         </div>
@@ -131,10 +141,16 @@
         <div class="connection-card">
           <div class="connection-header">
             <span class="provider-name">{conn.provider}</span>
-            <span class="badge" style="background: {statusColor(conn.status)}">{conn.status}</span>
+            <span
+              class="badge"
+              style="background: {statusColor(conn.status)}"
+              aria-label="Status: {conn.status}"
+            >
+              {statusLabel(conn.status)}
+            </span>
           </div>
           <div class="connection-meta">
-            <span class="ref-id" title={conn.ref_id}>{conn.ref_id.slice(0, 8)}...</span>
+            <span class="ref-id" title={conn.ref_id}>{conn.ref_id.slice(0, 8)}…</span>
             <span class="connected-at">{new Date(conn.connected_at).toLocaleDateString()}</span>
           </div>
           <div class="connection-scopes">
@@ -143,8 +159,8 @@
             {/each}
           </div>
           <button
-            class="disconnect"
-            on:click={() => disconnectConnection(conn.ref_id)}
+            class="btn-disconnect"
+            onclick={() => disconnectConnection(conn.ref_id)}
             aria-label="Disconnect {conn.provider}"
           >
             Disconnect
@@ -156,24 +172,174 @@
 {/if}
 
 <style>
-  h1 { font-size: 20px; margin-bottom: 24px; }
-  h2 { font-size: 14px; color: #888; margin-bottom: 12px; }
-  .section { background: #1a1a2e; border: 1px solid #2a2a3e; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  .error { background: #3e1a1a; border: 1px solid #5e2a2a; border-radius: 4px; padding: 8px 12px; color: #ff6b6b; margin-bottom: 12px; font-size: 13px; }
-  .loading { color: #888; font-size: 13px; }
-  .provider-card, .connection-card { background: #12122a; border: 1px solid #2a2a3e; border-radius: 6px; padding: 12px; margin-bottom: 8px; }
-  .provider-header, .connection-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .provider-name { font-size: 14px; font-weight: 600; color: #e0e0e0; text-transform: capitalize; }
-  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; color: #fff; }
-  .badge.connected { background: #4caf50; }
-  .scopes { display: flex; gap: 6px; flex-wrap: wrap; }
-  .scope-group { font-size: 11px; color: #aaa; background: #2a2a3e; padding: 2px 6px; border-radius: 3px; }
-  .connection-meta { display: flex; gap: 12px; font-size: 12px; color: #888; margin-bottom: 6px; }
-  .ref-id { font-family: monospace; }
-  .connection-scopes { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
-  .scope-tag { font-size: 11px; color: #aaa; background: #2a2a3e; padding: 1px 5px; border-radius: 3px; }
-  button { padding: 6px 14px; background: #2a2a3e; border: none; border-radius: 4px; color: #e0e0e0; cursor: pointer; font-size: 12px; }
-  button:hover { background: #3a3a4e; }
-  button.disconnect { background: #3e1a1a; color: #ff6b6b; }
-  button.disconnect:hover { background: #5e2a2a; }
+  h1 {
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+    margin-bottom: var(--spacing-6);
+  }
+
+  h2 {
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-muted);
+    margin-bottom: var(--spacing-3);
+    text-transform: uppercase;
+    letter-spacing: var(--letter-spacing-wide);
+  }
+
+  .section {
+    background: var(--color-bg-elevated-2);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-4);
+    margin-bottom: var(--spacing-4);
+  }
+
+  .error {
+    background: var(--color-severity-hard-bg);
+    border: 1px solid var(--color-severity-hard);
+    border-radius: var(--radius-sm);
+    padding: var(--spacing-2) var(--spacing-3);
+    color: var(--color-severity-hard);
+    margin-bottom: var(--spacing-3);
+    font-size: var(--font-size-sm);
+  }
+
+  .loading {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: var(--spacing-10) var(--spacing-4);
+    color: var(--color-text-secondary);
+  }
+
+  .empty-hint {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    margin-top: var(--spacing-2);
+  }
+
+  .provider-card,
+  .connection-card {
+    background: var(--color-bg-elevated-1);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-3);
+    margin-bottom: var(--spacing-2);
+  }
+
+  .provider-header,
+  .connection-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-2);
+  }
+
+  .provider-name {
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+    text-transform: capitalize;
+  }
+
+  .badge {
+    font-size: var(--font-size-xs);
+    padding: var(--spacing-0-5) var(--spacing-2);
+    border-radius: var(--radius-full);
+    color: var(--color-text-inverse);
+    font-weight: var(--font-weight-medium);
+  }
+
+  .badge-connected {
+    background: var(--color-severity-normal);
+  }
+
+  .scopes {
+    display: flex;
+    gap: var(--spacing-1);
+    flex-wrap: wrap;
+  }
+
+  .scope-group {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    background: var(--color-bg-elevated-3);
+    padding: var(--spacing-0-5) var(--spacing-1);
+    border-radius: var(--radius-sm);
+  }
+
+  .connection-meta {
+    display: flex;
+    gap: var(--spacing-3);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--spacing-1);
+  }
+
+  .ref-id {
+    font-family: var(--font-family-mono);
+  }
+
+  .connection-scopes {
+    display: flex;
+    gap: var(--spacing-1);
+    flex-wrap: wrap;
+    margin-bottom: var(--spacing-2);
+  }
+
+  .scope-tag {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    background: var(--color-bg-elevated-3);
+    padding: var(--spacing-0-5) var(--spacing-1);
+    border-radius: var(--radius-sm);
+  }
+
+  .btn-connect {
+    padding: var(--spacing-1) var(--spacing-3);
+    background: var(--color-interactive-primary);
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--color-interactive-primary-text);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    transition: background var(--duration-fast) var(--easing-default);
+  }
+
+  .btn-connect:hover {
+    background: var(--color-interactive-primary-hover);
+  }
+
+  .btn-connect:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus-ring);
+  }
+
+  .btn-disconnect {
+    padding: var(--spacing-1) var(--spacing-3);
+    background: var(--color-severity-hard-bg);
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--color-severity-hard);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    transition: background var(--duration-fast) var(--easing-default);
+  }
+
+  .btn-disconnect:hover {
+    background: var(--color-interactive-danger);
+    color: var(--color-text-inverse);
+  }
+
+  .btn-disconnect:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus-ring);
+  }
 </style>

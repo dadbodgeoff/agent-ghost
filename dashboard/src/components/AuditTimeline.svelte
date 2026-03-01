@@ -1,30 +1,39 @@
 <script lang="ts">
-  export let entries: {
-    id: string;
-    timestamp: string;
-    event_type: string;
-    severity: string;
-    details: string;
-    agent_id?: string;
-  }[] = [];
+  /**
+   * AuditTimeline — vertical timeline of audit events with severity dots.
+   * Ref: T-1.9.3, DESIGN_SYSTEM §8.4
+   */
 
-  const SEVERITY_COLORS: Record<string, string> = {
-    critical: '#ef4444',
-    high: '#f97316',
-    medium: '#eab308',
-    low: '#22c55e',
-    info: '#71717a',
+  let {
+    entries = [],
+  }: {
+    entries?: Array<{
+      id: string;
+      timestamp: string;
+      event_type: string;
+      severity: string;
+      details: string;
+      agent_id?: string;
+    }>;
+  } = $props();
+
+  const SEVERITY_TOKENS: Record<string, string> = {
+    critical: 'var(--color-severity-hard)',
+    high: 'var(--color-severity-active)',
+    medium: 'var(--color-severity-soft)',
+    low: 'var(--color-severity-normal)',
+    info: 'var(--color-text-muted)',
   };
 
   function severityColor(severity: string): string {
-    return SEVERITY_COLORS[severity.toLowerCase()] || '#71717a';
+    return SEVERITY_TOKENS[severity.toLowerCase()] || 'var(--color-text-muted)';
   }
 </script>
 
 <div class="audit-timeline" role="list" aria-label="Audit event timeline">
-  {#each entries as entry}
+  {#each entries as entry (entry.id)}
     <div class="timeline-entry" role="listitem">
-      <div class="dot" style="background: {severityColor(entry.severity)}"></div>
+      <div class="dot" style="background: {severityColor(entry.severity)}" aria-hidden="true"></div>
       <div class="content">
         <div class="header">
           <span class="event-type">{entry.event_type}</span>
@@ -44,15 +53,69 @@
 </div>
 
 <style>
-  .audit-timeline { display: flex; flex-direction: column; gap: 0; }
-  .timeline-entry { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid #1e1e24; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
-  .content { flex: 1; }
-  .header { display: flex; gap: 8px; align-items: center; font-size: 12px; }
-  .event-type { font-weight: 600; color: #e4e4e7; }
-  .severity { font-weight: 600; }
-  .time { color: #52525b; margin-left: auto; }
-  .details { font-size: 13px; color: #a1a1aa; margin: 4px 0 0; }
-  .agent { font-size: 11px; color: #52525b; }
-  .empty { color: #52525b; font-size: 13px; text-align: center; padding: 24px; }
+  .audit-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .timeline-entry {
+    display: flex;
+    gap: var(--spacing-3);
+    padding: var(--spacing-3) 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+    margin-top: var(--spacing-1);
+    flex-shrink: 0;
+  }
+
+  .content {
+    flex: 1;
+  }
+
+  .header {
+    display: flex;
+    gap: var(--spacing-2);
+    align-items: center;
+    font-size: var(--font-size-sm);
+  }
+
+  .event-type {
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-primary);
+  }
+
+  .severity {
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .time {
+    color: var(--color-text-disabled);
+    margin-left: auto;
+    font-size: var(--font-size-xs);
+  }
+
+  .details {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    margin: var(--spacing-1) 0 0;
+  }
+
+  .agent {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-disabled);
+    font-family: var(--font-family-mono);
+  }
+
+  .empty {
+    color: var(--color-text-disabled);
+    font-size: var(--font-size-sm);
+    text-align: center;
+    padding: var(--spacing-6);
+  }
 </style>

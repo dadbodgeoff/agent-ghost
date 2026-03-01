@@ -131,6 +131,13 @@ pub async fn run_interactive_chat() {
         tracing::warn!(path = %db_path, "Could not open DB — persistence disabled");
     }
 
+    // Wire CostTracker.record() into the agent runner (T-1.2.1).
+    let cost_tracker = std::sync::Arc::new(crate::cost::tracker::CostTracker::new());
+    let ct = cost_tracker.clone();
+    runner.cost_recorder = Some(std::sync::Arc::new(move |agent_id, session_id, cost, is_compaction| {
+        ct.record(agent_id, session_id, cost, is_compaction);
+    }));
+
     // Configure filesystem tool with current working directory.
     if let Ok(cwd) = std::env::current_dir() {
         runner.tool_executor.set_workspace_root(cwd.clone());

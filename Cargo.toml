@@ -160,6 +160,12 @@ wasmtime = "27"
 # Notifications
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 
+# Rate limiting
+governor = "0.6"
+
+# OpenAPI
+utoipa = { version = "5", features = ["axum_extras"] }
+
 # Serde YAML
 serde_yaml = "0.9"
 

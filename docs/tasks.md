@@ -284,10 +284,11 @@
   - Loading: skeleton/spinner
   - Empty: "No [agents/sessions/etc.] yet" with call-to-action
   - Error: error message + retry button + `X-Request-ID`
-- [ ] **T-1.14.3** Add CSS custom properties for dark/light theme `§9.1`
-  - `:root` (dark default) and `:root.light` (light theme)
-  - Toggle in `/settings`, persist in `localStorage`
-  - Respect `prefers-color-scheme` as default
+- [ ] **T-1.14.3** Add theme toggle UI in `/settings` `§9.1`
+  - Toggle switch: dark / light / system
+  - Persist choice in `localStorage` as `ghost-theme`
+  - Prerequisite: T-1.0.1 (tokens), T-1.0.3 (theme infrastructure)
+  - Scope: toggle UI only — token files and theme detection already exist via T-1.0.1/T-1.0.3
 
 ### Phase 1 Exit Criteria
 

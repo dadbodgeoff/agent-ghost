@@ -1,0 +1,63 @@
+/*
+ * GHOST ADE — Light Theme Token Overrides
+ * Applied when :root.light is set on <html>.
+ * Ref: docs/DESIGN_SYSTEM.md §2.3
+ */
+
+:root.light {
+  /* ── Backgrounds ── */
+  --color-bg-base:       #f4f4f8;
+  --color-bg-elevated-1: #ffffff;
+  --color-bg-elevated-2: #f8f8fc;
+  --color-bg-elevated-3: #ffffff;
+  --color-bg-overlay:    rgba(0, 0, 0, 0.4);
+  --color-bg-inset:      #eeeef2;
+
+  /* ── Surfaces ── */
+  --color-surface-hover:    #ededf4;
+  --color-surface-active:   #e0e0ec;
+  --color-surface-selected: #e8e8f8;
+  --color-surface-disabled: #f0f0f4;
+
+  /* ── Text ── */
+  --color-text-primary:   #1a1a2e;
+  --color-text-secondary: #44445a;
+  --color-text-muted:     #6b6b80;
+  --color-text-disabled:  #a0a0b0;
+  --color-text-inverse:   #f0f0f5;
+  --color-text-on-brand:  #ffffff;
+
+  /* ── Borders ── */
+  --color-border-default: #d4d4dc;
+  --color-border-subtle:  rgba(0, 0, 0, 0.06);
+  --color-border-strong:  #b0b0c0;
+  --color-border-brand:   #7070cc;
+
+  /* ── Brand ── */
+  --color-brand-primary:  #6060cc;
+  --color-brand-hover:    #5050bb;
+  --color-brand-pressed:  #4040aa;
+  --color-brand-subtle:   rgba(96, 96, 204, 0.08);
+
+  /* ── Interactive ── */
+  --color-interactive-primary:          #6060cc;
+  --color-interactive-primary-hover:    #5050bb;
+  --color-interactive-primary-text:     #ffffff;
+  --color-interactive-secondary:        transparent;
+  --color-interactive-secondary-border: #b0b0c0;
+  --color-interactive-secondary-hover:  #ededf4;
+  --color-interactive-danger:           #dc2626;
+  --color-interactive-danger-hover:     #b91c1c;
+  --color-interactive-disabled-bg:      #e8e8ec;
+  --color-interactive-disabled-text:    #a0a0b0;
+
+  /* ── Focus ── */
+  --color-focus-ring: #6060cc;
+  --shadow-focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px #6060cc;
+
+  /* ── Shadows (light mode uses shadows for elevation) ── */
+  --shadow-elevated-1: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-elevated-2: 0 4px 6px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.06);
+  --shadow-elevated-3: 0 10px 15px rgba(0, 0, 0, 0.08), 0 4px 6px rgba(0, 0, 0, 0.05);
+  --shadow-popover:    0 4px 12px rgba(0, 0, 0, 0.1);
+}

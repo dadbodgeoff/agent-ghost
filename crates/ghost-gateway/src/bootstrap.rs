@@ -369,12 +369,16 @@ impl GatewayBootstrap {
 
     /// Build the axum Router with all API routes mounted.
     pub fn build_router(_config: &GhostConfig, app_state: Arc<AppState>, mesh_router: Option<axum::Router>) -> axum::Router {
-        use axum::routing::{delete, get, post};
+        use axum::routing::{delete, get, post, put};
 
         let mut app = axum::Router::new()
-            // Health
+            // Health (public — no auth)
             .route("/api/health", get(crate::api::health::health_handler))
             .route("/api/ready", get(crate::api::health::ready_handler))
+            // Auth (public — no auth)
+            .route("/api/auth/login", post(crate::api::auth::login))
+            .route("/api/auth/refresh", post(crate::api::auth::refresh))
+            .route("/api/auth/logout", post(crate::api::auth::logout))
             // Agents
             .route("/api/agents", get(crate::api::agents::list_agents))
             .route("/api/agents", post(crate::api::agents::create_agent))
@@ -385,16 +389,29 @@ impl GatewayBootstrap {
             .route("/api/audit/export", get(crate::api::audit::audit_export))
             // Convergence
             .route("/api/convergence/scores", get(crate::api::convergence::get_scores))
-            // Goals
+            // Goals (T-2.1.5, T-2.1.6)
             .route("/api/goals", get(crate::api::goals::list_goals))
+            .route("/api/goals/:id", get(crate::api::goals::get_goal))
             .route("/api/goals/:id/approve", post(crate::api::goals::approve_goal))
             .route("/api/goals/:id/reject", post(crate::api::goals::reject_goal))
-            // Sessions
+            // Sessions (T-2.1.1)
             .route("/api/sessions", get(crate::api::sessions::list_sessions))
-            // Memory
+            .route("/api/sessions/:id/events", get(crate::api::sessions::session_events))
+            // Memory (T-2.1.2)
             .route("/api/memory", get(crate::api::memory::list_memories))
             .route("/api/memory", post(crate::api::memory::write_memory))
+            .route("/api/memory/search", get(crate::api::memory::search_memories))
             .route("/api/memory/:id", get(crate::api::memory::get_memory))
+            // CRDT State (T-2.1.3)
+            .route("/api/state/crdt/:agent_id", get(crate::api::state::get_crdt_state))
+            // Integrity (T-2.1.4)
+            .route("/api/integrity/chain/:agent_id", get(crate::api::integrity::verify_chain))
+            // Workflows (T-2.1.9)
+            .route("/api/workflows", get(crate::api::workflows::list_workflows))
+            .route("/api/workflows", post(crate::api::workflows::create_workflow))
+            .route("/api/workflows/:id", get(crate::api::workflows::get_workflow))
+            .route("/api/workflows/:id", put(crate::api::workflows::update_workflow))
+            .route("/api/workflows/:id/execute", post(crate::api::workflows::execute_workflow))
             // Safety
             .route("/api/safety/kill-all", post(crate::api::safety::kill_all))
             .route("/api/safety/pause/:agent_id", post(crate::api::safety::pause_agent))
@@ -405,6 +422,8 @@ impl GatewayBootstrap {
             .route("/api/costs", get(crate::api::costs::get_costs))
             // WebSocket
             .route("/api/ws", get(crate::api::websocket::ws_handler))
+            // OpenAPI spec (public — no auth)
+            .route("/api/openapi.json", get(crate::api::openapi::openapi_spec))
             // OAuth
             .route("/api/oauth/providers", get(crate::api::oauth_routes::list_providers))
             .route("/api/oauth/connect", post(crate::api::oauth_routes::connect))
@@ -426,17 +445,97 @@ impl GatewayBootstrap {
         };
         app = app.merge(crate::api::push_routes::push_router(push_state));
 
+        // Build CORS layer — restricted when GHOST_CORS_ORIGINS is set.
+        let cors = Self::build_cors_layer();
+
+        // Rate limiting state.
+        let rate_limit_state = std::sync::Arc::new(crate::api::rate_limit::RateLimitState::new());
+
+        // Auth config — resolve once at startup, not per-request.
+        let auth_config = Arc::new(crate::api::auth::AuthConfig::from_env());
+        let revocation_set = Arc::new(crate::api::auth::RevocationSet::new());
+        let ws_tracker = Arc::new(crate::api::websocket::WsConnectionTracker::new());
+
         let app = app
-            // Middleware
-            .layer(tower_http::cors::CorsLayer::permissive())
-            .layer(tower_http::trace::TraceLayer::new_for_http());
+            // Middleware stack: last .layer() = outermost = runs first on request.
+            //
+            // Request order: Trace → CORS → request_id → auth → rate_limit → handler
+            // (auth BEFORE rate_limit so Claims are available for per-token limits)
+            .layer(axum::middleware::from_fn(crate::api::rate_limit::rate_limit_middleware))
+            .layer(axum::middleware::from_fn(crate::api::auth::auth_middleware))
+            .layer(axum::middleware::from_fn(crate::api::rate_limit::request_id_middleware))
+            .layer(axum::Extension(rate_limit_state))
+            .layer(axum::Extension(auth_config.clone()))
+            .layer(axum::Extension(revocation_set.clone()))
+            .layer(axum::Extension(ws_tracker))
+            .layer(cors)
+            .layer(
+                tower_http::trace::TraceLayer::new_for_http()
+                    .make_span_with(|req: &axum::http::Request<_>| {
+                        let request_id = req
+                            .headers()
+                            .get("x-request-id")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+                        tracing::info_span!(
+                            "request",
+                            method = %req.method(),
+                            uri = %req.uri(),
+                            request_id = %request_id,
+                        )
+                    }),
+            );
 
         tracing::info!(
-            routes = "health, ready, agents, audit, convergence, goals, sessions, memory, safety, costs, ws, oauth",
+            routes = "health, ready, agents, audit, convergence, goals, sessions, memory, state, integrity, workflows, safety, costs, ws, oauth, auth, openapi",
             "API router built"
         );
 
         app
+    }
+
+    /// Build CORS layer — restricted when GHOST_CORS_ORIGINS is set.
+    ///
+    /// Default allowed origins: localhost:5173 (SvelteKit dev) + localhost:18789 (embedded).
+    /// Production: set GHOST_CORS_ORIGINS=https://your-domain.com
+    fn build_cors_layer() -> tower_http::cors::CorsLayer {
+        use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
+
+        let origins_env = std::env::var("GHOST_CORS_ORIGINS").ok();
+
+        let origins: Vec<String> = match origins_env {
+            Some(ref val) if !val.is_empty() => {
+                val.split(',').map(|s| s.trim().to_string()).collect()
+            }
+            _ => vec![
+                "http://localhost:5173".into(),
+                "http://localhost:18789".into(),
+                "http://127.0.0.1:5173".into(),
+                "http://127.0.0.1:18789".into(),
+            ],
+        };
+
+        let parsed: Vec<axum::http::HeaderValue> = origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(parsed))
+            .allow_methods(AllowMethods::list([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ]))
+            .allow_headers(AllowHeaders::list([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderName::from_static("x-request-id"),
+            ]))
+            .allow_credentials(true)
     }
 
     /// Apply network egress policies per agent based on isolation mode (Phase 11).

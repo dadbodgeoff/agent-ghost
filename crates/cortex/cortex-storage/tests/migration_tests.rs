@@ -424,5 +424,169 @@ fn v018_schema_version_updated() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 19, "Latest migration version should be 19");
+    assert_eq!(version, 20, "Latest migration version should be 20");
+}
+
+// ── v019 migration tests ────────────────────────────────────────────────
+
+#[test]
+fn v019_intervention_state_table_created() {
+    let conn = setup_db();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        tables.contains(&"intervention_state".to_string()),
+        "v019 should create intervention_state table"
+    );
+}
+
+#[test]
+fn v019_indexes_created() {
+    let conn = setup_db();
+    let indexes: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        indexes.contains(&"idx_memory_events_memory_id".to_string()),
+        "v019 should create idx_memory_events_memory_id"
+    );
+    assert!(
+        indexes.contains(&"idx_itp_events_event_type".to_string()),
+        "v019 should create idx_itp_events_event_type"
+    );
+}
+
+// ── v020 migration tests ────────────────────────────────────────────────
+
+#[test]
+fn v020_audit_log_table_created_with_actor_id() {
+    let conn = setup_db();
+    // audit_log should exist (created by v020 if not already present)
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        tables.contains(&"audit_log".to_string()),
+        "v020 should ensure audit_log table exists"
+    );
+
+    // actor_id column should exist
+    let has_actor_id: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('audit_log') WHERE name = 'actor_id'")
+        .unwrap()
+        .exists([])
+        .unwrap();
+    assert!(has_actor_id, "v020 should add actor_id column to audit_log");
+}
+
+#[test]
+fn v020_audit_log_actor_id_index_exists() {
+    let conn = setup_db();
+    let indexes: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        indexes.contains(&"idx_audit_log_actor_id".to_string()),
+        "v020 should create idx_audit_log_actor_id"
+    );
+}
+
+#[test]
+fn v020_audit_log_insert_with_actor_id_succeeds() {
+    let conn = setup_db();
+    conn.execute(
+        "INSERT INTO audit_log (id, timestamp, agent_id, event_type, severity, details, actor_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params!["test-1", "2026-03-01T00:00:00Z", "agent-1", "test_event", "info", "test details", "user@example.com"],
+    )
+    .expect("INSERT with actor_id should succeed");
+
+    let actor: Option<String> = conn
+        .query_row(
+            "SELECT actor_id FROM audit_log WHERE id = 'test-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(actor, Some("user@example.com".to_string()));
+}
+
+#[test]
+fn v020_audit_log_insert_without_actor_id_succeeds() {
+    let conn = setup_db();
+    conn.execute(
+        "INSERT INTO audit_log (id, timestamp, agent_id, event_type, severity, details)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params!["test-2", "2026-03-01T00:00:00Z", "agent-1", "test_event", "info", "no actor"],
+    )
+    .expect("INSERT without actor_id should succeed (NULL allowed)");
+
+    let actor: Option<String> = conn
+        .query_row(
+            "SELECT actor_id FROM audit_log WHERE id = 'test-2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(actor, None, "actor_id should be NULL when not provided");
+}
+
+#[test]
+fn v020_migration_is_idempotent_with_existing_audit_log() {
+    // Simulate the case where ghost-audit's ensure_table() already created
+    // audit_log before migrations run. v020 should handle this gracefully.
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;").unwrap();
+
+    // Pre-create audit_log (as ghost-audit would)
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS audit_log (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            tool_name TEXT,
+            details TEXT NOT NULL DEFAULT '',
+            session_id TEXT
+        );"
+    ).unwrap();
+
+    // Insert a pre-existing row
+    conn.execute(
+        "INSERT INTO audit_log (id, timestamp, agent_id, event_type, details)
+         VALUES ('pre-existing', '2026-01-01T00:00:00Z', 'agent-0', 'boot', 'before migration')",
+        [],
+    ).unwrap();
+
+    // Now run all migrations — v020 should add actor_id without destroying data
+    cortex_storage::run_all_migrations(&conn).expect("migrations should succeed on pre-existing audit_log");
+
+    // Pre-existing row should still be there with NULL actor_id
+    let (details, actor): (String, Option<String>) = conn
+        .query_row(
+            "SELECT details, actor_id FROM audit_log WHERE id = 'pre-existing'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(details, "before migration");
+    assert_eq!(actor, None, "pre-existing rows should have NULL actor_id");
 }

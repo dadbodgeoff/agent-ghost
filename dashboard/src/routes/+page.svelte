@@ -1,46 +1,126 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import ScoreGauge from '../components/ScoreGauge.svelte';
 
-  let score = 0;
-  let level = 0;
-  let agents: any[] = [];
+  let score = $state(0);
+  let level = $state(0);
+  let agents: any[] = $state([]);
+  let loading = $state(true);
+  let error = $state('');
 
   onMount(async () => {
     try {
-      const data = await api.get('/api/convergence/scores');
-      if (data) {
-        score = data.composite_score || 0;
-        level = data.intervention_level || 0;
+      const [convData, agentData] = await Promise.all([
+        api.get('/api/convergence/scores'),
+        api.get('/api/agents'),
+      ]);
+
+      // Fix: unwrap {scores: [...]} wrapper, read correct field names.
+      if (convData?.scores?.length > 0) {
+        score = convData.scores[0].score ?? 0;
+        level = convData.scores[0].level ?? 0;
       }
-      agents = await api.get('/api/agents') || [];
-    } catch (e) {
+      agents = agentData ?? [];
+    } catch (e: any) {
+      error = e.message || 'Failed to load dashboard data';
       console.error('Failed to load dashboard data:', e);
     }
+    loading = false;
   });
 </script>
 
-<h1>Dashboard</h1>
+<h1 class="page-title">Dashboard</h1>
 
-<div class="grid">
-  <div class="card">
-    <div class="card-label">Composite Score</div>
-    <div class="card-value">{score.toFixed(2)}</div>
+{#if loading}
+  <div class="grid">
+    {#each [1, 2, 3] as _}
+      <div class="card skeleton">&nbsp;</div>
+    {/each}
   </div>
-  <div class="card">
-    <div class="card-label">Intervention Level</div>
-    <div class="card-value">{level}</div>
+{:else if error}
+  <div class="error-state">
+    <p>{error}</p>
+    <button onclick={() => location.reload()}>Retry</button>
   </div>
-  <div class="card">
-    <div class="card-label">Active Agents</div>
-    <div class="card-value">{agents.length}</div>
+{:else}
+  <div class="grid">
+    <div class="card">
+      <div class="card-label">Composite Score</div>
+      <ScoreGauge {score} {level} />
+    </div>
+    <div class="card">
+      <div class="card-label">Intervention Level</div>
+      <div class="card-value">{level}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Active Agents</div>
+      <div class="card-value">{agents.length}</div>
+    </div>
   </div>
-</div>
+{/if}
 
 <style>
-  h1 { font-size: 20px; margin-bottom: 24px; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-  .card { background: #1a1a2e; border: 1px solid #2a2a3e; border-radius: 8px; padding: 20px; }
-  .card-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-  .card-value { font-size: 36px; font-weight: 700; margin-top: 8px; }
+  .page-title {
+    font-size: var(--font-size-lg);
+    font-weight: var(--font-weight-bold);
+    margin-bottom: var(--spacing-6);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--layout-card-gap);
+  }
+
+  .card {
+    background: var(--color-bg-elevated-2);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-md);
+    padding: var(--layout-card-padding);
+  }
+
+  .card-label {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-medium);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: var(--letter-spacing-wider);
+  }
+
+  .card-value {
+    font-size: var(--font-size-2xl);
+    font-weight: var(--font-weight-bold);
+    margin-top: var(--spacing-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .skeleton {
+    min-height: 120px;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 0.7; }
+  }
+
+  .error-state {
+    text-align: center;
+    padding: var(--spacing-12);
+    color: var(--color-text-muted);
+  }
+
+  .error-state button {
+    margin-top: var(--spacing-4);
+    padding: var(--spacing-2) var(--spacing-4);
+    background: var(--color-interactive-primary);
+    color: var(--color-interactive-primary-text);
+    border: none;
+    border-radius: var(--radius-sm);
+  }
+
+  @media (max-width: 640px) {
+    .grid { grid-template-columns: 1fr; }
+  }
 </style>

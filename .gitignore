@@ -11,3 +11,11 @@ Thumbs.db
 
 # Environment
 .env
+
+# Node/npm
+node_modules/
+package-lock.json
+
+# SvelteKit
+.svelte-kit/
+build/

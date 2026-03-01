@@ -11,6 +11,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
 
+use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 /// Query parameters for memory listing.
@@ -19,6 +20,19 @@ pub struct MemoryQueryParams {
     pub agent_id: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
+}
+
+/// Query parameters for memory search (T-2.1.2).
+#[derive(Debug, Deserialize)]
+pub struct MemorySearchParams {
+    /// Search query (LIKE matching on snapshot content).
+    pub q: Option<String>,
+    pub agent_id: Option<String>,
+    pub memory_type: Option<String>,
+    pub importance: Option<String>,
+    pub confidence_min: Option<f64>,
+    pub confidence_max: Option<f64>,
+    pub limit: Option<u32>,
 }
 
 /// GET /api/memory — list memory snapshots with optional agent_id filter.
@@ -239,6 +253,135 @@ pub async fn get_memory(
             Json(serde_json::json!({"error": format!("database error: {e}"), "id": id})),
         ),
     }
+}
+
+/// GET /api/memory/search — search memories with filters (T-2.1.2).
+///
+/// Supports full-text search via LIKE matching on snapshot JSON content,
+/// with optional filters for agent, memory type, importance, and confidence.
+/// Results are ranked by a basic relevance score (defer FTS5 + RetrievalScorer to P3).
+pub async fn search_memories(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<MemorySearchParams>,
+) -> ApiResult<serde_json::Value> {
+    let limit = params.limit.unwrap_or(50).min(200);
+
+    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+
+    // Build dynamic WHERE clause.
+    let mut conditions = Vec::new();
+    let mut bind_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = 1u32;
+
+    // Text search: LIKE on snapshot JSON content.
+    if let Some(ref q) = params.q {
+        if !q.trim().is_empty() {
+            conditions.push(format!("ms.snapshot LIKE ?{idx}"));
+            bind_params.push(Box::new(format!("%{q}%")));
+            idx += 1;
+        }
+    }
+
+    // Agent filter via memory_events join.
+    let need_join = params.agent_id.is_some();
+    if let Some(ref agent_id) = params.agent_id {
+        conditions.push(format!("me.actor_id = ?{idx}"));
+        bind_params.push(Box::new(agent_id.clone()));
+        idx += 1;
+    }
+
+    // Memory type filter (stored in snapshot JSON as "memory_type" field).
+    if let Some(ref mt) = params.memory_type {
+        conditions.push(format!(
+            "json_extract(ms.snapshot, '$.memory_type') = ?{idx}"
+        ));
+        bind_params.push(Box::new(mt.clone()));
+        idx += 1;
+    }
+
+    // Importance filter (stored in snapshot JSON as "importance" field).
+    if let Some(ref imp) = params.importance {
+        conditions.push(format!(
+            "json_extract(ms.snapshot, '$.importance') = ?{idx}"
+        ));
+        bind_params.push(Box::new(imp.clone()));
+        idx += 1;
+    }
+
+    // Confidence range filters.
+    if let Some(cmin) = params.confidence_min {
+        conditions.push(format!(
+            "CAST(json_extract(ms.snapshot, '$.confidence') AS REAL) >= ?{idx}"
+        ));
+        bind_params.push(Box::new(cmin));
+        idx += 1;
+    }
+    if let Some(cmax) = params.confidence_max {
+        conditions.push(format!(
+            "CAST(json_extract(ms.snapshot, '$.confidence') AS REAL) <= ?{idx}"
+        ));
+        bind_params.push(Box::new(cmax));
+        idx += 1;
+    }
+
+    let where_clause = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    let join_clause = if need_join {
+        "JOIN memory_events me ON ms.memory_id = me.memory_id"
+    } else {
+        ""
+    };
+
+    let query = format!(
+        "SELECT DISTINCT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
+         FROM memory_snapshots ms \
+         {join_clause} \
+         {where_clause} \
+         ORDER BY ms.created_at DESC \
+         LIMIT ?{idx}"
+    );
+    bind_params.push(Box::new(limit));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        bind_params.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = db
+        .prepare(&query)
+        .map_err(|e| ApiError::db_error("memory_search_prepare", e))?;
+
+    let results: Vec<serde_json::Value> = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            let snapshot_str: String = row.get(2)?;
+            let snapshot_parsed = serde_json::from_str::<serde_json::Value>(&snapshot_str)
+                .unwrap_or(serde_json::Value::String(snapshot_str.clone()));
+
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "memory_id": row.get::<_, String>(1)?,
+                "snapshot": snapshot_parsed,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        })
+        .map_err(|e| ApiError::db_error("memory_search_query", e))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "results": results,
+        "count": results.len(),
+        "query": params.q,
+        "filters": {
+            "agent_id": params.agent_id,
+            "memory_type": params.memory_type,
+            "importance": params.importance,
+            "confidence_min": params.confidence_min,
+            "confidence_max": params.confidence_max,
+        },
+    })))
 }
 
 /// Request body for creating/updating a memory.

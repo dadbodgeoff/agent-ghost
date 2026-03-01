@@ -1,9 +1,9 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api';
 
-  let token = '';
-  let error = '';
+  let token = $state('');
+  let error = $state('');
+  let loading = $state(false);
 
   async function login() {
     error = '';
@@ -12,52 +12,185 @@
       return;
     }
 
+    loading = true;
     try {
-      sessionStorage.setItem('ghost-token', token);
-      const health = await api.get('/api/health');
-      if (health) {
-        goto('/');
-      } else {
-        error = 'Invalid token or gateway unreachable';
-        sessionStorage.removeItem('ghost-token');
-        token = '';
+      const resp = await fetch('http://127.0.0.1:18789/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token.trim() }),
+        credentials: 'include',
+      });
+
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null);
+        error = body?.error?.message ?? `Authentication failed (${resp.status})`;
+        loading = false;
+        return;
       }
-    } catch {
-      error = 'Invalid token or gateway unreachable';
-      sessionStorage.removeItem('ghost-token');
-      token = '';
+
+      const data = await resp.json();
+      // Store access token in sessionStorage for API calls.
+      if (data.access_token) {
+        sessionStorage.setItem('ghost-token', data.access_token);
+      } else {
+        // Legacy mode: gateway accepted the token directly.
+        sessionStorage.setItem('ghost-token', token.trim());
+      }
+      goto('/');
+    } catch (e: any) {
+      error = 'Gateway unreachable. Is ghost-gateway running on port 18789?';
     }
+    loading = false;
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') login();
   }
 </script>
 
 <div class="login-container">
   <div class="login-card">
-    <h1>GHOST Platform</h1>
-    <p>Enter your GHOST_TOKEN to access the dashboard.</p>
+    <div class="logo">GHOST</div>
+    <p class="subtitle">Enter your access token to continue.</p>
 
-    <form on:submit|preventDefault={login}>
+    <form onsubmit={(e) => { e.preventDefault(); login(); }}>
+      <label for="token-input" class="sr-only">Access Token</label>
       <input
+        id="token-input"
         type="password"
         bind:value={token}
-        placeholder="GHOST_TOKEN"
+        placeholder="GHOST_TOKEN or JWT"
         autocomplete="off"
+        disabled={loading}
+        onkeydown={handleKeydown}
       />
-      <button type="submit">Login</button>
+      <button type="submit" disabled={loading}>
+        {#if loading}
+          Authenticating…
+        {:else}
+          Login
+        {/if}
+      </button>
     </form>
 
     {#if error}
-      <div class="error">{error}</div>
+      <div class="error" role="alert">{error}</div>
     {/if}
+
+    <p class="hint">
+      Set <code>GHOST_TOKEN</code> or <code>GHOST_JWT_SECRET</code> on the gateway.
+      No auth configured? Any token works in dev mode.
+    </p>
   </div>
 </div>
 
 <style>
-  .login-container { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #0d0d1a; }
-  .login-card { background: #1a1a2e; border: 1px solid #2a2a3e; border-radius: 8px; padding: 32px; width: 360px; text-align: center; }
-  h1 { font-size: 24px; color: #a0a0ff; margin-bottom: 8px; }
-  p { color: #888; font-size: 13px; margin-bottom: 24px; }
-  input { width: 100%; padding: 10px; background: #0d0d1a; border: 1px solid #2a2a3e; border-radius: 4px; color: #e0e0e0; font-size: 14px; margin-bottom: 12px; }
-  button { width: 100%; padding: 10px; background: #4040a0; border: none; border-radius: 4px; color: white; font-size: 14px; cursor: pointer; }
-  button:hover { background: #5050b0; }
-  .error { color: #f44336; font-size: 12px; margin-top: 12px; }
+  .login-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: var(--color-bg-base);
+  }
+
+  .login-card {
+    background: var(--color-bg-elevated-2);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-8);
+    width: 380px;
+    text-align: center;
+  }
+
+  .logo {
+    font-size: var(--font-size-xl);
+    font-weight: var(--font-weight-bold);
+    color: var(--color-brand-primary);
+    margin-bottom: var(--spacing-2);
+    letter-spacing: var(--letter-spacing-wide);
+  }
+
+  .subtitle {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--spacing-6);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  input {
+    width: 100%;
+    padding: var(--spacing-3);
+    background: var(--color-bg-inset);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-base);
+    margin-bottom: var(--spacing-3);
+    transition: border-color var(--duration-fast) var(--easing-default);
+  }
+
+  input:focus {
+    border-color: var(--color-brand-primary);
+    outline: none;
+    box-shadow: var(--shadow-focus-ring);
+  }
+
+  input:disabled {
+    opacity: 0.6;
+  }
+
+  button {
+    width: 100%;
+    padding: var(--spacing-3);
+    background: var(--color-interactive-primary);
+    color: var(--color-interactive-primary-text);
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-semibold);
+    transition: background var(--duration-fast) var(--easing-default);
+  }
+
+  button:hover:not(:disabled) {
+    background: var(--color-interactive-primary-hover);
+  }
+
+  button:disabled {
+    background: var(--color-interactive-disabled-bg);
+    color: var(--color-interactive-disabled-text);
+    cursor: not-allowed;
+  }
+
+  .error {
+    color: var(--color-severity-hard);
+    font-size: var(--font-size-sm);
+    margin-top: var(--spacing-3);
+    padding: var(--spacing-2);
+    background: var(--color-severity-hard-bg);
+    border-radius: var(--radius-sm);
+  }
+
+  .hint {
+    margin-top: var(--spacing-6);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-disabled);
+    line-height: var(--line-height-normal);
+  }
+
+  .hint code {
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+  }
 </style>

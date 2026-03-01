@@ -24,6 +24,11 @@ pf = ["ghost-egress/pf"]
 # Workspace crates
 cortex-core = { workspace = true }
 cortex-storage = { workspace = true }
+cortex-retrieval = { workspace = true }
+cortex-crdt = { workspace = true }
+cortex-temporal = { workspace = true }
+cortex-validation = { workspace = true }
+cortex-privacy = { workspace = true }
 ghost-signing = { workspace = true }
 ghost-llm = { workspace = true }
 ghost-secrets = { workspace = true }
@@ -84,6 +89,15 @@ base64 = { workspace = true }
 
 # Futures
 futures = "0.3"
+
+# JWT authentication
+jsonwebtoken = "9"
+
+# Rate limiting
+governor = { workspace = true }
+
+# OpenAPI
+utoipa = { workspace = true }
 
 # Email (for notification dispatcher)
 lettre = { workspace = true }

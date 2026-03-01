@@ -1,5 +1,10 @@
 /**
- * REST + WebSocket API client (Task 6.9 AC2).
+ * REST API client for the GHOST gateway.
+ *
+ * WebSocket is now handled by the dedicated wsStore
+ * (dashboard/src/lib/stores/websocket.svelte.ts).
+ *
+ * Token is read from sessionStorage (set by login page).
  */
 
 const BASE_URL = 'http://127.0.0.1:18789';
@@ -17,8 +22,23 @@ function headers(): HeadersInit {
 
 export const api = {
   async get(path: string): Promise<any> {
-    const resp = await fetch(`${BASE_URL}${path}`, { headers: headers() });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const resp = await fetch(`${BASE_URL}${path}`, {
+      headers: headers(),
+      credentials: 'include',
+    });
+    if (resp.status === 401) {
+      // Token expired or invalid — redirect to login.
+      sessionStorage.removeItem('ghost-token');
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => null);
+      const msg = body?.error?.message || `HTTP ${resp.status}`;
+      throw new Error(msg);
+    }
     return resp.json();
   },
 
@@ -26,23 +46,68 @@ export const api = {
     const resp = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
       headers: headers(),
+      credentials: 'include',
       body: body ? JSON.stringify(body) : undefined,
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return resp.json();
+    if (resp.status === 401) {
+      sessionStorage.removeItem('ghost-token');
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => null);
+      const msg = errBody?.error?.message || `HTTP ${resp.status}`;
+      throw new Error(msg);
+    }
+    // Some endpoints (like DELETE) may return 204 No Content.
+    const text = await resp.text();
+    return text ? JSON.parse(text) : null;
   },
 
-  connectWebSocket(): WebSocket | null {
-    const token = getToken();
-    if (!token) return null;
+  async put(path: string, body?: any): Promise<any> {
+    const resp = await fetch(`${BASE_URL}${path}`, {
+      method: 'PUT',
+      headers: headers(),
+      credentials: 'include',
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (resp.status === 401) {
+      sessionStorage.removeItem('ghost-token');
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => null);
+      const msg = errBody?.error?.message || `HTTP ${resp.status}`;
+      throw new Error(msg);
+    }
+    const text = await resp.text();
+    return text ? JSON.parse(text) : null;
+  },
 
-    const ws = new WebSocket(`ws://127.0.0.1:18789/api/ws?token=${encodeURIComponent(token)}`);
-
-    ws.onclose = () => {
-      // Reconnect with exponential backoff
-      setTimeout(() => api.connectWebSocket(), 3000);
-    };
-
-    return ws;
+  async del(path: string): Promise<any> {
+    const resp = await fetch(`${BASE_URL}${path}`, {
+      method: 'DELETE',
+      headers: headers(),
+      credentials: 'include',
+    });
+    if (resp.status === 401) {
+      sessionStorage.removeItem('ghost-token');
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => null);
+      const msg = errBody?.error?.message || `HTTP ${resp.status}`;
+      throw new Error(msg);
+    }
+    const text = await resp.text();
+    return text ? JSON.parse(text) : null;
   },
 };

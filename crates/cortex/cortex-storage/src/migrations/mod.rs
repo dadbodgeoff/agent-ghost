@@ -4,20 +4,26 @@ pub mod v016_convergence_safety;
 pub mod v017_convergence_tables;
 pub mod v018_delegation_state;
 pub mod v019_intervention_state;
+pub mod v020_actor_id;
+pub mod v021_workflows;
+pub mod v022_session_event_index;
 
 use rusqlite::Connection;
 use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
 
-pub const LATEST_VERSION: u32 = 19;
+pub const LATEST_VERSION: u32 = 22;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 4] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 7] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
     (19, "intervention_state", v019_intervention_state::migrate),
+    (20, "actor_id", v020_actor_id::migrate),
+    (21, "workflows", v021_workflows::migrate),
+    (22, "session_event_index", v022_session_event_index::migrate),
 ];
 
 /// Ensure the schema_version table exists and run pending migrations.

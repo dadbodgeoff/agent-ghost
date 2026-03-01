@@ -1,0 +1,67 @@
+/*
+ * GHOST ADE — Global Styles
+ * Imports all token layers and sets base body styles.
+ * Imported once in +layout.svelte.
+ */
+
+@import './reset.css';
+@import './fonts.css';
+@import './tokens.css';
+@import './tokens-light.css';
+
+body {
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+  color: var(--color-text-primary);
+  background: var(--color-bg-base);
+}
+
+/* Utility: monospace text (hashes, IDs, code) */
+.mono {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+}
+
+/* Utility: visually hidden but accessible to screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Focus visible: only show focus ring on keyboard navigation */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Scrollbar styling (dark theme) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-base);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-default);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
