@@ -177,7 +177,7 @@
     >
       <defs>
         <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-          <polygon points="0 0, 10 3.5, 0 7" fill="var(--color-border-primary)" />
+          <polygon points="0 0, 10 3.5, 0 7" fill="var(--color-border-default)" />
         </marker>
       </defs>
 
@@ -189,7 +189,7 @@
           <line
             x1={s.x} y1={s.y}
             x2={t.x} y2={t.y}
-            stroke="var(--color-border-primary)"
+            stroke="var(--color-border-default)"
             stroke-width="1.5"
             marker-end="url(#arrowhead)"
             opacity="0.6"
@@ -210,7 +210,7 @@
           >
             <circle
               r="20"
-              fill="var(--color-bg-secondary)"
+              fill="var(--color-bg-elevated-1)"
               stroke={nodeColor(node.type)}
               stroke-width={selectedNodeId === node.id ? 3 : 1.5}
               class:selected={selectedNodeId === node.id}
@@ -233,8 +233,8 @@
 
 <style>
   .causal-graph {
-    background: var(--color-bg-primary);
-    border: 1px solid var(--color-border-primary);
+    background: var(--color-bg-base);
+    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     padding: var(--spacing-2);
     overflow: hidden;
@@ -273,7 +273,7 @@
   .empty {
     text-align: center;
     padding: var(--spacing-8);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     font-size: var(--font-size-sm);
   }
 

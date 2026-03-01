@@ -86,6 +86,7 @@
       type="text"
       class="search-input"
       placeholder="Search memories..."
+      aria-label="Search memories"
       bind:value={searchQuery}
       onkeydown={(e) => { if (e.key === 'Enter') handleSearch(); }}
     />
@@ -163,14 +164,14 @@
   .search-input {
     flex: 1;
     padding: var(--spacing-2) var(--spacing-3);
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border-primary);
+    background: var(--color-bg-elevated-1);
+    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-sm);
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
   }
 
-  .search-input::placeholder { color: var(--color-text-quaternary); }
+  .search-input::placeholder { color: var(--color-text-disabled); }
 
   .btn-search, .btn-clear {
     padding: var(--spacing-2) var(--spacing-4);
@@ -187,7 +188,7 @@
   }
 
   .btn-clear {
-    background: var(--color-bg-tertiary);
+    background: var(--color-bg-elevated-2);
     color: var(--color-text-secondary);
   }
 
@@ -199,19 +200,19 @@
 
   .filter-input, .filter-select {
     padding: var(--spacing-1) var(--spacing-2);
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border-primary);
+    background: var(--color-bg-elevated-1);
+    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-sm);
     font-size: var(--font-size-xs);
     color: var(--color-text-primary);
   }
 
   .filter-input { max-width: 160px; }
-  .filter-input::placeholder { color: var(--color-text-quaternary); }
+  .filter-input::placeholder { color: var(--color-text-disabled); }
 
   .result-count {
     font-size: var(--font-size-sm);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     margin-bottom: var(--spacing-3);
   }
 
@@ -223,7 +224,7 @@
 
   .skeleton-block {
     height: 200px;
-    background: var(--color-bg-secondary);
+    background: var(--color-bg-elevated-1);
     border-radius: var(--radius-md);
     animation: pulse 1.5s ease-in-out infinite;
   }
@@ -236,7 +237,7 @@
   .empty-state, .error-state {
     text-align: center;
     padding: var(--spacing-12);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
   }
 
   .error-state button {

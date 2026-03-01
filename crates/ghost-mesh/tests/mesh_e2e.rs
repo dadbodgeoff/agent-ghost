@@ -36,6 +36,11 @@ fn agent_card_sign_verify_roundtrip() {
         version: "1.0.0".into(),
         signed_at: Utc::now(),
         signature: Vec::new(),
+        supported_task_types: Vec::new(),
+        default_input_modes: Vec::new(),
+        default_output_modes: Vec::new(),
+        provider: String::new(),
+        a2a_protocol_version: String::new(),
     };
 
     card.sign(&signing_key);
@@ -65,6 +70,11 @@ fn agent_card_tampered_fails_verification() {
         version: "1.0.0".into(),
         signed_at: Utc::now(),
         signature: Vec::new(),
+        supported_task_types: Vec::new(),
+        default_input_modes: Vec::new(),
+        default_output_modes: Vec::new(),
+        provider: String::new(),
+        a2a_protocol_version: String::new(),
     };
 
     card.sign(&signing_key);
@@ -97,6 +107,11 @@ fn agent_card_wrong_key_fails_verification() {
         version: "1.0.0".into(),
         signed_at: Utc::now(),
         signature: Vec::new(),
+        supported_task_types: Vec::new(),
+        default_input_modes: Vec::new(),
+        default_output_modes: Vec::new(),
+        provider: String::new(),
+        a2a_protocol_version: String::new(),
     };
 
     card.sign(&signing_key);
@@ -122,6 +137,11 @@ fn agent_card_canonical_bytes_deterministic() {
         version: "1.0.0".into(),
         signed_at: Utc::now(),
         signature: Vec::new(),
+        supported_task_types: Vec::new(),
+        default_input_modes: Vec::new(),
+        default_output_modes: Vec::new(),
+        provider: String::new(),
+        a2a_protocol_version: String::new(),
     };
 
     let bytes1 = card.canonical_bytes();

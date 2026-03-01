@@ -1,0 +1,52 @@
+# Default values for GHOST ADE Helm chart.
+
+replicaCount: 1
+
+image:
+  repository: ghost-gateway
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 18789
+
+gateway:
+  bind: "0.0.0.0"
+  port: 18789
+  dbPath: "/data/ghost.db"
+  logLevel: "info"
+
+convergence:
+  profile: "standard"
+  monitorAddress: "localhost:9090"
+
+security:
+  soulDriftThreshold: 0.15
+
+mesh:
+  enabled: false
+  minTrustForDelegation: 0.7
+  maxDelegationDepth: 3
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

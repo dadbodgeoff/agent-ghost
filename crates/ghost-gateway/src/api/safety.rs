@@ -16,6 +16,50 @@ use crate::safety::kill_switch::{KillLevel, PLATFORM_KILLED};
 use crate::state::AppState;
 use cortex_core::safety::trigger::TriggerEvent;
 
+/// T-5.4.3: Look up agent ID by name, with DB fallback on registry poisoning.
+///
+/// When the agent registry RwLock is poisoned, falls back to querying
+/// the agents table in the DB directly. Safety operations must remain
+/// functional even when in-memory state is corrupted.
+fn lookup_agent_id(state: &AppState, name_or_id: &str) -> Result<uuid::Uuid, (StatusCode, Json<serde_json::Value>)> {
+    // Try UUID parse first.
+    if let Ok(id) = uuid::Uuid::parse_str(name_or_id) {
+        return Ok(id);
+    }
+
+    // Try in-memory registry.
+    match state.agents.read() {
+        Ok(guard) => {
+            if let Some(a) = guard.lookup_by_name(name_or_id) {
+                return Ok(a.id);
+            }
+        }
+        Err(e) => {
+            // T-5.4.3: Registry poisoned — fall back to DB lookup.
+            tracing::error!(error = %e, "Agent registry RwLock poisoned — falling back to DB lookup");
+            if let Ok(db) = state.db.lock() {
+                let result: Option<String> = db
+                    .query_row(
+                        "SELECT id FROM agents WHERE name = ?1 LIMIT 1",
+                        rusqlite::params![name_or_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                if let Some(id_str) = result {
+                    if let Ok(id) = uuid::Uuid::parse_str(&id_str) {
+                        return Ok(id);
+                    }
+                }
+            }
+        }
+    }
+
+    Err((
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error": "agent not found", "agent_id": name_or_id})),
+    ))
+}
+
 /// Write a safety action to the audit_log table.
 fn write_audit_entry(state: &AppState, event_type: &str, severity: &str, agent_id: Option<&str>, details: &str) {
     let db = match state.db.lock() {
@@ -41,11 +85,35 @@ fn write_audit_entry(state: &AppState, event_type: &str, severity: &str, agent_i
     }
 }
 
+/// T-5.11.2: Check safety cooldown for the given actor, returning 429 if in cooldown.
+fn check_safety_cooldown(state: &AppState, actor: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if let Err(remaining_secs) = state.safety_cooldown.check_and_record(actor) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": {
+                    "code": "SAFETY_COOLDOWN",
+                    "message": format!(
+                        "Too many safety actions. Cooldown active — retry after {remaining_secs}s."
+                    ),
+                    "retry_after": remaining_secs,
+                }
+            })),
+        ));
+    }
+    Ok(())
+}
+
 /// POST /api/safety/kill-all — activate KILL_ALL (Req 14b AC5).
 pub async fn kill_all(
     State(state): State<Arc<AppState>>,
     Json(body): Json<KillAllRequest>,
 ) -> impl IntoResponse {
+    // T-5.11.2: Safety action cooldown.
+    if let Err(resp) = check_safety_cooldown(&state, &body.initiated_by) {
+        return resp;
+    }
+
     tracing::error!(
         reason = %body.reason,
         initiated_by = %body.initiated_by,
@@ -92,16 +160,46 @@ pub async fn kill_all(
                 tracing::info!("KILL_ALL propagated through distributed kill gate");
             }
             Err(e) => {
-                tracing::error!(error = %e, "FAILED to propagate KILL_ALL through kill gate — SPLIT BRAIN RISK");
+                // T-5.4.2: RwLock poisoned — fall back to HTTP fanout.
+                // Kill signal MUST reach peers; silent failure causes split-brain.
+                tracing::error!(
+                    error = %e,
+                    "CRITICAL: Kill gate RwLock poisoned — falling back to HTTP fanout"
+                );
+                // Write audit entry for the poisoning event.
+                write_audit_entry(
+                    &state, "kill_gate_poison", "critical", None,
+                    &format!("Kill gate RwLock poisoned during KILL_ALL. Error: {e}. Falling back to HTTP fanout."),
+                );
+                // HTTP fanout will be triggered below — this is the fallback path.
             }
         }
     }
+
+    // HTTP fanout to mesh peers (T-X.25).
+    crate::api::kill_fanout::propagate_kill(&state, "KILL_ALL", &body.reason, None);
 
     // Write to audit log.
     write_audit_entry(
         &state, "kill_all", "critical", None,
         &format!("KILL_ALL activated by {}. Reason: {}", body.initiated_by, body.reason),
     );
+
+    // Fire webhooks for kill_switch event (T-4.3.1).
+    {
+        let db = Arc::clone(&state.db);
+        let tx = state.event_tx.clone();
+        let payload = serde_json::json!({
+            "event": "kill_switch",
+            "level": "KILL_ALL",
+            "reason": body.reason,
+            "initiated_by": body.initiated_by,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        tokio::spawn(async move {
+            crate::api::webhooks::fire_webhooks(&db, &tx, "kill_switch", payload).await;
+        });
+    }
 
     (
         StatusCode::OK,
@@ -119,30 +217,15 @@ pub async fn pause_agent(
     Path(agent_id_str): Path<String>,
     Json(body): Json<PauseRequest>,
 ) -> impl IntoResponse {
-    let agent_id = match uuid::Uuid::parse_str(&agent_id_str) {
+    // T-5.11.2: Safety action cooldown.
+    if let Err(resp) = check_safety_cooldown(&state, "api") {
+        return resp;
+    }
+
+    // T-5.4.3: Use helper with DB fallback on registry poisoning.
+    let agent_id = match lookup_agent_id(&state, &agent_id_str) {
         Ok(id) => id,
-        Err(_) => {
-            // Try looking up by name in the registry.
-            let agents = match state.agents.read() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    tracing::error!(error = %e, "Agent registry RwLock poisoned in pause_agent");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "internal server error"})),
-                    );
-                }
-            };
-            match agents.lookup_by_name(&agent_id_str) {
-                Some(a) => a.id,
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": "agent not found", "agent_id": agent_id_str})),
-                    );
-                }
-            }
-        }
+        Err(resp) => return resp,
     };
 
     tracing::warn!(
@@ -173,6 +256,22 @@ pub async fn pause_agent(
         &format!("Agent paused. Reason: {}", body.reason),
     );
 
+    // Fire webhooks for intervention_change event (T-4.3.1).
+    {
+        let db = Arc::clone(&state.db);
+        let tx = state.event_tx.clone();
+        let payload = serde_json::json!({
+            "event": "intervention_change",
+            "action": "pause",
+            "agent_id": agent_id.to_string(),
+            "reason": body.reason,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        tokio::spawn(async move {
+            crate::api::webhooks::fire_webhooks(&db, &tx, "intervention_change", payload).await;
+        });
+    }
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -184,35 +283,31 @@ pub async fn pause_agent(
 }
 
 /// POST /api/safety/resume/{agent_id} — resume a paused/quarantined agent (Req 14b AC3-4).
+///
+/// T-5.1.2: Quarantine resume requires `admin` or `security_reviewer` role.
+/// Forensic review is persisted as an audit entry with reviewer identity
+/// BEFORE the resume is allowed.
 pub async fn resume_agent(
     State(state): State<Arc<AppState>>,
+    claims: Option<axum::Extension<crate::api::auth::Claims>>,
     Path(agent_id_str): Path<String>,
     Json(body): Json<ResumeRequest>,
 ) -> impl IntoResponse {
-    let agent_id = match uuid::Uuid::parse_str(&agent_id_str) {
+    // T-5.4.3: Use helper with DB fallback on registry poisoning.
+    let agent_id = match lookup_agent_id(&state, &agent_id_str) {
         Ok(id) => id,
-        Err(_) => {
-            let agents = match state.agents.read() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    tracing::error!(error = %e, "Agent registry RwLock poisoned in resume_agent");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "internal server error"})),
-                    );
-                }
-            };
-            match agents.lookup_by_name(&agent_id_str) {
-                Some(a) => a.id,
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": "agent not found", "agent_id": agent_id_str})),
-                    );
-                }
-            }
-        }
+        Err(resp) => return resp,
     };
+
+    // Extract actor identity from JWT claims (T-5.1.2).
+    let actor_id = claims
+        .as_ref()
+        .map(|c| c.sub.clone())
+        .unwrap_or_else(|| "unknown".into());
+    let actor_role = claims
+        .as_ref()
+        .map(|c| c.role.clone())
+        .unwrap_or_default();
 
     // Check current kill state for this agent.
     let current = state.kill_switch.current_state();
@@ -220,6 +315,18 @@ pub async fn resume_agent(
 
     match agent_state.map(|s| s.level) {
         Some(KillLevel::Quarantine) => {
+            // T-5.1.2: Quarantine resume requires admin or security_reviewer role.
+            if actor_role != "admin" && actor_role != "security_reviewer" {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "Quarantine resume requires 'admin' or 'security_reviewer' role",
+                        "agent_id": agent_id.to_string(),
+                        "current_role": actor_role,
+                    })),
+                );
+            }
+
             // Quarantine resume requires forensic review + second confirmation.
             if !body.forensic_reviewed.unwrap_or(false) {
                 return (
@@ -230,6 +337,13 @@ pub async fn resume_agent(
                     })),
                 );
             }
+
+            // T-5.1.2: Persist forensic review as audit entry BEFORE allowing resume.
+            write_audit_entry(
+                &state, "forensic_review", "critical", Some(&agent_id.to_string()),
+                &format!("Forensic review completed by {actor_id} (role: {actor_role}) for quarantine resume"),
+            );
+
             if !body.second_confirmation.unwrap_or(false) {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -304,29 +418,15 @@ pub async fn quarantine_agent(
     Path(agent_id_str): Path<String>,
     Json(body): Json<PauseRequest>,
 ) -> impl IntoResponse {
-    let agent_id = match uuid::Uuid::parse_str(&agent_id_str) {
+    // T-5.11.2: Safety action cooldown.
+    if let Err(resp) = check_safety_cooldown(&state, "api") {
+        return resp;
+    }
+
+    // T-5.4.3: Use helper with DB fallback on registry poisoning.
+    let agent_id = match lookup_agent_id(&state, &agent_id_str) {
         Ok(id) => id,
-        Err(_) => {
-            let agents = match state.agents.read() {
-                Ok(guard) => guard,
-                Err(e) => {
-                    tracing::error!(error = %e, "Agent registry RwLock poisoned in quarantine_agent");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "internal server error"})),
-                    );
-                }
-            };
-            match agents.lookup_by_name(&agent_id_str) {
-                Some(a) => a.id,
-                None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": "agent not found", "agent_id": agent_id_str})),
-                    );
-                }
-            }
-        }
+        Err(resp) => return resp,
     };
 
     tracing::warn!(
@@ -357,6 +457,22 @@ pub async fn quarantine_agent(
         &format!("Agent quarantined. Reason: {}", body.reason),
     );
 
+    // Fire webhooks for intervention_change event (T-4.3.1).
+    {
+        let db = Arc::clone(&state.db);
+        let tx = state.event_tx.clone();
+        let payload = serde_json::json!({
+            "event": "intervention_change",
+            "action": "quarantine",
+            "agent_id": agent_id.to_string(),
+            "reason": body.reason,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        });
+        tokio::spawn(async move {
+            crate::api::webhooks::fire_webhooks(&db, &tx, "intervention_change", payload).await;
+        });
+    }
+
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -369,11 +485,30 @@ pub async fn quarantine_agent(
 }
 
 /// GET /api/safety/status — get current kill switch state.
+///
+/// T-5.1.4: `viewer` role sees only `{platform_killed, state}`.
+/// `operator`+ sees the full breakdown including per-agent details and gate topology.
 pub async fn safety_status(
     State(state): State<Arc<AppState>>,
+    claims: Option<axum::Extension<crate::api::auth::Claims>>,
 ) -> impl IntoResponse {
     let ks_state = state.kill_switch.current_state();
     let platform_killed = PLATFORM_KILLED.load(std::sync::atomic::Ordering::SeqCst);
+
+    // T-5.1.4: Determine if caller has elevated access.
+    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or("viewer");
+    let is_elevated = matches!(role, "admin" | "operator" | "security_reviewer");
+
+    // T-5.1.4: Viewer only sees minimal state.
+    if !is_elevated {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "platform_killed": platform_killed,
+                "state": format!("{:?}", ks_state.platform_level),
+            })),
+        );
+    }
 
     let per_agent: serde_json::Map<String, serde_json::Value> = ks_state
         .per_agent
@@ -391,23 +526,28 @@ pub async fn safety_status(
         .collect();
 
     // Include distributed gate state if available.
-    let gate_state = state.kill_gate.as_ref().and_then(|gate| {
-        let bridge = match gate.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                tracing::error!(error = %e, "Kill gate RwLock poisoned in safety_status");
-                return None;
+    // T-5.4.2: On RwLock poisoning, return degraded state info rather than hiding it.
+    let gate_state = state.kill_gate.as_ref().map(|gate| {
+        match gate.read() {
+            Ok(guard) => {
+                let snapshot = guard.gate.snapshot();
+                serde_json::json!({
+                    "state": format!("{:?}", snapshot.state),
+                    "node_id": snapshot.node_id.to_string(),
+                    "closed_at": snapshot.closed_at.map(|t| t.to_rfc3339()),
+                    "close_reason": snapshot.close_reason,
+                    "acked_nodes": snapshot.acked_nodes.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                    "chain_length": snapshot.chain_length,
+                })
             }
-        };
-        let snapshot = bridge.gate.snapshot();
-        Some(serde_json::json!({
-            "state": format!("{:?}", snapshot.state),
-            "node_id": snapshot.node_id.to_string(),
-            "closed_at": snapshot.closed_at.map(|t| t.to_rfc3339()),
-            "close_reason": snapshot.close_reason,
-            "acked_nodes": snapshot.acked_nodes.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
-            "chain_length": snapshot.chain_length,
-        }))
+            Err(e) => {
+                tracing::error!(error = %e, "CRITICAL: Kill gate RwLock poisoned in safety_status");
+                serde_json::json!({
+                    "state": "POISONED",
+                    "error": "Kill gate lock poisoned — gate state unreliable. Restart required.",
+                })
+            }
+        }
     });
 
     (

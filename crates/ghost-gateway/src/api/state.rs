@@ -55,7 +55,7 @@ pub async fn get_crdt_state(
              FROM memory_events \
              WHERE actor_id = ?1 \
              ORDER BY recorded_at ASC \
-             LIMIT ?3 OFFSET ?4",
+             LIMIT ?2 OFFSET ?3",
             "SELECT COUNT(*) FROM memory_events WHERE actor_id = ?1",
         )
     };

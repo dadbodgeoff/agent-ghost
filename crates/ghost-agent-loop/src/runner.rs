@@ -133,6 +133,7 @@ impl AgentRunner {
     /// GATE 1.5: damage counter
     /// GATE 2: spending cap
     /// GATE 3: kill switch
+    #[tracing::instrument(skip(self, ctx, log), fields(otel.kind = "internal"))]
     pub fn check_gates(
         &mut self,
         ctx: &RunContext,
@@ -376,6 +377,11 @@ impl AgentRunner {
     /// Steps 5-8 are blocking gates — failure halts before run().
     /// Step 9 is the most complex (multiple data sources, partial assembly
     /// must be valid with sensible defaults).
+    #[tracing::instrument(skip(self, user_message), fields(
+        gen_ai.operation.name = "agent_pre_loop",
+        gen_ai.agent.id = %agent_id,
+        gen_ai.session.id = %session_id,
+    ))]
     pub async fn pre_loop(
         &mut self,
         agent_id: Uuid,
@@ -514,6 +520,12 @@ impl AgentRunner {
     /// - `recursion_depth` increments per tool-call round-trip
     /// - `total_cost` accumulates across iterations
     /// - Kill switch is checked every iteration (GATE 3)
+    #[tracing::instrument(skip(self, ctx, fallback_chain, user_message), fields(
+        gen_ai.operation.name = "agent_run",
+        gen_ai.agent.id = %ctx.agent_id,
+        gen_ai.session.id = %ctx.session_id,
+        recursion_depth = ctx.recursion_depth,
+    ))]
     pub async fn run_turn(
         &mut self,
         ctx: &mut RunContext,

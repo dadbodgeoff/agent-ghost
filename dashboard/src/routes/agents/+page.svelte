@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import { wsStore } from '$lib/stores/websocket.svelte';
   import ScoreGauge from '../../components/ScoreGauge.svelte';
 
   interface Agent {
@@ -29,7 +30,7 @@
     deleted: 'Deleted',
   };
 
-  onMount(async () => {
+  async function loadAgents() {
     try {
       const [agentData, convData] = await Promise.all([
         api.get('/api/agents'),
@@ -38,10 +39,18 @@
       agents = agentData ?? [];
       const scores: AgentScore[] = convData?.scores ?? [];
       scoreMap = new Map(scores.map((s: AgentScore) => [s.agent_id, s]));
-    } catch (e: any) {
-      error = e.message || 'Failed to load agents';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load agents';
     }
     loading = false;
+  }
+
+  onMount(() => {
+    loadAgents();
+
+    // T-5.9.1: Wire AgentStateChange to refresh agent list.
+    const unsub = wsStore.on('AgentStateChange', () => { loadAgents(); });
+    return () => unsub();
   });
 
   function getScore(agentId: string): AgentScore | undefined {

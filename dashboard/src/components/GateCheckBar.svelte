@@ -37,7 +37,7 @@
     pass: 'var(--color-severity-normal)',
     fail: 'var(--color-severity-hard)',
     warning: 'var(--color-severity-soft)',
-    unknown: 'var(--color-text-quaternary)',
+    unknown: 'var(--color-text-disabled)',
   };
 
   const statusIcons: Record<string, string> = {
@@ -77,9 +77,9 @@
     gap: var(--spacing-2);
     align-items: center;
     padding: var(--spacing-1) var(--spacing-2);
-    background: var(--color-bg-secondary);
+    background: var(--color-bg-elevated-1);
     border-radius: var(--radius-md);
-    border: 1px solid var(--color-border-primary);
+    border: 1px solid var(--color-border-default);
   }
 
   .gate-check-bar.compact {

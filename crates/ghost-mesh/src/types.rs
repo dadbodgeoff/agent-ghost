@@ -36,6 +36,23 @@ pub struct AgentCard {
     pub signed_at: DateTime<Utc>,
     /// Ed25519 signature over canonical_bytes() (64 bytes).
     pub signature: Vec<u8>,
+
+    // ── A2A protocol fields (T-4.1.1) ──
+    /// Task types this agent can handle (e.g. "code_review", "summarization").
+    #[serde(default)]
+    pub supported_task_types: Vec<String>,
+    /// Default input content types (e.g. "text/plain", "application/json").
+    #[serde(default)]
+    pub default_input_modes: Vec<String>,
+    /// Default output content types.
+    #[serde(default)]
+    pub default_output_modes: Vec<String>,
+    /// Organization or individual providing this agent.
+    #[serde(default)]
+    pub provider: String,
+    /// A2A protocol version supported (e.g. "0.2.0").
+    #[serde(default)]
+    pub a2a_protocol_version: String,
 }
 
 impl AgentCard {
@@ -65,6 +82,17 @@ impl AgentCard {
         buf.extend_from_slice(self.sybil_lineage_hash.as_bytes());
         buf.extend_from_slice(self.version.as_bytes());
         buf.extend_from_slice(self.signed_at.to_rfc3339().as_bytes());
+        for t in &self.supported_task_types {
+            buf.extend_from_slice(t.as_bytes());
+        }
+        for m in &self.default_input_modes {
+            buf.extend_from_slice(m.as_bytes());
+        }
+        for m in &self.default_output_modes {
+            buf.extend_from_slice(m.as_bytes());
+        }
+        buf.extend_from_slice(self.provider.as_bytes());
+        buf.extend_from_slice(self.a2a_protocol_version.as_bytes());
         buf
     }
 

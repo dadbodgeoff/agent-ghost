@@ -6,7 +6,9 @@
 pub mod agents;
 pub mod api;
 pub mod auth;
+pub mod backup_scheduler;
 pub mod bootstrap;
+pub mod config_watcher;
 pub mod cli;
 pub mod config;
 pub mod convergence_watcher;

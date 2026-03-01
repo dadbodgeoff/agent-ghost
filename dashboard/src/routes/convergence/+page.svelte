@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import { wsStore } from '$lib/stores/websocket.svelte';
   import ScoreGauge from '../../components/ScoreGauge.svelte';
   import SignalChart from '../../components/SignalChart.svelte';
 
@@ -47,23 +48,38 @@
     return SIGNAL_NAMES.map(name => obj[name] ?? 0);
   }
 
-  onMount(async () => {
+  async function loadScores() {
     try {
-      const [scoreData, healthData] = await Promise.all([
-        api.get('/api/convergence/scores'),
-        api.get('/api/health').catch(() => null),
-      ]);
+      const scoreData = await api.get('/api/convergence/scores');
       scores = scoreData?.scores ?? [];
-
-      // Check monitor connectivity from health endpoint.
-      if (healthData?.convergence_monitor) {
-        monitorOnline = healthData.convergence_monitor.connected === true;
-        lastMonitorUpdate = healthData.convergence_monitor.last_update ?? null;
-      }
-    } catch (e: any) {
-      error = e.message || 'Failed to load convergence data';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load convergence data';
     }
-    loading = false;
+  }
+
+  onMount(() => {
+    // Load initial data (fire-and-forget async).
+    (async () => {
+      try {
+        const [scoreData, healthData] = await Promise.all([
+          api.get('/api/convergence/scores'),
+          api.get('/api/health').catch(() => null),
+        ]);
+        scores = scoreData?.scores ?? [];
+
+        if (healthData?.convergence_monitor) {
+          monitorOnline = healthData.convergence_monitor.connected === true;
+          lastMonitorUpdate = healthData.convergence_monitor.last_update ?? null;
+        }
+      } catch (e: unknown) {
+        error = e instanceof Error ? e.message : 'Failed to load convergence data';
+      }
+      loading = false;
+    })();
+
+    // T-5.9.1: Wire ScoreUpdate WS event to refresh convergence data.
+    const unsub = wsStore.on('ScoreUpdate', () => { loadScores(); });
+    return () => unsub();
   });
 </script>
 

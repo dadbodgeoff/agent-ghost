@@ -29,6 +29,11 @@ fn make_agent_card(signing_key: &ghost_signing::SigningKey) -> AgentCard {
         version: "1.0.0".to_string(),
         signed_at: Utc::now(),
         signature: vec![],
+        supported_task_types: Vec::new(),
+        default_input_modes: Vec::new(),
+        default_output_modes: Vec::new(),
+        provider: String::new(),
+        a2a_protocol_version: String::new(),
     };
     card.sign(signing_key);
     card

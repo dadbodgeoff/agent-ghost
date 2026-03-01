@@ -27,6 +27,7 @@ pub struct ProposalExtractor;
 
 impl ProposalExtractor {
     /// Extract all proposals from agent output text.
+    #[tracing::instrument(skip(text), fields(otel.kind = "internal", text_len = text.len()))]
     pub fn extract(text: &str, agent_id: Uuid, session_id: Uuid) -> Vec<Proposal> {
         let mut proposals = Vec::new();
 

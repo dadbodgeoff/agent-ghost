@@ -6,10 +6,9 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { api } from '$lib/api';
-  import GateCheckBar from '../../../components/GateCheckBar.svelte';
   import HashChainStrip from '../../../components/HashChainStrip.svelte';
 
-  let sessionId = $derived($page.params.id);
+  let sessionId = $derived($page.params.id ?? '');
   let events: any[] = $state([]);
   let loading = $state(true);
   let error = $state('');
@@ -101,7 +100,7 @@
   .loading, .error-state {
     text-align: center;
     padding: var(--spacing-12);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
   }
 
   .back-link {
@@ -122,7 +121,7 @@
     display: flex;
     gap: var(--spacing-4);
     font-size: var(--font-size-sm);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     align-items: center;
   }
 
@@ -136,8 +135,8 @@
   }
 
   .card {
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border-primary);
+    background: var(--color-bg-elevated-1);
+    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     padding: var(--spacing-4);
     margin-bottom: var(--spacing-4);
@@ -148,7 +147,7 @@
     font-weight: var(--font-weight-semibold);
     text-transform: uppercase;
     letter-spacing: var(--letter-spacing-wide);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     margin-bottom: var(--spacing-3);
   }
 
@@ -159,18 +158,18 @@
   th {
     text-align: left;
     font-size: var(--font-size-xs);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     text-transform: uppercase;
     padding: var(--spacing-2);
-    border-bottom: 1px solid var(--color-border-primary);
+    border-bottom: 1px solid var(--color-border-default);
   }
 
   td {
     padding: var(--spacing-2);
     font-size: var(--font-size-sm);
-    border-bottom: 1px solid var(--color-border-secondary);
+    border-bottom: 1px solid var(--color-border-subtle);
   }
 
   .mono { font-family: var(--font-family-mono); font-size: var(--font-size-xs); }
-  .timestamp { font-size: var(--font-size-xs); color: var(--color-text-tertiary); }
+  .timestamp { font-size: var(--font-size-xs); color: var(--color-text-muted); }
 </style>

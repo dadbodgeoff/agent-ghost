@@ -8,8 +8,28 @@
   import { api } from '$lib/api';
   import ValidationMatrix from '../../../components/ValidationMatrix.svelte';
 
-  let proposalId = $derived($page.params.id);
-  let proposal: any = $state(null);
+  // T-5.9.5: Typed proposal detail.
+  interface ProposalDetail {
+    id: string;
+    agent_id: string;
+    session_id: string;
+    proposer_type: string;
+    operation: string;
+    target_type: string;
+    decision: string | null;
+    dimension_scores: Record<string, number>;
+    flags: string[];
+    created_at: string;
+    resolved_at: string | null;
+    content_diff?: string;
+    content?: string;
+    resolver?: string;
+    denial_reason?: string;
+    cited_memory_ids?: string[];
+  }
+
+  let proposalId = $derived($page.params.id ?? '');
+  let proposal: ProposalDetail | null = $state(null);
   let loading = $state(true);
   let error = $state('');
   let actionLoading = $state(false);
@@ -17,8 +37,8 @@
   onMount(async () => {
     try {
       proposal = await api.get(`/api/goals/${proposalId}`);
-    } catch (e: any) {
-      error = e.message || 'Failed to load proposal';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load proposal';
     }
     loading = false;
   });
@@ -27,14 +47,19 @@
     actionLoading = true;
     try {
       await api.post(`/api/goals/${proposalId}/${action}`);
-      proposal = { ...proposal, decision: action === 'approve' ? 'approved' : 'rejected', resolved_at: new Date().toISOString() };
-    } catch (e: any) {
-      error = e.message;
+      if (proposal) {
+        proposal = { ...proposal, decision: action === 'approve' ? 'approved' : 'rejected', resolved_at: new Date().toISOString() };
+      }
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : `Failed to ${action} proposal`;
     }
     actionLoading = false;
   }
 
-  let isPending = $derived(!proposal?.decision || proposal?.decision === 'HumanReviewRequired');
+  let isPending = $derived.by(() => {
+    const d = proposal?.decision;
+    return !d || d === 'HumanReviewRequired';
+  });
 </script>
 
 {#if loading}
@@ -128,7 +153,7 @@
   .loading, .error-state {
     text-align: center;
     padding: var(--spacing-12);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
   }
 
   .back-link {
@@ -168,8 +193,8 @@
   }
 
   .card {
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border-primary);
+    background: var(--color-bg-elevated-1);
+    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     padding: var(--spacing-4);
   }
@@ -181,7 +206,7 @@
     font-weight: var(--font-weight-semibold);
     text-transform: uppercase;
     letter-spacing: var(--letter-spacing-wide);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     margin-bottom: var(--spacing-3);
   }
 
@@ -194,7 +219,7 @@
 
   .meta-list dt {
     font-size: var(--font-size-xs);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     font-weight: var(--font-weight-medium);
   }
 
@@ -212,7 +237,7 @@
   .content-json {
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);
-    background: var(--color-bg-tertiary);
+    background: var(--color-bg-elevated-2);
     padding: var(--spacing-3);
     border-radius: var(--radius-sm);
     overflow-x: auto;
@@ -254,6 +279,6 @@
 
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .btn-approve { background: var(--color-severity-normal); color: white; }
-  .btn-reject { background: var(--color-severity-hard); color: white; }
+  .btn-approve { background: var(--color-severity-normal); color: var(--color-text-inverse); }
+  .btn-reject { background: var(--color-severity-hard); color: var(--color-text-inverse); }
 </style>

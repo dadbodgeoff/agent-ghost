@@ -29,6 +29,9 @@ cortex-crdt = { workspace = true }
 cortex-temporal = { workspace = true }
 cortex-validation = { workspace = true }
 cortex-privacy = { workspace = true }
+cortex-convergence = { workspace = true }
+cortex-observability = { workspace = true }
+cortex-multiagent = { workspace = true }
 ghost-signing = { workspace = true }
 ghost-llm = { workspace = true }
 ghost-secrets = { workspace = true }
@@ -42,6 +45,7 @@ ghost-oauth = { workspace = true }
 ghost-egress = { workspace = true }
 ghost-kill-gates = { workspace = true }
 ghost-mesh = { workspace = true }
+ghost-skills = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -56,11 +60,14 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# Hashing
+# Hashing & HMAC
 blake3 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 # SQLite
 rusqlite = { workspace = true }
@@ -87,8 +94,15 @@ regex = { workspace = true }
 # Base64
 base64 = { workspace = true }
 
-# Futures
+# URL parsing (SSRF validation)
+url = { workspace = true }
+
+# File watching
+notify = { version = "6", default-features = false, features = ["macos_fsevent"] }
+
+# Futures / Streams
 futures = "0.3"
+async-stream = "0.3"
 
 # JWT authentication
 jsonwebtoken = "9"

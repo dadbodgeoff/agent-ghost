@@ -89,9 +89,9 @@
     gap: 0;
     overflow-x: auto;
     padding: var(--spacing-2);
-    background: var(--color-bg-secondary);
+    background: var(--color-bg-elevated-1);
     border-radius: var(--radius-md);
-    border: 1px solid var(--color-border-primary);
+    border: 1px solid var(--color-border-default);
     scrollbar-width: thin;
   }
 
@@ -99,10 +99,10 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
+    gap: var(--spacing-0-5);
     padding: var(--spacing-1) var(--spacing-2);
-    background: var(--color-bg-tertiary);
-    border: 1px solid var(--color-border-secondary);
+    background: var(--color-bg-elevated-2);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all var(--duration-fast) var(--easing-default);
@@ -122,12 +122,12 @@
 
   .chain-block.genesis {
     border-color: var(--color-severity-normal);
-    background: color-mix(in srgb, var(--color-severity-normal) 10%, var(--color-bg-tertiary));
+    background: color-mix(in srgb, var(--color-severity-normal) 10%, var(--color-bg-elevated-2));
   }
 
   .chain-block.broken {
     border-color: var(--color-severity-hard);
-    background: color-mix(in srgb, var(--color-severity-hard) 10%, var(--color-bg-tertiary));
+    background: color-mix(in srgb, var(--color-severity-hard) 10%, var(--color-bg-elevated-2));
   }
 
   .block-hash {
@@ -138,15 +138,15 @@
   }
 
   .block-seq {
-    font-size: 10px;
-    color: var(--color-text-quaternary);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-disabled);
   }
 
   .chain-link {
     flex-shrink: 0;
     padding: 0 var(--spacing-1);
     font-size: var(--font-size-sm);
-    color: var(--color-text-quaternary);
+    color: var(--color-text-disabled);
   }
 
   .chain-link.broken {
@@ -158,7 +158,7 @@
     flex-shrink: 0;
     padding: var(--spacing-1) var(--spacing-2);
     font-size: var(--font-size-xs);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     font-style: italic;
   }
 </style>

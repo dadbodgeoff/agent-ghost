@@ -274,10 +274,12 @@ pub async fn search_memories(
     let mut idx = 1u32;
 
     // Text search: LIKE on snapshot JSON content.
+    // Escape LIKE metacharacters (%, _) in user input to prevent wildcard abuse.
     if let Some(ref q) = params.q {
         if !q.trim().is_empty() {
-            conditions.push(format!("ms.snapshot LIKE ?{idx}"));
-            bind_params.push(Box::new(format!("%{q}%")));
+            conditions.push(format!("ms.snapshot LIKE ?{idx} ESCAPE '\\'"));
+            let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            bind_params.push(Box::new(format!("%{escaped}%")));
             idx += 1;
         }
     }
@@ -306,6 +308,15 @@ pub async fn search_memories(
         ));
         bind_params.push(Box::new(imp.clone()));
         idx += 1;
+    }
+
+    // T-5.6.5: Validate confidence bounds.
+    if let (Some(cmin), Some(cmax)) = (params.confidence_min, params.confidence_max) {
+        if cmin > cmax {
+            return Err(ApiError::bad_request(format!(
+                "confidence_min ({cmin}) must be <= confidence_max ({cmax})"
+            )));
+        }
     }
 
     // Confidence range filters.

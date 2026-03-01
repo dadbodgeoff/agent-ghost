@@ -4,12 +4,15 @@
   import { page } from '$app/stores';
   import '../styles/global.css';
   import ConnectionIndicator from '../components/ConnectionIndicator.svelte';
+  import CommandPalette from '../components/CommandPalette.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
+  import { api } from '$lib/api';
 
   let token: string | null = null;
   let offline = $state(false);
   let showInstallPrompt = $state(false);
   let deferredPrompt: any = null;
+  let lastSync = $state('unknown');
 
   // Reactive binding to WS connection state for the indicator.
   let wsState = $derived(wsStore.state);
@@ -40,7 +43,10 @@
 
     offline = !navigator.onLine;
     window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => (offline = true));
+    window.addEventListener('offline', () => {
+      offline = true;
+      lastSync = new Date().toLocaleTimeString();
+    });
 
     window.addEventListener('beforeinstallprompt', (e: Event) => {
       e.preventDefault();
@@ -79,24 +85,16 @@
       const sub = await reg.pushManager.getSubscription();
       if (sub) return;
 
-      const resp = await fetch('http://127.0.0.1:18789/api/push/vapid-key');
-      if (!resp.ok) return;
-      const { key } = await resp.json();
+      const keyData = await api.get('/api/push/vapid-key');
+      const key = keyData.key;
+      if (!key) return;
 
       const newSub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: key,
       });
 
-      const authToken = sessionStorage.getItem('ghost-token');
-      await fetch('http://127.0.0.1:18789/api/push/subscribe', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-        },
-        body: JSON.stringify(newSub.toJSON()),
-      });
+      await api.post('/api/push/subscribe', newSub.toJSON());
     } catch {
       // Push subscription failed — non-fatal.
     }
@@ -111,7 +109,7 @@
 </svelte:head>
 
 {#if offline}
-  <div class="offline-banner" role="alert">Offline — showing cached data</div>
+  <div class="offline-banner" role="alert">Offline — showing cached data (last sync: {lastSync})</div>
 {/if}
 
 {#if showInstallPrompt}
@@ -134,9 +132,26 @@
       <a href="/goals" class:active={$page.url.pathname === '/goals'}>Goals</a>
       <a href="/sessions" class:active={$page.url.pathname === '/sessions'}>Sessions</a>
       <a href="/agents" class:active={$page.url.pathname === '/agents'}>Agents</a>
+      <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')}>Workflows</a>
+      <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')}>Skills</a>
+      <a href="/studio" class:active={$page.url.pathname.startsWith('/studio')}>Studio</a>
+      <a href="/observability" class:active={$page.url.pathname.startsWith('/observability')}>Observability</a>
+      <a href="/orchestration" class:active={$page.url.pathname.startsWith('/orchestration')}>Orchestration</a>
       <a href="/security" class:active={$page.url.pathname === '/security'}>Security</a>
       <a href="/costs" class:active={$page.url.pathname === '/costs'}>Costs</a>
+      <a href="/search" class:active={$page.url.pathname === '/search'}>Search</a>
       <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')}>Settings</a>
+      {#if $page.url.pathname.startsWith('/settings')}
+        <div class="settings-subnav">
+          <a href="/settings/profiles" class:active={$page.url.pathname === '/settings/profiles'}>Profiles</a>
+          <a href="/settings/policies" class:active={$page.url.pathname === '/settings/policies'}>Policies</a>
+          <a href="/settings/channels" class:active={$page.url.pathname === '/settings/channels'}>Channels</a>
+          <a href="/settings/backups" class:active={$page.url.pathname === '/settings/backups'}>Backups</a>
+          <a href="/settings/webhooks" class:active={$page.url.pathname === '/settings/webhooks'}>Webhooks</a>
+          <a href="/settings/notifications" class:active={$page.url.pathname === '/settings/notifications'}>Notifications</a>
+          <a href="/settings/oauth" class:active={$page.url.pathname === '/settings/oauth'}>OAuth</a>
+        </div>
+      {/if}
 
       <div class="sidebar-footer">
         <ConnectionIndicator state={wsState} />
@@ -145,7 +160,17 @@
     <main class="content">
       <slot />
     </main>
+
+    <!-- Mobile bottom nav (T-4.10.1) -->
+    <nav class="bottom-nav" aria-label="Mobile navigation">
+      <a href="/" class:active={$page.url.pathname === '/'}>Overview</a>
+      <a href="/agents" class:active={$page.url.pathname === '/agents'}>Agents</a>
+      <a href="/goals" class:active={$page.url.pathname === '/goals'}>Goals</a>
+      <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')}>Workflows</a>
+      <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')}>Settings</a>
+    </nav>
   </div>
+  <CommandPalette />
 {/if}
 
 <style>
@@ -196,6 +221,30 @@
     color: var(--color-brand-primary);
   }
 
+  .settings-subnav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-1);
+    padding-left: var(--spacing-4);
+  }
+
+  .settings-subnav a {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    padding: var(--spacing-1) var(--spacing-2);
+    border-radius: var(--radius-sm);
+  }
+
+  .settings-subnav a:hover {
+    color: var(--color-text-primary);
+    background: var(--color-surface-hover);
+  }
+
+  .settings-subnav a.active {
+    color: var(--color-brand-primary);
+    background: var(--color-surface-selected);
+  }
+
   .sidebar-footer {
     margin-top: auto;
     padding-top: var(--spacing-4);
@@ -242,9 +291,36 @@
     color: var(--color-text-muted);
   }
 
+  .bottom-nav {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--color-bg-elevated-2);
+    border-top: 1px solid var(--color-border-default);
+    padding: var(--spacing-2) 0;
+    z-index: 100;
+  }
+
+  .bottom-nav a {
+    flex: 1;
+    text-align: center;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    padding: var(--spacing-1) 0;
+    transition: color var(--duration-fast) var(--easing-default);
+  }
+
+  .bottom-nav a:hover,
+  .bottom-nav a.active {
+    color: var(--color-brand-primary);
+  }
+
   @media (max-width: 640px) {
     .sidebar { display: none; }
-    .content { padding: var(--spacing-4); }
+    .bottom-nav { display: flex; }
+    .content { padding: var(--spacing-4); padding-bottom: calc(var(--spacing-4) + 60px); }
   }
 
   @media (min-width: 641px) and (max-width: 1024px) {

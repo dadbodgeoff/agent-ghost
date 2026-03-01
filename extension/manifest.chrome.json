@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "nativeMessaging",
-    "activeTab"
+    "activeTab",
+    "identity"
   ],
   "host_permissions": [
     "https://chat.openai.com/*",

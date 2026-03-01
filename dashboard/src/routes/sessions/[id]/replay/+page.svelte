@@ -10,7 +10,7 @@
   import TimelineSlider from '../../../../components/TimelineSlider.svelte';
   import GateCheckBar from '../../../../components/GateCheckBar.svelte';
 
-  let sessionId = $derived($page.params.id);
+  let sessionId = $derived($page.params.id ?? '');
   let events: any[] = $state([]);
   let loading = $state(true);
   let error = $state('');
@@ -107,7 +107,7 @@
   .loading, .error-state {
     text-align: center;
     padding: var(--spacing-12);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
   }
 
   .back-link {
@@ -127,9 +127,9 @@
   .timeline-section {
     margin-bottom: var(--spacing-6);
     padding: var(--spacing-4);
-    background: var(--color-bg-secondary);
+    background: var(--color-bg-elevated-1);
     border-radius: var(--radius-md);
-    border: 1px solid var(--color-border-primary);
+    border: 1px solid var(--color-border-default);
   }
 
   .event-detail-grid {
@@ -140,8 +140,8 @@
   }
 
   .card {
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border-primary);
+    background: var(--color-bg-elevated-1);
+    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     padding: var(--spacing-4);
   }
@@ -151,7 +151,7 @@
     font-weight: var(--font-weight-semibold);
     text-transform: uppercase;
     letter-spacing: var(--letter-spacing-wide);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     margin-bottom: var(--spacing-3);
   }
 
@@ -162,13 +162,13 @@
     margin: 0;
   }
 
-  .detail-list dt { font-size: var(--font-size-xs); color: var(--color-text-tertiary); }
+  .detail-list dt { font-size: var(--font-size-xs); color: var(--color-text-muted); }
   .detail-list dd { font-size: var(--font-size-sm); margin: 0; }
 
   .attrs-json {
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);
-    background: var(--color-bg-tertiary);
+    background: var(--color-bg-elevated-2);
     padding: var(--spacing-3);
     border-radius: var(--radius-sm);
     overflow-x: auto;
@@ -183,7 +183,7 @@
 
   .no-events {
     text-align: center;
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     padding: var(--spacing-8);
   }
 

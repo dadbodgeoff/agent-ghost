@@ -125,13 +125,14 @@
   .slider-label {
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
   }
 
   .slider-track {
     position: relative;
     height: 8px;
-    background: var(--color-bg-tertiary);
+    background: var(--color-bg-elevated-2);
     border-radius: var(--radius-full);
     cursor: pointer;
     touch-action: none;
@@ -160,7 +161,7 @@
     height: 16px;
     border-radius: var(--radius-full);
     background: var(--color-interactive-primary);
-    border: 2px solid var(--color-bg-primary);
+    border: 2px solid var(--color-bg-base);
     box-shadow: var(--shadow-elevated-1);
     transform: translate(-50%, -50%);
     transition: transform var(--duration-fast) var(--easing-default);

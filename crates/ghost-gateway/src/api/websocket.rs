@@ -75,8 +75,45 @@ pub enum WsEvent {
         sender: Option<String>,
         sequence_number: i64,
     },
+    /// Agent configuration changed (T-3.6.2).
+    AgentConfigChange {
+        agent_id: String,
+        changed_fields: Vec<String>,
+    },
+    /// OTel trace updated for a session (T-3.8).
+    TraceUpdate {
+        session_id: String,
+        trace_id: String,
+        span_count: u32,
+    },
+    /// Backup operation completed (T-3.4).
+    BackupComplete {
+        backup_id: String,
+        status: String,
+        size_bytes: u64,
+    },
+    /// Webhook fired notification (T-4.3.1).
+    WebhookFired {
+        webhook_id: String,
+        event_type: String,
+        status_code: u16,
+    },
+    /// Skill installed or uninstalled (T-4.2.1).
+    SkillChange {
+        skill_name: String,
+        action: String,
+    },
+    /// A2A task status update (T-4.1.2).
+    A2ATaskUpdate {
+        task_id: String,
+        status: String,
+        agent_name: String,
+    },
     /// Heartbeat to keep connection alive.
     Ping,
+    /// T-5.3.4 (T-X.28): Resync signal — sent when client lagged behind broadcast.
+    /// Client should perform a full REST re-fetch on all stores.
+    Resync { missed_events: u64 },
 }
 
 impl WsEvent {
@@ -99,7 +136,13 @@ impl WsEvent {
             }
             WsEvent::AgentStateChange { agent_id, .. } => vec![format!("agent:{agent_id}")],
             WsEvent::SessionEvent { session_id, .. } => vec![format!("session:{session_id}")],
-            WsEvent::Ping => vec![],
+            WsEvent::AgentConfigChange { agent_id, .. } => vec![format!("agent:{agent_id}")],
+            WsEvent::TraceUpdate { session_id, .. } => vec![format!("session:{session_id}")],
+            WsEvent::BackupComplete { .. } => vec!["system:backup".to_string()],
+            WsEvent::WebhookFired { .. } => vec!["system:webhooks".to_string()],
+            WsEvent::SkillChange { .. } => vec!["system:skills".to_string()],
+            WsEvent::A2ATaskUpdate { .. } => vec!["a2a:tasks".to_string()],
+            WsEvent::Ping | WsEvent::Resync { .. } => vec![],
         }
     }
 }
@@ -163,6 +206,7 @@ pub async fn ws_handler(
     axum::Extension(revocation_set): axum::Extension<Arc<RevocationSet>>,
     axum::Extension(ws_tracker): axum::Extension<Arc<WsConnectionTracker>>,
     connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
     Query(params): Query<WsQueryParams>,
 ) -> impl IntoResponse {
@@ -180,13 +224,33 @@ pub async fn ws_handler(
     }
 
     if auth_config.auth_required() {
-        let token = match &params.token {
-            Some(t) => t.as_str(),
-            None => {
-                ws_tracker.release(client_ip);
-                return axum::http::StatusCode::UNAUTHORIZED.into_response();
-            }
-        };
+        // T-5.1.3: Prefer token from Sec-WebSocket-Protocol header (standard WS auth pattern).
+        // Token is encoded as subprotocol "ghost-token.<TOKEN>" to avoid query param leakage
+        // in HTTP logs, proxy logs, and browser history.
+        // Fall back to query param with deprecation warning.
+        let token_from_header: Option<String> = headers
+            .get("sec-websocket-protocol")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|protos| {
+                protos
+                    .split(',')
+                    .map(|s| s.trim())
+                    .find(|p| p.starts_with("ghost-token."))
+                    .and_then(|p| p.strip_prefix("ghost-token."))
+                    .map(|t| t.to_string())
+            });
+
+        let token_str;
+        if let Some(ref t) = token_from_header {
+            token_str = t.clone();
+        } else if let Some(ref t) = params.token {
+            tracing::warn!("WebSocket auth via query param is deprecated — use Sec-WebSocket-Protocol header");
+            token_str = t.clone();
+        } else {
+            ws_tracker.release(client_ip);
+            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        }
+        let token = token_str.as_str();
 
         // Try JWT validation first.
         if let Some(ref secret) = auth_config.jwt_secret {
@@ -290,7 +354,15 @@ async fn handle_socket(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(lagged = n, "WebSocket client lagged behind broadcast");
+                        // T-5.3.4 (T-X.28): Send Resync event on Lagged.
+                        // Client must perform full REST re-fetch to guarantee consistency.
+                        tracing::warn!(lagged = n, "WebSocket client lagged — sending Resync");
+                        let resync = WsEvent::Resync { missed_events: n };
+                        if let Ok(json) = serde_json::to_string(&resync) {
+                            if socket.send(Message::Text(json)).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

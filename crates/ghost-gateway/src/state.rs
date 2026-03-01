@@ -58,4 +58,16 @@ pub struct AppState {
 
     /// Model provider configurations (Finding #19).
     pub model_providers: Vec<crate::config::ProviderConfig>,
+
+    /// Custom safety checks registered at runtime (T-4.3.2).
+    pub custom_safety_checks: Arc<RwLock<Vec<crate::api::safety_checks::CustomSafetyCheck>>>,
+
+    /// T-5.3.6: Cancellation token for graceful shutdown of background tasks.
+    pub shutdown_token: tokio_util::sync::CancellationToken,
+
+    /// T-5.3.6: JoinHandles for background tasks (convergence_watcher, backup_scheduler, etc.)
+    pub background_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+
+    /// T-5.11.2: Safety endpoint cooldown tracker (3 actions / 10 min → 5 min cooldown).
+    pub safety_cooldown: Arc<crate::api::rate_limit::SafetyCooldown>,
 }

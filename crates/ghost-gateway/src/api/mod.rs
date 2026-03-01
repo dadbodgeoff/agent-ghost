@@ -1,5 +1,7 @@
 //! REST API and WebSocket server (Req 25).
 
+pub mod a2a;
+pub mod admin;
 pub mod agents;
 pub mod audit;
 pub mod auth;
@@ -9,14 +11,24 @@ pub mod error;
 pub mod goals;
 pub mod health;
 pub mod integrity;
+pub mod kill_fanout;
 pub mod memory;
 pub mod mesh_routes;
+pub mod mesh_viz;
 pub mod oauth_routes;
 pub mod openapi;
+pub mod profiles;
 pub mod push_routes;
 pub mod rate_limit;
 pub mod safety;
+pub mod safety_checks;
+pub mod ssrf;
+pub mod search;
 pub mod sessions;
+pub mod skills;
 pub mod state;
+pub mod studio;
+pub mod traces;
+pub mod webhooks;
 pub mod websocket;
 pub mod workflows;

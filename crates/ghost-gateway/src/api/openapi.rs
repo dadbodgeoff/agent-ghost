@@ -54,6 +54,22 @@ use utoipa::OpenApi;
         login,
         refresh,
         logout,
+        list_webhooks,
+        create_webhook,
+        update_webhook,
+        delete_webhook,
+        test_webhook,
+        list_skills,
+        install_skill,
+        uninstall_skill,
+        list_safety_checks,
+        register_safety_check,
+        unregister_safety_check,
+        send_a2a_task,
+        get_a2a_task,
+        list_a2a_tasks,
+        stream_a2a_task,
+        discover_a2a_agents,
     ),
     components(
         schemas(
@@ -63,6 +79,9 @@ use utoipa::OpenApi;
             ConvergenceScoreSchema,
             SessionSchema,
             AgentCostSchema,
+            WebhookSchema,
+            SkillSchema,
+            A2ATaskSchema,
         )
     ),
     tags(
@@ -76,6 +95,10 @@ use utoipa::OpenApi;
         (name = "costs", description = "Per-agent cost tracking"),
         (name = "safety", description = "Kill switch and quarantine controls"),
         (name = "audit", description = "Audit log queries and export"),
+        (name = "webhooks", description = "Webhook configuration and testing"),
+        (name = "skills", description = "Skill marketplace management"),
+        (name = "safety-checks", description = "Custom safety check registration"),
+        (name = "a2a", description = "Agent-to-Agent protocol endpoints"),
     )
 )]
 pub struct ApiDoc;
@@ -441,6 +464,226 @@ async fn refresh() {}
     security(("bearer_auth" = []))
 )]
 async fn logout() {}
+
+// ── Webhook schema ──
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct WebhookSchema {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub events: Vec<String>,
+    pub active: bool,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SkillSchema {
+    pub id: String,
+    pub skill_name: String,
+    pub version: String,
+    pub description: String,
+    pub capabilities: Vec<String>,
+    pub source: String,
+    pub state: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct A2ATaskSchema {
+    pub id: String,
+    pub target_agent: String,
+    pub method: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+// ── Webhook paths ──
+
+#[utoipa::path(
+    get, path = "/api/webhooks",
+    tag = "webhooks",
+    responses(
+        (status = 200, description = "List all webhooks", body = Vec<WebhookSchema>),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_webhooks() {}
+
+#[utoipa::path(
+    post, path = "/api/webhooks",
+    tag = "webhooks",
+    responses(
+        (status = 201, description = "Webhook created"),
+        (status = 400, description = "Invalid webhook configuration"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn create_webhook() {}
+
+#[utoipa::path(
+    put, path = "/api/webhooks/{id}",
+    tag = "webhooks",
+    params(("id" = String, Path, description = "Webhook ID")),
+    responses(
+        (status = 200, description = "Webhook updated"),
+        (status = 404, description = "Webhook not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_webhook() {}
+
+#[utoipa::path(
+    delete, path = "/api/webhooks/{id}",
+    tag = "webhooks",
+    params(("id" = String, Path, description = "Webhook ID")),
+    responses(
+        (status = 200, description = "Webhook deleted"),
+        (status = 404, description = "Webhook not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn delete_webhook() {}
+
+#[utoipa::path(
+    post, path = "/api/webhooks/{id}/test",
+    tag = "webhooks",
+    params(("id" = String, Path, description = "Webhook ID")),
+    responses(
+        (status = 200, description = "Test webhook fired, returns status code"),
+        (status = 404, description = "Webhook not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn test_webhook() {}
+
+// ── Skill paths ──
+
+#[utoipa::path(
+    get, path = "/api/skills",
+    tag = "skills",
+    responses(
+        (status = 200, description = "Installed and available skills"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_skills() {}
+
+#[utoipa::path(
+    post, path = "/api/skills/{id}/install",
+    tag = "skills",
+    params(("id" = String, Path, description = "Skill ID")),
+    responses(
+        (status = 200, description = "Skill installed"),
+        (status = 404, description = "Skill not found"),
+        (status = 409, description = "Skill already installed"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn install_skill() {}
+
+#[utoipa::path(
+    post, path = "/api/skills/{id}/uninstall",
+    tag = "skills",
+    params(("id" = String, Path, description = "Skill ID")),
+    responses(
+        (status = 200, description = "Skill uninstalled"),
+        (status = 404, description = "Skill not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn uninstall_skill() {}
+
+// ── Safety check paths ──
+
+#[utoipa::path(
+    get, path = "/api/safety/checks",
+    tag = "safety-checks",
+    responses(
+        (status = 200, description = "List registered custom safety checks"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_safety_checks() {}
+
+#[utoipa::path(
+    post, path = "/api/safety/checks",
+    tag = "safety-checks",
+    responses(
+        (status = 201, description = "Custom safety check registered"),
+        (status = 400, description = "Invalid check configuration"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn register_safety_check() {}
+
+#[utoipa::path(
+    delete, path = "/api/safety/checks/{id}",
+    tag = "safety-checks",
+    params(("id" = String, Path, description = "Safety check ID")),
+    responses(
+        (status = 200, description = "Safety check removed"),
+        (status = 404, description = "Check not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn unregister_safety_check() {}
+
+// ── A2A paths ──
+
+#[utoipa::path(
+    post, path = "/api/a2a/tasks",
+    tag = "a2a",
+    responses(
+        (status = 201, description = "A2A task sent", body = A2ATaskSchema),
+        (status = 400, description = "Invalid task request"),
+        (status = 502, description = "Target agent unreachable"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn send_a2a_task() {}
+
+#[utoipa::path(
+    get, path = "/api/a2a/tasks/{task_id}",
+    tag = "a2a",
+    params(("task_id" = String, Path, description = "A2A task ID")),
+    responses(
+        (status = 200, description = "Task status and result", body = A2ATaskSchema),
+        (status = 404, description = "Task not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_a2a_task() {}
+
+#[utoipa::path(
+    get, path = "/api/a2a/tasks",
+    tag = "a2a",
+    responses(
+        (status = 200, description = "List of A2A tasks", body = Vec<A2ATaskSchema>),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_a2a_tasks() {}
+
+#[utoipa::path(
+    get, path = "/api/a2a/tasks/{task_id}/stream",
+    tag = "a2a",
+    params(("task_id" = String, Path, description = "A2A task ID")),
+    responses(
+        (status = 200, description = "SSE stream of task updates"),
+        (status = 404, description = "Task not found"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn stream_a2a_task() {}
+
+#[utoipa::path(
+    get, path = "/api/a2a/discover",
+    tag = "a2a",
+    responses(
+        (status = 200, description = "Discovered A2A agents"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn discover_a2a_agents() {}
 
 // ── Handler ──
 

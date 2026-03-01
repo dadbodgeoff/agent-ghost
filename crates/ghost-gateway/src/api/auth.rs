@@ -44,11 +44,14 @@ impl Claims {
         }
     }
 
-    /// Fallback claims for no-auth mode — implicit admin.
+    /// Fallback claims for no-auth mode — dev role only.
+    ///
+    /// T-5.1.1: Never assign admin role in no-auth mode. Dev role grants
+    /// read-all + write-non-safety. Safety endpoints always require proper auth.
     pub fn no_auth_fallback() -> Self {
         Self {
             sub: "anonymous".into(),
-            role: "admin".into(),
+            role: "dev".into(),
             exp: u64::MAX,
             iat: 0,
             jti: String::new(),
@@ -87,14 +90,19 @@ impl RevocationSet {
 pub struct AuthConfig {
     pub jwt_secret: Option<String>,
     pub legacy_token: Option<String>,
+    /// Whether GHOST_ENV=production.
+    pub is_production: bool,
 }
 
 impl AuthConfig {
     /// Read auth configuration from environment (call once at startup).
     pub fn from_env() -> Self {
+        let ghost_env = std::env::var("GHOST_ENV").unwrap_or_default();
+        let is_production = ghost_env.eq_ignore_ascii_case("production");
         Self {
             jwt_secret: std::env::var("GHOST_JWT_SECRET").ok(),
             legacy_token: std::env::var("GHOST_TOKEN").ok(),
+            is_production,
         }
     }
 
@@ -102,6 +110,24 @@ impl AuthConfig {
     pub fn auth_required(&self) -> bool {
         self.jwt_secret.is_some() || self.legacy_token.is_some()
     }
+
+    /// T-5.1.1: Validate that production environments have auth configured.
+    /// Call during bootstrap — exits with fatal error if production has no auth.
+    pub fn validate_production(&self) {
+        if self.is_production && !self.auth_required() {
+            eprintln!(
+                "FATAL: GHOST_ENV=production but no authentication configured. \
+                 Set GHOST_JWT_SECRET or GHOST_TOKEN before running in production."
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// T-5.1.1: Check if a path is a safety-critical endpoint that requires auth
+/// even in dev/no-auth mode. Kill/pause/resume/quarantine are irreversible.
+fn is_safety_endpoint(path: &str) -> bool {
+    path.starts_with("/api/safety/")
 }
 
 /// Extract the Bearer token from an Authorization header value.
@@ -139,15 +165,23 @@ fn encode_jwt(claims: &Claims, secret: &str) -> Result<String, String> {
         .map_err(|e| format!("JWT encode error: {e}"))
 }
 
-/// Constant-time string comparison to prevent timing attacks.
+/// Constant-time string comparison to prevent timing attacks (T-5.2.4).
+///
+/// Compares all bytes regardless of length difference to avoid leaking
+/// the token length via timing side-channel.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    // T-5.2.4: Always compare the same number of bytes to avoid length leak.
+    // XOR-fold both strings against the longer length, using 0 padding.
+    let max_len = a_bytes.len().max(b_bytes.len());
+    let mut diff = (a_bytes.len() != b_bytes.len()) as u8; // length mismatch contributes to diff
+    for i in 0..max_len {
+        let x = if i < a_bytes.len() { a_bytes[i] } else { 0 };
+        let y = if i < b_bytes.len() { b_bytes[i] } else { 0 };
+        diff |= x ^ y;
     }
-    a.bytes()
-        .zip(b.bytes())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
+    diff == 0
 }
 
 /// Build a `Set-Cookie` header value for the refresh token.
@@ -216,15 +250,59 @@ pub async fn auth_middleware(
     let config = match request.extensions().get::<Arc<AuthConfig>>() {
         Some(c) => c.clone(),
         None => {
-            // Fallback: no config injected — treat as no-auth mode.
+            // T-5.1.1: Safety endpoints MUST reject without proper auth.
+            if is_safety_endpoint(path) {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "error": {
+                            "code": "AUTH_REQUIRED",
+                            "message": "Safety-critical endpoints require authentication"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            // Fallback: no config injected — treat as no-auth dev mode.
+            tracing::warn!(path, "Auth disabled — no AuthConfig injected. Granting dev role.");
             let mut request = request;
             request.extensions_mut().insert(Claims::no_auth_fallback());
             return next.run(request).await;
         }
     };
 
-    // No auth configured → local dev mode, allow everything.
+    // No auth configured → local dev mode (T-5.1.1).
     if !config.auth_required() {
+        // T-5.1.1: In production, this should never happen (validate_production exits at startup).
+        // Defense-in-depth: reject production requests without auth.
+        if config.is_production {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": {
+                        "code": "AUTH_NOT_CONFIGURED",
+                        "message": "Authentication not configured in production mode"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        // T-5.1.1: Safety endpoints MUST reject without proper auth even in dev.
+        if is_safety_endpoint(path) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": {
+                        "code": "AUTH_REQUIRED",
+                        "message": "Safety-critical endpoints require authentication even in dev mode"
+                    }
+                })),
+            )
+                .into_response();
+        }
+
+        tracing::warn!(path, "Auth disabled — no auth configured. Granting dev role.");
         let mut request = request;
         request.extensions_mut().insert(Claims::no_auth_fallback());
         return next.run(request).await;

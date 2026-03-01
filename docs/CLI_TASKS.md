@@ -146,7 +146,7 @@
   - File: `ghost-gateway/src/main.rs`
 
 - [ ] **T-0.9.4** Add new `Commands` enum variants `§4.3`
-  - Add all subcommand groups: `Init`, `Login`, `Logout`, `Doctor`, `Completions`, `Logs`, `Agent(AgentCommands)`, `Safety(SafetyCommands)`, `Config(ConfigCommands)`, `Db(DbCommands)`, `Audit(AuditCommands)`, `Convergence(ConvergenceCommands)`, `Session(SessionCommands)`, `Identity(IdentityCommands)`, `Secret(SecretCommands)`, `Policy(PolicyCommands)`, `Mesh(MeshCommands)`, `Skill(SkillCommands)`
+  - Add all subcommand groups: `Init`, `Login`, `Logout`, `Doctor`, `Completions`, `Logs`, `Agent(AgentCommands)`, `Safety(SafetyCommands)`, `Config(ConfigCommands)`, `Db(DbCommands)`, `Audit(AuditCommands)`, `Convergence(ConvergenceCommands)`, `Session(SessionCommands)`, `Identity(IdentityCommands)`, `Secret(SecretCommands)`, `Policy(PolicyCommands)`, `Mesh(MeshCommands)`, `Skill(SkillCommands)`, `Channel(ChannelCommands)`
   - Preserve existing `Serve`, `Chat`, `Backup`, `Export`, `Migrate` for backward compat
   - Wire dispatch to `cli::{module}::run()` for each group
   - Dependency: T-0.9.1, T-0.9.3
@@ -178,9 +178,9 @@
 
 - [ ] **T-0.11.1** Update `cli/mod.rs` with all new modules `§9.4`
   - Add: `pub mod error`, `pub mod output`, `pub mod confirm`, `pub mod backend`, `pub mod http_client`, `pub mod auth`
-  - Add stubs for Phase 1+ modules: `pub mod init`, `pub mod doctor`, `pub mod logs`, `pub mod agent`, `pub mod safety`, `pub mod config_cmd`, `pub mod db`, `pub mod audit_cmd`, `pub mod convergence`, `pub mod session`, `pub mod identity`, `pub mod secret`, `pub mod policy`, `pub mod mesh`, `pub mod skill`, `pub mod completions`
+  - Add stubs for Phase 1+ modules: `pub mod init`, `pub mod doctor`, `pub mod logs`, `pub mod agent`, `pub mod safety`, `pub mod config_cmd`, `pub mod db`, `pub mod audit_cmd`, `pub mod convergence`, `pub mod session`, `pub mod identity`, `pub mod secret`, `pub mod policy`, `pub mod mesh`, `pub mod skill`, `pub mod completions`, `pub mod channel`
   - Each stub: empty file with `//! ghost <group> — <description>.` doc comment + empty `Commands` enum + `pub async fn run() -> Result<(), CliError> { todo!() }`
-  - File: `ghost-gateway/src/cli/mod.rs`, 17 new stub files
+  - File: `ghost-gateway/src/cli/mod.rs`, 18 new stub files
 
 ### 0.12 Integration Tests
 
@@ -190,6 +190,29 @@
   - Tests: `--help` works, `--version` works, unknown command fails with exit 2, `status` returns 0 or 69
   - Dependency: T-0.2.3, T-0.9.3
   - File: `ghost-gateway/tests/cli_tests.rs` (new)
+
+### 0.13 Path Foundation & Early Completions
+
+> Promoted from Cross-Cutting (T-X.2) and Phase 1 (T-1.8.1). Both must land before
+> Phase 1 begins: init builds the entire `~/.ghost/` tree, and completions stub must
+> compile before the stubs in T-0.11.1 are registered.
+
+- [ ] **T-0.13.1** Add `GHOST_HOME` env var to path resolution `E.11`
+  - Check `GHOST_HOME` before defaulting to `~/.ghost/` everywhere paths are constructed
+  - Apply inside `shellexpand_tilde()` in `bootstrap.rs` and all callers that hardcode `~/.ghost/`
+  - Precedence: `GHOST_HOME` → `~/.ghost/`
+  - Document: XDG non-compliance is intentional; `GHOST_XDG=1` deferred
+  - ⚠️ Must land before T-1.1.1 (`ghost init`) to avoid baking in `~/.ghost/` unconditionally
+  - File: `ghost-gateway/src/bootstrap.rs`
+
+- [ ] **T-0.13.2** Implement `ghost completions` `§4.1`
+  - Moved from T-1.8.1 — no backend requirement, only depends on T-0.2.1 which is already Phase 0
+  - Create `ghost-gateway/src/cli/completions.rs`
+  - Accepts `<bash|zsh|fish|powershell|elvish>` positional arg (via `clap_complete::Shell`)
+  - Generates completions to stdout via `clap_complete::generate()`
+  - Backend: DirectOnly (no network, no DB)
+  - Dependency: T-0.2.1
+  - File: `ghost-gateway/src/cli/completions.rs`
 
 ### Phase 0 Exit Criteria
 
@@ -202,6 +225,8 @@
 | `ghost backup/export/migrate` | Return `CliError` instead of `process::exit()` |
 | CLI integration tests | 4+ tests pass via `assert_cmd` |
 | Error output | All errors to stderr, data to stdout |
+| `ghost completions bash` | Valid bash completions output |
+| `GHOST_HOME` | All path construction respects env override |
 
 ---
 
@@ -213,8 +238,9 @@
 ### 1.1 Init & First-Run
 
 - [ ] **T-1.1.1** Implement `ghost init` `§4.1, Appendix A, E.9`
+  - Dependency: T-0.13.1 — all paths must go through `GHOST_HOME`-aware resolution, not hardcoded `~/.ghost/`
   - Create `ghost-gateway/src/cli/init.rs`
-  - Create directory structure: `~/.ghost/{config,data,backups,agents,skills}/`
+  - Create directory structure: `~/.ghost/{config,data,backups,agents,skills}/` (via resolved base path)
   - Generate platform Ed25519 keypair via `ghost_identity::keypair_manager::AgentKeypairManager::generate()`
   - Write default `ghost.yml` via `GhostConfig::default()` → `serde_yaml::to_string()`
   - Write SOUL.md template (hardcoded string — `SoulManager::create_template()` doesn't exist, F.3)
@@ -246,6 +272,7 @@
   - Create `ghost-gateway/src/cli/doctor.rs`
   - Checks: `~/.ghost/` exists, `ghost.yml` valid, SOUL.md present, CORP_POLICY.md present, platform keypair present
   - LLM providers: check `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_BASE_URL`
+    - ⚠️ Env var checks are existence-only — a present but expired/invalid key still passes. Output must read "Key found (not validated)", never "✓ API key valid". Add `--probe` flag (deferred to Phase 2) that makes a minimal test API call to each configured provider.
   - Database: exists, migrations current (compare `current_version()` vs `LATEST_VERSION`), WAL mode, hash chain spot-check
   - Gateway: HTTP health probe
   - Convergence monitor: HTTP health probe at configured address
@@ -261,7 +288,13 @@
   - Create `ghost-gateway/src/cli/config_cmd.rs`
   - Load config via `GhostConfig::load_default()`
   - Overlay all env var overrides: `GHOST_TOKEN`, `GHOST_JWT_SECRET`, `GHOST_CORS_ORIGINS`, `GHOST_BACKUP_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_BASE_URL`, vault token env
-  - Redact all secret values (show `****` suffix)
+  - Additionally, for each channel in `config.channels`, overlay channel credential env vars by resolving the `{key}_key` option values:
+    - `GHOST_TELEGRAM_BOT_TOKEN` (if telegram channel configured)
+    - `GHOST_WHATSAPP_ACCESS_TOKEN` (if whatsapp cloud-api configured)
+    - `GHOST_SLACK_BOT_TOKEN`, `GHOST_SLACK_APP_TOKEN` (if slack configured)
+    - `GHOST_DISCORD_BOT_TOKEN` (if discord configured)
+    - Only show env vars for channels actually present in `config.channels` — do not show all possible channel vars unconditionally
+  - Redact all secret values (show `****` suffix); `phone_number_id` for WhatsApp is not secret — show literal value
   - `ResolvedConfig` struct with `Serialize` + `TableDisplay`
   - Backend: DirectOnly
   - File: `ghost-gateway/src/cli/config_cmd.rs`
@@ -312,6 +345,19 @@
   - Backend: HttpOnly
   - File: `ghost-gateway/src/cli/agent.rs`
 
+- [ ] **T-1.5.6** Implement `ghost agent update` (backend + CLI)
+  - **Step A — Backend prerequisite**: `PATCH /api/agents/:id` does not exist in `bootstrap.rs` (only GET list, POST create, DELETE exist). Add:
+    - Handler `update_agent()` in `ghost-gateway/src/api/agents.rs`
+    - Request body: `UpdateAgentRequest { model: Option<String>, spending_cap: Option<f64>, capabilities: Option<Vec<String>> }` (all optional, patch semantics)
+    - Route: `.route("/api/agents/:id", patch(crate::api::agents::update_agent))` in `bootstrap.rs` (append to existing agents block)
+  - **Step B — CLI**: Add `ghost agent update <id|name>` subcommand
+    - Args: `--model <model>`, `--spending-cap <f64>`, `--capabilities <comma-list>`
+    - At least one flag required (clap `required_unless_present_any` or runtime check)
+    - HTTP: `PATCH /api/agents/:id` with `UpdateAgentRequest` body
+    - Print updated agent summary on success
+  - Backend: HttpOnly
+  - File: `ghost-gateway/src/api/agents.rs`, `ghost-gateway/src/bootstrap.rs`, `ghost-gateway/src/cli/agent.rs`
+
 ### 1.6 Safety Commands
 
 - [ ] **T-1.6.1** Implement `ghost safety status` `§4.1, Appendix C`
@@ -356,26 +402,147 @@
 
 ### 1.8 Shell Completions
 
-- [ ] **T-1.8.1** Implement `ghost completions` `§4.1`
-  - Create `ghost-gateway/src/cli/completions.rs`
-  - Accepts `<bash|zsh|fish|powershell|elvish>` positional arg (via `clap_complete::Shell`)
-  - Generates completions to stdout via `clap_complete::generate()`
-  - Backend: DirectOnly (no network, no DB)
-  - Dependency: T-0.2.1
-  - File: `ghost-gateway/src/cli/completions.rs`
+- **T-1.8.1** *(Moved to T-0.13.2 in Phase 0)* — `ghost completions` has no backend requirement and depends only on T-0.2.1 (`clap_complete`), which already lands in Phase 0. Implementing it in Phase 0 means the exit criteria binary is fully functional before Phase 1 starts.
+
+### 1.9 Channel Commands
+
+> Ghost agents communicate with end users through messaging adapters (WhatsApp, Telegram,
+> Slack, Discord). The CLI is the operator's window into that layer — not for sending messages,
+> but for verifying bindings and credential health. The `ghost-channels` crate already has
+> working adapters for all four. These commands read from config (DirectOnly) and make
+> lightweight external probe calls. No gateway dependency.
+>
+> **Credential resolution convention** (used by T-1.9.2 and T-1.9.4): for each option key
+> (e.g., `bot_token`), check in order:
+> 1. Env var named by `{KEY}_key` value in options (e.g., options `bot_token_key: GHOST_TELEGRAM_BOT_TOKEN` → `std::env::var("GHOST_TELEGRAM_BOT_TOKEN")`)
+> 2. SecretProvider lookup using that same key name via `provider.get_secret("GHOST_TELEGRAM_BOT_TOKEN")`
+> 3. Literal value in options under the plain key name (e.g., `bot_token: "xoxb-..."`) — warn operator that inline credentials in config are not recommended
+> 4. `Err(CliError::Config("credential not found: bot_token for channel whatsapp"))` → exit 78
+
+- [ ] **T-1.9.1** Implement `ghost channel list`
+  - Create `ghost-gateway/src/cli/channel.rs`
+  - Load `GhostConfig::channels` (Vec of `ChannelConfig { channel_type, agent, options }`)
+  - For each entry, derive display fields from the known adapter implementations:
+
+    | channel_type | mode derivation | streaming | editing |
+    |---|---|---|---|
+    | `telegram` | always "bot" | yes | yes |
+    | `whatsapp` | options has `phone_number_id` → "cloud-api"; else "sidecar" | no | no |
+    | `slack` | always "socket-mode" | no | yes |
+    | `discord` | always "gateway" | no | yes |
+    | `cli` | always "stdio" | yes | no |
+
+  - `ChannelListEntry` struct with `#[derive(Serialize)]` + `TableDisplay`:
+    - columns: `CHANNEL`, `AGENT`, `MODE`, `STREAMING`, `EDITING`, `CREDENTIALS`
+    - `CREDENTIALS` column: list option keys present (names only, never values), e.g., "bot_token_key, ✓"
+  - If `config.channels` is empty: print "No channels configured. Add a `channels:` block to ghost.yml or run `ghost init`." to stderr → exit 0
+  - Backend: DirectOnly
+  - File: `ghost-gateway/src/cli/channel.rs`
+
+- [ ] **T-1.9.2** Implement `ghost channel test [<type>]`
+  - Accepts optional positional `<type>` arg. If omitted, test all channels in `config.channels`
+  - For each matching channel, resolve credentials (see convention above), then execute the adapter-specific probe:
+
+    **telegram** — `GET https://api.telegram.org/bot{token}/getMe` (5s timeout)
+    - 200 + `{"ok": true}` → `✓ telegram → {agent}: @{result.username} (id={result.id})`
+    - 200 + `{"ok": false, "description": "..."}` → `✗ telegram → {agent}: {description}` → exit 1
+    - network error / timeout → `✗ telegram → {agent}: connection failed ({err})` → exit 69
+
+    **whatsapp (cloud-api)** — `GET https://graph.facebook.com/v18.0/{phone_number_id}?fields=display_phone_number,verified_name&access_token={token}` (5s timeout)
+    - 200 → `✓ whatsapp → {agent}: {display_phone_number} ({verified_name})`
+    - 400/401 → parse `{"error": {"message": "..."}}` → `✗ whatsapp → {agent}: {message}` → exit 1
+    - network error → exit 69
+
+    **whatsapp (sidecar)** — cannot probe a local Baileys process via HTTP
+    - Print: `~ whatsapp → {agent}: sidecar mode — cannot probe remotely. Ensure Node.js/Baileys process is running.` → exit 0 (not a failure)
+
+    **slack** — `POST https://slack.com/api/auth.test` with `Authorization: Bearer {bot_token}`, no body (5s timeout)
+    - 200 + `{"ok": true}` → `✓ slack → {agent}: {user} @ {team}`
+    - 200 + `{"ok": false, "error": "..."}` → `✗ slack → {agent}: {error}` → exit 1
+    - network error → exit 69
+
+    **discord** — `GET https://discord.com/api/v10/users/@me` with `Authorization: Bot {token}` (5s timeout)
+    - 200 → `✓ discord → {agent}: @{username}#{discriminator}`
+    - 401 → `✗ discord → {agent}: invalid token` → exit 1
+    - network error → exit 69
+
+    **cli** — always `✓ cli → {agent}: ready (no external dependency)`
+
+  - Use a single `reqwest::Client` with 5s timeout for all probes (do not create per-request clients)
+  - `pub async fn probe_channel(entry: &ChannelConfig, provider: &dyn SecretProvider) -> ProbeResult` — export this function; T-1.9.3 and T-1.9.4 call it directly
+  - Args: `--output` respects GlobalOpts format; JSON output wraps results in `[{"channel": ..., "agent": ..., "status": "ok"|"error"|"warning", "detail": ...}]`
+  - Backend: DirectOnly (config) + external HTTPS (probe) — no gateway needed
+  - Dependency: T-0.6.1 (SecretProvider resolution)
+  - File: `ghost-gateway/src/cli/channel.rs`
+
+- [ ] **T-1.9.3** Extend `ghost doctor` with channel health section
+  - After the "Gateway" check block, add a "Channels" section
+  - Call `channel::probe_channel(entry, &provider)` for each configured channel — reuse T-1.9.2's exported function exactly, no duplication
+  - Output format (matching existing doctor style):
+    ```
+    Channels (2 configured)
+      ✓ telegram → alice: @ghostbot (id=123456789)
+      ✗ whatsapp → bob: (#190) invalid OAuth 2.0 access token
+    ```
+  - If `config.channels` is empty: `Channels  ✗ none configured — agents cannot receive messages`
+  - Count channel failures toward the summary error count
+  - Dependency: T-1.9.2 (`channel::probe_channel`), T-1.3.1
+  - File: `ghost-gateway/src/cli/doctor.rs`
+
+- [ ] **T-1.9.4** Extend `ghost init` with channel setup step
+  - After LLM provider selection, prompt: `Configure a messaging channel? [y/N]`
+  - If yes, present menu: `[1] Telegram  [2] WhatsApp (Cloud API)  [3] WhatsApp (Sidecar)  [4] Slack  [5] Discord  [0] Skip`
+  - Per-type credential collection and config generation:
+
+    **Telegram**
+    - Check `GHOST_TELEGRAM_BOT_TOKEN` env var first; if set, skip prompt and print "✓ Found GHOST_TELEGRAM_BOT_TOKEN in environment"
+    - Otherwise: `print!("Bot token (from @BotFather): ")` + raw stdin read (no echo — `std::io::stdin().read_line()` with terminal echo suppressed via platform API, or print a warning that the token will be visible)
+    - Store via `provider.set_secret("GHOST_TELEGRAM_BOT_TOKEN", &token)?`
+    - Write to `ghost.yml`: `options: { bot_token_key: "GHOST_TELEGRAM_BOT_TOKEN" }`
+
+    **WhatsApp (Cloud API)**
+    - Check `GHOST_WHATSAPP_ACCESS_TOKEN` + `GHOST_WHATSAPP_PHONE_NUMBER_ID` env vars
+    - If not set: prompt for each separately (access token is secret, phone number ID is not)
+    - Store access token via `provider.set_secret("GHOST_WHATSAPP_ACCESS_TOKEN", &token)?`
+    - Write to `ghost.yml`: `options: { mode: "cloud_api", access_token_key: "GHOST_WHATSAPP_ACCESS_TOKEN", phone_number_id: "{literal_id}" }`
+    - ⚠️ Print: "You must register a webhook at https://developers.facebook.com/apps/ pointing to {gateway_url}/api/channels/whatsapp/webhook"
+
+    **WhatsApp (Sidecar)**
+    - Write to `ghost.yml`: `options: { mode: "sidecar" }`
+    - ⚠️ Print: "Sidecar mode requires Node.js and the Baileys package. See docs/channels/whatsapp-sidecar.md"
+
+    **Slack**
+    - Check `GHOST_SLACK_BOT_TOKEN` + `GHOST_SLACK_APP_TOKEN` env vars
+    - Prompt for each if not present; store via SecretProvider
+    - Write to `ghost.yml`: `options: { bot_token_key: "GHOST_SLACK_BOT_TOKEN", app_token_key: "GHOST_SLACK_APP_TOKEN" }`
+
+    **Discord**
+    - Check `GHOST_DISCORD_BOT_TOKEN` env var
+    - Prompt if not present; store via SecretProvider
+    - Write to `ghost.yml`: `options: { bot_token_key: "GHOST_DISCORD_BOT_TOKEN" }`
+
+  - After collecting credentials: call `channel::probe_channel()` to validate before writing. If probe fails:
+    - Print error + "Write config anyway? [y/N]". If N, abort channel setup (do not write channel block to ghost.yml). LLM and DB setup already done — do not roll back.
+  - Prompt for which agent to bind: list registered agents from config (default: "default" if it exists)
+  - Append `ChannelConfig` entry to `ghost.yml` channels list using `serde_yaml`
+  - Skip all prompts with `--defaults` (no channel configured, print "Run `ghost init` again or edit ghost.yml to add channels")
+  - Dependency: T-1.1.1 (init flow), T-1.9.2 (`probe_channel`)
+  - File: `ghost-gateway/src/cli/init.rs`, `ghost-gateway/src/cli/channel.rs`
 
 ### Phase 1 Exit Criteria
 
 | Metric | Target |
 |---|---|
-| `ghost init` | Creates `~/.ghost/` with config, SOUL.md, keypair, DB |
+| `ghost init` | Creates `~/.ghost/` (or `$GHOST_HOME/`) with config, SOUL.md, keypair, DB, optional channel setup |
 | `ghost login/logout` | Token stored/cleared via SecretProvider |
-| `ghost doctor` | Reports 10+ health checks |
-| `ghost agent list/create/inspect/delete` | Full CRUD via HTTP |
+| `ghost doctor` | Reports 10+ health checks including channel health; API key output says "found (not validated)" |
+| `ghost agent list/create/inspect/delete/update` | Full CRUD via HTTP, including PATCH |
 | `ghost safety status/kill-all/clear` | Kill switch management works |
 | `ghost db migrate/status` | Migration reporting works |
-| `ghost completions bash` | Valid bash completions output |
+| `ghost channel list` | Shows all configured channel↔agent bindings |
+| `ghost channel test` | Probes each channel's external API with correct credentials |
 | All commands | Respect `--output json`, `--quiet`, `--color` |
+| (`ghost completions` — in Phase 0 exit criteria) | |
 
 ---
 
@@ -386,14 +553,15 @@
 
 ### 2.1 Live Event Streaming
 
-- [ ] **T-2.1.1** Implement `ghost logs` `§4.1, E.3, E.8`
+- [ ] **T-2.1.1** Implement `ghost logs` `§4.1, E.3, E.8, R12`
   - Create `ghost-gateway/src/cli/logs.rs`
   - Connect to `ws://{gateway}/api/ws?token={token}` via `tokio-tungstenite`
   - Parse incoming `WsEvent` JSON (already `#[serde(tag = "type")]`)
-  - Args: `--agent <id>` (filter), `--type <event_type>` (filter), `--json` (NDJSON output)
+  - Args: `--agent <id>` (filter), `--type <event_type>` (filter), `--json` (NDJSON output), `--idle-timeout <seconds>` (default: 1800)
   - Table mode: formatted event lines with timestamp, type, agent, summary
   - JSON mode: one JSON object per line (NDJSON)
   - Signal handling: `tokio::select!` with `ctrl_c()`, send WS Close frame on Ctrl+C (E.8)
+  - Idle timeout: use `tokio::time::timeout` wrapping the WS read future; if no message arrives within `--idle-timeout` seconds, close the connection cleanly and print "Connection idle for {n}s. Re-run to reconnect." to stderr (R12)
   - Backend: HttpOnly (WS)
   - Dependency: T-0.2.2
   - File: `ghost-gateway/src/cli/logs.rs`
@@ -444,12 +612,13 @@
   - Backend: PreferHttp
   - File: `ghost-gateway/src/cli/session.rs`
 
-- [ ] **T-2.4.2** Implement `ghost session inspect` `§4.1, F.5`
+- [ ] **T-2.4.2** Implement `ghost session inspect` `§4.1`
   - Accepts `<session_id>` positional arg
-  - ⚠️ No `GET /api/sessions/:id/events` endpoint exists (F.5) — must use Direct mode
-  - Direct: query `itp_events WHERE session_id = ?` via `cortex_storage::queries::itp_event_queries`
+  - ~~F.5 (no endpoint) is stale~~ — `GET /api/sessions/:id/events` was added and is registered in `bootstrap.rs:405`
+  - HTTP: `GET /api/sessions/:id/events` → parse event list
+  - Direct fallback: query `itp_events WHERE session_id = ?` via `cortex_storage::queries::itp_event_queries`
   - Show: event timeline, gate states, agent, timestamps
-  - Backend: DirectOnly (until endpoint is added)
+  - Backend: PreferHttp
   - File: `ghost-gateway/src/cli/session.rs`
 
 ### 2.5 Database Commands (Continued)
@@ -462,10 +631,14 @@
   - File: `ghost-gateway/src/cli/db.rs`
 
 - [ ] **T-2.5.2** Implement `ghost db compact` `§4.1, §8.3`
-  - Args: `--yes`, `--dry-run`
+  - Args: `--yes`, `--dry-run`, `--force`
+  - **Pre-flight gateway check** (R19): probe `{gateway_url}/api/health` with 2s timeout.
+    - If 200 → abort: print "Gateway is running. VACUUM requires exclusive DB access and will conflict with active connections. Stop the gateway first, then compact. Pass `--force` to skip this check at your own risk." → exit `EX_UNAVAILABLE (69)`
+    - If timeout/error → proceed (gateway not running)
+    - `--force` skips the probe but prints warning: "⚠️ Skipping gateway check. Ensure no other process has the DB open."
   - Confirmation prompt: "Compact database? This may take a moment. [y/N]"
   - Execute: `PRAGMA wal_checkpoint(TRUNCATE); VACUUM;`
-  - Dry-run: show current WAL size + estimated savings
+  - Dry-run: show current WAL size + estimated savings (skip probe in dry-run)
   - Backend: DirectOnly
   - File: `ghost-gateway/src/cli/db.rs`
 
@@ -501,6 +674,13 @@
   - `pub fn load(path: &Path) -> Result<Self, PolicyError>` — parse CORP_POLICY.md markdown deny-list
   - Unblocks `ghost policy show` and `ghost policy lint`
   - File: `ghost-policy/src/corp_policy.rs`
+
+- [ ] **T-3.1.3** Update `ghost init` to use `SoulManager::create_template()` `F.3 follow-up`
+  - T-1.1.1 writes SOUL.md from a hardcoded inline string because `SoulManager::create_template()` doesn't exist yet (F.3)
+  - Once T-3.1.1 lands, replace the inline template in `init.rs` with `SoulManager::create_template(&soul_path)?`
+  - Delete the hardcoded template string; do not keep both paths
+  - Dependency: T-3.1.1, T-1.1.1
+  - File: `ghost-gateway/src/cli/init.rs`
 
 ### 3.2 Identity Commands
 
@@ -609,9 +789,12 @@
 
 - [ ] **T-4.1.3** Implement `ghost mesh discover` `§4.1`
   - Accepts `<url>` positional arg
-  - Fetch `/.well-known/agent.json` from remote URL
-  - Register as known peer
-  - Backend: HttpOnly
+  - Fetch `/.well-known/agent.json` from remote URL to read the peer's `AgentCard`
+  - Registration path (in priority order):
+    1. If gateway is running: `POST /api/a2a/discover` does not exist — use `POST /api/mesh/peers` if added by ADE 4.1, otherwise fall back to option 2
+    2. Config file: append peer entry to `~/.ghost/config/peers.yml` (create if absent)
+  - ⚠️ Verify which registration endpoint ADE Phase 4.1 exposes before implementing. Add `--local` flag to force config-file storage regardless of gateway state.
+  - Backend: HttpOnly (fetch) + DirectOnly fallback (config write)
   - File: `ghost-gateway/src/cli/mesh.rs`
 
 - [ ] **T-4.1.4** Implement `ghost mesh ping` `§4.1`
@@ -676,6 +859,43 @@
   - Backend: HttpOnly
   - File: `ghost-gateway/src/cli/cron.rs` (new)
 
+### 4.6 Channel Injection (Operator Debug Tool)
+
+> Operator-only escape hatch: inject a synthetic inbound message into a running agent without
+> touching the real channel. Requires the gateway to be running — the agent must be live to
+> receive and respond. Requires a new backend endpoint; the ghost-channels adapters have
+> `push_inbound()` on WhatsApp but no general injection path accessible from outside the process.
+
+- [ ] **T-4.6.1** Add `POST /api/channels/:type/inject` endpoint to ghost-gateway (backend prerequisite)
+  - New handler in `ghost-gateway/src/api/channels.rs` (new file)
+  - Route: `.route("/api/channels/:type/inject", post(crate::api::channels::inject_message))` in `bootstrap.rs`
+  - Request body:
+    ```rust
+    struct InjectMessageRequest {
+        content: String,
+        sender: String,         // e.g. "ghost-operator" — shown in audit log as synthetic sender
+        agent_id: Option<Uuid>, // if None: use first agent bound to this channel_type in config
+    }
+    ```
+  - Handler logic:
+    1. Find target agent: `agent_id` arg → `state.agent_registry.lookup(id)`, or scan `config.channels` for first entry with matching `channel_type` → `registry.lookup_by_name(entry.agent)`
+    2. If no agent found for channel_type → 404 `{"error": "no agent bound to channel '{type}'"}`
+    3. Construct `ghost_channels::types::InboundMessage::new(type, &request.sender, &request.content)` with a fresh `Uuid::now_v7()` as `id`
+    4. Route to agent via existing session/lane machinery — use `state.session_manager` or `state.itp_router` (whichever owns the inbound message path; verify against `session/router.rs`)
+    5. Return `202 Accepted` with `{"message_id": "{uuid}", "agent_id": "{uuid}", "routed": true}` — do not wait for the agent's response (async)
+  - Auth: requires valid Bearer token (same middleware as all other routes)
+  - ⚠️ `ghost-channels` must be added to `ghost-gateway/Cargo.toml [dependencies]` if not already present — verify before implementing
+  - File: `ghost-gateway/src/api/channels.rs` (new), `ghost-gateway/src/bootstrap.rs`
+
+- [ ] **T-4.6.2** Implement `ghost channel send <type> <message>`
+  - Args: `<type>` (telegram/whatsapp/slack/discord), `<message>` (positional string), `--agent <id|name>` (optional), `--sender <name>` (default: `"ghost-operator"`)
+  - HTTP: `POST /api/channels/:type/inject` with `InjectMessageRequest` body
+  - On 202: print `Injected → agent {agent_id} (message_id={message_id})`. Then stream incoming events filtered to that agent via WS for 10s, printing any response the agent sends (so the operator can see if the pipeline end-to-end works). Ctrl+C exits early.
+  - On 404: print "No agent is bound to channel '{type}'. Check `ghost channel list`." → exit 1
+  - Backend: HttpOnly
+  - Dependency: T-4.6.1, T-0.2.2 (tokio-tungstenite for response streaming)
+  - File: `ghost-gateway/src/cli/channel.rs`
+
 ### Phase 4 Exit Criteria
 
 | Metric | Target |
@@ -684,6 +904,7 @@
 | `ghost skill list/install/inspect` | WASM skill lifecycle works |
 | `ghost session replay` | Text-based replay renders conversation |
 | `ghost convergence history` | Score history with deltas |
+| `ghost channel send` | Injects test message, streams agent response for 10s |
 
 ---
 
@@ -699,11 +920,7 @@
 
 ### XDG & Home Directory `E.11`
 
-- [ ] **T-X.2** Add `GHOST_HOME` env var override
-  - Check `GHOST_HOME` before defaulting to `~/.ghost/`
-  - Apply in `shellexpand_tilde()` and all path resolution
-  - Document XDG non-compliance decision: `~/.ghost/` is canonical, `GHOST_XDG=1` deferred
-  - File: `ghost-gateway/src/bootstrap.rs`
+- **T-X.2** *(Promoted to T-0.13.1 in Phase 0)* — `GHOST_HOME` must be in place before `ghost init` constructs the `~/.ghost/` tree. Keeping it in Cross-Cutting created a dependency inversion: Phase 1 code would bake in `~/.ghost/` before the override ever landed. See T-0.13.1.
 
 ### Path Resolution Consolidation `F.19`
 
@@ -852,17 +1069,21 @@
 | R16 | `ghost identity drift` needs LLM embeddings | 3 | Fall back to hash-based drift. Document embedding requirement. |
 | R17 | Three `expand_tilde()` implementations | 0 | Consolidate in Phase 0 (T-X.3) |
 | R18 | `ghost safety clear` expectation mismatch | 1 | Print explicit restart warning (T-1.6.3) |
+| R19 | `ghost db compact` runs `VACUUM` while gateway is active | 2 | Pre-flight HTTP health probe in T-2.5.2; abort if gateway reachable unless `--force` passed |
+| R20 | F.x audit findings may be stale against actual source | 0 | Confirmed: F.5 (no sessions/:id/events endpoint) is already stale — endpoint exists at `bootstrap.rs:405`. Before implementing any task that relies on an F.x finding, verify the finding against current source. |
+| R21 | WhatsApp sidecar mode cannot be probed remotely | 1 | `ghost channel test whatsapp` prints a warning for sidecar mode rather than failing. `ghost doctor` treats sidecar as `~` (warning, not `✗`) so it doesn't block a passing health check. Operator must verify sidecar health manually. |
+| R22 | Inline credentials in `ChannelConfig.options` (e.g., `bot_token: "xoxb-..."`) | 1 | T-1.9.2 credential resolution warns the operator when a literal value is used instead of a secret key reference. T-1.9.4 (`ghost init`) always stores via SecretProvider and writes `_key` references — never writes literal credentials to ghost.yml. |
 
 ---
 
 ## Task Count Summary
 
-| Phase | Tasks | Effort |
-|---|---|---|
-| Phase 0: Infrastructure | 20 | ~40h |
-| Phase 1: Essential | 17 | ~50h |
-| Phase 2: Observability | 10 | ~35h |
-| Phase 3: Identity/Secrets/Policy | 11 | ~25h |
-| Phase 4: Mesh/Skills/Advanced | 10 | ~30h |
-| Cross-Cutting | 7 | ~15h |
-| **Total** | **75** | **~195h** |
+| Phase | Tasks | Effort | Notes |
+|---|---|---|---|
+| Phase 0: Infrastructure | 22 | ~45h | +T-0.13.1 (GHOST_HOME), +T-0.13.2 (completions, promoted from Phase 1) |
+| Phase 1: Essential | 21 | ~65h | +T-1.5.6 (agent update + backend), +T-1.9.1–T-1.9.4 (channel list/test/doctor/init) |
+| Phase 2: Observability | 10 | ~35h | T-2.4.2 now PreferHttp (F.5 was stale); idle timeout added to T-2.1.1 |
+| Phase 3: Identity/Secrets/Policy | 12 | ~28h | +T-3.1.3 (wire SoulManager back into init.rs) |
+| Phase 4: Mesh/Skills/Advanced | 12 | ~35h | +T-4.6.1 (inject backend endpoint), +T-4.6.2 (ghost channel send) |
+| Cross-Cutting | 5 | ~10h | T-X.2 promoted to Phase 0; T-X.6/7 unchanged |
+| **Total** | **82** | **~218h** | |

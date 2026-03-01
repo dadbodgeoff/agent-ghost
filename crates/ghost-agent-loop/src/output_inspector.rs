@@ -74,6 +74,7 @@ impl OutputInspector {
     }
 
     /// Scan text for credential patterns.
+    #[tracing::instrument(skip(self, text), fields(otel.kind = "internal", text_len = text.len()))]
     pub fn scan(&self, text: &str, agent_id: Uuid) -> InspectionResult {
         for (name, pattern) in CREDENTIAL_PATTERNS.iter() {
             if let Some(matched) = pattern.find(text) {

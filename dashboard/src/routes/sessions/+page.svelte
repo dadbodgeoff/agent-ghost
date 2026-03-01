@@ -53,7 +53,7 @@
     <tbody>
       {#each sessions as session}
         <tr>
-          <td class="mono">{session.session_id.slice(0, 8)}…</td>
+          <td class="mono"><a href="/sessions/{session.session_id}" class="session-link">{session.session_id.slice(0, 8)}…</a></td>
           <td>{Array.isArray(session.agents) ? session.agents.join(', ') : session.agents}</td>
           <td>{session.event_count}</td>
           <td class="timestamp">{new Date(session.started_at).toLocaleString()}</td>
@@ -101,6 +101,15 @@
   .timestamp {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
+  }
+
+  .session-link {
+    color: var(--color-interactive-primary);
+    text-decoration: none;
+  }
+
+  .session-link:hover {
+    text-decoration: underline;
   }
 
   .skeleton-table {

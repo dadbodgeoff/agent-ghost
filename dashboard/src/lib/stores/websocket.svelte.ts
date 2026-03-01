@@ -24,6 +24,13 @@ export type WsEventType =
   | 'KillSwitchActivation'
   | 'ProposalDecision'
   | 'AgentStateChange'
+  | 'AgentConfigChange'
+  | 'TraceUpdate'
+  | 'BackupComplete'
+  | 'WebhookFired'
+  | 'SkillChange'
+  | 'A2ATaskUpdate'
+  | 'Resync'
   | 'Ping';
 
 export interface WsMessage {
@@ -94,6 +101,20 @@ class WebSocketStore {
 
         if (msg.type === 'Ping') {
           // Keepalive — no action needed beyond updating lastMessage.
+          return;
+        }
+
+        // T-5.3.4 (T-X.28): Handle Resync — client lagged behind broadcast.
+        // Trigger full REST re-fetch on all stores to guarantee consistency.
+        if (msg.type === 'Resync') {
+          console.warn(`[ws] Resync: missed ${(msg as { missed_events?: number }).missed_events ?? '?'} events — refreshing all stores`);
+          // Route to registered Resync handlers (pages should re-fetch their data).
+          const resyncHandlers = this.handlers.get('Resync');
+          if (resyncHandlers) {
+            for (const handler of resyncHandlers) {
+              try { handler(msg); } catch (e) { console.error('[ws] Resync handler error:', e); }
+            }
+          }
           return;
         }
 

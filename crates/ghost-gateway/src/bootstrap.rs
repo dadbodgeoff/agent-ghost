@@ -50,6 +50,7 @@ impl BootstrapError {
 pub struct GatewayBootstrap;
 
 impl GatewayBootstrap {
+    #[tracing::instrument(skip(config_path), fields(otel.kind = "internal"))]
     pub async fn run(config_path: Option<&str>) -> Result<(Gateway, GhostConfig), BootstrapError> {
         let shared_state = Arc::new(GatewaySharedState::new());
 
@@ -172,7 +173,8 @@ impl GatewayBootstrap {
         }
 
         // Build shared application state for all route handlers.
-        let (event_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(256);
+        // T-5.3.4: Increase broadcast capacity from 256 to 1024 (T-X.27).
+        let (event_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(1024);
         let kill_switch = Arc::new(KillSwitch::new());
         let cost_tracker = Arc::new(crate::cost::tracker::CostTracker::new());
 
@@ -226,6 +228,10 @@ impl GatewayBootstrap {
             soul_drift_threshold: config.security.soul_drift_threshold,
             convergence_profile: config.convergence.profile.clone(),
             model_providers: config.models.providers.clone(),
+            custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
         });
 
         // Step 5: Start API server
@@ -412,12 +418,48 @@ impl GatewayBootstrap {
             .route("/api/workflows/:id", get(crate::api::workflows::get_workflow))
             .route("/api/workflows/:id", put(crate::api::workflows::update_workflow))
             .route("/api/workflows/:id/execute", post(crate::api::workflows::execute_workflow))
+            // Studio (T-2.7.1)
+            .route("/api/studio/run", post(crate::api::studio::run_prompt))
+            // Traces (T-3.1.4)
+            .route("/api/traces/:session_id", get(crate::api::traces::get_traces))
+            // Mesh visualization (T-3.2.1–3.2.3)
+            .route("/api/mesh/trust-graph", get(crate::api::mesh_viz::trust_graph))
+            .route("/api/mesh/consensus", get(crate::api::mesh_viz::consensus_state))
+            .route("/api/mesh/delegations", get(crate::api::mesh_viz::delegations))
+            // Profiles (T-3.3.1)
+            .route("/api/profiles", get(crate::api::profiles::list_profiles))
+            .route("/api/profiles", post(crate::api::profiles::create_profile))
+            .route("/api/profiles/:name", put(crate::api::profiles::update_profile).delete(crate::api::profiles::delete_profile))
+            .route("/api/agents/:id/profile", post(crate::api::profiles::assign_profile))
+            // Unified search (T-3.5.1)
+            .route("/api/search", get(crate::api::search::search))
+            // Admin (T-3.4.1–3.4.4)
+            .route("/api/admin/backup", post(crate::api::admin::create_backup))
+            .route("/api/admin/backups", get(crate::api::admin::list_backups))
+            .route("/api/admin/restore", post(crate::api::admin::restore_backup))
+            .route("/api/admin/export", get(crate::api::admin::export_data))
             // Safety
             .route("/api/safety/kill-all", post(crate::api::safety::kill_all))
             .route("/api/safety/pause/:agent_id", post(crate::api::safety::pause_agent))
             .route("/api/safety/resume/:agent_id", post(crate::api::safety::resume_agent))
             .route("/api/safety/quarantine/:agent_id", post(crate::api::safety::quarantine_agent))
             .route("/api/safety/status", get(crate::api::safety::safety_status))
+            // Custom safety checks (T-4.3.2)
+            .route("/api/safety/checks", get(crate::api::safety_checks::list_safety_checks).post(crate::api::safety_checks::register_safety_check))
+            .route("/api/safety/checks/:id", delete(crate::api::safety_checks::unregister_safety_check))
+            // Webhooks (T-4.3.1)
+            .route("/api/webhooks", get(crate::api::webhooks::list_webhooks).post(crate::api::webhooks::create_webhook))
+            .route("/api/webhooks/:id", put(crate::api::webhooks::update_webhook).delete(crate::api::webhooks::delete_webhook))
+            .route("/api/webhooks/:id/test", post(crate::api::webhooks::test_webhook))
+            // Skills (T-4.2.1)
+            .route("/api/skills", get(crate::api::skills::list_skills))
+            .route("/api/skills/:id/install", post(crate::api::skills::install_skill))
+            .route("/api/skills/:id/uninstall", post(crate::api::skills::uninstall_skill))
+            // A2A gateway-mediated (T-4.1.2)
+            .route("/api/a2a/tasks", get(crate::api::a2a::list_tasks).post(crate::api::a2a::send_task))
+            .route("/api/a2a/tasks/:task_id", get(crate::api::a2a::get_task))
+            .route("/api/a2a/tasks/:task_id/stream", get(crate::api::a2a::stream_task))
+            .route("/api/a2a/discover", get(crate::api::a2a::discover_agents))
             // Cost
             .route("/api/costs", get(crate::api::costs::get_costs))
             // WebSocket
@@ -488,7 +530,7 @@ impl GatewayBootstrap {
             );
 
         tracing::info!(
-            routes = "health, ready, agents, audit, convergence, goals, sessions, memory, state, integrity, workflows, safety, costs, ws, oauth, auth, openapi",
+            routes = "health, ready, agents, audit, convergence, goals, sessions, memory, state, integrity, workflows, studio, traces, mesh-viz, profiles, search, admin, safety, safety-checks, webhooks, skills, a2a, costs, ws, oauth, auth, openapi",
             "API router built"
         );
 
@@ -503,17 +545,35 @@ impl GatewayBootstrap {
         use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
         let origins_env = std::env::var("GHOST_CORS_ORIGINS").ok();
+        let is_production = std::env::var("GHOST_ENV")
+            .map(|v| v.eq_ignore_ascii_case("production"))
+            .unwrap_or(false);
+
+        // T-5.1.5: In production, GHOST_CORS_ORIGINS MUST be set.
+        if is_production && origins_env.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
+            eprintln!(
+                "FATAL: GHOST_ENV=production but GHOST_CORS_ORIGINS not set. \
+                 Set GHOST_CORS_ORIGINS to your production domain(s)."
+            );
+            std::process::exit(1);
+        }
 
         let origins: Vec<String> = match origins_env {
             Some(ref val) if !val.is_empty() => {
                 val.split(',').map(|s| s.trim().to_string()).collect()
             }
-            _ => vec![
-                "http://localhost:5173".into(),
-                "http://localhost:18789".into(),
-                "http://127.0.0.1:5173".into(),
-                "http://127.0.0.1:18789".into(),
-            ],
+            _ => {
+                // T-5.1.5: Warn when using default dev origins.
+                tracing::warn!(
+                    "GHOST_CORS_ORIGINS not set — using default localhost origins (dev mode only)"
+                );
+                vec![
+                    "http://localhost:5173".into(),
+                    "http://localhost:18789".into(),
+                    "http://127.0.0.1:5173".into(),
+                    "http://127.0.0.1:18789".into(),
+                ]
+            }
         };
 
         let parsed: Vec<axum::http::HeaderValue> = origins
@@ -750,6 +810,15 @@ impl GatewayBootstrap {
             version: env!("CARGO_PKG_VERSION").to_string(),
             signed_at: chrono::Utc::now(),
             signature: Vec::new(),
+            supported_task_types: vec![
+                "code_review".to_string(),
+                "summarization".to_string(),
+                "analysis".to_string(),
+            ],
+            default_input_modes: vec!["text/plain".to_string(), "application/json".to_string()],
+            default_output_modes: vec!["text/plain".to_string(), "application/json".to_string()],
+            provider: "ghost-platform".to_string(),
+            a2a_protocol_version: "0.2.0".to_string(),
         };
 
         let state = std::sync::Arc::new(std::sync::Mutex::new(

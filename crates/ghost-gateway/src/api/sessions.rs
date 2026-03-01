@@ -246,11 +246,25 @@ pub async fn session_events(
                 // Approximate cost: $0.003 per 1K tokens (rough Claude estimate).
                 cumulative_cost += tokens * 0.000003;
 
-                // PII redaction on attributes.
+                // T-5.6.6: PII redaction on attributes — never return unredacted data.
                 if let Some(attrs) = event.get("attributes") {
-                    let redacted = redact_pii(&attrs.to_string());
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&redacted) {
-                        event["attributes"] = parsed;
+                    let raw = attrs.to_string();
+                    let redacted = redact_pii(&raw);
+                    match serde_json::from_str::<serde_json::Value>(&redacted) {
+                        Ok(parsed) => {
+                            event["attributes"] = parsed;
+                        }
+                        Err(e) => {
+                            // PII redaction produced invalid JSON — replace entirely
+                            // to prevent leaking unredacted data.
+                            tracing::error!(
+                                error = %e,
+                                "PII redaction produced invalid JSON — replacing with placeholder"
+                            );
+                            event["attributes"] = serde_json::json!({
+                                "_redaction_error": "[PII_REDACTION_FAILED]"
+                            });
+                        }
                     }
                 }
 

@@ -24,6 +24,7 @@ pub fn spawn_convergence_watcher(state: Arc<AppState>) {
 
         loop {
             interval.tick().await;
+            let _span = tracing::info_span!("convergence_watcher_poll").entered();
 
             let agent_ids: Vec<(String, String)> = {
                 let agents = match state.agents.read() {

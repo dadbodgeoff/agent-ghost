@@ -50,7 +50,7 @@
 
 {#if isOpen && node}
   <div class="panel-backdrop" onclick={onclose} role="presentation"></div>
-  <aside class="node-detail-panel" role="dialog" aria-label="Node details">
+  <aside class="node-detail-panel" role="dialog" aria-modal="true" aria-label="Node details">
     <header class="panel-header">
       <div class="header-info">
         <span class="node-type">{typeLabels[node.type] ?? node.type}</span>
@@ -120,7 +120,7 @@
   .panel-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.3);
+    background: var(--color-bg-overlay);
     z-index: 90;
   }
 
@@ -130,8 +130,8 @@
     right: 0;
     bottom: 0;
     width: min(400px, 90vw);
-    background: var(--color-bg-primary);
-    border-left: 1px solid var(--color-border-primary);
+    background: var(--color-bg-base);
+    border-left: 1px solid var(--color-border-default);
     box-shadow: var(--shadow-elevated-3);
     z-index: 100;
     display: flex;
@@ -149,7 +149,7 @@
     justify-content: space-between;
     align-items: flex-start;
     padding: var(--spacing-4);
-    border-bottom: 1px solid var(--color-border-primary);
+    border-bottom: 1px solid var(--color-border-default);
   }
 
   .header-info { flex: 1; }
@@ -159,7 +159,7 @@
     font-weight: var(--font-weight-semibold);
     text-transform: uppercase;
     letter-spacing: var(--letter-spacing-wide);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
   }
 
   .header-info h3 {
@@ -172,7 +172,7 @@
     background: none;
     border: none;
     font-size: var(--font-size-xl);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     cursor: pointer;
     padding: 0;
     line-height: 1;
@@ -196,7 +196,7 @@
   .detail-list dt {
     font-size: var(--font-size-xs);
     font-weight: var(--font-weight-semibold);
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: var(--letter-spacing-wide);
     padding-top: 2px;
@@ -222,14 +222,14 @@
     font-size: var(--font-size-xs);
     font-weight: var(--font-weight-semibold);
     text-transform: uppercase;
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     margin-bottom: var(--spacing-2);
   }
 
   .attributes-json {
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);
-    background: var(--color-bg-secondary);
+    background: var(--color-bg-elevated-1);
     padding: var(--spacing-3);
     border-radius: var(--radius-sm);
     overflow-x: auto;
@@ -241,6 +241,6 @@
 
   .panel-footer {
     padding: var(--spacing-3);
-    border-top: 1px solid var(--color-border-primary);
+    border-top: 1px solid var(--color-border-default);
   }
 </style>

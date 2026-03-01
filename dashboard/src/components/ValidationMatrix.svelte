@@ -97,7 +97,7 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    border: 1px solid var(--color-border-primary);
+    border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     overflow: hidden;
     font-family: var(--font-family-mono);
@@ -109,8 +109,8 @@
     grid-template-columns: 1fr 2fr auto;
     gap: var(--spacing-2);
     padding: var(--spacing-2) var(--spacing-3);
-    background: var(--color-bg-tertiary);
-    border-bottom: 1px solid var(--color-border-primary);
+    background: var(--color-bg-elevated-2);
+    border-bottom: 1px solid var(--color-border-default);
     font-weight: var(--font-weight-semibold);
     color: var(--color-text-secondary);
     font-size: var(--font-size-xs);
@@ -123,7 +123,7 @@
     grid-template-columns: 1fr 2fr auto;
     gap: var(--spacing-2);
     padding: var(--spacing-2) var(--spacing-3);
-    border-bottom: 1px solid var(--color-border-secondary);
+    border-bottom: 1px solid var(--color-border-subtle);
     align-items: center;
     transition: background var(--duration-fast) var(--easing-default);
   }
@@ -133,7 +133,7 @@
   }
 
   .matrix-row:hover {
-    background: var(--color-bg-secondary);
+    background: var(--color-bg-elevated-1);
   }
 
   .matrix-row.failed {
@@ -153,7 +153,7 @@
   }
 
   .dim-label {
-    color: var(--color-text-tertiary);
+    color: var(--color-text-muted);
     font-size: var(--font-size-xs);
   }
 
@@ -166,7 +166,7 @@
   .score-bar {
     flex: 1;
     height: 6px;
-    background: var(--color-bg-tertiary);
+    background: var(--color-bg-elevated-2);
     border-radius: var(--radius-full);
     position: relative;
     overflow: visible;
@@ -183,7 +183,7 @@
     top: -2px;
     width: 2px;
     height: 10px;
-    background: var(--color-text-quaternary);
+    background: var(--color-text-disabled);
     transform: translateX(-50%);
   }
 
@@ -191,6 +191,7 @@
     min-width: 4ch;
     text-align: right;
     color: var(--color-text-secondary);
+    font-variant-numeric: tabular-nums;
   }
 
   .status-badge {
@@ -213,8 +214,8 @@
 
   .matrix-footer {
     padding: var(--spacing-2) var(--spacing-3);
-    background: var(--color-bg-tertiary);
-    border-top: 1px solid var(--color-border-primary);
+    background: var(--color-bg-elevated-2);
+    border-top: 1px solid var(--color-border-default);
     text-align: right;
   }
 

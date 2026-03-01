@@ -1,11 +1,32 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
+  import { wsStore } from '$lib/stores/websocket.svelte';
   import AuditTimeline from '../../components/AuditTimeline.svelte';
   import FilterBar from '../../components/FilterBar.svelte';
 
-  let killState: any = $state(null);
-  let auditEntries: any[] = $state([]);
+  // T-5.9.5: Replace `any` with proper types.
+  interface KillState {
+    platform_level?: string;
+    platform_killed?: boolean;
+    platform?: { level?: number };
+    per_agent?: Record<string, { level: string; activated_at?: string; trigger?: string }>;
+    activated_at?: string;
+    trigger?: string;
+    distributed_gate?: Record<string, unknown>;
+  }
+
+  interface AuditEntry {
+    id: string;
+    timestamp: string;
+    agent_id: string;
+    event_type: string;
+    severity: string;
+    details: string;
+  }
+
+  let killState: KillState | null = $state(null);
+  let auditEntries: AuditEntry[] = $state([]);
   let agents: Array<{ id: string; name: string }> = $state([]);
   let loading = $state(true);
   let error = $state('');
@@ -30,23 +51,46 @@
     searchPlaceholder: 'Search audit entries…',
   });
 
-  onMount(async () => {
+  async function refreshSafety() {
     try {
-      const [safetyData, auditData, agentData] = await Promise.all([
-        api.get('/api/safety/status'),
-        api.get('/api/audit?page_size=50'),
-        api.get('/api/agents').catch(() => []),
-      ]);
-      killState = safetyData;
-      auditEntries = auditData?.entries ?? [];
-      agents = (agentData ?? []).map((a: any) => ({ id: a.id, name: a.name }));
-    } catch (e: any) {
-      error = e.message || 'Failed to load security data';
-    }
-    loading = false;
+      killState = await api.get('/api/safety/status');
+    } catch { /* non-fatal refresh */ }
+  }
+
+  onMount(() => {
+    // Load initial data (fire-and-forget async).
+    (async () => {
+      try {
+        const [safetyData, auditData, agentData] = await Promise.all([
+          api.get('/api/safety/status'),
+          api.get('/api/audit?page_size=50'),
+          api.get('/api/agents').catch(() => []),
+        ]);
+        killState = safetyData;
+        auditEntries = auditData?.entries ?? [];
+        agents = (agentData ?? []).map((a: { id: string; name: string }) => ({ id: a.id, name: a.name }));
+      } catch (e: unknown) {
+        error = e instanceof Error ? e.message : 'Failed to load security data';
+      }
+      loading = false;
+    })();
+
+    // T-5.9.1: Wire KillSwitchActivation + InterventionChange to refresh safety state.
+    const unsub1 = wsStore.on('KillSwitchActivation', () => { refreshSafety(); });
+    const unsub2 = wsStore.on('InterventionChange', () => { refreshSafety(); });
+    return () => { unsub1(); unsub2(); };
   });
 
-  async function applyFilters(state: any) {
+  interface FilterState {
+    agentId?: string;
+    eventType?: string;
+    severities?: string[];
+    from?: string;
+    to?: string;
+    query?: string;
+  }
+
+  async function applyFilters(state: FilterState) {
     try {
       const params = new URLSearchParams();
       params.set('page_size', '50');
@@ -59,14 +103,18 @@
 
       const data = await api.get(`/api/audit?${params.toString()}`);
       auditEntries = data?.entries ?? [];
-    } catch (e: any) {
-      // Keep existing entries on filter error
-      console.error('Filter query failed:', e);
+    } catch (e: unknown) {
+      // T-5.9.2: Show filter error instead of swallowing.
+      error = e instanceof Error ? e.message : 'Filter query failed';
     }
   }
 
   function getPlatformLevel(): number {
-    return killState?.platform_level ?? killState?.platform?.level ?? 0;
+    if (killState?.platform_level != null) {
+      const n = Number(killState.platform_level);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return killState?.platform?.level ?? 0;
   }
 
   async function killAll() {

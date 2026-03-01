@@ -11,7 +11,6 @@
   import ScoreGauge from '../../../components/ScoreGauge.svelte';
   import CostBar from '../../../components/CostBar.svelte';
   import ConfirmDialog from '../../../components/ConfirmDialog.svelte';
-  import HashChainStrip from '../../../components/HashChainStrip.svelte';
 
   interface AgentDetail {
     id: string;
@@ -591,12 +590,12 @@
     justify-content: space-between;
     font-size: var(--font-size-sm);
     padding: var(--spacing-1) 0;
-    border-bottom: 1px solid var(--color-border-secondary);
+    border-bottom: 1px solid var(--color-border-subtle);
   }
 
   .crdt-type { color: var(--color-text-primary); }
-  .crdt-memory { font-family: var(--font-family-mono); color: var(--color-text-tertiary); font-size: var(--font-size-xs); }
-  .crdt-time { color: var(--color-text-quaternary); font-size: var(--font-size-xs); }
+  .crdt-memory { font-family: var(--font-family-mono); color: var(--color-text-muted); font-size: var(--font-size-xs); }
+  .crdt-time { color: var(--color-text-disabled); font-size: var(--font-size-xs); }
 
   .integrity-section { margin-bottom: var(--spacing-3); }
   .integrity-section h3 {

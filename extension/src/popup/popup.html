@@ -112,6 +112,52 @@
     .alert-warning { background: #422006; color: #fbbf24; border: 1px solid #854d0e; }
     .alert-danger { background: #450a0a; color: #f87171; border: 1px solid #991b1b; }
 
+    .status-label {
+      font-size: 12px;
+      margin-left: 6px;
+      color: #a1a1aa;
+    }
+    .status-label.connected { color: #22c55e; }
+    .status-label.disconnected { color: #ef4444; }
+
+    .agent-section {
+      margin-top: 16px;
+    }
+    .agent-section h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fafafa;
+      margin-bottom: 8px;
+    }
+    .agent-list-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      background: #18181b;
+      border-radius: 6px;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .agent-list-item .agent-name { color: #e4e4e7; }
+    .agent-list-item .agent-state {
+      font-size: 11px;
+      color: #71717a;
+      text-transform: capitalize;
+    }
+    .agent-list-empty {
+      font-size: 12px;
+      color: #52525b;
+      padding: 8px 0;
+    }
+
+    .sync-status {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #71717a;
+      text-align: center;
+    }
+
     .footer {
       margin-top: 16px;
       text-align: center;
@@ -123,7 +169,10 @@
 <body>
   <div class="header">
     <h1>GHOST Monitor</h1>
-    <span class="status-dot disconnected" id="statusDot" role="status" aria-label="Connection status"></span>
+    <span style="display:flex;align-items:center;">
+      <span class="status-dot disconnected" id="statusDot" role="status" aria-label="Connection status"></span>
+      <span class="status-label disconnected" id="statusLabel">Disconnected</span>
+    </span>
   </div>
 
   <div class="score-gauge">
@@ -144,6 +193,13 @@
       <dd id="platform">—</dd>
     </dl>
   </div>
+
+  <div class="agent-section">
+    <h2>Agents</h2>
+    <div id="agentList"><span class="agent-list-empty">Loading agents...</span></div>
+  </div>
+
+  <div class="sync-status">Last sync: <span id="syncStatus">never</span></div>
 
   <div class="footer">GHOST Convergence Monitor v0.1.0</div>
 

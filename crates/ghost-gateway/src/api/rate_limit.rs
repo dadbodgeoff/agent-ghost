@@ -140,8 +140,26 @@ pub async fn rate_limit_middleware(
         rate_state.get_ip_limiter(ip)
     };
 
+    // T-5.11.1: Determine rate limit quota for header emission.
+    let quota_limit: u32 = if claims.is_some() {
+        if is_safety { 10 } else { 200 }
+    } else {
+        20
+    };
+
     match limiter.check() {
-        Ok(_) => next.run(request).await,
+        Ok(_) => {
+            let mut resp = next.run(request).await;
+            // T-5.11.1: Inject rate limit headers on all successful responses.
+            let headers = resp.headers_mut();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&quota_limit.to_string()) {
+                headers.insert("x-ratelimit-limit", v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str("60") {
+                headers.insert("x-ratelimit-reset", v);
+            }
+            resp
+        }
         Err(not_until) => {
             let wait = not_until
                 .wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
@@ -156,12 +174,75 @@ pub async fn rate_limit_middleware(
 
             let mut resp = (StatusCode::TOO_MANY_REQUESTS, body.to_string()).into_response();
 
+            let headers = resp.headers_mut();
             if let Ok(val) = axum::http::HeaderValue::from_str(&secs.to_string()) {
-                resp.headers_mut().insert("retry-after", val);
+                headers.insert("retry-after", val);
+            }
+            // T-5.11.1: Include rate limit headers on 429 responses too.
+            if let Ok(v) = axum::http::HeaderValue::from_str(&quota_limit.to_string()) {
+                headers.insert("x-ratelimit-limit", v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str("0") {
+                headers.insert("x-ratelimit-remaining", v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+                headers.insert("x-ratelimit-reset", v);
             }
 
             resp
         }
+    }
+}
+
+// ── T-5.11.2: Safety action cooldown tracker ────────────────────────
+
+/// Tracks safety actions per actor. After 3 actions in 10 minutes, a 5-minute
+/// cooldown is enforced. Uses DashMap for lock-free concurrent access.
+pub struct SafetyCooldown {
+    /// actor → list of action timestamps (kept pruned to last 10 min)
+    actions: DashMap<String, Vec<std::time::Instant>>,
+}
+
+impl SafetyCooldown {
+    pub fn new() -> Self {
+        Self {
+            actions: DashMap::new(),
+        }
+    }
+
+    /// Record a safety action for the given actor. Returns Err with cooldown
+    /// seconds remaining if the actor is in cooldown.
+    pub fn check_and_record(&self, actor: &str) -> Result<(), u64> {
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(600); // 10 minutes
+        let cooldown = std::time::Duration::from_secs(300); // 5 minutes
+
+        let mut entry = self.actions.entry(actor.to_string()).or_default();
+        let timestamps = entry.value_mut();
+
+        // Prune entries older than 10 minutes.
+        timestamps.retain(|t| now.duration_since(*t) < window);
+
+        // If 3+ actions within window, check if cooldown has elapsed since the 3rd.
+        if timestamps.len() >= 3 {
+            let third_action = timestamps[timestamps.len() - 3];
+            let since_third = now.duration_since(third_action);
+            if since_third < cooldown {
+                let remaining = (cooldown - since_third).as_secs().max(1);
+                return Err(remaining);
+            }
+            // Cooldown elapsed — clear history and allow.
+            timestamps.clear();
+        }
+
+        timestamps.push(now);
+        Ok(())
+    }
+}
+
+impl Default for SafetyCooldown {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
