@@ -13,16 +13,18 @@ pub mod v025_convergence_profiles;
 pub mod v026_webhooks;
 pub mod v027_installed_skills;
 pub mod v028_a2a_tasks;
+pub mod v029_archival;
+pub mod v030_memory_compaction;
 
 use rusqlite::Connection;
 use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
 
-pub const LATEST_VERSION: u32 = 28;
+pub const LATEST_VERSION: u32 = 30;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 13] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 15] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -36,7 +38,29 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 13] = [
     (26, "webhooks", v026_webhooks::migrate),
     (27, "installed_skills", v027_installed_skills::migrate),
     (28, "a2a_tasks", v028_a2a_tasks::migrate),
+    (29, "archival", v029_archival::migrate),
+    (30, "memory_compaction", v030_memory_compaction::migrate),
 ];
+
+/// Query the current schema version from the database.
+/// Returns 0 if no migrations have been applied yet.
+pub fn current_version(conn: &Connection) -> CortexResult<u32> {
+    // Ensure the table exists before querying.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );"
+    ).map_err(|e| to_storage_err(e.to_string()))?;
+
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|e| to_storage_err(e.to_string()))
+}
 
 /// Ensure the schema_version table exists and run pending migrations.
 pub fn run_migrations(conn: &Connection) -> CortexResult<()> {

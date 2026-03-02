@@ -19,6 +19,11 @@ pub fn open_in_memory() -> CortexResult<Connection> {
     Connection::open_in_memory().map_err(|e| to_storage_err(e.to_string()))
 }
 
+/// Query the current schema version.
+pub fn current_version(conn: &Connection) -> CortexResult<u32> {
+    migrations::current_version(conn)
+}
+
 /// Run all migrations up to LATEST_VERSION on the given connection.
 pub fn run_all_migrations(conn: &Connection) -> CortexResult<()> {
     migrations::run_migrations(conn)

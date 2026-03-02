@@ -170,6 +170,101 @@ curl http://127.0.0.1:18789/api/oauth/providers
 # [{"name":"google",...},{"name":"github",...},{"name":"slack",...},{"name":"microsoft",...}]
 ```
 
+## CLI Reference
+
+After building, the `ghost` binary provides a comprehensive CLI for platform management.
+
+### First-Run Setup
+```bash
+ghost init            # Create ~/.ghost/ with config, keypair, DB, and optional channel setup
+ghost doctor          # Verify platform health (config, DB, providers, channels)
+```
+
+### Day-to-Day Operations
+```bash
+ghost serve           # Start the gateway server (default command)
+ghost chat            # Interactive chat REPL with Ctrl+C support
+ghost status          # Show gateway and agent status
+ghost login           # Authenticate with a running gateway
+ghost logout          # Remove stored authentication
+```
+
+### Agent Management
+```bash
+ghost agent list      # List all agents
+ghost agent create    # Create a new agent
+ghost agent inspect <id>  # Show agent details
+ghost agent update <id>   # Update agent settings
+ghost agent delete <id>   # Delete an agent
+ghost agent pause <id>    # Pause an agent
+ghost agent resume <id>   # Resume a paused agent
+```
+
+### Safety & Observability
+```bash
+ghost safety status   # Show kill switch state
+ghost safety kill-all # Emergency stop all agents
+ghost logs            # Stream live events from gateway (WebSocket)
+ghost audit query     # Query audit log with filters
+ghost audit tail      # Stream live audit events
+ghost convergence scores  # Show per-agent convergence scores
+ghost session list    # List ITP sessions
+ghost session replay <id> # Text-based session replay
+```
+
+### Configuration & Database
+```bash
+ghost config show     # Show resolved configuration (secrets redacted)
+ghost config validate # Validate ghost.yml
+ghost db status       # Show DB version, size, journal mode
+ghost db migrate      # Run pending migrations
+ghost db verify       # Verify hash chain integrity
+ghost db compact      # WAL checkpoint + VACUUM
+```
+
+### Identity, Secrets & Policy
+```bash
+ghost identity show   # Show SOUL.md summary and key fingerprint
+ghost identity drift  # Check for identity drift
+ghost secret list     # List known secret keys
+ghost secret set <key>    # Set a secret (reads from stdin)
+ghost policy show     # Show corporate policy
+ghost policy check <tool> # Dry-run a tool call against policy
+```
+
+### Mesh, Skills & Channels
+```bash
+ghost mesh peers      # List mesh peers
+ghost mesh trust      # Show EigenTrust scores
+ghost mesh discover <url> # Discover a remote peer
+ghost skill list      # List installed/available skills
+ghost skill install <path>    # Install a WASM skill
+ghost channel list    # List configured channels
+ghost channel test    # Probe channel API connectivity
+ghost channel send <type> <msg>   # Inject a test message
+```
+
+### Utilities
+```bash
+ghost completions bash    # Generate shell completions
+ghost heartbeat status    # Show heartbeat engine state
+ghost cron list           # List scheduled tasks
+ghost backup              # Create encrypted backup
+```
+
+### Global Flags
+```
+--config <path>       Path to ghost.yml
+--output <format>     Output format: table (default), json, jsonl, yaml
+--gateway-url <url>   Override gateway URL
+--format-version <v>  Pin output format version (default: latest)
+--verbose / --quiet   Control verbosity
+--color <mode>        Color output: auto, always, never
+```
+
+All commands support `--help` for detailed usage. JSON output follows the
+[CLI stability contract](docs/CLI_CONTRACT.md).
+
 ## The 37 Crates
 
 <details>

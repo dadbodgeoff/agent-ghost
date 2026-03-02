@@ -39,7 +39,7 @@ impl Default for MonitorConfig {
     fn default() -> Self {
         let home = dirs_path();
         Self {
-            db_path: home.join("ghost.db"),
+            db_path: home.join("data/ghost.db"),
             http_port: 18790,
             socket_path: home.join("monitor.sock"),
             state_dir: home.join("data/convergence_state"),

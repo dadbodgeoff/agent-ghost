@@ -20,6 +20,8 @@ pub struct MemoryQueryParams {
     pub agent_id: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
+    /// Include archived memories in results (default: false).
+    pub include_archived: Option<bool>,
 }
 
 /// Query parameters for memory search (T-2.1.2).
@@ -33,6 +35,8 @@ pub struct MemorySearchParams {
     pub confidence_min: Option<f64>,
     pub confidence_max: Option<f64>,
     pub limit: Option<u32>,
+    /// Include archived memories in results (default: false).
+    pub include_archived: Option<bool>,
 }
 
 /// GET /api/memory — list memory snapshots with optional agent_id filter.
@@ -54,17 +58,23 @@ pub async fn list_memories(
         }
     };
 
+    let include_archived = params.include_archived.unwrap_or(false);
+    let archival_filter = if include_archived {
+        ""
+    } else {
+        " AND ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)"
+    };
+
     // Count total — use COUNT(DISTINCT ms.id) to avoid inflation from
     // the 1:N JOIN between memory_snapshots and memory_events (F2 fix).
     let total: u32 = match &params.agent_id {
         Some(agent_id) => {
-            match db.query_row(
+            let sql = format!(
                 "SELECT COUNT(DISTINCT ms.id) FROM memory_snapshots ms \
                  JOIN memory_events me ON ms.memory_id = me.memory_id \
-                 WHERE me.actor_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            ) {
+                 WHERE me.actor_id = ?1{archival_filter}"
+            );
+            match db.query_row(&sql, [agent_id], |row| row.get(0)) {
                 Ok(count) => count,
                 Err(e) => {
                     return (
@@ -75,7 +85,14 @@ pub async fn list_memories(
             }
         }
         None => {
-            match db.query_row("SELECT COUNT(*) FROM memory_snapshots", [], |row| row.get(0)) {
+            let sql = if include_archived {
+                "SELECT COUNT(*) FROM memory_snapshots".to_string()
+            } else {
+                "SELECT COUNT(*) FROM memory_snapshots ms \
+                 WHERE ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)"
+                    .to_string()
+            };
+            match db.query_row(&sql, [], |row| row.get(0)) {
                 Ok(count) => count,
                 Err(e) => {
                     return (
@@ -90,14 +107,15 @@ pub async fn list_memories(
     // Fetch page.
     let mut memories = Vec::new();
     if let Some(ref agent_id) = params.agent_id {
-        let mut stmt = match db.prepare(
+        let sql = format!(
             "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
              FROM memory_snapshots ms \
              JOIN memory_events me ON ms.memory_id = me.memory_id \
-             WHERE me.actor_id = ?1 \
+             WHERE me.actor_id = ?1{archival_filter} \
              GROUP BY ms.id \
-             ORDER BY ms.created_at DESC LIMIT ?2 OFFSET ?3",
-        ) {
+             ORDER BY ms.created_at DESC LIMIT ?2 OFFSET ?3"
+        );
+        let mut stmt = match db.prepare(&sql) {
             Ok(stmt) => stmt,
             Err(e) => {
                 return (
@@ -134,11 +152,19 @@ pub async fn list_memories(
             }
         };
     } else {
-        let mut stmt = match db.prepare(
+        let sql = if include_archived {
             "SELECT id, memory_id, snapshot, created_at \
              FROM memory_snapshots \
-             ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
-        ) {
+             ORDER BY created_at DESC LIMIT ?1 OFFSET ?2"
+                .to_string()
+        } else {
+            "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
+             FROM memory_snapshots ms \
+             WHERE ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log) \
+             ORDER BY ms.created_at DESC LIMIT ?1 OFFSET ?2"
+                .to_string()
+        };
+        let mut stmt = match db.prepare(&sql) {
             Ok(stmt) => stmt,
             Err(e) => {
                 return (
@@ -268,8 +294,16 @@ pub async fn search_memories(
 
     let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
 
+    // Archival filter: exclude archived memories by default.
+    let include_archived = params.include_archived.unwrap_or(false);
+
     // Build dynamic WHERE clause.
     let mut conditions = Vec::new();
+    if !include_archived {
+        conditions.push(
+            "ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)".to_string(),
+        );
+    }
     let mut bind_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut idx = 1u32;
 
@@ -463,4 +497,148 @@ pub async fn write_memory(
             "event_type": body.event_type,
         })),
     )
+}
+
+// ─── Archival endpoints ──────────────────────────────────────────────────
+
+/// Request body for archiving a memory.
+#[derive(Debug, Deserialize)]
+pub struct ArchiveMemoryRequest {
+    pub reason: String,
+    #[serde(default)]
+    pub decayed_confidence: Option<f64>,
+    #[serde(default)]
+    pub original_confidence: Option<f64>,
+}
+
+/// POST /api/memory/:id/archive — archive a memory.
+///
+/// Inserts an archival record. The memory remains accessible via direct
+/// GET /api/memory/:id but is excluded from list and search by default.
+pub async fn archive_memory(
+    State(state): State<Arc<AppState>>,
+    Path(memory_id): Path<String>,
+    Json(body): Json<ArchiveMemoryRequest>,
+) -> ApiResult<serde_json::Value> {
+    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+
+    // Verify the memory exists.
+    let exists: bool = db
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM memory_snapshots WHERE memory_id = ?1",
+            [&memory_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApiError::db_error("archive_check", e))?;
+
+    if !exists {
+        return Err(ApiError::not_found(format!("memory {memory_id} not found")));
+    }
+
+    // Check if already archived.
+    if cortex_storage::queries::archival_queries::is_archived(&db, &memory_id)
+        .map_err(|e| ApiError::internal(e.to_string()))?
+    {
+        return Err(ApiError::bad_request(format!(
+            "memory {memory_id} is already archived"
+        )));
+    }
+
+    cortex_storage::queries::archival_queries::insert_archival_record(
+        &db,
+        &memory_id,
+        &body.reason,
+        body.decayed_confidence.unwrap_or(0.0),
+        body.original_confidence.unwrap_or(0.0),
+    )
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    // Insert a new snapshot with archived=true (append-only safe).
+    if let Ok(Some(latest)) =
+        cortex_storage::queries::memory_snapshot_queries::latest_by_memory(&db, &memory_id)
+    {
+        if let Ok(mut snapshot) =
+            serde_json::from_str::<serde_json::Value>(&latest.snapshot)
+        {
+            snapshot["archived"] = serde_json::json!(true);
+            let updated = serde_json::to_string(&snapshot).unwrap_or_default();
+            let state_hash = blake3::hash(updated.as_bytes());
+            let _ = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+                &db, &memory_id, &updated, Some(state_hash.as_bytes()),
+            );
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "archived",
+        "memory_id": memory_id,
+    })))
+}
+
+/// POST /api/memory/:id/unarchive — restore an archived memory.
+pub async fn unarchive_memory(
+    State(state): State<Arc<AppState>>,
+    Path(memory_id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+
+    if !cortex_storage::queries::archival_queries::is_archived(&db, &memory_id)
+        .map_err(|e| ApiError::internal(e.to_string()))?
+    {
+        return Err(ApiError::bad_request(format!(
+            "memory {memory_id} is not archived"
+        )));
+    }
+
+    cortex_storage::queries::archival_queries::remove_archival_record(&db, &memory_id)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    // Insert a new snapshot with archived=false (append-only safe).
+    if let Ok(Some(latest)) =
+        cortex_storage::queries::memory_snapshot_queries::latest_by_memory(&db, &memory_id)
+    {
+        if let Ok(mut snapshot) =
+            serde_json::from_str::<serde_json::Value>(&latest.snapshot)
+        {
+            snapshot["archived"] = serde_json::json!(false);
+            let updated = serde_json::to_string(&snapshot).unwrap_or_default();
+            let state_hash = blake3::hash(updated.as_bytes());
+            let _ = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+                &db, &memory_id, &updated, Some(state_hash.as_bytes()),
+            );
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "unarchived",
+        "memory_id": memory_id,
+    })))
+}
+
+/// GET /api/memory/archived — list archived memories.
+pub async fn list_archived(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<serde_json::Value> {
+    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+
+    let rows = cortex_storage::queries::archival_queries::query_archived(&db, 200)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let results: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "memory_id": r.memory_id,
+                "archived_at": r.archived_at,
+                "reason": r.reason,
+                "decayed_confidence": r.decayed_confidence,
+                "original_confidence": r.original_confidence,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "archived": results,
+        "count": results.len(),
+    })))
 }

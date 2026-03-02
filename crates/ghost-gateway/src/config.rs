@@ -407,7 +407,7 @@ impl GhostConfig {
         if let Ok(p) = std::env::var("GHOST_CONFIG") {
             return Self::load(Path::new(&p));
         }
-        let home_config = dirs_path("~/.ghost/config/ghost.yml");
+        let home_config = PathBuf::from(crate::bootstrap::shellexpand_tilde("~/.ghost/config/ghost.yml"));
         if home_config.exists() {
             return Self::load(&home_config);
         }
@@ -419,7 +419,7 @@ impl GhostConfig {
         Ok(GhostConfig::default())
     }
 
-    fn validate(&self) -> Result<(), ConfigError> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         let mut seen_names = std::collections::BTreeSet::new();
         for agent in &self.agents {
             if agent.name.is_empty() {
@@ -477,18 +477,3 @@ fn substitute_env_vars(input: &str) -> Result<String, ConfigError> {
     Ok(result)
 }
 
-fn dirs_path(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
-        if let Some(home) = dirs_home() {
-            return home.join(&path[2..]);
-        }
-    }
-    PathBuf::from(path)
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(PathBuf::from)
-}

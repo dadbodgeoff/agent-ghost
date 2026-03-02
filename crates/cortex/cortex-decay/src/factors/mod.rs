@@ -1,6 +1,11 @@
-//! Decay factors. Each factor returns a multiplier in (0.0, 1.0].
+//! Decay factors. Each factor returns a multiplier >= 1.0.
 
+pub mod citation;
 pub mod convergence;
+pub mod importance;
+pub mod pattern;
+pub mod temporal;
+pub mod usage;
 
 /// Context needed to compute all decay factors for a memory.
 #[derive(Debug, Clone)]
@@ -21,7 +26,8 @@ impl Default for DecayContext {
         Self {
             now: chrono::Utc::now(),
             stale_citation_ratio: 0.0,
-            has_active_patterns: false,
+            // Default true: callers that don't track patterns get factor=1.0 (no effect).
+            has_active_patterns: true,
             convergence_score: 0.0,
         }
     }
@@ -31,6 +37,12 @@ impl Default for DecayContext {
 #[derive(Debug, Clone)]
 pub struct DecayBreakdown {
     pub base_confidence: f64,
+    pub temporal: f64,
+    pub citation: f64,
+    pub usage: f64,
+    pub importance: f64,
+    pub pattern: f64,
     pub convergence: f64,
+    pub combined_factor: f64,
     pub final_confidence: f64,
 }

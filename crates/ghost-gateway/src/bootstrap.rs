@@ -232,6 +232,7 @@ impl GatewayBootstrap {
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
+            monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
 
         // Step 5: Start API server
@@ -247,6 +248,12 @@ impl GatewayBootstrap {
             reason: "monitor health check task panicked".into(),
         });
         tracing::info!(monitor = ?monitor_state, "Step 3: Monitor health check complete");
+
+        // Set initial monitor health from startup check result.
+        app_state.monitor_healthy.store(
+            matches!(monitor_state, MonitorConnection::Connected { .. }),
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         // Transition decision
         match monitor_state {
@@ -265,6 +272,65 @@ impl GatewayBootstrap {
                     "Gateway started in DEGRADED mode. Safety floor absent."
                 );
             }
+        }
+
+        // Spawn recurring MonitorHealthChecker (30s interval, 3-failure threshold → Degraded).
+        // Uses the existing MonitorHealthChecker struct — previously never spawned.
+        {
+            use crate::gateway::GatewayState;
+            use crate::health::{MonitorHealthChecker, MonitorHealthConfig, RecoveryCoordinator};
+            use std::sync::atomic::Ordering;
+
+            let health_cfg = MonitorHealthConfig {
+                address: config.convergence.monitor.address.clone(),
+                ..MonitorHealthConfig::default()
+            };
+            let mut checker = MonitorHealthChecker::new(health_cfg, Arc::clone(&shared_state));
+            let monitor_flag = Arc::clone(&app_state.monitor_healthy);
+            let gateway_shared = Arc::clone(&shared_state);
+            let monitor_addr = config.convergence.monitor.address.clone();
+            let shutdown = app_state.shutdown_token.clone();
+
+            let handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(checker.config.check_interval);
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::info!("MonitorHealthChecker: shutdown signal received");
+                            break;
+                        }
+                        _ = interval.tick() => {
+                            let ok = checker.check_once().await;
+                            monitor_flag.store(ok, Ordering::Relaxed);
+
+                            // Recovery: monitor came back after being down.
+                            // check_once() handles Healthy → Degraded (via maybe_transition_to_degraded).
+                            // Here we handle Degraded → Recovering → Healthy.
+                            if ok && gateway_shared.current_state() == GatewayState::Degraded {
+                                if gateway_shared.transition_to(GatewayState::Recovering).is_ok() {
+                                    tracing::info!("Monitor recovered — initiating recovery sequence");
+                                    let coord = RecoveryCoordinator {
+                                        shared_state: Arc::clone(&gateway_shared),
+                                        monitor_address: monitor_addr.clone(),
+                                    };
+                                    tokio::spawn(async move {
+                                        let _ = coord.attempt_recovery().await;
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            if let Ok(mut tasks) = app_state.background_tasks.lock() {
+                tasks.push(handle);
+            }
+            tracing::info!(
+                interval_secs = 30,
+                failure_threshold = 3,
+                "MonitorHealthChecker background task spawned"
+            );
         }
 
         // Store app_state in the Gateway for access by run_with_router.
@@ -407,7 +473,10 @@ impl GatewayBootstrap {
             .route("/api/memory", get(crate::api::memory::list_memories))
             .route("/api/memory", post(crate::api::memory::write_memory))
             .route("/api/memory/search", get(crate::api::memory::search_memories))
+            .route("/api/memory/archived", get(crate::api::memory::list_archived))
             .route("/api/memory/:id", get(crate::api::memory::get_memory))
+            .route("/api/memory/:id/archive", post(crate::api::memory::archive_memory))
+            .route("/api/memory/:id/unarchive", post(crate::api::memory::unarchive_memory))
             // CRDT State (T-2.1.3)
             .route("/api/state/crdt/:agent_id", get(crate::api::state::get_crdt_state))
             // Integrity (T-2.1.4)
@@ -455,6 +524,8 @@ impl GatewayBootstrap {
             .route("/api/skills", get(crate::api::skills::list_skills))
             .route("/api/skills/:id/install", post(crate::api::skills::install_skill))
             .route("/api/skills/:id/uninstall", post(crate::api::skills::uninstall_skill))
+            // Channel injection (T-4.6.1)
+            .route("/api/channels/:type/inject", post(crate::api::channels::inject_message))
             // A2A gateway-mediated (T-4.1.2)
             .route("/api/a2a/tasks", get(crate::api::a2a::list_tasks).post(crate::api::a2a::send_task))
             .route("/api/a2a/tasks/:task_id", get(crate::api::a2a::get_task))
@@ -830,7 +901,28 @@ impl GatewayBootstrap {
     }
 }
 
+/// Resolve the GHOST home directory.
+///
+/// Precedence: `GHOST_HOME` env var → `~/.ghost/`.
+pub fn ghost_home() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("GHOST_HOME") {
+        return std::path::PathBuf::from(home);
+    }
+    match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        Ok(home) => std::path::PathBuf::from(home).join(".ghost"),
+        Err(_) => std::path::PathBuf::from(".ghost"),
+    }
+}
+
+/// Expand `~/.ghost` prefix using `GHOST_HOME`, then expand remaining `~/` with `$HOME`.
 pub fn shellexpand_tilde(path: &str) -> String {
+    // If the path starts with ~/.ghost, resolve via GHOST_HOME.
+    if path.starts_with("~/.ghost/") || path == "~/.ghost" {
+        let home = ghost_home();
+        let suffix = path.strip_prefix("~/.ghost").unwrap_or("");
+        return format!("{}{suffix}", home.display());
+    }
+
     if path.starts_with("~/") {
         match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
             Ok(home) => format!("{}{}", home, &path[1..]),

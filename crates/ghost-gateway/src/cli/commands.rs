@@ -2,9 +2,14 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::bootstrap::shellexpand_tilde;
+
+use super::error::CliError;
+
 /// Run a backup operation.
-pub fn run_backup(output: Option<&str>) {
-    let ghost_dir = expand_tilde("~/.ghost");
+pub fn run_backup(output: Option<&str>) -> Result<(), CliError> {
+    let ghost_dir = shellexpand_tilde("~/.ghost");
+    let ghost_dir = PathBuf::from(&ghost_dir);
     let output_path = output
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -31,16 +36,14 @@ pub fn run_backup(output: Option<&str>) {
                 output_path.display(),
                 manifest.entries.len()
             );
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("Backup failed: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => Err(CliError::Internal(format!("backup failed: {e}"))),
     }
 }
 
 /// Run an export analysis.
-pub fn run_export(path: &str) {
+pub fn run_export(path: &str) -> Result<(), CliError> {
     let analyzer = ghost_export::analyzer::ExportAnalyzer::new();
     match analyzer.analyze(Path::new(path)) {
         Ok(result) => {
@@ -53,22 +56,22 @@ pub fn run_export(path: &str) {
             if !result.flagged_sessions.is_empty() {
                 println!("Flagged:    {} sessions", result.flagged_sessions.len());
             }
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("Export analysis failed: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => Err(CliError::Internal(format!("export analysis failed: {e}"))),
     }
 }
 
 /// Run an OpenClaw migration.
-pub fn run_migrate(source: &str) {
-    let source_path = expand_tilde(source);
-    let target_path = expand_tilde("~/.ghost");
+pub fn run_migrate(source: &str) -> Result<(), CliError> {
+    let source_path = PathBuf::from(shellexpand_tilde(source));
+    let target_path = PathBuf::from(shellexpand_tilde("~/.ghost"));
 
     if !ghost_migrate::migrator::OpenClawMigrator::detect(&source_path) {
-        eprintln!("No OpenClaw installation found at: {}", source_path.display());
-        std::process::exit(1);
+        return Err(CliError::NotFound(format!(
+            "no OpenClaw installation found at: {}",
+            source_path.display()
+        )));
     }
 
     let migrator = ghost_migrate::migrator::OpenClawMigrator::new(&source_path, &target_path);
@@ -86,26 +89,8 @@ pub fn run_migrate(source: &str) {
             for review in &result.review_items {
                 println!("  → {}", review);
             }
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("Migration failed: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => Err(CliError::Internal(format!("migration failed: {e}"))),
     }
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    if path.starts_with("~/") {
-        if let Some(home) = dirs_home() {
-            return home.join(&path[2..]);
-        }
-    }
-    PathBuf::from(path)
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(PathBuf::from)
 }

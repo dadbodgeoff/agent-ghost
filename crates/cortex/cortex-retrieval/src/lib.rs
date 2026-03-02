@@ -5,4 +5,4 @@
 
 pub mod scorer;
 
-pub use scorer::{RetrievalScorer, ScorerWeights};
+pub use scorer::{QueryContext, RetrievalScorer, ScorerWeights};

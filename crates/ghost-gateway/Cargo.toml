@@ -45,6 +45,7 @@ ghost-oauth = { workspace = true }
 ghost-egress = { workspace = true }
 ghost-kill-gates = { workspace = true }
 ghost-mesh = { workspace = true }
+ghost-policy = { workspace = true }
 ghost-skills = { workspace = true }
 
 # Serialization
@@ -83,6 +84,14 @@ dashmap = { workspace = true }
 
 # CLI
 clap = { workspace = true }
+clap_complete = { workspace = true }
+clap_mangen = { workspace = true }
+
+# WebSocket client
+tokio-tungstenite = { workspace = true }
+
+# Secrets (for SecretString::expose_secret)
+secrecy = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
@@ -120,3 +129,5 @@ lettre = { workspace = true }
 proptest = { workspace = true }
 once_cell = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+assert_cmd = "2"
+predicates = "3"

@@ -166,6 +166,8 @@ dashmap = "6"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+clap_mangen = "0.2"
 
 # WASM sandbox
 wasmtime = "27"
@@ -178,6 +180,9 @@ governor = "0.6"
 
 # OpenAPI
 utoipa = { version = "5", features = ["axum_extras"] }
+
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 
 # Serde YAML
 serde_yaml = "0.9"

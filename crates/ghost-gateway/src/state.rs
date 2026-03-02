@@ -70,4 +70,8 @@ pub struct AppState {
 
     /// T-5.11.2: Safety endpoint cooldown tracker (3 actions / 10 min → 5 min cooldown).
     pub safety_cooldown: Arc<crate::api::rate_limit::SafetyCooldown>,
+
+    /// Convergence monitor liveness flag — updated every 30s by MonitorHealthChecker.
+    /// O(1) read, no lock, no disk I/O. Safe for high-frequency health probes.
+    pub monitor_healthy: Arc<std::sync::atomic::AtomicBool>,
 }

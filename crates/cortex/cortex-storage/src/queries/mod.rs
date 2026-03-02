@@ -10,3 +10,5 @@ pub mod memory_event_queries;
 pub mod memory_snapshot_queries;
 pub mod memory_audit_queries;
 pub mod delegation_state_queries;
+pub mod archival_queries;
+pub mod compaction_queries;

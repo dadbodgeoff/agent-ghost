@@ -2,13 +2,13 @@
 //!
 //! Wired to AgentRunner for live agent interaction via CLI.
 
-use std::io::{self, BufRead, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::{self, Write};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use ghost_llm::fallback::AuthProfile;
 use ghost_llm::provider::{
-    AnthropicProvider, GeminiProvider, OllamaProvider, OpenAICompatProvider, OpenAIProvider,
+    AnthropicProvider, GeminiProvider, OllamaProvider, OpenAIProvider,
 };
 use uuid::Uuid;
 
@@ -107,11 +107,15 @@ fn build_fallback_chain_from_env() -> ghost_agent_loop::runner::LLMFallbackChain
 ///
 /// Creates an AgentRunner and dispatches user messages through the
 /// full agentic loop with real LLM providers from env vars.
-pub async fn run_interactive_chat() {
+pub async fn run_interactive_chat() -> Result<(), super::error::CliError> {
+    run_interactive_chat_inner().await;
+    Ok(())
+}
+
+async fn run_interactive_chat_inner() {
     println!("GHOST Interactive Chat");
     println!("Type /quit to exit, /help for commands.\n");
 
-    let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     // Set up agent runner for live mode.
@@ -156,10 +160,23 @@ pub async fn run_interactive_chat() {
             tracing::warn!(error = %e, "failed to flush stdout");
         }
 
-        let mut input = String::new();
-        if stdin.lock().read_line(&mut input).is_err() {
-            break;
-        }
+        // Use tokio::select! so Ctrl+C is handled cleanly (T-X.4).
+        let input = tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\nGoodbye.");
+                return;
+            }
+            line = super::signal::read_line_async() => {
+                match line {
+                    Some(l) => l,
+                    None => {
+                        // EOF (Ctrl+D) or I/O error.
+                        eprintln!("\nGoodbye.");
+                        return;
+                    }
+                }
+            }
+        };
 
         let trimmed = input.trim();
         if trimmed.is_empty() {

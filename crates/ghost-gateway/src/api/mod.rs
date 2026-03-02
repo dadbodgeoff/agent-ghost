@@ -5,6 +5,7 @@ pub mod admin;
 pub mod agents;
 pub mod audit;
 pub mod auth;
+pub mod channels;
 pub mod convergence;
 pub mod costs;
 pub mod error;
