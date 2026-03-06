@@ -424,7 +424,7 @@ fn v018_schema_version_updated() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 20, "Latest migration version should be 20");
+    assert_eq!(version, cortex_storage::migrations::LATEST_VERSION, "Latest migration version should match LATEST_VERSION");
 }
 
 // ── v019 migration tests ────────────────────────────────────────────────

@@ -14,6 +14,7 @@ use super::builtin::shell::{execute_shell, ShellToolConfig};
 use super::builtin::web_search::{search, WebSearchConfig};
 use super::plan_validator::{PlanValidator, PlanValidationResult, ToolCallPlan};
 use super::registry::{RegisteredTool, ToolRegistry};
+use super::skill_bridge::{ExecutionContext, SkillBridge};
 
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -27,6 +28,23 @@ pub enum ToolError {
     PolicyDenied(String),
     #[error("invalid arguments: {0}")]
     InvalidArguments(String),
+}
+
+impl From<ghost_skills::skill::SkillError> for ToolError {
+    fn from(e: ghost_skills::skill::SkillError) -> Self {
+        use ghost_skills::skill::SkillError;
+        match &e {
+            SkillError::InvalidInput(_) => ToolError::InvalidArguments(e.to_string()),
+            SkillError::ConvergenceTooHigh { .. }
+            | SkillError::BudgetExhausted { .. }
+            | SkillError::AppNotAllowed { .. }
+            | SkillError::UserDenied
+            | SkillError::AuthorizationDenied(_)
+            | SkillError::PcControlBlocked(_)
+            | SkillError::CircuitBreakerOpen(_) => ToolError::PolicyDenied(e.to_string()),
+            _ => ToolError::ExecutionFailed(e.to_string()),
+        }
+    }
 }
 
 /// Result of a tool execution.
@@ -50,6 +68,8 @@ pub struct ToolExecutor {
     http_request_config: HttpRequestConfig,
     /// Snapshot memories set per-run for the memory tool.
     snapshot_memories: Vec<serde_json::Value>,
+    /// Optional skill bridge for dispatching skill tool calls.
+    skill_bridge: Option<SkillBridge>,
 }
 
 impl ToolExecutor {
@@ -63,6 +83,7 @@ impl ToolExecutor {
             fetch_config: FetchConfig::default(),
             http_request_config: HttpRequestConfig::default(),
             snapshot_memories: Vec::new(),
+            skill_bridge: None,
         }
     }
 
@@ -77,6 +98,7 @@ impl ToolExecutor {
             fetch_config: FetchConfig::default(),
             http_request_config: HttpRequestConfig::default(),
             snapshot_memories: Vec::new(),
+            skill_bridge: None,
         }
     }
 
@@ -110,6 +132,11 @@ impl ToolExecutor {
         self.snapshot_memories = memories;
     }
 
+    /// Set the skill bridge for dispatching skill tool calls.
+    pub fn set_skill_bridge(&mut self, bridge: SkillBridge) {
+        self.skill_bridge = Some(bridge);
+    }
+
     /// Validate a plan of tool calls before executing any of them.
     pub fn validate_plan(&self, calls: &[LLMToolCall]) -> PlanValidationResult {
         let plan = ToolCallPlan::new(calls.to_vec());
@@ -126,6 +153,7 @@ impl ToolExecutor {
         &self,
         call: &LLMToolCall,
         registry: &ToolRegistry,
+        exec_ctx: &ExecutionContext,
     ) -> Result<ToolResult, ToolError> {
         let tool = registry
             .lookup(&call.name)
@@ -135,7 +163,7 @@ impl ToolExecutor {
         let start = std::time::Instant::now();
 
         // Execute with timeout
-        let result = tokio::time::timeout(timeout, self.dispatch(call, tool)).await;
+        let result = tokio::time::timeout(timeout, self.dispatch(call, tool, exec_ctx)).await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -178,6 +206,7 @@ impl ToolExecutor {
         &self,
         call: &LLMToolCall,
         _tool: &RegisteredTool,
+        exec_ctx: &ExecutionContext,
     ) -> Result<String, ToolError> {
         match call.name.as_str() {
             "read_file" => {
@@ -319,6 +348,16 @@ impl ToolExecutor {
                     }
                     Err(e) => Err(ToolError::ExecutionFailed(e.to_string())),
                 }
+            }
+            name if name.starts_with("skill_") => {
+                let skill_name = &name[6..]; // strip "skill_" prefix
+                let bridge = self.skill_bridge.as_ref()
+                    .ok_or_else(|| ToolError::ExecutionFailed(
+                        "skill bridge not configured".into()
+                    ))?;
+                let result = bridge.execute(skill_name, &call.arguments, exec_ctx)
+                    .map_err(ToolError::from)?;
+                Ok(result.to_string())
             }
             _ => {
                 // Unknown builtin — return a generic result for registered tools

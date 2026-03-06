@@ -59,6 +59,9 @@ pub struct AppState {
     /// Model provider configurations (Finding #19).
     pub model_providers: Vec<crate::config::ProviderConfig>,
 
+    /// Tool configurations (web_search, web_fetch, http_request, shell).
+    pub tools_config: crate::config::ToolsConfig,
+
     /// Custom safety checks registered at runtime (T-4.3.2).
     pub custom_safety_checks: Arc<RwLock<Vec<crate::api::safety_checks::CustomSafetyCheck>>>,
 
@@ -74,4 +77,11 @@ pub struct AppState {
     /// Convergence monitor liveness flag — updated every 30s by MonitorHealthChecker.
     /// O(1) read, no lock, no disk I/O. Safe for high-frequency health probes.
     pub monitor_healthy: Arc<std::sync::atomic::AtomicBool>,
+
+    /// Embedding engine for memory vector search.
+    pub embedding_engine: Arc<Mutex<cortex_embeddings::EmbeddingEngine>>,
+
+    /// Phase 5 safety skills — platform-managed, always active, cannot be uninstalled.
+    /// Keyed by skill name for O(1) lookup in the execute endpoint.
+    pub safety_skills: Arc<std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>>>,
 }

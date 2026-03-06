@@ -109,6 +109,14 @@ pub enum WsEvent {
         status: String,
         agent_name: String,
     },
+    /// Studio chat message (new assistant response in a session).
+    ChatMessage {
+        session_id: String,
+        message_id: String,
+        role: String,
+        content: String,
+        safety_status: String,
+    },
     /// Heartbeat to keep connection alive.
     Ping,
     /// T-5.3.4 (T-X.28): Resync signal — sent when client lagged behind broadcast.
@@ -142,6 +150,7 @@ impl WsEvent {
             WsEvent::WebhookFired { .. } => vec!["system:webhooks".to_string()],
             WsEvent::SkillChange { .. } => vec!["system:skills".to_string()],
             WsEvent::A2ATaskUpdate { .. } => vec!["a2a:tasks".to_string()],
+            WsEvent::ChatMessage { session_id, .. } => vec![format!("studio:session:{session_id}")],
             WsEvent::Ping | WsEvent::Resync { .. } => vec![],
         }
     }

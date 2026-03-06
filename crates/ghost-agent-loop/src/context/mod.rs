@@ -11,3 +11,4 @@ pub mod memory_compressor;
 pub mod usage_tracker;
 pub mod objectives;
 pub mod exploration_budget;
+pub mod environment;

@@ -283,66 +283,17 @@ pub async fn get_memory(
 
 /// GET /api/memory/search — search memories with filters (T-2.1.2).
 ///
-/// Supports full-text search via LIKE matching on snapshot JSON content,
-/// with optional filters for agent, memory type, importance, and confidence.
-/// Results are ranked by a basic relevance score (defer FTS5 + RetrievalScorer to P3).
+/// Uses FTS5 full-text search when available (v031+), with RetrievalScorer
+/// re-ranking for multi-factor relevance. Falls back to LIKE matching
+/// on pre-v031 databases.
 pub async fn search_memories(
     State(state): State<Arc<AppState>>,
     Query(params): Query<MemorySearchParams>,
 ) -> ApiResult<serde_json::Value> {
     let limit = params.limit.unwrap_or(50).min(200);
-
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
-
-    // Archival filter: exclude archived memories by default.
     let include_archived = params.include_archived.unwrap_or(false);
 
-    // Build dynamic WHERE clause.
-    let mut conditions = Vec::new();
-    if !include_archived {
-        conditions.push(
-            "ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)".to_string(),
-        );
-    }
-    let mut bind_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut idx = 1u32;
-
-    // Text search: LIKE on snapshot JSON content.
-    // Escape LIKE metacharacters (%, _) in user input to prevent wildcard abuse.
-    if let Some(ref q) = params.q {
-        if !q.trim().is_empty() {
-            conditions.push(format!("ms.snapshot LIKE ?{idx} ESCAPE '\\'"));
-            let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-            bind_params.push(Box::new(format!("%{escaped}%")));
-            idx += 1;
-        }
-    }
-
-    // Agent filter via memory_events join.
-    let need_join = params.agent_id.is_some();
-    if let Some(ref agent_id) = params.agent_id {
-        conditions.push(format!("me.actor_id = ?{idx}"));
-        bind_params.push(Box::new(agent_id.clone()));
-        idx += 1;
-    }
-
-    // Memory type filter (stored in snapshot JSON as "memory_type" field).
-    if let Some(ref mt) = params.memory_type {
-        conditions.push(format!(
-            "json_extract(ms.snapshot, '$.memory_type') = ?{idx}"
-        ));
-        bind_params.push(Box::new(mt.clone()));
-        idx += 1;
-    }
-
-    // Importance filter (stored in snapshot JSON as "importance" field).
-    if let Some(ref imp) = params.importance {
-        conditions.push(format!(
-            "json_extract(ms.snapshot, '$.importance') = ?{idx}"
-        ));
-        bind_params.push(Box::new(imp.clone()));
-        idx += 1;
-    }
+    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
 
     // T-5.6.5: Validate confidence bounds.
     if let (Some(cmin), Some(cmax)) = (params.confidence_min, params.confidence_max) {
@@ -353,19 +304,152 @@ pub async fn search_memories(
         }
     }
 
-    // Confidence range filters.
-    if let Some(cmin) = params.confidence_min {
-        conditions.push(format!(
-            "CAST(json_extract(ms.snapshot, '$.confidence') AS REAL) >= ?{idx}"
-        ));
-        bind_params.push(Box::new(cmin));
-        idx += 1;
+    // Try FTS5 path first (v031+), fall back to LIKE.
+    let use_fts = params.q.as_ref().map_or(false, |q| !q.trim().is_empty())
+        && cortex_storage::queries::fts_queries::fts_available(&db);
+
+    let raw_results = if use_fts {
+        // FTS5 candidate retrieval with BM25 ranking.
+        let q = params.q.as_deref().unwrap_or("");
+        let fts_results = cortex_storage::queries::fts_queries::fts_search(
+            &db,
+            q,
+            limit * 3, // Over-fetch for re-ranking
+            include_archived,
+        )
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        fts_results
+            .into_iter()
+            .map(|r| SearchCandidate {
+                id: r.id,
+                memory_id: r.memory_id,
+                snapshot: r.snapshot,
+                created_at: r.created_at,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        // Fallback: LIKE-based search (pre-v031 or no query text).
+        search_like_fallback(&db, &params, include_archived, limit)?
+    };
+
+    // Apply post-retrieval filters (memory_type, importance, confidence range).
+    let filtered: Vec<_> = raw_results
+        .into_iter()
+        .filter(|c| apply_snapshot_filters(c, &params))
+        .collect();
+
+    // Re-rank with RetrievalScorer (all 11 factors).
+    let scorer = cortex_retrieval::RetrievalScorer::default();
+    let convergence_score = get_convergence_score(&db);
+
+    // Embed the query for vector similarity scoring.
+    let query_embedding = if let Some(ref q) = params.q {
+        if !q.trim().is_empty() {
+            state.embedding_engine.lock().ok().map(|mut engine| engine.embed_query(q))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Batch-fetch memory embeddings for all candidates.
+    let memory_ids: Vec<&str> = filtered.iter().map(|c| c.memory_id.as_str()).collect();
+    let embedding_map: std::collections::HashMap<String, Vec<f32>> =
+        if cortex_storage::queries::embedding_queries::embeddings_available(&db) {
+            cortex_storage::queries::embedding_queries::get_embeddings_batch(&db, &memory_ids)
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+    let mut scored: Vec<(SearchCandidate, f64)> = filtered
+        .into_iter()
+        .map(|c| {
+            let query_ctx = cortex_retrieval::QueryContext {
+                query_text: params.q.clone(),
+                query_embedding: query_embedding.clone(),
+                memory_embedding: embedding_map.get(&c.memory_id).cloned(),
+                ..Default::default()
+            };
+            let score = parse_and_score(&c.snapshot, &scorer, convergence_score, &query_ctx);
+            (c, score)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit as usize);
+
+    let results: Vec<serde_json::Value> = scored
+        .iter()
+        .map(|(c, score)| {
+            let snapshot_parsed = serde_json::from_str::<serde_json::Value>(&c.snapshot)
+                .unwrap_or(serde_json::Value::String(c.snapshot.clone()));
+            serde_json::json!({
+                "id": c.id,
+                "memory_id": c.memory_id,
+                "snapshot": snapshot_parsed,
+                "created_at": c.created_at,
+                "score": score,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "results": results,
+        "count": results.len(),
+        "query": params.q,
+        "search_mode": if use_fts { "fts5" } else { "like" },
+        "filters": {
+            "agent_id": params.agent_id,
+            "memory_type": params.memory_type,
+            "importance": params.importance,
+            "confidence_min": params.confidence_min,
+            "confidence_max": params.confidence_max,
+        },
+    })))
+}
+
+struct SearchCandidate {
+    id: i64,
+    memory_id: String,
+    snapshot: String,
+    created_at: String,
+}
+
+/// LIKE-based fallback for pre-FTS5 databases.
+fn search_like_fallback(
+    db: &rusqlite::Connection,
+    params: &MemorySearchParams,
+    include_archived: bool,
+    limit: u32,
+) -> Result<Vec<SearchCandidate>, ApiError> {
+    let mut conditions = Vec::new();
+    let mut bind_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = 1u32;
+
+    if !include_archived {
+        conditions.push(
+            "ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)".to_string(),
+        );
     }
-    if let Some(cmax) = params.confidence_max {
-        conditions.push(format!(
-            "CAST(json_extract(ms.snapshot, '$.confidence') AS REAL) <= ?{idx}"
-        ));
-        bind_params.push(Box::new(cmax));
+
+    if let Some(ref q) = params.q {
+        if !q.trim().is_empty() {
+            conditions.push(format!("ms.snapshot LIKE ?{idx} ESCAPE '\\'"));
+            let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            bind_params.push(Box::new(format!("%{escaped}%")));
+            idx += 1;
+        }
+    }
+
+    let need_join = params.agent_id.is_some();
+    if let Some(ref agent_id) = params.agent_id {
+        conditions.push(format!("me.actor_id = ?{idx}"));
+        bind_params.push(Box::new(agent_id.clone()));
         idx += 1;
     }
 
@@ -398,35 +482,120 @@ pub async fn search_memories(
         .prepare(&query)
         .map_err(|e| ApiError::db_error("memory_search_prepare", e))?;
 
-    let results: Vec<serde_json::Value> = stmt
+    let results = stmt
         .query_map(param_refs.as_slice(), |row| {
-            let snapshot_str: String = row.get(2)?;
-            let snapshot_parsed = serde_json::from_str::<serde_json::Value>(&snapshot_str)
-                .unwrap_or(serde_json::Value::String(snapshot_str.clone()));
-
-            Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "memory_id": row.get::<_, String>(1)?,
-                "snapshot": snapshot_parsed,
-                "created_at": row.get::<_, String>(3)?,
-            }))
+            Ok(SearchCandidate {
+                id: row.get(0)?,
+                memory_id: row.get(1)?,
+                snapshot: row.get(2)?,
+                created_at: row.get(3)?,
+            })
         })
         .map_err(|e| ApiError::db_error("memory_search_query", e))?
         .filter_map(|r| r.ok())
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "results": results,
-        "count": results.len(),
-        "query": params.q,
-        "filters": {
-            "agent_id": params.agent_id,
-            "memory_type": params.memory_type,
-            "importance": params.importance,
-            "confidence_min": params.confidence_min,
-            "confidence_max": params.confidence_max,
-        },
-    })))
+    Ok(results)
+}
+
+/// Apply memory_type, importance, and confidence filters on snapshot JSON.
+fn apply_snapshot_filters(candidate: &SearchCandidate, params: &MemorySearchParams) -> bool {
+    let snapshot: serde_json::Value = match serde_json::from_str(&candidate.snapshot) {
+        Ok(v) => v,
+        Err(_) => return true, // Keep unparseable snapshots
+    };
+
+    if let Some(ref mt) = params.memory_type {
+        if snapshot.get("memory_type").and_then(|v| v.as_str()) != Some(mt.as_str()) {
+            return false;
+        }
+    }
+
+    if let Some(ref imp) = params.importance {
+        if snapshot.get("importance").and_then(|v| v.as_str()) != Some(imp.as_str()) {
+            return false;
+        }
+    }
+
+    if let Some(cmin) = params.confidence_min {
+        if let Some(conf) = snapshot.get("confidence").and_then(|v| v.as_f64()) {
+            if conf < cmin {
+                return false;
+            }
+        }
+    }
+
+    if let Some(cmax) = params.confidence_max {
+        if let Some(conf) = snapshot.get("confidence").and_then(|v| v.as_f64()) {
+            if conf > cmax {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// Parse a snapshot into BaseMemory and score with RetrievalScorer.
+fn parse_and_score(
+    snapshot_str: &str,
+    scorer: &cortex_retrieval::RetrievalScorer,
+    convergence_score: f64,
+    ctx: &cortex_retrieval::QueryContext,
+) -> f64 {
+    use cortex_core::memory::{BaseMemory, Importance};
+    use cortex_core::memory::types::MemoryType;
+
+    // Try to parse as BaseMemory; if it fails, return a neutral score.
+    let parsed: Result<BaseMemory, _> = serde_json::from_str(snapshot_str);
+    match parsed {
+        Ok(memory) => scorer.score_with_context(&memory, convergence_score, ctx),
+        Err(_) => {
+            // Fallback: parse what we can for a minimal score.
+            let v: serde_json::Value = serde_json::from_str(snapshot_str)
+                .unwrap_or(serde_json::json!({}));
+            let importance = match v.get("importance").and_then(|i| i.as_str()) {
+                Some("Critical") => Importance::Critical,
+                Some("High") => Importance::High,
+                Some("Low") => Importance::Low,
+                Some("Trivial") => Importance::Trivial,
+                _ => Importance::Normal,
+            };
+            let confidence = v
+                .get("confidence")
+                .and_then(|c| c.as_f64())
+                .unwrap_or(0.5);
+            let memory = BaseMemory {
+                id: uuid::Uuid::nil(),
+                memory_type: MemoryType::Semantic,
+                content: v.get("content").cloned().unwrap_or(serde_json::json!({})),
+                summary: v
+                    .get("summary")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                importance,
+                confidence,
+                created_at: chrono::Utc::now(),
+                last_accessed: None,
+                access_count: 0,
+                tags: vec![],
+                archived: false,
+            };
+            scorer.score_with_context(&memory, convergence_score, ctx)
+        }
+    }
+}
+
+/// Fetch the latest convergence score from the database.
+fn get_convergence_score(db: &rusqlite::Connection) -> f64 {
+    db.query_row(
+        "SELECT COALESCE(composite_score, 0.0) FROM convergence_scores \
+         ORDER BY recorded_at DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap_or(0.0)
 }
 
 /// Request body for creating/updating a memory.
@@ -487,6 +656,29 @@ pub async fn write_memory(
         &db, &body.memory_id, &body.event_type, Some(&details),
     ) {
         tracing::warn!(error = %e, memory_id = %body.memory_id, "audit log insert failed");
+    }
+
+    // 4. Generate and store embedding if snapshot was provided.
+    if let Some(ref snapshot) = body.snapshot {
+        if let Ok(memory) = serde_json::from_str::<cortex_core::memory::BaseMemory>(snapshot) {
+            if let Ok(mut engine) = state.embedding_engine.lock() {
+                let embedding = engine.embed_memory(&memory);
+                if cortex_storage::queries::embedding_queries::embeddings_available(&db) {
+                    if let Err(e) = cortex_storage::queries::embedding_queries::upsert_embedding(
+                        &db,
+                        &body.memory_id,
+                        &embedding,
+                        "tfidf",
+                    ) {
+                        tracing::warn!(
+                            error = %e,
+                            memory_id = %body.memory_id,
+                            "embedding storage failed"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     (

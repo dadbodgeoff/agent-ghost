@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { api, BASE_URL } from '$lib/api';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import AuditTimeline from '../../components/AuditTimeline.svelte';
   import FilterBar from '../../components/FilterBar.svelte';
@@ -132,7 +132,7 @@
   async function exportAudit(format: string) {
     try {
       const blob = await fetch(
-        `http://127.0.0.1:18789/api/audit/export?format=${format}`,
+        `${BASE_URL}/api/audit/export?format=${format}`,
         { headers: { Authorization: `Bearer ${sessionStorage.getItem('ghost-token') ?? ''}` } }
       ).then(r => r.blob());
       const url = URL.createObjectURL(blob);

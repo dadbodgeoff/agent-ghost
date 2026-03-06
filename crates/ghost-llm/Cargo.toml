@@ -19,6 +19,8 @@ tracing = { workspace = true }
 async-trait = "0.1"
 reqwest = { workspace = true }
 rand.workspace = true
+futures = "0.3"
+async-stream = "0.3"
 
 [dev-dependencies]
 proptest = { workspace = true }

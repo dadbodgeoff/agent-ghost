@@ -121,10 +121,10 @@ pub async fn consensus_state(
     // dimension_scores is JSON; non-null indicates a proposal that went through consensus.
     let mut stmt = db
         .prepare(
-            "SELECT p.id, p.status, \
-                    (SELECT COUNT(*) FROM proposals p2 WHERE p2.id = p.id AND p2.status = 'approved') as approvals, \
-                    (SELECT COUNT(*) FROM proposals p3 WHERE p3.id = p.id AND p3.status = 'rejected') as rejections \
-             FROM proposals p \
+            "SELECT p.id, COALESCE(p.decision, 'pending'), \
+                    (SELECT COUNT(*) FROM goal_proposals p2 WHERE p2.id = p.id AND p2.decision = 'approved') as approvals, \
+                    (SELECT COUNT(*) FROM goal_proposals p3 WHERE p3.id = p.id AND p3.decision = 'rejected') as rejections \
+             FROM goal_proposals p \
              WHERE p.dimension_scores IS NOT NULL \
              ORDER BY p.created_at DESC LIMIT 50",
         )

@@ -1,9 +1,16 @@
 # Build artifacts
 /target/
+src-tauri/target/
 
 # IDE
 .vscode/
 .idea/
+
+# Claude Code
+.claude/
+
+# Task/planning docs
+docs/
 
 # OS
 .DS_Store

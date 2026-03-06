@@ -234,7 +234,7 @@ enum DbCommands {
         #[arg(long)]
         full: bool,
     },
-    /// Compact database (WAL checkpoint + VACUUM).
+    /// Compact database (WAL checkpoint + VACUUM + memory event compaction).
     Compact {
         /// Skip confirmation prompt.
         #[arg(long, short)]
@@ -245,6 +245,9 @@ enum DbCommands {
         /// Skip gateway health probe (dangerous).
         #[arg(long)]
         force: bool,
+        /// Only run SQLite VACUUM, skip memory event compaction.
+        #[arg(long)]
+        vacuum_only: bool,
     },
 }
 
@@ -496,18 +499,22 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             let config_path = cli_args.global.config.clone();
             let result = GatewayBootstrap::run(config_path.as_deref()).await;
             match result {
-                Ok((gateway, config)) => {
-                    let app_state = gateway
-                        .app_state
-                        .clone()
-                        .expect("AppState must be set after bootstrap");
+                Ok((runtime, config)) => {
+                    let app_state = runtime.app_state.clone();
+                    let mesh_router = runtime.mesh_router.clone();
+                    let bind_addr = format!(
+                        "{}:{}",
+                        config.gateway.bind, config.gateway.port
+                    );
                     let router = GatewayBootstrap::build_router(
                         &config,
                         app_state,
-                        gateway.mesh_router.clone(),
+                        mesh_router,
                     );
-                    gateway
-                        .run_with_router(Some(router), None)
+                    // Single linear path: open → run → shutdown.
+                    // Shutdown is guaranteed to execute inside run().
+                    runtime
+                        .run(router, &bind_addr)
                         .await
                         .map_err(|e| CliError::Internal(format!("gateway error: {e}")))
                 }
@@ -522,7 +529,7 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                 .global
                 .gateway_url
                 .as_deref()
-                .unwrap_or("http://127.0.0.1:18789");
+                .unwrap_or("http://127.0.0.1:39780");
             cli::status::show_status(
                 base_url,
                 cli_args.global.config.as_deref(),
@@ -553,10 +560,42 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             Ok(())
         }
 
-        // Phase 0+ stubs (not yet implemented).
+        // Phase 0+ commands.
         Commands::Init => cli::init::run().await,
-        Commands::Login => todo!("ghost login — Phase 1"),
-        Commands::Logout => todo!("ghost logout — Phase 1"),
+        Commands::Login => {
+            let config = load_config(cli_args.global.config.as_deref())?;
+            let provider = ghost_gateway::config::build_secret_provider(&config.secrets)
+                .map_err(|e| CliError::Config(format!("secret provider: {e}")))?;
+            // Prompt for token or read from stdin
+            use std::io::IsTerminal;
+            let token = if std::io::stdin().is_terminal() {
+                eprint!("Enter token: ");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                let mut line = String::new();
+                std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+                    .map_err(|e| CliError::Internal(format!("read token: {e}")))?;
+                line.trim().to_string()
+            } else {
+                let mut buf = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                    .map_err(|e| CliError::Internal(format!("read token: {e}")))?;
+                buf.trim().to_string()
+            };
+            if token.is_empty() {
+                return Err(CliError::Usage("no token provided".into()));
+            }
+            cli::auth::store_token(provider.as_ref(), &token)?;
+            eprintln!("Token stored. Subsequent commands will use this token.");
+            Ok(())
+        }
+        Commands::Logout => {
+            let config = load_config(cli_args.global.config.as_deref())?;
+            let provider = ghost_gateway::config::build_secret_provider(&config.secrets)
+                .map_err(|e| CliError::Config(format!("secret provider: {e}")))?;
+            cli::auth::clear_token(provider.as_ref())?;
+            eprintln!("Token cleared.");
+            Ok(())
+        }
         Commands::Doctor => cli::doctor::run().await,
 
         // ─── Phase 2: ghost logs ───────────────────────────────────────────
@@ -576,11 +615,44 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             .await
         }
 
-        // ─── Phase 1 stubs (Agent / Safety / Config) ─────────────────────
+        // ─── Phase 1: Agent / Safety / Config ───────────────────────────
 
-        Commands::Agent(_) => cli::agent::run().await,
-        Commands::Safety(_) => cli::safety::run().await,
-        Commands::Config(_) => cli::config_cmd::run().await,
+        Commands::Agent(sub) => {
+            let config = load_config(cli_args.global.config.as_deref())?;
+            let gateway_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
+            let token = resolve_token();
+            let backend = CliBackend::detect(&config, Some(&gateway_url), token).await?;
+            let output = cli_args.global.output;
+            match sub {
+                AgentCommands::List => cli::agent::run_list(&backend, output).await,
+                AgentCommands::Create => cli::agent::run_create(&backend, output).await,
+                AgentCommands::Inspect { id } => cli::agent::run_inspect(&backend, &id, output).await,
+                AgentCommands::Delete { id } => cli::agent::run_delete(&backend, &id, false, output).await,
+                AgentCommands::Update { id } => cli::agent::run_update(&backend, &id, output).await,
+                AgentCommands::Pause { id } => cli::agent::run_pause(&backend, &id, false, output).await,
+                AgentCommands::Resume { id } => cli::agent::run_resume(&backend, &id, false, output).await,
+                AgentCommands::Quarantine { id } => cli::agent::run_quarantine(&backend, &id, false, output).await,
+            }
+        }
+        Commands::Safety(sub) => {
+            let config = load_config(cli_args.global.config.as_deref())?;
+            let gateway_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
+            let token = resolve_token();
+            let backend = CliBackend::detect(&config, Some(&gateway_url), token).await?;
+            let output = cli_args.global.output;
+            match sub {
+                SafetyCommands::Status => cli::safety::run_status(&backend, output).await,
+                SafetyCommands::KillAll => cli::safety::run_kill_all(&backend, false, false, output).await,
+                SafetyCommands::Clear => cli::safety::run_clear(&backend, false, output).await,
+            }
+        }
+        Commands::Config(sub) => {
+            let output = cli_args.global.output;
+            match sub {
+                ConfigCommands::Show => cli::config_cmd::run_show(cli_args.global.config.as_deref(), output).await,
+                ConfigCommands::Validate => cli::config_cmd::run_validate(cli_args.global.config.as_deref(), output).await,
+            }
+        }
 
         // ─── Phase 2: ghost db ────────────────────────────────────────────
 
@@ -600,10 +672,10 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                     let backend = CliBackend::open_direct(&config)?;
                     cli::db::run_verify(DbVerifyArgs { full }, &backend)
                 }
-                DbCommands::Compact { yes, dry_run, force } => {
+                DbCommands::Compact { yes, dry_run, force, vacuum_only } => {
                     let backend = CliBackend::open_direct(&config)?;
                     cli::db::run_compact(
-                        DbCompactArgs { yes, dry_run, force, gateway_url },
+                        DbCompactArgs { yes, dry_run, force, gateway_url, vacuum_only },
                         &backend,
                     )
                     .await

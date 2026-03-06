@@ -2,19 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-/// Sliding window granularities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WindowLevel {
-    /// Current session.
-    Micro,
-    /// Last 7 sessions.
-    Meso,
-    /// Last 30 sessions.
-    Macro,
-}
 
 /// Per-agent window state tracking.
 pub struct WindowManager {

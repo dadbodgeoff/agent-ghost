@@ -3,7 +3,7 @@
 
 gateway:
   bind: "127.0.0.1"
-  port: 18789
+  port: 39780
   db_path: "~/.ghost/data/ghost.db"
 
 agents:
@@ -18,6 +18,32 @@ agents:
 channels:
   - channel_type: cli
     agent: "ghost"
+
+models:
+  default_provider: "openai_compat"
+  providers:
+    - name: "openai_compat"
+      base_url: "https://api.x.ai"
+      model: "grok-4-1-fast-reasoning"
+      api_key_env: "XAI_API_KEY"
+    - name: "ollama"
+      base_url: "http://localhost:11434"
+      model: "qwen3.5:9b"
+
+tools:
+  web_search:
+    backend: "searxng"
+    searxng_url: "http://localhost:8888"
+    max_results: 5
+  web_fetch:
+    allow_http: false
+    timeout_secs: 15
+  shell:
+    timeout_secs: 30
+
+pc_control:
+  enabled: false
+  allowed_apps: []
 
 convergence:
   profile: "standard"

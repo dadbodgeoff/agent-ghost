@@ -5,6 +5,7 @@
 //! - `GET  /api/oauth/callback`           — OAuth redirect handler
 //! - `GET  /api/oauth/connections`        — list active connections
 //! - `DELETE /api/oauth/connections/:ref_id` — disconnect (revoke + delete)
+//! - `POST /api/oauth/execute`            — execute API call through OAuth connection
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
@@ -38,7 +39,7 @@ pub struct ConnectRequest {
 }
 
 fn default_redirect_uri() -> String {
-    "http://localhost:18789/api/oauth/callback".into()
+    "http://localhost:39780/api/oauth/callback".into()
 }
 
 /// POST /api/oauth/connect — initiate OAuth flow.
@@ -123,6 +124,70 @@ pub async fn list_connections(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
         ),
+    }
+}
+
+/// Request body for POST /api/oauth/execute.
+#[derive(Deserialize)]
+pub struct ApiCallRequest {
+    /// OAuth connection reference (UUID string from a prior `/connect` flow).
+    pub ref_id: String,
+    /// The upstream API request to execute through this OAuth connection.
+    pub api_request: ghost_oauth::ApiRequest,
+}
+
+/// POST /api/oauth/execute — execute an API call through an OAuth connection.
+///
+/// The broker injects the stored Bearer token into the request, executes it
+/// against the upstream provider, and returns the raw response. The agent
+/// never sees the access token.
+pub async fn execute_api_call(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ApiCallRequest>,
+) -> impl IntoResponse {
+    let ref_id = match uuid::Uuid::parse_str(&req.ref_id) {
+        Ok(id) => ghost_oauth::OAuthRefId::from_uuid(id),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid ref_id format"})),
+            );
+        }
+    };
+
+    match state.oauth_broker.execute(&ref_id, &req.api_request) {
+        Ok(response) => {
+            tracing::info!(
+                ref_id = %req.ref_id,
+                method = %req.api_request.method,
+                url = %req.api_request.url,
+                upstream_status = response.status,
+                "OAuth API call executed"
+            );
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": response.status,
+                    "headers": response.headers,
+                    "body": response.body,
+                })),
+            )
+        }
+        Err(e) => {
+            let status = match &e {
+                ghost_oauth::OAuthError::TokenExpired(_) => StatusCode::UNAUTHORIZED,
+                ghost_oauth::OAuthError::TokenRevoked(_) => StatusCode::UNAUTHORIZED,
+                ghost_oauth::OAuthError::NotConnected(_) => StatusCode::NOT_FOUND,
+                ghost_oauth::OAuthError::ProviderError(_) => StatusCode::BAD_GATEWAY,
+                ghost_oauth::OAuthError::RefreshFailed(_) => StatusCode::BAD_GATEWAY,
+                ghost_oauth::OAuthError::StorageError(_)
+                | ghost_oauth::OAuthError::EncryptionError(_) => {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+                _ => StatusCode::BAD_REQUEST,
+            };
+            (status, Json(serde_json::json!({"error": e.to_string()})))
+        }
     }
 }
 

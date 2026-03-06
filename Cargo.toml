@@ -37,6 +37,8 @@ members = [
     "crates/ghost-egress",
     "crates/ghost-mesh",
     "crates/ghost-kill-gates",
+    "crates/cortex/cortex-embeddings",
+    "crates/ghost-pc-control",
     "crates/ghost-integration-tests",
 ]
 
@@ -77,6 +79,9 @@ rand = "0.8"
 # Regex
 regex = "1"
 
+# Git (libgit2 bindings — local repo operations only)
+git2 = { version = "0.19", default-features = false }
+
 # SHA-2 (for ITP privacy hashing — distinct from blake3)
 sha2 = "0.10"
 
@@ -87,7 +92,7 @@ hmac = "0.12"
 url = "2"
 
 # Tokio utilities (CancellationToken for graceful shutdown)
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Unicode normalization
 unicode-normalization = "0.1"
@@ -147,6 +152,8 @@ ghost-oauth = { path = "crates/ghost-oauth" }
 ghost-egress = { path = "crates/ghost-egress" }
 ghost-mesh = { path = "crates/ghost-mesh" }
 ghost-kill-gates = { path = "crates/ghost-kill-gates" }
+cortex-embeddings = { path = "crates/cortex/cortex-embeddings" }
+ghost-pc-control = { path = "crates/ghost-pc-control" }
 
 # Secrets
 secrecy = { version = "0.10", features = ["serde"] }
@@ -158,7 +165,7 @@ base64 = "0.22"
 axum = { version = "0.7", features = ["ws", "macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 hyper = "1"
 
 # Concurrency
@@ -186,6 +193,15 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 
 # Serde YAML
 serde_yaml = "0.9"
+
+# Clipboard (cross-platform)
+arboard = "3"
+
+# Process/system info (cross-platform)
+sysinfo = "0.32"
+
+# Synchronous HTTP (for bundled skills that need network access)
+ureq = { version = "2", features = ["json"] }
 
 [profile.release]
 lto = true

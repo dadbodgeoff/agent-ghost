@@ -349,7 +349,7 @@ mod shutdown {
     #[tokio::test]
     async fn shutdown_completes_all_steps() {
         let config = ShutdownConfig::default();
-        let result = execute_shutdown(&config, false).await;
+        let result = execute_shutdown(&config, false, None).await;
         assert_eq!(result.steps_completed, 7);
         assert!(!result.forced);
     }
@@ -357,7 +357,7 @@ mod shutdown {
     #[tokio::test]
     async fn shutdown_with_kill_switch_skips_flush() {
         let config = ShutdownConfig::default();
-        let result = execute_shutdown(&config, true).await;
+        let result = execute_shutdown(&config, true, None).await;
         assert_eq!(result.steps_completed, 7);
     }
 }

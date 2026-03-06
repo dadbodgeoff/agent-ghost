@@ -249,7 +249,7 @@ pub async fn export_data(
     let table_queries: &[(&str, &str)] = &[
         ("agents", "SELECT id, name FROM agents LIMIT 10000"),
         ("memories", "SELECT id, memory_type, summary FROM memory_snapshots LIMIT 10000"),
-        ("proposals", "SELECT id, operation, status FROM proposals LIMIT 10000"),
+        ("proposals", "SELECT id, operation, decision FROM goal_proposals LIMIT 10000"),
         ("audit", "SELECT id, event_type, severity FROM audit_log LIMIT 10000"),
     ];
 

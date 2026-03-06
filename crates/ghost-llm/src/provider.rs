@@ -7,10 +7,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Default HTTP timeout for cloud providers.
+/// Default HTTP timeout for cloud providers (non-streaming).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longer timeout for local inference (Ollama).
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Timeout for SSE streaming connections. Must be much longer than
+/// DEFAULT_TIMEOUT because reasoning models can think for 60s+ before
+/// streaming, and agent loops with tool calls can run for minutes.
+const STREAMING_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Errors from LLM providers.
 #[derive(Debug, Error)]
@@ -788,7 +792,8 @@ impl LLMProvider for GeminiProvider {
 // ── Ollama local provider ───────────────────────────────────────────────
 
 /// Ollama local provider.
-/// Uses OpenAI-compatible format. 120s timeout for local inference.
+/// Uses native /api/chat endpoint with think:false to disable reasoning overhead.
+/// 120s timeout for local inference.
 pub struct OllamaProvider {
     pub model: String,
     pub base_url: String,
@@ -803,18 +808,269 @@ impl LLMProvider for OllamaProvider {
         messages: &[ChatMessage],
         tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        // Ollama exposes an OpenAI-compatible endpoint at /v1/chat/completions.
-        // The native /api/chat uses a different format; we use the compat endpoint
-        // so openai_format_complete works without translation.
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
-        openai_format_complete(&url, &self.model, None, messages, tools, LOCAL_TIMEOUT).await
+        // Use native Ollama /api/chat endpoint (not OpenAI-compat) so we can
+        // pass `think: false` to disable chain-of-thought reasoning for models
+        // like Qwen 3.5 and DeepSeek-R1. Without this, these models generate
+        // thousands of reasoning tokens that waste local compute.
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+        let client = build_client(LOCAL_TIMEOUT)?;
+
+        let ollama_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
+            let role = match m.role {
+                MessageRole::System => "system",
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::Tool => "tool",
+            };
+            serde_json::json!({ "role": role, "content": m.content })
+        }).collect();
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": ollama_messages,
+            "stream": false,
+            "think": false,
+        });
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(ollama_format_tools(tools));
+        }
+
+        let resp = client.post(&url).json(&body).send().await.map_err(|e| {
+            if e.is_timeout() {
+                LLMError::Timeout(LOCAL_TIMEOUT.as_secs())
+            } else {
+                LLMError::Other(format!("HTTP request failed: {e}"))
+            }
+        })?;
+
+        let status = resp.status();
+        let resp_body: serde_json::Value = resp.json().await
+            .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
+
+        if !status.is_success() {
+            let error_msg = resp_body["error"]
+                .as_str()
+                .unwrap_or(&resp_body.to_string())
+                .to_string();
+            return Err(LLMError::Other(format!("Ollama error: {error_msg}")));
+        }
+
+        parse_ollama_response(&resp_body, &self.model)
     }
 
     fn supports_streaming(&self) -> bool { true }
-    fn context_window(&self) -> usize { 32_768 }
+    fn context_window(&self) -> usize { 262_144 }
     fn token_pricing(&self) -> TokenPricing {
         TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 } // local
     }
+}
+
+impl OllamaProvider {
+    /// Stream a chat completion via Ollama's native `/api/chat` with `stream: true`.
+    ///
+    /// Returns a `StreamChunkStream` that yields `TextDelta` chunks as Ollama generates
+    /// tokens, then `Done(UsageStats)` when the response is complete.
+    pub fn stream_chat(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
+    ) -> crate::streaming::StreamChunkStream {
+        use crate::streaming::StreamChunk;
+        use futures::StreamExt;
+
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+        let ollama_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
+            let role = match m.role {
+                MessageRole::System => "system",
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::Tool => "tool",
+            };
+            serde_json::json!({ "role": role, "content": m.content })
+        }).collect();
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": ollama_messages,
+            "stream": true,
+            "think": false,
+        });
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(ollama_format_tools(tools));
+        }
+
+        let model_name = self.model.clone();
+
+        Box::pin(async_stream::stream! {
+            let client = match build_client(LOCAL_TIMEOUT) {
+                Ok(c) => c,
+                Err(e) => {
+                    yield Err(e);
+                    return;
+                }
+            };
+
+            let resp = match client.post(&url).json(&body).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    if e.is_timeout() {
+                        yield Err(LLMError::Timeout(LOCAL_TIMEOUT.as_secs()));
+                    } else {
+                        yield Err(LLMError::Other(format!("HTTP request failed: {e}")));
+                    }
+                    return;
+                }
+            };
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                yield Err(LLMError::Other(format!("Ollama error HTTP {status}: {body_text}")));
+                return;
+            }
+
+            let mut byte_stream = resp.bytes_stream();
+            let mut buffer = String::new();
+            let mut prompt_tokens: usize = 0;
+            let mut completion_tokens: usize = 0;
+
+            while let Some(chunk_result) = byte_stream.next().await {
+                let bytes = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        yield Err(LLMError::Other(format!("Stream read error: {e}")));
+                        return;
+                    }
+                };
+
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                // Ollama sends newline-delimited JSON.
+                while let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].trim().to_string();
+                    buffer = buffer[newline_pos + 1..].to_string();
+
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let parsed: serde_json::Value = match serde_json::from_str(&line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    let done = parsed["done"].as_bool().unwrap_or(false);
+
+                    if done {
+                        prompt_tokens = parsed["prompt_eval_count"].as_u64().unwrap_or(0) as usize;
+                        completion_tokens = parsed["eval_count"].as_u64().unwrap_or(0) as usize;
+
+                        // Check for tool calls in the final chunk.
+                        if let Some(tool_calls) = parsed["message"].get("tool_calls").and_then(|v| v.as_array()) {
+                            for tc in tool_calls {
+                                let func = &tc["function"];
+                                if let Some(name) = func["name"].as_str() {
+                                    let id = format!("ollama_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0"));
+                                    let args = func.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                                    yield Ok(StreamChunk::ToolCallStart {
+                                        id: id.clone(),
+                                        name: name.to_string(),
+                                    });
+                                    yield Ok(StreamChunk::ToolCallDelta {
+                                        id,
+                                        arguments_delta: args.to_string(),
+                                    });
+                                }
+                            }
+                        }
+
+                        yield Ok(StreamChunk::Done(UsageStats {
+                            prompt_tokens,
+                            completion_tokens,
+                            total_tokens: prompt_tokens + completion_tokens,
+                        }));
+                        return;
+                    }
+
+                    // Yield text delta from non-done chunks.
+                    if let Some(content) = parsed["message"]["content"].as_str() {
+                        if !content.is_empty() {
+                            yield Ok(StreamChunk::TextDelta(content.to_string()));
+                        }
+                    }
+                }
+            }
+
+            // Stream ended without a done=true chunk — yield Done with what we have.
+            yield Ok(StreamChunk::Done(UsageStats {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
+            }));
+
+            let _ = model_name; // suppress unused warning
+        })
+    }
+}
+
+/// Format tools for Ollama's native /api/chat endpoint.
+fn ollama_format_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
+    tools.iter().map(|t| {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            }
+        })
+    }).collect()
+}
+
+/// Parse Ollama native /api/chat response into CompletionResult.
+fn parse_ollama_response(body: &serde_json::Value, model_fallback: &str) -> Result<CompletionResult, LLMError> {
+    let model = body["model"].as_str().unwrap_or(model_fallback).to_string();
+
+    let message = &body["message"];
+    let content = message["content"].as_str().map(|s| s.to_string());
+
+    // Ollama native format: tool_calls are in message.tool_calls
+    let tool_calls_raw = message.get("tool_calls").and_then(|v| v.as_array());
+    let tool_calls: Vec<LLMToolCall> = tool_calls_raw
+        .map(|arr| {
+            arr.iter().filter_map(|tc| {
+                let func = &tc["function"];
+                let name = func["name"].as_str()?.to_string();
+                let arguments = func.get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                // Ollama native format doesn't include a call ID; generate one.
+                let id = format!("ollama_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0"));
+                Some(LLMToolCall { id, name, arguments })
+            }).collect()
+        })
+        .unwrap_or_default();
+
+    // Approximate token counts from Ollama's duration-based stats.
+    let prompt_tokens = body["prompt_eval_count"].as_u64().unwrap_or(0) as usize;
+    let completion_tokens = body["eval_count"].as_u64().unwrap_or(0) as usize;
+    let usage = UsageStats {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+    };
+
+    let has_tool_calls = !tool_calls.is_empty();
+    let has_text = content.as_ref().map_or(false, |t| !t.is_empty());
+
+    let response = match (has_text, has_tool_calls) {
+        (true, false) => LLMResponse::Text(content.unwrap()),
+        (false, true) => LLMResponse::ToolCalls(tool_calls),
+        (true, true) => LLMResponse::Mixed { text: content.unwrap(), tool_calls },
+        (false, false) => LLMResponse::Empty,
+    };
+
+    Ok(CompletionResult { response, usage, model })
 }
 
 // ── OpenAI-compatible provider ──────────────────────────────────────────
@@ -856,4 +1112,259 @@ impl LLMProvider for OpenAICompatProvider {
             Err(e) => tracing::error!(provider = "openai_compat", error = %e, "Failed to update API key — RwLock poisoned"),
         }
     }
+}
+
+impl OpenAICompatProvider {
+    /// Stream a chat completion via the OpenAI-compatible `/v1/chat/completions`
+    /// endpoint with `stream: true`.
+    ///
+    /// Returns a `StreamChunkStream` that yields `TextDelta` chunks as the model
+    /// generates tokens, `ToolCallStart`/`ToolCallDelta` for tool calls, then
+    /// `Done(UsageStats)` when the response is complete.
+    ///
+    /// This is critical for reasoning models (e.g. Grok) where non-streaming
+    /// calls can block for 30–60+ seconds with zero user feedback.
+    pub fn stream_chat(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
+    ) -> crate::streaming::StreamChunkStream {
+        use crate::streaming::StreamChunk;
+        use futures::StreamExt;
+
+        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        let api_key = self.api_key.read()
+            .map(|k| k.clone())
+            .unwrap_or_default();
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": openai_format_messages(messages),
+            "stream": true,
+        });
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(openai_format_tools(tools));
+        }
+        // Request usage stats in the final chunk (OpenAI extension).
+        body["stream_options"] = serde_json::json!({"include_usage": true});
+
+        Box::pin(async_stream::stream! {
+            let client = match build_client(STREAMING_TIMEOUT) {
+                Ok(c) => c,
+                Err(e) => {
+                    yield Err(e);
+                    return;
+                }
+            };
+
+            let resp = match client
+                .post(&url)
+                .header("authorization", format!("Bearer {api_key}"))
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    if e.is_timeout() {
+                        yield Err(LLMError::Timeout(STREAMING_TIMEOUT.as_secs()));
+                    } else {
+                        yield Err(LLMError::Other(format!("HTTP request failed: {e}")));
+                    }
+                    return;
+                }
+            };
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let headers = resp.headers().clone();
+                let body_text = resp.text().await.unwrap_or_default();
+                yield Err(map_http_error(status, &body_text, &headers));
+                return;
+            }
+
+            let mut byte_stream = resp.bytes_stream();
+            let mut buffer = String::new();
+            let mut usage = UsageStats::default();
+            // Track tool call index → id mapping. OpenAI only sends the `id`
+            // in the first delta chunk for each tool call; subsequent chunks
+            // only include the `index`.
+            let mut tool_call_ids: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+
+            // Per-chunk idle timeout: if no bytes arrive for 90s, the
+            // connection is dead (LLM hung, network issue, etc.).
+            let idle_timeout = Duration::from_secs(90);
+
+            loop {
+                let chunk_result = match tokio::time::timeout(idle_timeout, byte_stream.next()).await {
+                    Ok(Some(result)) => result,
+                    Ok(None) => break, // stream ended naturally
+                    Err(_) => {
+                        yield Err(LLMError::Timeout(idle_timeout.as_secs()));
+                        return;
+                    }
+                };
+                let bytes = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        yield Err(LLMError::Other(format!("Stream read error: {e}")));
+                        return;
+                    }
+                };
+
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                // OpenAI SSE format: "data: {json}\n\n"
+                while let Some(double_newline) = buffer.find("\n\n") {
+                    let block = buffer[..double_newline].to_string();
+                    buffer = buffer[double_newline + 2..].to_string();
+
+                    for line in block.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with(':') {
+                            continue; // skip empty lines and comments
+                        }
+
+                        let data = if let Some(d) = line.strip_prefix("data: ") {
+                            d.trim()
+                        } else {
+                            continue;
+                        };
+
+                        if data == "[DONE]" {
+                            yield Ok(StreamChunk::Done(usage.clone()));
+                            return;
+                        }
+
+                        let parsed: serde_json::Value = match serde_json::from_str(data) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+
+                        // Extract usage from the final chunk if present.
+                        if let Some(u) = parsed.get("usage") {
+                            let pt = u["prompt_tokens"].as_u64().unwrap_or(0) as usize;
+                            let ct = u["completion_tokens"].as_u64().unwrap_or(0) as usize;
+                            usage = UsageStats {
+                                prompt_tokens: pt,
+                                completion_tokens: ct,
+                                total_tokens: pt + ct,
+                            };
+                        }
+
+                        let Some(delta) = parsed["choices"]
+                            .as_array()
+                            .and_then(|c| c.first())
+                            .and_then(|c| c.get("delta"))
+                        else {
+                            continue;
+                        };
+
+                        // Text content delta.
+                        if let Some(content) = delta["content"].as_str() {
+                            if !content.is_empty() {
+                                yield Ok(StreamChunk::TextDelta(content.to_string()));
+                            }
+                        }
+
+                        // Tool call deltas (OpenAI format).
+                        // First chunk: { "index": 0, "id": "call_xxx", "function": {"name": "web_search", "arguments": ""} }
+                        // Subsequent:  { "index": 0, "function": {"arguments": "{\"qu"} }
+                        if let Some(tool_calls) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+                            for tc in tool_calls {
+                                let idx = tc["index"].as_u64().unwrap_or(0);
+
+                                // First chunk for this tool call includes id + function.name.
+                                if let Some(id) = tc["id"].as_str() {
+                                    tool_call_ids.insert(idx, id.to_string());
+                                    let name = tc["function"]["name"]
+                                        .as_str()
+                                        .unwrap_or("unknown")
+                                        .to_string();
+                                    yield Ok(StreamChunk::ToolCallStart {
+                                        id: id.to_string(),
+                                        name,
+                                    });
+                                }
+
+                                // Subsequent chunks include function.arguments delta.
+                                if let Some(args_delta) = tc["function"]["arguments"].as_str() {
+                                    if !args_delta.is_empty() {
+                                        let call_id = tool_call_ids
+                                            .get(&idx)
+                                            .cloned()
+                                            .unwrap_or_else(|| format!("call_{idx}"));
+                                        yield Ok(StreamChunk::ToolCallDelta {
+                                            id: call_id,
+                                            arguments_delta: args_delta.to_string(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Stream ended without [DONE] — yield Done with whatever usage we collected.
+            yield Ok(StreamChunk::Done(usage));
+        })
+    }
+}
+
+// ── Streaming shim for non-streaming providers ──────────────────────────
+
+/// Wraps a non-streaming `complete()` call into a `StreamChunkStream`.
+///
+/// This is the fallback for providers that don't implement native streaming.
+/// It calls `complete()`, then yields the result as stream chunks.
+pub fn complete_stream_shim(
+    provider: std::sync::Arc<dyn LLMProvider>,
+    messages: Vec<ChatMessage>,
+    tools: Vec<ToolSchema>,
+) -> crate::streaming::StreamChunkStream {
+    use crate::streaming::StreamChunk;
+
+    Box::pin(async_stream::stream! {
+        match provider.complete(&messages, &tools).await {
+            Ok(result) => {
+                match result.response {
+                    LLMResponse::Text(text) => {
+                        yield Ok(StreamChunk::TextDelta(text));
+                    }
+                    LLMResponse::ToolCalls(calls) => {
+                        for call in calls {
+                            yield Ok(StreamChunk::ToolCallStart {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                            });
+                            yield Ok(StreamChunk::ToolCallDelta {
+                                id: call.id,
+                                arguments_delta: call.arguments.to_string(),
+                            });
+                        }
+                    }
+                    LLMResponse::Mixed { text, tool_calls } => {
+                        yield Ok(StreamChunk::TextDelta(text));
+                        for call in tool_calls {
+                            yield Ok(StreamChunk::ToolCallStart {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                            });
+                            yield Ok(StreamChunk::ToolCallDelta {
+                                id: call.id,
+                                arguments_delta: call.arguments.to_string(),
+                            });
+                        }
+                    }
+                    LLMResponse::Empty => {}
+                }
+                yield Ok(StreamChunk::Done(result.usage));
+            }
+            Err(e) => {
+                yield Err(e);
+            }
+        }
+    })
 }

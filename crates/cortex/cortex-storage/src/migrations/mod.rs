@@ -15,16 +15,23 @@ pub mod v027_installed_skills;
 pub mod v028_a2a_tasks;
 pub mod v029_archival;
 pub mod v030_memory_compaction;
+pub mod v031_fts5_search;
+pub mod v032_embeddings;
+pub mod v033_bundled_skill_tables;
+pub mod v034_pc_control_actions;
+pub mod v035_convergence_links;
+pub mod v036_citation_count;
+pub mod v037_studio_chat_tables;
 
 use rusqlite::Connection;
 use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
 
-pub const LATEST_VERSION: u32 = 30;
+pub const LATEST_VERSION: u32 = 37;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 15] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 22] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -40,6 +47,13 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 15] = [
     (28, "a2a_tasks", v028_a2a_tasks::migrate),
     (29, "archival", v029_archival::migrate),
     (30, "memory_compaction", v030_memory_compaction::migrate),
+    (31, "fts5_search", v031_fts5_search::migrate),
+    (32, "embeddings", v032_embeddings::migrate),
+    (33, "bundled_skill_tables", v033_bundled_skill_tables::migrate),
+    (34, "pc_control_actions", v034_pc_control_actions::migrate),
+    (35, "convergence_links", v035_convergence_links::migrate),
+    (36, "citation_count", v036_citation_count::migrate),
+    (37, "studio_chat_tables", v037_studio_chat_tables::migrate),
 ];
 
 /// Query the current schema version from the database.

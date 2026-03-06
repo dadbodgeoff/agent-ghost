@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::agents::registry::AgentRegistry;
 use crate::api::websocket::WsEvent;
 use crate::config::GhostConfig;
-use crate::gateway::{Gateway, GatewaySharedState, GatewayState};
+use crate::gateway::{GatewaySharedState, GatewayState};
 use crate::health::MonitorConnection;
+use crate::runtime::GatewayRuntime;
 use crate::safety::kill_switch::KillSwitch;
 use crate::safety::quarantine::QuarantineManager;
 use crate::state::AppState;
@@ -51,7 +52,7 @@ pub struct GatewayBootstrap;
 
 impl GatewayBootstrap {
     #[tracing::instrument(skip(config_path), fields(otel.kind = "internal"))]
-    pub async fn run(config_path: Option<&str>) -> Result<(Gateway, GhostConfig), BootstrapError> {
+    pub async fn run(config_path: Option<&str>) -> Result<(GatewayRuntime, GhostConfig), BootstrapError> {
         let shared_state = Arc::new(GatewaySharedState::new());
 
         // Pre-step: Check kill_state.json on startup (AC13)
@@ -94,6 +95,35 @@ impl GatewayBootstrap {
         // Step 1b: Build SecretProvider from secrets config (Phase 10)
         let secret_provider = Self::build_secrets(&config)?;
         tracing::info!("Step 1b: SecretProvider initialized (provider: {})", config.secrets.provider);
+
+        // Step 1b.1: Hydrate provider API keys from secret_provider into env vars.
+        // This ensures keys saved through the dashboard UI survive gateway restarts.
+        for provider in &config.models.providers {
+            if matches!(provider.name.as_str(), "ollama") {
+                continue; // No API key needed for local providers.
+            }
+            let env_name = provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or(match provider.name.as_str() {
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    "openai" => "OPENAI_API_KEY",
+                    "gemini" => "GEMINI_API_KEY",
+                    _ => continue,
+                });
+            // Only hydrate if env var is not already set (env takes precedence).
+            if std::env::var(env_name).ok().filter(|v| !v.is_empty()).is_some() {
+                continue;
+            }
+            if let Ok(secret) = secret_provider.get_secret(env_name) {
+                use ghost_secrets::ExposeSecret;
+                let value = secret.expose_secret().to_string();
+                if !value.is_empty() {
+                    unsafe { std::env::set_var(env_name, &value); }
+                    tracing::info!(env_name = %env_name, "Hydrated provider API key from secret store");
+                }
+            }
+        }
 
         // Step 1c: Log consumed config fields (Findings #17, #18, #19).
         tracing::info!(
@@ -214,6 +244,74 @@ impl GatewayBootstrap {
         ));
         tracing::info!("OAuth broker initialized");
 
+        // Initialize embedding engine (TF-IDF provider, in-memory cache).
+        let embedding_engine = cortex_embeddings::EmbeddingEngine::new(
+            cortex_embeddings::EmbeddingConfig::default(),
+        );
+        tracing::info!(
+            provider = "tfidf",
+            dimensions = 128,
+            "Embedding engine initialized"
+        );
+
+        // Register Phase 5 safety skills — platform-managed, always active.
+        let mut all_skills: std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>> =
+            ghost_skills::safety_skills::all_safety_skills()
+                .into_iter()
+                .map(|s| (s.name().to_string(), s))
+                .collect();
+        tracing::info!(
+            count = all_skills.len(),
+            skills = ?all_skills.keys().collect::<Vec<_>>(),
+            "Phase 5 safety skills registered"
+        );
+
+        // Register Phase 7 git skills — wrapped with ConvergenceGuard.
+        let git_skills = ghost_skills::git_skills::all_git_skills();
+        let git_count = git_skills.len();
+        for skill in git_skills {
+            all_skills.insert(skill.name().to_string(), skill);
+        }
+        tracing::info!(count = git_count, "Phase 7 git skills registered");
+
+        // Register Phase 7 code analysis skills — wrapped with ConvergenceGuard.
+        let code_skills = ghost_skills::code_analysis::all_code_analysis_skills();
+        let code_count = code_skills.len();
+        for skill in code_skills {
+            all_skills.insert(skill.name().to_string(), skill);
+        }
+        tracing::info!(count = code_count, "Phase 7 code analysis skills registered");
+
+        // Register Phase 8 bundled skills — user-installable, curated.
+        let bundled_skills = ghost_skills::bundled_skills::all_bundled_skills();
+        let bundled_count = bundled_skills.len();
+        for skill in bundled_skills {
+            all_skills.insert(skill.name().to_string(), skill);
+        }
+        tracing::info!(count = bundled_count, "Phase 8 bundled skills registered");
+
+        // Register Phase 9 PC control skills (disabled by default).
+        let pc_skills = ghost_pc_control::all_pc_control_skills(&config.pc_control);
+        let pc_count = pc_skills.len();
+        for skill in pc_skills {
+            all_skills.insert(skill.name().to_string(), skill);
+        }
+        if pc_count > 0 {
+            tracing::info!(count = pc_count, "Phase 9 PC control skills registered");
+        } else {
+            tracing::debug!("Phase 9 PC control: disabled (pc_control.enabled = false)");
+        }
+
+        // Register Phase 10 delegation skills — convergence-gated, prerequisites enforced at execute time.
+        let delegation_skills = ghost_skills::delegation_skills::all_delegation_skills();
+        let delegation_count = delegation_skills.len();
+        for skill in delegation_skills {
+            all_skills.insert(skill.name().to_string(), skill);
+        }
+        tracing::info!(count = delegation_count, "Phase 10 delegation skills registered");
+
+        let safety_skills = all_skills;
+
         let app_state = Arc::new(AppState {
             gateway: Arc::clone(&shared_state),
             agents: Arc::new(RwLock::new(agent_registry)),
@@ -228,20 +326,46 @@ impl GatewayBootstrap {
             soul_drift_threshold: config.security.soul_drift_threshold,
             convergence_profile: config.convergence.profile.clone(),
             model_providers: config.models.providers.clone(),
+            tools_config: config.tools.clone(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            embedding_engine: Arc::new(Mutex::new(embedding_engine)),
+            safety_skills: Arc::new(safety_skills),
         });
 
         // Step 5: Start API server
         Self::step5_start_api(&config)?;
         tracing::info!("Step 5: API server started");
 
-        // Step 5b: Start convergence score watcher (Findings #13, #14).
-        crate::convergence_watcher::spawn_convergence_watcher(Arc::clone(&app_state));
-        tracing::info!("Step 5b: Convergence score watcher started");
+        // Build the GatewayRuntime — single owner of the process lifecycle.
+        let mut runtime = GatewayRuntime::new(
+            Arc::clone(&shared_state),
+            Arc::clone(&app_state),
+        );
+        runtime.mesh_router = mesh_router;
+
+        // Step 5b: Spawn background tasks through the runtime's TaskTracker.
+        // Every task goes through spawn_tracked() — guaranteed cancellation + await.
+        runtime.spawn_tracked(
+            "convergence_watcher",
+            crate::convergence_watcher::convergence_watcher_task(Arc::clone(&app_state)),
+        );
+        tracing::info!("Step 5b: Convergence score watcher started (tracked)");
+
+        runtime.spawn_tracked(
+            "config_watcher",
+            crate::config_watcher::config_watcher_task(Arc::clone(&app_state)),
+        );
+        tracing::info!("Step 5c: Config file watcher started (tracked)");
+
+        runtime.spawn_tracked(
+            "backup_scheduler",
+            crate::backup_scheduler::backup_scheduler_task(Arc::clone(&app_state)),
+        );
+        tracing::info!("Step 5d: Backup scheduler started (tracked)");
 
         // Await monitor health check result (started concurrently in step 3).
         let monitor_state = monitor_handle.await.unwrap_or(MonitorConnection::Unreachable {
@@ -275,7 +399,6 @@ impl GatewayBootstrap {
         }
 
         // Spawn recurring MonitorHealthChecker (30s interval, 3-failure threshold → Degraded).
-        // Uses the existing MonitorHealthChecker struct — previously never spawned.
         {
             use crate::gateway::GatewayState;
             use crate::health::{MonitorHealthChecker, MonitorHealthConfig, RecoveryCoordinator};
@@ -289,54 +412,40 @@ impl GatewayBootstrap {
             let monitor_flag = Arc::clone(&app_state.monitor_healthy);
             let gateway_shared = Arc::clone(&shared_state);
             let monitor_addr = config.convergence.monitor.address.clone();
-            let shutdown = app_state.shutdown_token.clone();
 
-            let handle = tokio::spawn(async move {
+            runtime.spawn_tracked("monitor_health_checker", async move {
                 let mut interval = tokio::time::interval(checker.config.check_interval);
                 loop {
-                    tokio::select! {
-                        _ = shutdown.cancelled() => {
-                            tracing::info!("MonitorHealthChecker: shutdown signal received");
-                            break;
-                        }
-                        _ = interval.tick() => {
-                            let ok = checker.check_once().await;
-                            monitor_flag.store(ok, Ordering::Relaxed);
+                    interval.tick().await;
+                    let ok = checker.check_once().await;
+                    monitor_flag.store(ok, Ordering::Relaxed);
 
-                            // Recovery: monitor came back after being down.
-                            // check_once() handles Healthy → Degraded (via maybe_transition_to_degraded).
-                            // Here we handle Degraded → Recovering → Healthy.
-                            if ok && gateway_shared.current_state() == GatewayState::Degraded {
-                                if gateway_shared.transition_to(GatewayState::Recovering).is_ok() {
-                                    tracing::info!("Monitor recovered — initiating recovery sequence");
-                                    let coord = RecoveryCoordinator {
-                                        shared_state: Arc::clone(&gateway_shared),
-                                        monitor_address: monitor_addr.clone(),
-                                    };
-                                    tokio::spawn(async move {
-                                        let _ = coord.attempt_recovery().await;
-                                    });
-                                }
-                            }
+                    // Recovery: monitor came back after being down.
+                    // check_once() handles Healthy → Degraded (via maybe_transition_to_degraded).
+                    // Here we handle Degraded → Recovering → Healthy.
+                    if ok && gateway_shared.current_state() == GatewayState::Degraded {
+                        if gateway_shared.transition_to(GatewayState::Recovering).is_ok() {
+                            tracing::info!("Monitor recovered — initiating recovery sequence");
+                            let coord = RecoveryCoordinator {
+                                shared_state: Arc::clone(&gateway_shared),
+                                monitor_address: monitor_addr.clone(),
+                            };
+                            tokio::spawn(async move {
+                                let _ = coord.attempt_recovery().await;
+                            });
                         }
                     }
                 }
             });
 
-            if let Ok(mut tasks) = app_state.background_tasks.lock() {
-                tasks.push(handle);
-            }
             tracing::info!(
                 interval_secs = 30,
                 failure_threshold = 3,
-                "MonitorHealthChecker background task spawned"
+                "MonitorHealthChecker background task spawned (tracked)"
             );
         }
 
-        // Store app_state in the Gateway for access by run_with_router.
-        let mut gw = Gateway::new_with_state(shared_state, app_state);
-        gw.mesh_router = mesh_router;
-        Ok((gw, config))
+        Ok((runtime, config))
     }
 
     fn step1_load_config(config_path: Option<&str>) -> Result<GhostConfig, BootstrapError> {
@@ -489,6 +598,13 @@ impl GatewayBootstrap {
             .route("/api/workflows/:id/execute", post(crate::api::workflows::execute_workflow))
             // Studio (T-2.7.1)
             .route("/api/studio/run", post(crate::api::studio::run_prompt))
+            // Studio chat sessions — DB-backed persistence with safety pipeline
+            .route("/api/studio/sessions", get(crate::api::studio_sessions::list_sessions).post(crate::api::studio_sessions::create_session))
+            .route("/api/studio/sessions/:id", get(crate::api::studio_sessions::get_session).delete(crate::api::studio_sessions::delete_session))
+            .route("/api/studio/sessions/:id/messages", post(crate::api::studio_sessions::send_message))
+            .route("/api/studio/sessions/:id/messages/stream", post(crate::api::studio_sessions::send_message_stream))
+            // Agent chat — full agent loop via HTTP
+            .route("/api/agent/chat", post(crate::api::agent_chat::agent_chat))
             // Traces (T-3.1.4)
             .route("/api/traces/:session_id", get(crate::api::traces::get_traces))
             // Mesh visualization (T-3.2.1–3.2.3)
@@ -507,6 +623,9 @@ impl GatewayBootstrap {
             .route("/api/admin/backups", get(crate::api::admin::list_backups))
             .route("/api/admin/restore", post(crate::api::admin::restore_backup))
             .route("/api/admin/export", get(crate::api::admin::export_data))
+            // Provider API key management
+            .route("/api/admin/provider-keys", get(crate::api::provider_keys::list_provider_keys).put(crate::api::provider_keys::set_provider_key))
+            .route("/api/admin/provider-keys/:env_name", delete(crate::api::provider_keys::delete_provider_key))
             // Safety
             .route("/api/safety/kill-all", post(crate::api::safety::kill_all))
             .route("/api/safety/pause/:agent_id", post(crate::api::safety::pause_agent))
@@ -524,6 +643,8 @@ impl GatewayBootstrap {
             .route("/api/skills", get(crate::api::skills::list_skills))
             .route("/api/skills/:id/install", post(crate::api::skills::install_skill))
             .route("/api/skills/:id/uninstall", post(crate::api::skills::uninstall_skill))
+            // Safety skill execution (Phase 5)
+            .route("/api/skills/:name/execute", post(crate::api::skill_execute::execute_skill))
             // Channel injection (T-4.6.1)
             .route("/api/channels/:type/inject", post(crate::api::channels::inject_message))
             // A2A gateway-mediated (T-4.1.2)
@@ -543,6 +664,7 @@ impl GatewayBootstrap {
             .route("/api/oauth/callback", get(crate::api::oauth_routes::callback))
             .route("/api/oauth/connections", get(crate::api::oauth_routes::list_connections))
             .route("/api/oauth/connections/:ref_id", delete(crate::api::oauth_routes::disconnect))
+            .route("/api/oauth/execute", post(crate::api::oauth_routes::execute_api_call))
             // Inject shared state into all handlers
             .with_state(app_state);
 
@@ -639,10 +761,10 @@ impl GatewayBootstrap {
                     "GHOST_CORS_ORIGINS not set — using default localhost origins (dev mode only)"
                 );
                 vec![
-                    "http://localhost:5173".into(),
-                    "http://localhost:18789".into(),
-                    "http://127.0.0.1:5173".into(),
-                    "http://127.0.0.1:18789".into(),
+                    "http://localhost:39781".into(),
+                    "http://localhost:39780".into(),
+                    "http://127.0.0.1:39781".into(),
+                    "http://127.0.0.1:39780".into(),
                 ]
             }
         };

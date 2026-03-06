@@ -3,6 +3,11 @@
 //! Captures pre/post redirect embeddings and computes cosine similarity.
 //! High similarity (>0.85) indicates the agent changed surface behavior
 //! without genuine intent shift → amplify convergence score.
+//!
+//! **Wiring status (T-6.5.2)**: Implemented but not yet wired into the monitor's
+//! scoring pipeline. Blocked on cortex-embeddings pipeline — the monitor does not
+//! currently receive or store message embeddings. Wire into `compute_score()` in
+//! `monitor.rs` once embedding data is available via the cortex pipeline.
 
 use serde::{Deserialize, Serialize};
 

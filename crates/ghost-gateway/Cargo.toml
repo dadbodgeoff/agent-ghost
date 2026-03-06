@@ -47,6 +47,8 @@ ghost-kill-gates = { workspace = true }
 ghost-mesh = { workspace = true }
 ghost-policy = { workspace = true }
 ghost-skills = { workspace = true }
+ghost-pc-control = { workspace = true }
+cortex-embeddings = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

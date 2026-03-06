@@ -205,7 +205,7 @@ fn search_proposals(
     results: &mut Vec<SearchResult>,
 ) {
     let Ok(mut stmt) = db.prepare(
-        "SELECT id, operation, status FROM proposals \
+        "SELECT id, operation, decision FROM goal_proposals \
          WHERE operation LIKE ?1 ESCAPE '\\' OR id LIKE ?1 ESCAPE '\\' \
          LIMIT ?2",
     ) else {

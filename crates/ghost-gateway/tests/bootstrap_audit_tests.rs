@@ -511,6 +511,16 @@ mod appstate_field_tests {
             token_store,
         ));
 
+        let embedding_engine = cortex_embeddings::EmbeddingEngine::new(
+            cortex_embeddings::EmbeddingConfig::default(),
+        );
+
+        let safety_skills: std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>> =
+            ghost_skills::safety_skills::all_safety_skills()
+                .into_iter()
+                .map(|s| (s.name().to_string(), s))
+                .collect();
+
         let _state = AppState {
             gateway: Arc::new(ghost_gateway::gateway::GatewaySharedState::new()),
             agents: Arc::new(RwLock::new(ghost_gateway::agents::registry::AgentRegistry::new())),
@@ -525,6 +535,14 @@ mod appstate_field_tests {
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".into(),
             model_providers: Vec::new(),
+            tools_config: ghost_gateway::config::ToolsConfig::default(),
+            custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            safety_cooldown: Arc::new(ghost_gateway::api::rate_limit::SafetyCooldown::new()),
+            monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            embedding_engine: Arc::new(Mutex::new(embedding_engine)),
+            safety_skills: Arc::new(safety_skills),
         };
     }
 }

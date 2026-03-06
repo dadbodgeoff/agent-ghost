@@ -61,6 +61,9 @@ pub struct QueryContext {
     pub query_embedding: Option<Vec<f32>>,
     /// Memory embedding vector (looked up externally).
     pub memory_embedding: Option<Vec<f32>>,
+    /// Citation count for the memory being scored (T-6.7.1).
+    /// Number of times this memory is referenced by other memories.
+    pub citation_count: Option<u32>,
 }
 
 /// Retrieval scorer that includes convergence as a factor.
@@ -92,7 +95,7 @@ impl RetrievalScorer {
             (self.weights.importance, self.importance_score(memory)),
             (self.weights.confidence, self.confidence_score(memory)),
             (self.weights.access_frequency, self.access_frequency_score(memory)),
-            (self.weights.citation_count, self.citation_count_score()),
+            (self.weights.citation_count, self.citation_count_score(ctx)),
             (self.weights.type_affinity, self.type_affinity_score(memory, ctx)),
             (self.weights.tag_match, self.tag_match_score(memory, ctx)),
             (self.weights.embedding_similarity, self.embedding_similarity_score(ctx)),
@@ -172,9 +175,19 @@ impl RetrievalScorer {
         score.clamp(0.0, 1.0)
     }
 
-    /// Factor 6: Citation count — stub until citation tracking is added.
-    fn citation_count_score(&self) -> f64 {
-        0.5 // Neutral
+    /// Factor 6: Citation count — boost frequently-cited memories (T-6.7.1).
+    ///
+    /// Formula: `log2(1 + citations) / log2(1 + 50)` — same diminishing-returns
+    /// pattern as access_frequency, capped at 50 citations for normalization.
+    /// Returns 0.5 (neutral) when citation data is unavailable.
+    fn citation_count_score(&self, ctx: &QueryContext) -> f64 {
+        match ctx.citation_count {
+            Some(count) => {
+                let score = (1.0 + count as f64).log2() / (1.0 + 50.0_f64).log2();
+                score.clamp(0.0, 1.0)
+            }
+            None => 0.5, // Neutral when citation data unavailable
+        }
     }
 
     /// Factor 7: Type affinity — whether the memory type matches the query context.
@@ -211,7 +224,7 @@ impl RetrievalScorer {
     }
 
     /// Factor 9: Embedding similarity — cosine similarity between vectors.
-    /// Stub returns 0.5 until embeddings are wired (Phase 4).
+    /// Returns 0.5 (neutral) when embeddings are unavailable.
     fn embedding_similarity_score(&self, ctx: &QueryContext) -> f64 {
         match (&ctx.query_embedding, &ctx.memory_embedding) {
             (Some(q), Some(m)) if q.len() == m.len() && !q.is_empty() => {
@@ -222,8 +235,12 @@ impl RetrievalScorer {
     }
 
     /// Factor 10: Pattern alignment — stub until pattern linking is richer.
+    ///
+    /// **Blocked (T-6.7.2)**: Requires a pattern/theme taxonomy and extraction pipeline.
+    /// When available, compute Jaccard similarity between the query's inferred patterns
+    /// and the memory's assigned patterns (same approach as `tag_match_score`).
     fn pattern_alignment_score(&self) -> f64 {
-        0.5 // Neutral
+        0.5 // Neutral — no pattern taxonomy available yet
     }
 
     /// Factor 11: Convergence — deprioritize emotional/attachment content at high convergence.

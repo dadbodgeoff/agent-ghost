@@ -154,7 +154,7 @@ impl Gateway {
         router: Option<axum::Router>,
         bind_addr: Option<&str>,
     ) -> Result<(), GatewayError> {
-        let addr = bind_addr.unwrap_or("127.0.0.1:18789");
+        let addr = bind_addr.unwrap_or("127.0.0.1:39780");
 
         if let Some(router) = router {
             let listener = tokio::net::TcpListener::bind(addr)

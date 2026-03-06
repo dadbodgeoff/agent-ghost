@@ -163,7 +163,12 @@ impl ProposalValidator {
     }
 
     /// Stub for D1-D4 base validation.
-    /// In production, delegates to the existing ValidationEngine.
+    ///
+    /// **Blocked (T-6.9.1)**: The intended `ValidationEngine` (D1 citation, D2 temporal,
+    /// D3 contradiction, D4 pattern alignment) does not exist yet. When it is implemented,
+    /// wire it here: call `ValidationEngine::validate()` with the proposal's content and
+    /// context, extract the composite D1-D4 score, and return it. The combined 7-dimension
+    /// score must remain in [0.0, 1.0] and the existing D5-D7 scoring must not change.
     fn compute_base_score(&self, _proposal: &Proposal, _ctx: &ProposalContext) -> f64 {
         // Default: pass. Real implementation wires to existing D1-D4 engine.
         0.8

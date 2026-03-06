@@ -64,11 +64,6 @@ impl InterventionStateMachine {
         }
     }
 
-    /// Reconstruct state from persisted data (Req 9 AC2).
-    pub fn restore_state(&mut self, agent_id: Uuid, state: AgentInterventionState) {
-        self.states.insert(agent_id, state);
-    }
-
     /// Reconstruct state from individual persisted fields (Req 9 AC2).
     pub fn restore_state_from_fields(
         &mut self,

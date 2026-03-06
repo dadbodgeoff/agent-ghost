@@ -11,7 +11,8 @@
  * Ref: T-1.7.1, §5.1
  */
 
-const WS_URL = 'ws://127.0.0.1:18789/api/ws';
+import { BASE_URL } from '$lib/api';
+const WS_URL = BASE_URL.replace(/^http/, 'ws') + '/api/ws';
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
@@ -188,6 +189,8 @@ class WebSocketStore {
 
   /** Multi-tab leader election via BroadcastChannel. */
   private initLeaderElection() {
+    // Skip in Tauri — single window, no leader election needed
+    if (typeof window !== 'undefined' && (window as any).__TAURI__) return;
     if (this.bc) return;
     try {
       this.bc = new BroadcastChannel('ghost-ws-leader');

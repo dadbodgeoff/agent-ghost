@@ -22,7 +22,7 @@ use crate::pipeline::signal_scheduler::{ComputeTrigger, SignalScheduler};
 use crate::pipeline::window_manager::WindowManager;
 use crate::session::registry::SessionRegistry;
 use crate::state_publisher::{ConvergenceSharedState, StatePublisher};
-use crate::transport::http_api::{self, HttpApiState};
+use crate::transport::http_api::{self, AckResult, HttpApiState, InterventionSnapshot, MonitorRequest, ScoreSnapshot, SessionSnapshot, ThresholdChangeResult};
 #[cfg(unix)]
 use crate::transport::unix_socket::UnixSocketTransport;
 use crate::transport::{EventType, IngestEvent};
@@ -299,12 +299,27 @@ impl ConvergenceMonitor {
         self.reconstruct_state();
 
         let (ingest_tx, mut ingest_rx) = mpsc::channel::<IngestEvent>(10_000);
+        let (recalculate_tx, mut recalculate_rx) = mpsc::channel::<()>(1);
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let (monitor_tx, mut monitor_rx) = mpsc::channel::<MonitorRequest>(16);
 
         // ── Start HTTP API transport ────────────────────────────────
         let http_state = Arc::new(RwLock::new(HttpApiState {
             ingest_tx: ingest_tx.clone(),
             healthy: true,
+            start_time: std::time::Instant::now(),
+            scores: BTreeMap::new(),
+            sessions: Vec::new(),
+            interventions: BTreeMap::new(),
+            agent_count: 0,
+            event_count: 0,
+            last_computation: None,
+            recalculate_tx,
+            last_recalculate: None,
+            shutdown_tx,
+            monitor_tx,
         }));
+        let http_state_ref = http_state.clone();
         let router = http_api::build_router(http_state);
         let http_port = self.config.http_port;
 
@@ -334,7 +349,22 @@ impl ConvergenceMonitor {
             tracing::info!("unix socket transport not available on this platform — using HTTP API only");
         }
 
+        // ── Start native messaging transport (T-6.5.1) ──────────────
+        if self.config.native_messaging_enabled {
+            let nm_transport =
+                crate::transport::native_messaging::NativeMessagingTransport::new(ingest_tx.clone());
+            tokio::spawn(async move {
+                tracing::info!("native messaging transport started");
+                if let Err(e) = nm_transport.run().await {
+                    tracing::error!("native messaging transport error: {e}");
+                }
+            });
+        }
+
         tracing::info!("convergence monitor running");
+
+        // Sync initial state from reconstruction into HTTP API
+        self.sync_http_state(&http_state_ref).await;
 
         // ── Single-threaded event loop (A27.3) ─────────────────────
         // select! over: ingest channel, health check interval,
@@ -356,18 +386,28 @@ impl ConvergenceMonitor {
         // Stagger the 15-min timer by 2.5 minutes
         signal_15min_interval.reset_after(tokio::time::Duration::from_secs(150));
 
+        let mut event_count: u64 = 0;
+
         loop {
             tokio::select! {
                 Some(event) = ingest_rx.recv() => {
                     self.handle_event(event);
+                    event_count += 1;
+                    // Sync state to HTTP API after each event
+                    {
+                        let mut state = http_state_ref.write().await;
+                        state.event_count = event_count;
+                    }
+                    self.sync_http_state(&http_state_ref).await;
                 }
                 _ = health_interval.tick() => {
                     tracing::debug!("health check tick");
-                    // Publish health status for all tracked agents
+                    self.sync_http_state(&http_state_ref).await;
                 }
                 _ = cooldown_interval.tick() => {
                     // Check and expire cooldowns for all agents
                     self.check_cooldowns();
+                    self.sync_http_state(&http_state_ref).await;
                 }
                 _ = signal_5min_interval.tick() => {
                     tracing::debug!("5-minute signal scheduler tick");
@@ -377,8 +417,24 @@ impl ConvergenceMonitor {
                     tracing::debug!("15-minute signal scheduler tick");
                     self.handle_timer_tick(ComputeTrigger::Timer15Min);
                 }
+                Some(()) = recalculate_rx.recv() => {
+                    tracing::info!("recalculate-all requested via HTTP API");
+                    self.handle_recalculate_all();
+                    self.sync_http_state(&http_state_ref).await;
+                }
+                Some(req) = monitor_rx.recv() => {
+                    self.handle_monitor_request(req);
+                    self.sync_http_state(&http_state_ref).await;
+                }
+                Some(()) = shutdown_rx.recv() => {
+                    tracing::info!("shutdown requested via HTTP API");
+                    // Flush pending scores to DB
+                    self.flush_pending_scores();
+                    break;
+                }
                 _ = tokio::signal::ctrl_c() => {
                     tracing::info!("shutdown signal received");
+                    self.flush_pending_scores();
                     break;
                 }
             }
@@ -386,6 +442,188 @@ impl ConvergenceMonitor {
 
         tracing::info!("convergence monitor stopped");
         Ok(())
+    }
+
+    /// Sync monitor state snapshots into the shared HTTP API state.
+    async fn sync_http_state(&self, http_state: &Arc<RwLock<HttpApiState>>) {
+        let mut state = http_state.write().await;
+
+        // Scores: snapshot from score_cache
+        state.scores = self
+            .score_cache
+            .iter()
+            .map(|(agent_id, cached)| {
+                (
+                    *agent_id,
+                    ScoreSnapshot {
+                        agent_id: *agent_id,
+                        composite_score: cached.score,
+                        level: cached.level,
+                        signals: cached.signal_scores,
+                        computed_at: Utc::now() - chrono::Duration::milliseconds(
+                            cached.cached_at.elapsed().as_millis() as i64,
+                        ),
+                    },
+                )
+            })
+            .collect();
+
+        // Sessions: snapshot active sessions from registry
+        state.sessions = self
+            .sessions
+            .all_active_agent_ids()
+            .iter()
+            .flat_map(|agent_id| {
+                self.sessions.active_sessions(agent_id).into_iter().map(|s| {
+                    SessionSnapshot {
+                        session_id: s.session_id,
+                        agent_id: s.agent_id,
+                        started_at: s.started_at,
+                        last_event_at: s.last_event_at,
+                        event_count: s.event_count,
+                        is_active: s.is_active,
+                    }
+                })
+            })
+            .collect();
+
+        // Interventions: snapshot from intervention state machine
+        let now = Utc::now();
+        state.interventions = self
+            .score_cache
+            .keys()
+            .filter_map(|agent_id| {
+                self.intervention.get_state(agent_id).map(|is| {
+                    let cooldown_remaining = is.cooldown_until.map(|until| {
+                        (until - now).num_seconds().max(0)
+                    });
+                    (
+                        *agent_id,
+                        InterventionSnapshot {
+                            agent_id: *agent_id,
+                            level: is.level,
+                            cooldown_remaining_secs: cooldown_remaining,
+                            ack_required: is.ack_required,
+                            consecutive_normal: is.consecutive_normal,
+                        },
+                    )
+                })
+            })
+            .collect();
+
+        // Status metadata
+        state.agent_count = self.score_cache.len();
+        state.last_computation = if self.score_cache.is_empty() {
+            None
+        } else {
+            // Approximate: most recent cached_at
+            self.score_cache
+                .values()
+                .map(|c| {
+                    Utc::now()
+                        - chrono::Duration::milliseconds(c.cached_at.elapsed().as_millis() as i64)
+                })
+                .max()
+        };
+    }
+
+    /// Recompute scores for all tracked agents (T-6.2.7).
+    fn handle_recalculate_all(&mut self) {
+        let agents: Vec<Uuid> = self.score_cache.keys().copied().collect();
+        for agent_id in agents {
+            self.compute_score(agent_id);
+        }
+        tracing::info!("recalculated scores for all tracked agents");
+    }
+
+    /// Handle a request from the HTTP API (T-6.3.2, T-6.4.1, T-6.4.2).
+    fn handle_monitor_request(&mut self, req: MonitorRequest) {
+        match req {
+            // T-6.3.2: Acknowledge a Level 2 intervention (Req 9 AC4).
+            MonitorRequest::Acknowledge { agent_id, reply } => {
+                let result = match self.intervention.get_state(&agent_id) {
+                    None => AckResult::NotFound,
+                    Some(state) if state.level == 2 && state.ack_required => {
+                        self.intervention.acknowledge(agent_id);
+                        if let Err(e) = self.persist_intervention_state(agent_id) {
+                            tracing::error!(
+                                agent_id = %agent_id,
+                                error = %e,
+                                "failed to persist state after acknowledge"
+                            );
+                        }
+                        tracing::info!(agent_id = %agent_id, "Level 2 intervention acknowledged");
+                        AckResult::Ok
+                    }
+                    Some(_) => AckResult::NotLevel2,
+                };
+                let _ = reply.send(result);
+            }
+            // T-6.4.2: Propose a threshold change (CS§ dual-key).
+            MonitorRequest::ThresholdChange { current, proposed, reply } => {
+                let result = if self.cooldown.is_critical_change(proposed) {
+                    // Critical change — require dual-key confirmation.
+                    let token = self.cooldown.initiate_dual_key_change();
+                    tracing::info!(
+                        current,
+                        proposed,
+                        "critical threshold change initiated — dual-key required"
+                    );
+                    ThresholdChangeResult::DualKeyRequired { token }
+                } else if self.cooldown.can_change_threshold(current, proposed) {
+                    tracing::info!(current, proposed, "threshold change applied");
+                    ThresholdChangeResult::Applied
+                } else {
+                    let reason = if self.cooldown.config_locked {
+                        "config locked during active sessions".to_string()
+                    } else {
+                        format!("proposed value {proposed} is below threshold floor")
+                    };
+                    ThresholdChangeResult::Rejected { reason }
+                };
+                let _ = reply.send(result);
+            }
+            // T-6.4.2: Confirm a dual-key threshold change.
+            MonitorRequest::ThresholdConfirm { token, reply } => {
+                let confirmed = self.cooldown.confirm_dual_key_change(&token);
+                if confirmed {
+                    tracing::info!("dual-key threshold change confirmed");
+                } else {
+                    tracing::warn!("dual-key threshold confirmation failed (invalid/expired token)");
+                }
+                let _ = reply.send(confirmed);
+            }
+        }
+    }
+
+    /// Flush any pending scores to the database before shutdown (T-6.2.8).
+    fn flush_pending_scores(&mut self) {
+        let cached: Vec<(Uuid, f64, u8)> = self
+            .score_cache
+            .iter()
+            .map(|(id, c)| (*id, c.score, c.level))
+            .collect();
+        for (agent_id, score, level) in cached {
+            tracing::debug!(agent_id = %agent_id, "flushing cached score before shutdown");
+            if let Err(e) = self.persist_convergence_score(
+                agent_id,
+                score,
+                level,
+                Uuid::nil(), // No specific session for flush
+                &[0.0; 8],
+                &[0u8; 32],
+                &[0u8; 32],
+            ) {
+                tracing::error!(agent_id = %agent_id, error = %e, "failed to flush score on shutdown");
+            }
+        }
+        // Persist intervention states
+        let agent_ids: Vec<Uuid> = self.score_cache.keys().copied().collect();
+        for agent_id in agent_ids {
+            if let Err(e) = self.persist_intervention_state(agent_id) {
+                tracing::error!(agent_id = %agent_id, error = %e, "failed to flush intervention state on shutdown");
+            }
+        }
     }
 
     /// Process a single ingest event through the pipeline.
@@ -470,6 +708,9 @@ impl ConvergenceMonitor {
 
                 // Task 19.2: session boundary — mark all signals dirty, reset counter
                 self.signal_scheduler.record_session_boundary(event.agent_id);
+
+                // T-6.4.1: Lock config during active sessions (A8).
+                self.cooldown.lock_config();
             }
             EventType::SessionEnd => {
                 self.sessions.end_session(event.session_id);
@@ -478,17 +719,75 @@ impl ConvergenceMonitor {
                 // Task 19.2: session boundary — mark all signals dirty, reset counter
                 self.signal_scheduler.record_session_boundary(event.agent_id);
 
-                // Lock config during active sessions, unlock on end (A8)
+                // T-6.5.3: Mark signals dirty at session boundary.
+                // S2 (inter-session gap) and S6 (initiative balance) depend on session boundaries.
+                self.signal_computer.mark_dirty(event.agent_id, 1); // S2
+                self.signal_computer.mark_dirty(event.agent_id, 5); // S6
+
+                // T-6.3.1: Try de-escalation at session boundary (Req 9 AC3).
+                // A session is "normal" if the cached score level is below the
+                // agent's current intervention level.
+                let session_was_normal = {
+                    let cached_level = self
+                        .score_cache
+                        .get(&event.agent_id)
+                        .map_or(0, |c| c.level);
+                    let intervention_level = self
+                        .intervention
+                        .get_state(&event.agent_id)
+                        .map_or(0, |s| s.level);
+                    cached_level < intervention_level
+                };
+                if self.intervention.try_deescalate(event.agent_id, session_was_normal) {
+                    tracing::info!(
+                        agent_id = %event.agent_id,
+                        "de-escalation at session boundary"
+                    );
+                    if let Err(e) = self.persist_intervention_state(event.agent_id) {
+                        tracing::error!(
+                            agent_id = %event.agent_id,
+                            error = %e,
+                            "failed to persist intervention state after de-escalation"
+                        );
+                    }
+                }
+
+                // T-6.4.1: Unlock config when no active sessions remain (A8).
                 if self.sessions.active_sessions(&event.agent_id).is_empty() {
                     self.cooldown.unlock_config();
                 }
             }
-            _ => {
+            EventType::InteractionMessage => {
                 self.sessions
                     .record_event(event.session_id, event.timestamp);
 
                 // Task 19.2: record message for signal scheduling
                 self.signal_scheduler.record_message(event.agent_id);
+
+                // T-6.5.3: Mark signals dirty on message receipt.
+                // S1 (session duration), S3 (response latency), S4 (vocabulary convergence).
+                self.signal_computer.mark_dirty(event.agent_id, 0); // S1
+                self.signal_computer.mark_dirty(event.agent_id, 2); // S3
+                self.signal_computer.mark_dirty(event.agent_id, 3); // S4
+            }
+            EventType::AgentStateSnapshot => {
+                self.sessions
+                    .record_event(event.session_id, event.timestamp);
+                self.signal_scheduler.record_message(event.agent_id);
+
+                // T-6.5.3: State snapshots may affect boundary/disengagement signals.
+                // S5 (goal boundary erosion), S7 (disengagement resistance).
+                self.signal_computer.mark_dirty(event.agent_id, 4); // S5
+                self.signal_computer.mark_dirty(event.agent_id, 6); // S7
+            }
+            EventType::ConvergenceAlert => {
+                self.sessions
+                    .record_event(event.session_id, event.timestamp);
+                self.signal_scheduler.record_message(event.agent_id);
+
+                // T-6.5.3: Convergence alerts affect behavioral anomaly detection.
+                // S8 (behavioral anomaly).
+                self.signal_computer.mark_dirty(event.agent_id, 7); // S8
             }
         }
 

@@ -56,7 +56,7 @@ pub async fn show_status(
 
     // Try monitor health. Derive monitor URL from base by replacing port.
     let monitor_url = base_url
-        .replace(":18789", ":18790")
+        .replace(":39780", ":39781")
         .replace("/api", "");
     let monitor = match reqwest::get(format!("{monitor_url}/health")).await {
         Ok(resp) if resp.status().is_success() => "CONNECTED".to_string(),

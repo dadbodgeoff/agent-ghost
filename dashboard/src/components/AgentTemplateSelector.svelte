@@ -17,8 +17,10 @@
 
   let {
     onselect,
+    selectedId = null,
   }: {
     onselect?: (template: AgentTemplate) => void;
+    selectedId?: string | null;
   } = $props();
 
   const templates: AgentTemplate[] = [
@@ -67,7 +69,7 @@
 
 <div class="template-grid">
   {#each templates as template (template.id)}
-    <button class="template-card" onclick={() => onselect?.(template)}>
+    <button class="template-card" class:selected={selectedId === template.id} onclick={() => onselect?.(template)}>
       <div class="template-header">
         <span class="template-name">{template.name}</span>
         <span class="template-model">{template.model.split('-').slice(-2).join('-')}</span>
@@ -105,6 +107,12 @@
 
   .template-card:hover {
     border-color: var(--color-interactive-primary);
+  }
+
+  .template-card.selected {
+    border-color: var(--color-interactive-primary);
+    background: color-mix(in srgb, var(--color-interactive-primary) 8%, var(--color-bg-elevated-1));
+    box-shadow: 0 0 0 1px var(--color-interactive-primary);
   }
 
   .template-header {

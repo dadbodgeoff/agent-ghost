@@ -1,0 +1,54 @@
+{
+  "productName": "GHOST",
+  "identifier": "com.ghost.desktop",
+  "build": {
+    "frontendDist": "../dashboard/build",
+    "devUrl": "http://localhost:39781",
+    "beforeDevCommand": "cd ../dashboard && npm run dev",
+    "beforeBuildCommand": "cd ../dashboard && npm run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:39780 ws://127.0.0.1:39780; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    },
+    "windows": [
+      {
+        "title": "GHOST",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "tooltip": "GHOST"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": [
+      "binaries/ghost"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "ghost"
+        ]
+      }
+    },
+    "shell": {
+      "open": true
+    }
+  }
+}

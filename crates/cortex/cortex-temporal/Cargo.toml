@@ -14,10 +14,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { workspace = true, optional = true }
+git2 = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
 
 [features]
 default = []
 sqlite = ["rusqlite"]
+git-anchor = ["git2"]
+rfc3161 = ["ureq"]
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -16,9 +16,18 @@ const DEFAULT_BACKUP_HOUR: u32 = 3;
 const DEFAULT_RETENTION_DAYS: u64 = 30;
 
 /// Start the backup scheduler background task.
+///
+/// When using `GatewayRuntime`, prefer `backup_scheduler_task()` with
+/// `runtime.spawn_tracked()` instead of this function.
 pub fn spawn_backup_scheduler(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        // Check if backups are enabled.
+    tokio::spawn(backup_scheduler_task(state));
+}
+
+/// The backup scheduler loop as a standalone future.
+/// Designed to be wrapped by `GatewayRuntime::spawn_tracked()` which
+/// adds cancellation handling.
+pub async fn backup_scheduler_task(state: Arc<AppState>) {
+    // Check if backups are enabled.
         let backup_dir = std::env::var("GHOST_BACKUP_DIR").unwrap_or_else(|_| "./backups".into());
         // T-5.8.1: Require explicit passphrase — never use hardcoded default.
         let passphrase = match std::env::var("GHOST_BACKUP_PASSPHRASE") {
@@ -139,7 +148,6 @@ pub fn spawn_backup_scheduler(state: Arc<AppState>) {
             // Prune old backups.
             prune_old_backups(&backup_dir, retention_days);
         }
-    });
 }
 
 fn prune_old_backups(backup_dir: &str, retention_days: u64) {

@@ -101,6 +101,54 @@ pub fn query_pending(conn: &Connection) -> CortexResult<Vec<DelegationRow>> {
     Ok(rows)
 }
 
+/// Query a single delegation by its delegation_id.
+pub fn query_by_delegation_id(
+    conn: &Connection,
+    delegation_id: &str,
+) -> CortexResult<Option<DelegationRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, delegation_id, sender_id, recipient_id, task, state, created_at
+             FROM delegation_state WHERE delegation_id = ?1
+             LIMIT 1",
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let mut rows = stmt
+        .query_map(params![delegation_id], |row| {
+            Ok(DelegationRow {
+                id: row.get(0)?,
+                delegation_id: row.get(1)?,
+                sender_id: row.get(2)?,
+                recipient_id: row.get(3)?,
+                task: row.get(4)?,
+                state: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| to_storage_err(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    Ok(rows.pop())
+}
+
+/// Get the most recent event_hash for a sender (for hash chain continuity).
+pub fn query_last_hash(conn: &Connection, sender_id: &str) -> CortexResult<Option<Vec<u8>>> {
+    let result: Result<Vec<u8>, _> = conn.query_row(
+        "SELECT event_hash FROM delegation_state
+         WHERE sender_id = ?1
+         ORDER BY created_at DESC LIMIT 1",
+        params![sender_id],
+        |row| row.get(0),
+    );
+    match result {
+        Ok(hash) => Ok(Some(hash)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(to_storage_err(e.to_string())),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DelegationRow {
     pub id: String,

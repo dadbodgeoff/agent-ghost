@@ -4,7 +4,7 @@ use ghost_llm::cost::CostCalculator;
 use ghost_llm::fallback::{CBState, FallbackChain, ProviderCircuitBreaker};
 use ghost_llm::provider::*;
 use ghost_llm::router::{ComplexityClassifier, ComplexityTier, ModelRouter};
-use ghost_llm::streaming::{StreamChunk, StreamingResponse};
+use ghost_llm::streaming::{StreamChunk, collect_text_from_chunks};
 use ghost_llm::tokens::{TokenCounter, TokenStrategy};
 use std::sync::Arc;
 use std::time::Duration;
@@ -203,11 +203,12 @@ fn router_returns_provider_for_tier() {
 
 #[test]
 fn streaming_collect_text() {
-    let mut resp = StreamingResponse::new("test-model".into());
-    resp.chunks.push(StreamChunk::TextDelta("Hello ".into()));
-    resp.chunks.push(StreamChunk::TextDelta("world".into()));
-    resp.chunks.push(StreamChunk::Done);
-    assert_eq!(resp.collect_text(), "Hello world");
+    let chunks = vec![
+        StreamChunk::TextDelta("Hello ".into()),
+        StreamChunk::TextDelta("world".into()),
+        StreamChunk::Done(UsageStats::default()),
+    ];
+    assert_eq!(collect_text_from_chunks(&chunks), "Hello world");
 }
 
 // ── Provider timeout test ───────────────────────────────────────────────

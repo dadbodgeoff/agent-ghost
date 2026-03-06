@@ -33,6 +33,9 @@ pub struct MonitorConfig {
     /// S4 vocabulary_convergence, S5 goal_boundary_erosion, S6 initiative_balance,
     /// S7 disengagement_resistance, S8 behavioral_anomaly.
     pub signal_weights: [f64; 8],
+    /// Enable native messaging transport for browser extensions (default false).
+    /// When enabled, spawns a Chrome/Firefox native messaging listener on stdin.
+    pub native_messaging_enabled: bool,
 }
 
 impl Default for MonitorConfig {
@@ -50,6 +53,7 @@ impl Default for MonitorConfig {
             max_provisional_sessions: 3,
             health_check_interval: Duration::from_secs(30),
             signal_weights: [1.0 / 8.0; 8],
+            native_messaging_enabled: false,
         }
     }
 }

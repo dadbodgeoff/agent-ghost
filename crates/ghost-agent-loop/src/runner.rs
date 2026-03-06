@@ -78,6 +78,23 @@ pub struct GateCheckLog {
     pub checks: Vec<&'static str>,
 }
 
+/// Events emitted during a streaming agent turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentStreamEvent {
+    /// Stream has started — provides the message ID.
+    StreamStart { message_id: String },
+    /// A text delta from the LLM.
+    TextDelta { content: String },
+    /// Agent is calling a tool.
+    ToolUse { tool: String, tool_id: String, status: String },
+    /// Tool execution completed.
+    ToolResult { tool: String, tool_id: String, status: String, preview: String },
+    /// The turn is complete.
+    TurnComplete { token_count: usize, safety_status: String },
+    /// An error occurred.
+    Error { message: String },
+}
+
 /// The core agent runner.
 pub struct AgentRunner {
     pub circuit_breaker: CircuitBreaker,
@@ -102,6 +119,13 @@ pub struct AgentRunner {
     pub db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     /// Optional cost recording callback: (agent_id, session_id, cost, is_compaction).
     pub cost_recorder: Option<Arc<dyn Fn(Uuid, Uuid, f64, bool) + Send + Sync>>,
+    /// L2: SOUL.md + IDENTITY.md content, loaded at startup.
+    pub soul_identity: String,
+    /// L4: Environment context, built at startup.
+    pub environment: String,
+    /// Multi-turn conversation history (injected between system prompt and user message).
+    /// Set this before calling `run_turn` for multi-turn sessions.
+    pub conversation_history: Vec<ghost_llm::provider::ChatMessage>,
 }
 
 impl AgentRunner {
@@ -122,6 +146,9 @@ impl AgentRunner {
             daily_spend: 0.0,
             db: None,
             cost_recorder: None,
+            soul_identity: String::new(),
+            environment: String::new(),
+            conversation_history: Vec::new(),
         }
     }
 
@@ -371,6 +398,22 @@ impl AgentRunner {
         )
     }
 
+    /// Build L5 skill index from the tool registry.
+    /// Produces a compact listing of available tools for the LLM's awareness.
+    pub fn build_skill_index(&self) -> String {
+        let names = self.tool_registry.tool_names();
+        if names.is_empty() {
+            return String::new();
+        }
+        let mut lines = vec!["Available tools:".to_string()];
+        for name in names {
+            if let Some(tool) = self.tool_registry.lookup(name) {
+                lines.push(format!("- {}: {}", tool.name, tool.description));
+            }
+        }
+        lines.join("\n")
+    }
+
     /// Pre-loop orchestrator: 11 steps executed IN ORDER before run() enters
     /// the recursive loop (per AGENT_LOOP_SEQUENCE_FLOW §3).
     ///
@@ -542,14 +585,17 @@ impl AgentRunner {
 
         // Compile prompt layers to get system message.
         let prompt_input = crate::context::prompt_compiler::PromptInput {
+            soul_identity: self.soul_identity.clone(),
+            environment: self.environment.clone(),
+            skill_index: self.build_skill_index(),
             user_message: user_message.to_string(),
             ..Default::default()
         };
         let (layers, _stats) = self.prompt_compiler.compile(&prompt_input);
 
-        // L0 (CORP_POLICY) + L1 (SIMULATION_BOUNDARY) as system message.
+        // L0–L7 as system message (everything except L8 conversation history and L9 user message).
         let system_content: String = layers.iter()
-            .filter(|l| l.index <= 1)
+            .filter(|l| l.index <= 7 && !l.content.is_empty())
             .map(|l| l.content.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -560,6 +606,11 @@ impl AgentRunner {
                 tool_calls: None,
                 tool_call_id: None,
             });
+        }
+
+        // Inject multi-turn conversation history (if any).
+        if !self.conversation_history.is_empty() {
+            conversation.extend(self.conversation_history.drain(..));
         }
 
         // User message.
@@ -683,6 +734,11 @@ impl AgentRunner {
                         }
                         self.proposal_router.record_decision(proposal, decision, false);
                     }
+                    // Text-only response is the final answer — return.
+                    result.total_tokens = ctx.total_tokens;
+                    result.total_cost = ctx.total_cost;
+                    result.output = Some(final_text);
+                    return Ok(result);
                 }
 
                 LLMResponse::ToolCalls(calls) => {
@@ -717,9 +773,13 @@ impl AgentRunner {
                         tool_call_id: None,
                     });
 
+                    let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
+                        agent_id: ctx.agent_id,
+                        session_id: ctx.session_id,
+                    };
                     for call in &calls {
                         let tool_result = self.tool_executor
-                            .execute(call, &self.tool_registry)
+                            .execute(call, &self.tool_registry, &exec_ctx)
                             .await;
 
                         let output = match tool_result {
@@ -836,9 +896,13 @@ impl AgentRunner {
                         tool_call_id: None,
                     });
 
+                    let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
+                        agent_id: ctx.agent_id,
+                        session_id: ctx.session_id,
+                    };
                     for call in &tool_calls {
                         let tool_result = self.tool_executor
-                            .execute(call, &self.tool_registry)
+                            .execute(call, &self.tool_registry, &exec_ctx)
                             .await;
 
                         let output = match tool_result {
@@ -852,6 +916,328 @@ impl AgentRunner {
                             }
                             Err(e) => format!("ERROR: {e}"),
                         };
+
+                        conversation.push(ChatMessage {
+                            role: MessageRole::Tool,
+                            content: output,
+                            tool_calls: None,
+                            tool_call_id: Some(call.id.clone()),
+                        });
+                    }
+
+                    ctx.recursion_depth += 1;
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Streaming variant of `run_turn`. Sends `AgentStreamEvent` through the
+    /// channel as the agent generates text and executes tools.
+    ///
+    /// `get_stream` is a closure that creates a `StreamChunkStream` for a given
+    /// conversation and tool schema set. The SSE endpoint provides either
+    /// `OllamaProvider::stream_chat` or `complete_stream_shim` depending on the provider.
+    pub async fn run_turn_streaming<F>(
+        &mut self,
+        ctx: &mut RunContext,
+        user_message: &str,
+        tx: tokio::sync::mpsc::Sender<AgentStreamEvent>,
+        get_stream: F,
+    ) -> Result<RunResult, RunError>
+    where
+        F: Fn(Vec<ghost_llm::provider::ChatMessage>, Vec<ghost_llm::provider::ToolSchema>) -> ghost_llm::streaming::StreamChunkStream + Send + Sync,
+    {
+        use crate::output_inspector::InspectionResult;
+        use crate::proposal::extractor::ProposalExtractor;
+        use crate::tools::plan_validator::PlanValidationResult;
+        use ghost_llm::provider::{ChatMessage, LLMResponse, LLMToolCall, MessageRole};
+        use ghost_llm::streaming::StreamChunk;
+        use futures::StreamExt;
+
+        // Build initial conversation with user message (same as run_turn).
+        let mut conversation: Vec<ChatMessage> = Vec::new();
+
+        // Compile prompt layers to get system message.
+        let prompt_input = crate::context::prompt_compiler::PromptInput {
+            soul_identity: self.soul_identity.clone(),
+            environment: self.environment.clone(),
+            skill_index: self.build_skill_index(),
+            user_message: user_message.to_string(),
+            ..Default::default()
+        };
+        let (layers, _stats) = self.prompt_compiler.compile(&prompt_input);
+
+        let system_content: String = layers.iter()
+            .filter(|l| l.index <= 7 && !l.content.is_empty())
+            .map(|l| l.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !system_content.is_empty() {
+            conversation.push(ChatMessage {
+                role: MessageRole::System,
+                content: system_content,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+
+        // Inject multi-turn conversation history (if any).
+        if !self.conversation_history.is_empty() {
+            conversation.extend(self.conversation_history.drain(..));
+        }
+
+        // User message.
+        conversation.push(ChatMessage {
+            role: MessageRole::User,
+            content: user_message.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        // Get tool schemas filtered by intervention level.
+        let tool_schemas = self.tool_registry.schemas_filtered(ctx.intervention_level);
+
+        let mut result = RunResult {
+            output: None,
+            tool_calls_made: 0,
+            proposals_extracted: 0,
+            total_tokens: 0,
+            total_cost: 0.0,
+            halted_by: None,
+        };
+
+        let mut accumulated_output = String::new();
+
+        loop {
+            // ── GATE CHECKS ──────────────────────────────────────────
+            let mut gate_log = GateCheckLog::default();
+            if let Err(e) = self.check_gates(ctx, &mut gate_log) {
+                tracing::warn!(error = %e, "gate check failed — halting streaming loop");
+                result.halted_by = Some(e.to_string());
+                result.total_tokens = ctx.total_tokens;
+                result.total_cost = ctx.total_cost;
+                result.output = if accumulated_output.is_empty() { None } else { Some(accumulated_output) };
+                return if result.output.is_some() {
+                    Ok(result)
+                } else {
+                    Err(e)
+                };
+            }
+
+            // ── STREAMING LLM CALL ───────────────────────────────────
+            let mut stream = get_stream(conversation.clone(), tool_schemas.clone());
+            let mut segment_text = String::new();
+            let mut segment_tool_calls: Vec<LLMToolCall> = Vec::new();
+            let mut segment_tool_call_args: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new(); // id -> (name, accumulated_args)
+            let mut segment_usage = ghost_llm::provider::UsageStats::default();
+
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(StreamChunk::TextDelta(text)) => {
+                        segment_text.push_str(&text);
+                        let _ = tx.send(AgentStreamEvent::TextDelta { content: text }).await;
+                    }
+                    Ok(StreamChunk::ToolCallStart { id, name }) => {
+                        segment_tool_call_args.insert(id.clone(), (name.clone(), String::new()));
+                        let _ = tx.send(AgentStreamEvent::ToolUse {
+                            tool: name,
+                            tool_id: id,
+                            status: "parsing".into(),
+                        }).await;
+                    }
+                    Ok(StreamChunk::ToolCallDelta { id, arguments_delta }) => {
+                        if let Some((_, ref mut args)) = segment_tool_call_args.get_mut(&id) {
+                            args.push_str(&arguments_delta);
+                        }
+                    }
+                    Ok(StreamChunk::Done(usage)) => {
+                        segment_usage = usage;
+                        break;
+                    }
+                    Ok(StreamChunk::Error(msg)) => {
+                        let _ = tx.send(AgentStreamEvent::Error { message: msg.clone() }).await;
+                        self.circuit_breaker.record_failure();
+                        return Err(RunError::LLMError(msg));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AgentStreamEvent::Error { message: e.to_string() }).await;
+                        self.circuit_breaker.record_failure();
+                        return Err(RunError::LLMError(e.to_string()));
+                    }
+                }
+            }
+
+            // Assemble tool calls from accumulated deltas.
+            for (id, (name, args_str)) in segment_tool_call_args {
+                let arguments: serde_json::Value = serde_json::from_str(&args_str)
+                    .unwrap_or(serde_json::json!({}));
+                segment_tool_calls.push(LLMToolCall { id, name, arguments });
+            }
+
+            // Record success + update context.
+            self.circuit_breaker.record_success();
+            ctx.total_tokens += segment_usage.total_tokens;
+            let pricing = ghost_llm::provider::TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 };
+            let call_cost = (segment_usage.prompt_tokens as f64 * pricing.input_per_1k / 1000.0)
+                + (segment_usage.completion_tokens as f64 * pricing.output_per_1k / 1000.0);
+            ctx.total_cost += call_cost;
+            self.record_cost(ctx.agent_id, ctx.session_id, call_cost, false);
+
+            // Determine response type.
+            let has_text = !segment_text.is_empty();
+            let has_tool_calls = !segment_tool_calls.is_empty();
+
+            match (has_text, has_tool_calls) {
+                (false, false) => {
+                    // Empty — done.
+                    result.total_tokens = ctx.total_tokens;
+                    result.total_cost = ctx.total_cost;
+                    result.output = if accumulated_output.is_empty() { None } else { Some(accumulated_output) };
+                    return Ok(result);
+                }
+                (true, false) => {
+                    // Pure text — inspect for safety, accumulate, continue loop.
+                    let inspection = self.output_inspector.scan(&segment_text, ctx.agent_id);
+                    let final_text = match inspection {
+                        InspectionResult::KillAll { pattern_name, .. } => {
+                            self.kill_switch.store(true, Ordering::SeqCst);
+                            result.halted_by = Some("credential_exfiltration".into());
+                            result.total_tokens = ctx.total_tokens;
+                            result.total_cost = ctx.total_cost;
+                            return Err(RunError::CredentialExfiltration);
+                        }
+                        InspectionResult::Warning { redacted_text, .. } => redacted_text,
+                        InspectionResult::Clean => segment_text,
+                    };
+
+                    accumulated_output.push_str(&final_text);
+
+                    // Extract proposals.
+                    let proposals = ProposalExtractor::extract(&final_text, ctx.agent_id, ctx.session_id);
+                    result.proposals_extracted += proposals.len() as u32;
+                    ctx.proposal_count += proposals.len() as u32;
+                    // Route proposals (same as run_turn).
+                    for proposal in proposals {
+                        use cortex_core::models::proposal::{ProposalDecision, ProposalOperation};
+                        self.proposal_router.check_superseding(&proposal);
+                        let decision = if self.proposal_router.is_resubmission(&proposal) {
+                            ProposalDecision::AutoRejected
+                        } else if let Some(d) = self.proposal_router.reflection_precheck(
+                            &proposal, &cortex_core::config::ReflectionConfig::default(),
+                        ) {
+                            d
+                        } else if ctx.intervention_level <= 1 {
+                            ProposalDecision::AutoApproved
+                        } else {
+                            ProposalDecision::HumanReviewRequired
+                        };
+                        self.persist_proposal(&proposal, &format!("{decision:?}"));
+                        if proposal.operation == ProposalOperation::ReflectionWrite
+                            && decision == ProposalDecision::AutoApproved
+                        {
+                            self.persist_reflection(ctx.session_id, &proposal);
+                        }
+                        self.proposal_router.record_decision(proposal, decision, false);
+                    }
+                    // Text-only response is the final answer — break the loop.
+                    result.total_tokens = ctx.total_tokens;
+                    result.total_cost = ctx.total_cost;
+                    result.output = Some(accumulated_output);
+                    return Ok(result);
+                }
+                (_, true) => {
+                    // Tool calls (possibly mixed with text).
+                    if has_text {
+                        let inspection = self.output_inspector.scan(&segment_text, ctx.agent_id);
+                        match inspection {
+                            InspectionResult::KillAll { .. } => {
+                                self.kill_switch.store(true, Ordering::SeqCst);
+                                result.halted_by = Some("credential_exfiltration".into());
+                                result.total_tokens = ctx.total_tokens;
+                                result.total_cost = ctx.total_cost;
+                                return Err(RunError::CredentialExfiltration);
+                            }
+                            InspectionResult::Warning { redacted_text, .. } => {
+                                accumulated_output.push_str(&redacted_text);
+                                result.output = Some(accumulated_output.clone());
+                            }
+                            InspectionResult::Clean => {
+                                accumulated_output.push_str(&segment_text);
+                                result.output = Some(accumulated_output.clone());
+                            }
+                        }
+                    }
+
+                    // Plan validation.
+                    if let PlanValidationResult::Deny(reason) = self.tool_executor.validate_plan(&segment_tool_calls) {
+                        tracing::warn!(reason = %reason, "tool plan denied in streaming");
+                        self.tool_executor.record_denial(&segment_tool_calls[0].name);
+                        conversation.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: segment_text,
+                            tool_calls: Some(segment_tool_calls.clone()),
+                            tool_call_id: None,
+                        });
+                        for call in &segment_tool_calls {
+                            conversation.push(ChatMessage {
+                                role: MessageRole::Tool,
+                                content: format!("ERROR: Tool plan denied — {reason}"),
+                                tool_calls: None,
+                                tool_call_id: Some(call.id.clone()),
+                            });
+                        }
+                        ctx.recursion_depth += 1;
+                        continue;
+                    }
+
+                    // Execute tool calls.
+                    conversation.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: segment_text,
+                        tool_calls: Some(segment_tool_calls.clone()),
+                        tool_call_id: None,
+                    });
+
+                    let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
+                        agent_id: ctx.agent_id,
+                        session_id: ctx.session_id,
+                    };
+                    for call in &segment_tool_calls {
+                        let _ = tx.send(AgentStreamEvent::ToolUse {
+                            tool: call.name.clone(),
+                            tool_id: call.id.clone(),
+                            status: "running".into(),
+                        }).await;
+
+                        let tool_result = self.tool_executor
+                            .execute(call, &self.tool_registry, &exec_ctx)
+                            .await;
+
+                        let (output, status) = match tool_result {
+                            Ok(tr) => {
+                                result.tool_calls_made += 1;
+                                ctx.tool_call_count += 1;
+                                if call.name == "write_file" || call.name == "shell" {
+                                    self.damage_counter.increment();
+                                }
+                                (tr.output, "done")
+                            }
+                            Err(e) => (format!("ERROR: {e}"), "error"),
+                        };
+
+                        let preview = if output.len() > 200 {
+                            format!("{}…", &output[..200])
+                        } else {
+                            output.clone()
+                        };
+
+                        let _ = tx.send(AgentStreamEvent::ToolResult {
+                            tool: call.name.clone(),
+                            tool_id: call.id.clone(),
+                            status: status.into(),
+                            preview,
+                        }).await;
 
                         conversation.push(ChatMessage {
                             role: MessageRole::Tool,

@@ -66,7 +66,15 @@ pub async fn run_prompt(
         .unwrap_or("(empty)");
 
     // T-5.7.2: Wire to ghost_llm provider if model providers are configured.
-    let system = req.system_prompt.as_deref().unwrap_or("You are a helpful assistant.");
+    // When no explicit system prompt is provided, inject SOUL.md + L4 environment context.
+    let default_prompt;
+    let system = match req.system_prompt {
+        Some(ref s) if !s.is_empty() => s.as_str(),
+        _ => {
+            default_prompt = build_default_system_prompt();
+            &default_prompt
+        }
+    };
 
     // Check if any model providers are configured.
     if _state.model_providers.is_empty() {
@@ -107,24 +115,76 @@ pub async fn run_prompt(
         .and_then(|env| std::env::var(env).ok())
         .unwrap_or_default();
 
-    if api_key.is_empty() {
-        return Err(ApiError::bad_request(format!(
-            "Model provider '{}' has no API key configured (set {} env var)",
-            provider_config.name,
-            provider_config.api_key_env.as_deref().unwrap_or("API_KEY"),
-        )));
-    }
-
     let provider: Arc<dyn ghost_llm::provider::LLMProvider> =
         match provider_config.name.as_str() {
-            "anthropic" => Arc::new(ghost_llm::provider::AnthropicProvider {
-                model: model.clone(),
-                api_key: std::sync::RwLock::new(api_key),
-            }),
-            "openai" => Arc::new(ghost_llm::provider::OpenAIProvider {
-                model: model.clone(),
-                api_key: std::sync::RwLock::new(api_key),
-            }),
+            "ollama" => {
+                let base_url = provider_config
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:11434".to_string());
+                let ollama_model = provider_config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| model.clone());
+                Arc::new(ghost_llm::provider::OllamaProvider {
+                    model: ollama_model,
+                    base_url,
+                })
+            }
+            "anthropic" => {
+                if api_key.is_empty() {
+                    return Err(ApiError::bad_request(format!(
+                        "Model provider 'anthropic' has no API key (set {} env var)",
+                        provider_config.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY"),
+                    )));
+                }
+                Arc::new(ghost_llm::provider::AnthropicProvider {
+                    model: model.clone(),
+                    api_key: std::sync::RwLock::new(api_key),
+                })
+            }
+            "openai" => {
+                if api_key.is_empty() {
+                    return Err(ApiError::bad_request(format!(
+                        "Model provider 'openai' has no API key (set {} env var)",
+                        provider_config.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY"),
+                    )));
+                }
+                Arc::new(ghost_llm::provider::OpenAIProvider {
+                    model: model.clone(),
+                    api_key: std::sync::RwLock::new(api_key),
+                })
+            }
+            "gemini" => {
+                if api_key.is_empty() {
+                    return Err(ApiError::bad_request(format!(
+                        "Model provider 'gemini' has no API key (set {} env var)",
+                        provider_config.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY"),
+                    )));
+                }
+                Arc::new(ghost_llm::provider::GeminiProvider {
+                    model: provider_config.model.clone().unwrap_or(model.clone()),
+                    api_key: std::sync::RwLock::new(api_key),
+                })
+            }
+            "openai_compat" => {
+                if api_key.is_empty() {
+                    return Err(ApiError::bad_request(format!(
+                        "Model provider 'openai_compat' has no API key (set {} env var)",
+                        provider_config.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY"),
+                    )));
+                }
+                let base_url = provider_config
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:8080".to_string());
+                Arc::new(ghost_llm::provider::OpenAICompatProvider {
+                    model: provider_config.model.clone().unwrap_or(model.clone()),
+                    api_key: std::sync::RwLock::new(api_key),
+                    base_url,
+                    context_window_size: 128_000,
+                })
+            }
             other => {
                 return Err(ApiError::bad_request(format!(
                     "Unsupported model provider: {other}"
@@ -151,6 +211,34 @@ pub async fn run_prompt(
             }))
         }
         Err(e) => Err(ApiError::internal(format!("LLM completion failed: {e}"))),
+    }
+}
+
+/// Build a default system prompt with SOUL.md identity and L4 environment context.
+/// Falls back to a plain prompt if neither SOUL.md nor environment info is available.
+pub fn build_default_system_prompt() -> String {
+    let mut sections = Vec::new();
+
+    // L2: SOUL.md
+    let soul_path = crate::bootstrap::ghost_home().join("config").join("SOUL.md");
+    if let Ok(content) = std::fs::read_to_string(&soul_path) {
+        if !content.is_empty() {
+            sections.push(content);
+        }
+    }
+
+    // L4: Environment context
+    let env_ctx = ghost_agent_loop::context::environment::build_environment_context(
+        std::env::current_dir().ok().as_deref(),
+    );
+    if !env_ctx.is_empty() {
+        sections.push(format!("## Environment\n{env_ctx}"));
+    }
+
+    if sections.is_empty() {
+        "You are a helpful assistant.".to_string()
+    } else {
+        sections.join("\n\n")
     }
 }
 

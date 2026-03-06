@@ -11,7 +11,7 @@
 //! SignalComputer decides WHAT to compute.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use uuid::Uuid;
 
@@ -46,17 +46,6 @@ const DEFAULT_TIER_ASSIGNMENTS: [SignalFrequencyTier; 8] = [
     SignalFrequencyTier::Every5thMessage,   // S8: behavioral_anomaly
 ];
 
-/// Default staleness thresholds per tier.
-const DEFAULT_STALE_AFTER: [Duration; 8] = [
-    Duration::from_secs(300),  // S1: SessionBoundary → 5min
-    Duration::from_secs(300),  // S2: SessionBoundary → 5min
-    Duration::ZERO,            // S3: EveryMessage → 0s
-    Duration::from_secs(300),  // S4: SessionBoundary → 5min
-    Duration::from_secs(30),   // S5: Every5thMessage → 30s
-    Duration::ZERO,            // S6: EveryMessage → 0s
-    Duration::from_secs(300),  // S7: SessionBoundary → 5min
-    Duration::from_secs(30),   // S8: Every5thMessage → 30s
-];
 
 /// Signal scheduler — gates which signals are computed per event.
 pub struct SignalScheduler {
@@ -65,7 +54,6 @@ pub struct SignalScheduler {
     message_counter: BTreeMap<Uuid, u64>,
     /// Per-agent, per-signal last computation time.
     last_computed: BTreeMap<(Uuid, usize), Instant>,
-    stale_after: [Duration; 8],
     /// Per-agent, per-signal dirty flag.
     dirty: BTreeMap<(Uuid, usize), bool>,
 }
@@ -76,7 +64,6 @@ impl SignalScheduler {
             tier_assignment: DEFAULT_TIER_ASSIGNMENTS,
             message_counter: BTreeMap::new(),
             last_computed: BTreeMap::new(),
-            stale_after: DEFAULT_STALE_AFTER,
             dirty: BTreeMap::new(),
         }
     }

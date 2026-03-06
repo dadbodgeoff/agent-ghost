@@ -1,5 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { BASE_URL } from '$lib/api';
+  import { setToken } from '$lib/auth';
 
   let token = $state('');
   let error = $state('');
@@ -14,7 +16,7 @@
 
     loading = true;
     try {
-      const resp = await fetch('http://127.0.0.1:18789/api/auth/login', {
+      const resp = await fetch(`${BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: token.trim() }),
@@ -29,16 +31,16 @@
       }
 
       const data = await resp.json();
-      // Store access token in sessionStorage for API calls.
+      // Store access token — persists to Tauri store + sessionStorage.
       if (data.access_token) {
-        sessionStorage.setItem('ghost-token', data.access_token);
+        await setToken(data.access_token);
       } else {
         // Legacy mode: gateway accepted the token directly.
-        sessionStorage.setItem('ghost-token', token.trim());
+        await setToken(token.trim());
       }
       goto('/');
     } catch (e: any) {
-      error = 'Gateway unreachable. Is ghost-gateway running on port 18789?';
+      error = 'Gateway unreachable. Is ghost-gateway running on port 39780?';
     }
     loading = false;
   }

@@ -1021,7 +1021,11 @@ async fn tool_executor_enforces_timeout() {
     };
 
     // Execute succeeds (stub returns immediately)
-    let result = executor.execute(&call, &registry).await;
+    let exec_ctx = ghost_agent_loop::tools::skill_bridge::ExecutionContext {
+        agent_id: uuid::Uuid::nil(),
+        session_id: uuid::Uuid::nil(),
+    };
+    let result = executor.execute(&call, &registry, &exec_ctx).await;
     assert!(result.is_ok());
     assert!(result.unwrap().success);
 }
@@ -1041,7 +1045,11 @@ async fn tool_executor_not_found_returns_error() {
         arguments: serde_json::json!({}),
     };
 
-    let result = executor.execute(&call, &registry).await;
+    let exec_ctx = ghost_agent_loop::tools::skill_bridge::ExecutionContext {
+        agent_id: uuid::Uuid::nil(),
+        session_id: uuid::Uuid::nil(),
+    };
+    let result = executor.execute(&call, &registry, &exec_ctx).await;
     assert!(matches!(result, Err(ToolError::NotFound(_))));
 }
 

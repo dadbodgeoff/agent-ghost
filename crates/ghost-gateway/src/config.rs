@@ -40,6 +40,12 @@ pub struct GhostConfig {
     /// Mesh networking configuration (Task 22.1). Disabled by default.
     #[serde(default)]
     pub mesh: MeshConfig,
+    /// PC control configuration (Phase 9). Disabled by default.
+    #[serde(default)]
+    pub pc_control: ghost_pc_control::safety::PcControlConfig,
+    /// Tool configuration — web_search, web_fetch, http_request, shell.
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +69,7 @@ impl Default for GatewayConfig {
 }
 
 fn default_bind() -> String { "127.0.0.1".into() }
-fn default_port() -> u16 { 18789 }
+fn default_port() -> u16 { 39780 }
 fn default_db_path() -> String { "~/.ghost/data/ghost.db".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +83,10 @@ pub struct AgentConfig {
     pub isolation: IsolationMode,
     #[serde(default)]
     pub template: Option<String>,
+    /// Per-agent skill allowlist. When None, all registered skills are available.
+    /// When Some, acts as an allowlist (safety skills are always included).
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
     /// Per-agent network egress control (Phase 11).
     #[serde(default)]
     pub network: Option<NetworkEgressGatewayConfig>,
@@ -222,6 +232,8 @@ fn default_soul_drift_threshold() -> f64 { 0.15 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelsConfig {
     #[serde(default)]
+    pub default_provider: Option<String>,
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
 }
 
@@ -230,7 +242,110 @@ pub struct ProviderConfig {
     pub name: String,
     #[serde(default)]
     pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
+
+/// Tool configuration — web_search, web_fetch, http_request, shell.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsConfig {
+    #[serde(default)]
+    pub web_search: WebSearchToolConfig,
+    #[serde(default)]
+    pub web_fetch: WebFetchToolConfig,
+    #[serde(default)]
+    pub http_request: HttpRequestToolConfig,
+    #[serde(default)]
+    pub shell: ShellToolOverrides,
+}
+
+/// Web search tool config (maps to ghost_agent_loop WebSearchConfig).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchToolConfig {
+    /// Backend: "searxng", "tavily", or "brave".
+    #[serde(default = "default_search_backend")]
+    pub backend: String,
+    /// SearXNG instance URL.
+    #[serde(default = "default_searxng_url")]
+    pub searxng_url: String,
+    /// Tavily API key (or env var name via ${VAR}).
+    #[serde(default)]
+    pub tavily_api_key: String,
+    /// Brave API key (or env var name via ${VAR}).
+    #[serde(default)]
+    pub brave_api_key: String,
+    /// Max results per query.
+    #[serde(default = "default_search_max_results")]
+    pub max_results: usize,
+}
+
+fn default_search_backend() -> String { "searxng".into() }
+fn default_searxng_url() -> String { "http://localhost:8888".into() }
+fn default_search_max_results() -> usize { 5 }
+
+impl Default for WebSearchToolConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_search_backend(),
+            searxng_url: default_searxng_url(),
+            tavily_api_key: String::new(),
+            brave_api_key: String::new(),
+            max_results: default_search_max_results(),
+        }
+    }
+}
+
+/// Web fetch tool config (maps to ghost_agent_loop FetchConfig).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebFetchToolConfig {
+    #[serde(default)]
+    pub allow_http: bool,
+    #[serde(default = "default_fetch_max_bytes")]
+    pub max_body_bytes: u64,
+    #[serde(default = "default_fetch_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_fetch_max_bytes() -> u64 { 1_048_576 }
+fn default_fetch_timeout() -> u64 { 15 }
+
+impl Default for WebFetchToolConfig {
+    fn default() -> Self {
+        Self {
+            allow_http: false,
+            max_body_bytes: default_fetch_max_bytes(),
+            timeout_secs: default_fetch_timeout(),
+        }
+    }
+}
+
+/// HTTP request tool config (maps to ghost_agent_loop HttpRequestConfig).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpRequestToolConfig {
+    #[serde(default)]
+    pub allow_http: bool,
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+}
+
+impl Default for HttpRequestToolConfig {
+    fn default() -> Self {
+        Self { allow_http: false, allowed_domains: vec![] }
+    }
+}
+
+/// Shell tool overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ShellToolOverrides {
+    #[serde(default)]
+    pub allowed_prefixes: Vec<String>,
+    #[serde(default = "default_shell_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_shell_timeout() -> u64 { 30 }
 
 /// Secrets infrastructure configuration (Phase 10).
 ///
@@ -399,7 +514,8 @@ impl GhostConfig {
         Ok(config)
     }
 
-    /// Load from default locations: CLI arg > env > ~/.ghost/config/ghost.yml > ./ghost.yml
+    /// Load from default locations:
+    /// CLI arg > env > ~/.ghost/config/ghost.yml > ./ghost.yml > <exe_dir>/ghost.yml
     pub fn load_default(cli_path: Option<&str>) -> Result<Self, ConfigError> {
         if let Some(p) = cli_path {
             return Self::load(Path::new(p));
@@ -414,6 +530,29 @@ impl GhostConfig {
         let local = Path::new("ghost.yml");
         if local.exists() {
             return Self::load(local);
+        }
+        // Fallback: check relative to the executable's directory (handles cwd != project root,
+        // e.g. when launched by Tauri with cwd set to dashboard/).
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                // Check exe_dir itself (e.g. target/release/ghost.yml — unlikely but possible).
+                let beside_exe = exe_dir.join("ghost.yml");
+                if beside_exe.exists() {
+                    return Self::load(&beside_exe);
+                }
+                // Walk up from exe dir to find a project root containing ghost.yml.
+                // Typically exe is at <project>/target/release/ghost, so ../../ghost.yml.
+                let mut ancestor = exe_dir.to_path_buf();
+                for _ in 0..3 {
+                    if let Some(parent) = ancestor.parent() {
+                        ancestor = parent.to_path_buf();
+                        let candidate = ancestor.join("ghost.yml");
+                        if candidate.exists() {
+                            return Self::load(&candidate);
+                        }
+                    }
+                }
+            }
         }
         // Return default config if no file found
         Ok(GhostConfig::default())
@@ -460,6 +599,8 @@ impl Default for GhostConfig {
             models: ModelsConfig::default(),
             secrets: SecretsConfig::default(),
             mesh: MeshConfig::default(),
+            pc_control: ghost_pc_control::safety::PcControlConfig::default(),
+            tools: ToolsConfig::default(),
         }
     }
 }
