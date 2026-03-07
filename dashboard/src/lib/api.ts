@@ -1,52 +1,48 @@
 /**
- * REST API client for the GHOST gateway.
+ * Transitional REST helper.
  *
- * WebSocket is now handled by the dedicated wsStore
- * (dashboard/src/lib/stores/websocket.svelte.ts).
- *
- * Token is read from sessionStorage (set by login page).
- * 401 handling clears both Tauri store and sessionStorage via clearToken().
+ * New code should prefer `$lib/ghost-client` and `@ghost/sdk`.
+ * This file remains only to keep unmigrated routes working while transport
+ * ownership moves to the runtime layer and SDK.
  */
 
 import { clearToken } from '$lib/auth';
+import { getRuntime } from '$lib/platform/runtime';
 
-function getBaseUrl(): string {
-  if (typeof localStorage !== 'undefined') {
-    const override = localStorage.getItem('ghost-gateway-url');
-    if (override) return override;
-  }
-  // Port injected by Tauri via window.eval at startup.
-  if (typeof window !== 'undefined' && window.__GHOST_GATEWAY_PORT__) {
-    return `http://127.0.0.1:${window.__GHOST_GATEWAY_PORT__}`;
-  }
-  // Vite env override for standalone dashboard dev.
-  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GHOST_GATEWAY_URL) {
-    return import.meta.env.VITE_GHOST_GATEWAY_URL;
-  }
-  return 'http://127.0.0.1:39780';
-}
-const BASE_URL = getBaseUrl();
-export { BASE_URL };
-
-function getToken(): string | null {
-  return sessionStorage.getItem('ghost-token');
+export async function getBaseUrl(): Promise<string> {
+  const runtime = await getRuntime();
+  return runtime.getBaseUrl();
 }
 
-function headers(): HeadersInit {
-  const token = getToken();
-  const h: HeadersInit = { 'Content-Type': 'application/json' };
-  if (token) h['Authorization'] = `Bearer ${token}`;
+async function buildUrl(path: string): Promise<string> {
+  return `${await getBaseUrl()}${path}`;
+}
+
+async function headers(includeContentType = true): Promise<HeadersInit> {
+  const runtime = await getRuntime();
+  const token = await runtime.getToken();
+  const h: HeadersInit = {
+    Accept: 'application/json',
+  };
+
+  if (includeContentType) {
+    h['Content-Type'] = 'application/json';
+  }
+
+  if (token) {
+    h['Authorization'] = `Bearer ${token}`;
+  }
+
   return h;
 }
 
 export const api = {
   async get<T = unknown>(path: string): Promise<T> {
-    const resp = await fetch(`${BASE_URL}${path}`, {
-      headers: headers(),
+    const resp = await fetch(await buildUrl(path), {
+      headers: await headers(false),
       credentials: 'omit',
     });
     if (resp.status === 401) {
-      // Token expired or invalid — redirect to login.
       await clearToken();
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login';
@@ -62,9 +58,9 @@ export const api = {
   },
 
   async post<T = unknown>(path: string, body?: unknown): Promise<T | null> {
-    const resp = await fetch(`${BASE_URL}${path}`, {
+    const resp = await fetch(await buildUrl(path), {
       method: 'POST',
-      headers: headers(),
+      headers: await headers(body !== undefined),
       credentials: 'omit',
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -80,15 +76,14 @@ export const api = {
       const msg = errBody?.error?.message || `HTTP ${resp.status}`;
       throw new Error(msg);
     }
-    // Some endpoints (like DELETE) may return 204 No Content.
     const text = await resp.text();
     return text ? JSON.parse(text) : null;
   },
 
   async put<T = unknown>(path: string, body?: unknown): Promise<T | null> {
-    const resp = await fetch(`${BASE_URL}${path}`, {
+    const resp = await fetch(await buildUrl(path), {
       method: 'PUT',
-      headers: headers(),
+      headers: await headers(body !== undefined),
       credentials: 'omit',
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -108,19 +103,15 @@ export const api = {
     return text ? JSON.parse(text) : null;
   },
 
-  /**
-   * POST with SSE streaming response.
-   * Calls onEvent for each SSE event, resolves when stream ends.
-   */
   async streamPost(
     path: string,
     body: unknown,
     onEvent: (eventType: string, data: unknown, eventId?: string) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    const resp = await fetch(`${BASE_URL}${path}`, {
+    const resp = await fetch(await buildUrl(path), {
       method: 'POST',
-      headers: headers(),
+      headers: await headers(true),
       credentials: 'omit',
       body: JSON.stringify(body),
       signal,
@@ -149,8 +140,6 @@ export const api = {
     let buffer = '';
     let aborted = false;
 
-    // Explicitly cancel the reader when abort fires. WebKit (Tauri)
-    // doesn't always interrupt reader.read() from the fetch signal alone.
     const onAbort = () => {
       aborted = true;
       reader.cancel().catch(() => {});
@@ -163,8 +152,6 @@ export const api = {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-
-        // Parse SSE events from buffer.
         const events = buffer.split('\n\n');
         buffer = events.pop() || '';
 
@@ -184,7 +171,6 @@ export const api = {
             } else if (line.startsWith('id: ')) {
               eventId = line.slice(4).trim();
             }
-            // Comments (: ping) are ignored.
           }
 
           if (dataLines.length > 0) {
@@ -205,9 +191,9 @@ export const api = {
   },
 
   async del<T = unknown>(path: string): Promise<T | null> {
-    const resp = await fetch(`${BASE_URL}${path}`, {
+    const resp = await fetch(await buildUrl(path), {
       method: 'DELETE',
-      headers: headers(),
+      headers: await headers(false),
       credentials: 'omit',
     });
     if (resp.status === 401) {

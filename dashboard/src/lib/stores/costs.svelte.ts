@@ -1,12 +1,12 @@
 /**
  * Costs store — Svelte 5 runes (new).
  *
- * REST query from GET /api/costs.
+ * SDK-backed cost query state.
  *
  * Ref: T-1.8.6, §5.1
  */
 
-import { api } from '$lib/api';
+import { getGhostClient } from '$lib/ghost-client';
 import { wsStore } from '$lib/stores/websocket.svelte';
 
 export interface AgentCost {
@@ -36,8 +36,8 @@ class CostsStore {
     this.error = '';
 
     try {
-      const data = await api.get('/api/costs');
-      this.costs = Array.isArray(data) ? data : (data?.costs ?? []);
+      const client = await getGhostClient();
+      this.costs = await client.costs.list();
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load cost data';
     }
@@ -54,8 +54,8 @@ class CostsStore {
 
   async refresh() {
     try {
-      const data = await api.get('/api/costs');
-      this.costs = Array.isArray(data) ? data : (data?.costs ?? []);
+      const client = await getGhostClient();
+      this.costs = await client.costs.list();
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to refresh cost data';
     }

@@ -60,6 +60,16 @@ interface CreateSessionParams {
 interface ListSessionsParams {
     limit?: number;
     offset?: number;
+    before?: string;
+}
+interface RecoverStreamEvent {
+    seq: number;
+    event_type: string;
+    payload: Record<string, unknown>;
+    created_at: string;
+}
+interface RecoverStreamResult {
+    events: RecoverStreamEvent[];
 }
 declare class SessionsAPI {
     private request;
@@ -76,6 +86,10 @@ declare class SessionsAPI {
     delete(id: string): Promise<{
         deleted: boolean;
     }>;
+    recoverStream(id: string, params: {
+        message_id: string;
+        after_seq?: number;
+    }): Promise<RecoverStreamResult>;
 }
 
 interface SendMessageParams {
@@ -120,6 +134,7 @@ type StreamEvent = {
     type: 'error';
     message: string;
 };
+type ChatStreamEventHandler = (eventType: string, data: Record<string, unknown>, eventId?: string) => void;
 declare class ChatAPI {
     private request;
     private options;
@@ -128,6 +143,7 @@ declare class ChatAPI {
     send(sessionId: string, params: SendMessageParams): Promise<SendMessageResult>;
     /** Send a message and receive streaming SSE events. */
     stream(sessionId: string, params: SendMessageParams): AsyncGenerator<StreamEvent>;
+    streamWithCallback(sessionId: string, params: SendMessageParams, onEvent: ChatStreamEventHandler, signal?: AbortSignal): Promise<void>;
 }
 
 interface ConvergenceScore {
@@ -322,6 +338,276 @@ declare class HealthAPI {
     ready(): Promise<ReadyStatus>;
 }
 
+interface LoginParams {
+    token: string;
+}
+interface AuthTokenResponse {
+    access_token: string;
+    token_type: string;
+    expires_in: number;
+}
+interface LogoutResponse {
+    message?: string;
+    status?: string;
+}
+declare class AuthAPI {
+    private request;
+    constructor(request: GhostRequestFn);
+    login(params: LoginParams): Promise<AuthTokenResponse>;
+    refresh(): Promise<AuthTokenResponse>;
+    logout(): Promise<LogoutResponse | undefined>;
+}
+
+interface AuditEntry {
+    id: string;
+    timestamp: string;
+    event_type: string;
+    severity: string;
+    details: string;
+    agent_id?: string;
+    actor_id?: string;
+}
+interface AuditQueryParams {
+    time_start?: string;
+    time_end?: string;
+    agent_id?: string;
+    event_type?: string;
+    severity?: string;
+    tool_name?: string;
+    search?: string;
+    page?: number;
+    page_size?: number;
+}
+interface AuditQueryResult {
+    entries: AuditEntry[];
+    page: number;
+    page_size: number;
+    total: number;
+    filters_applied?: Record<string, unknown>;
+}
+interface AuditExportParams {
+    format?: 'json' | 'csv' | 'jsonl';
+    agent_id?: string;
+    time_start?: string;
+    time_end?: string;
+}
+declare class AuditAPI {
+    private request;
+    private options;
+    constructor(request: GhostRequestFn, options: GhostClientOptions);
+    query(params?: AuditQueryParams): Promise<AuditQueryResult>;
+    export(params?: AuditExportParams): Promise<unknown>;
+    exportBlob(params?: AuditExportParams): Promise<Blob>;
+}
+
+interface AgentCostInfo {
+    agent_id: string;
+    agent_name: string;
+    daily_total: number;
+    compaction_cost: number;
+    spending_cap: number;
+    cap_remaining: number;
+    cap_utilization_pct: number;
+}
+declare class CostsAPI {
+    private request;
+    constructor(request: GhostRequestFn);
+    list(): Promise<AgentCostInfo[]>;
+}
+
+interface MemoryEntry {
+    id?: number;
+    memory_id: string;
+    snapshot: string;
+    created_at: string;
+}
+interface ListMemoriesParams {
+    agent_id?: string;
+    page?: number;
+    page_size?: number;
+    include_archived?: boolean;
+}
+interface ListMemoriesResult {
+    memories: MemoryEntry[];
+    page: number;
+    page_size: number;
+    total: number;
+}
+interface SearchMemoriesParams {
+    q?: string;
+    agent_id?: string;
+    memory_type?: string;
+    importance?: string;
+    confidence_min?: number;
+    confidence_max?: number;
+    limit?: number;
+    include_archived?: boolean;
+}
+interface MemorySearchResultEntry {
+    id: number;
+    memory_id: string;
+    snapshot: unknown;
+    created_at: string;
+    score: number;
+}
+interface SearchMemoriesResult {
+    results: MemorySearchResultEntry[];
+    count: number;
+    query?: string;
+    search_mode: 'fts5' | 'like';
+    filters: {
+        agent_id?: string;
+        memory_type?: string;
+        importance?: string;
+        confidence_min?: number;
+        confidence_max?: number;
+    };
+}
+interface MemoryGraphNode {
+    id: string;
+    label: string;
+    type: 'entity' | 'event' | 'concept';
+    importance: number;
+    decayFactor: number;
+}
+interface MemoryGraphEdge {
+    source: string | MemoryGraphNode;
+    target: string | MemoryGraphNode;
+    relationship: string;
+    strength: number;
+}
+interface MemoryGraphResult {
+    nodes: MemoryGraphNode[];
+    edges: MemoryGraphEdge[];
+}
+declare class MemoryAPI {
+    private request;
+    constructor(request: GhostRequestFn);
+    list(params?: ListMemoriesParams): Promise<ListMemoriesResult>;
+    get(id: string): Promise<MemoryEntry>;
+    graph(): Promise<MemoryGraphResult>;
+    search(params?: SearchMemoriesParams): Promise<SearchMemoriesResult>;
+}
+
+interface RuntimeSession {
+    session_id: string;
+    started_at: string;
+    last_event_at: string;
+    event_count: number;
+    agents: string[] | string;
+}
+interface SessionEvent {
+    id: string;
+    event_type: string;
+    sender?: string | null;
+    timestamp: string;
+    sequence_number: number;
+    content_hash?: string | null;
+    content_length?: number | null;
+    privacy_level: string;
+    latency_ms?: number | null;
+    token_count?: number | null;
+    event_hash: string;
+    previous_hash: string;
+    attributes: Record<string, unknown>;
+}
+interface SessionEventsParams {
+    offset?: number;
+    limit?: number;
+}
+interface SessionEventsResult {
+    session_id: string;
+    events: SessionEvent[];
+    total: number;
+    offset: number;
+    limit: number;
+    chain_valid: boolean;
+    cumulative_cost: number;
+}
+interface SessionBookmark {
+    id: string;
+    eventIndex: number;
+    label: string;
+    createdAt: string;
+}
+interface SessionBookmarksResult {
+    bookmarks: SessionBookmark[];
+}
+interface CreateSessionBookmarkParams {
+    id?: string;
+    eventIndex: number;
+    label: string;
+}
+interface CreateSessionBookmarkResult {
+    id: string;
+    status: 'created';
+}
+interface DeleteSessionBookmarkResult {
+    status: 'deleted';
+}
+interface BranchSessionParams {
+    from_event_index: number;
+}
+interface BranchSessionResult {
+    session_id: string;
+    branched_from: string;
+    events_copied: number;
+}
+interface ListRuntimeSessionsParams {
+    page?: number;
+    page_size?: number;
+    cursor?: string;
+    limit?: number;
+}
+interface ListRuntimeSessionsPageResult {
+    sessions: RuntimeSession[];
+    page: number;
+    page_size: number;
+    total: number;
+}
+interface ListRuntimeSessionsCursorResult {
+    data: RuntimeSession[];
+    next_cursor: string | null;
+    has_more: boolean;
+    total_count: number;
+}
+declare class RuntimeSessionsAPI {
+    private request;
+    constructor(request: GhostRequestFn);
+    list(params?: ListRuntimeSessionsParams): Promise<ListRuntimeSessionsPageResult | ListRuntimeSessionsCursorResult>;
+    events(sessionId: string, params?: SessionEventsParams): Promise<SessionEventsResult>;
+    listBookmarks(sessionId: string): Promise<SessionBookmarksResult>;
+    createBookmark(sessionId: string, params: CreateSessionBookmarkParams): Promise<CreateSessionBookmarkResult>;
+    deleteBookmark(sessionId: string, bookmarkId: string): Promise<DeleteSessionBookmarkResult>;
+    branch(sessionId: string, params: BranchSessionParams): Promise<BranchSessionResult>;
+    heartbeat(sessionId: string): Promise<void>;
+}
+
+interface TraceSpanRecord {
+    span_id: string;
+    trace_id: string;
+    parent_span_id: string | null;
+    operation_name: string;
+    start_time: string;
+    end_time: string | null;
+    attributes: Record<string, unknown>;
+    status: string;
+}
+interface TraceGroup {
+    trace_id: string;
+    spans: TraceSpanRecord[];
+}
+interface SessionTrace {
+    session_id: string;
+    traces: TraceGroup[];
+    total_spans: number;
+}
+declare class TracesAPI {
+    private request;
+    constructor(request: GhostRequestFn);
+    get(sessionId: string): Promise<SessionTrace>;
+}
+
 /** All possible server-to-client WebSocket events. */
 type WsEvent = {
     type: 'ScoreUpdate';
@@ -432,6 +718,12 @@ declare class GhostClient {
     readonly skills: SkillsAPI;
     readonly safety: SafetyAPI;
     readonly health: HealthAPI;
+    readonly auth: AuthAPI;
+    readonly audit: AuditAPI;
+    readonly costs: CostsAPI;
+    readonly memory: MemoryAPI;
+    readonly runtimeSessions: RuntimeSessionsAPI;
+    readonly traces: TracesAPI;
     private readonly options;
     constructor(options?: GhostClientOptions);
     /** Create a WebSocket connection for real-time events. */
@@ -2207,4 +2499,4 @@ interface operations {
     };
 }
 
-export { type Agent, type AgentDetail, AgentsAPI, ChatAPI, ConvergenceAPI, type ConvergenceError, type ConvergenceScore, type ConvergenceScoresResult, type CreateAgentParams, type CreateSessionParams, type DeleteAgentResult, GhostAPIError, GhostClient, type GhostClientOptions, GhostError, GhostNetworkError, type GhostRequestFn, GhostTimeoutError, GhostWebSocket, type GhostWebSocketOptions, GoalsAPI, HealthAPI, type HealthStatus, type KillAllResult, type ListGoalsParams, type ListGoalsResult, type ListSessionsParams, type ListSkillsResult, type PauseResult, type Proposal, type ProposalDetail, type QuarantineResult, type ReadyStatus, type ResumeParams, type ResumeResult, SafetyAPI, type SafetyStatus, type SendMessageParams, type SendMessageResult, SessionsAPI, type Skill, SkillsAPI, type StreamEvent, type StudioMessage, type StudioSession, type StudioSessionWithMessages, type WsEvent, type components, type operations, type paths };
+export { type Agent, type AgentCostInfo, type AgentDetail, AgentsAPI, AuditAPI, type AuditEntry, type AuditExportParams, type AuditQueryParams, type AuditQueryResult, AuthAPI, type AuthTokenResponse, type BranchSessionParams, type BranchSessionResult, ChatAPI, type ChatStreamEventHandler, ConvergenceAPI, type ConvergenceError, type ConvergenceScore, type ConvergenceScoresResult, CostsAPI, type CreateAgentParams, type CreateSessionBookmarkParams, type CreateSessionBookmarkResult, type CreateSessionParams, type DeleteAgentResult, type DeleteSessionBookmarkResult, GhostAPIError, GhostClient, type GhostClientOptions, GhostError, GhostNetworkError, type GhostRequestFn, GhostTimeoutError, GhostWebSocket, type GhostWebSocketOptions, GoalsAPI, HealthAPI, type HealthStatus, type KillAllResult, type ListGoalsParams, type ListGoalsResult, type ListMemoriesParams, type ListMemoriesResult, type ListRuntimeSessionsCursorResult, type ListRuntimeSessionsPageResult, type ListRuntimeSessionsParams, type ListSessionsParams, type ListSkillsResult, type LoginParams, type LogoutResponse, MemoryAPI, type MemoryEntry, type MemoryGraphEdge, type MemoryGraphNode, type MemoryGraphResult, type MemorySearchResultEntry, type PauseResult, type Proposal, type ProposalDetail, type QuarantineResult, type ReadyStatus, type RecoverStreamEvent, type RecoverStreamResult, type ResumeParams, type ResumeResult, type RuntimeSession, RuntimeSessionsAPI, SafetyAPI, type SafetyStatus, type SearchMemoriesParams, type SearchMemoriesResult, type SendMessageParams, type SendMessageResult, type SessionBookmark, type SessionBookmarksResult, type SessionEvent, type SessionEventsParams, type SessionEventsResult, type SessionTrace, SessionsAPI, type Skill, SkillsAPI, type StreamEvent, type StudioMessage, type StudioSession, type StudioSessionWithMessages, type TraceGroup, type TraceSpanRecord, TracesAPI, type WsEvent, type components, type operations, type paths };

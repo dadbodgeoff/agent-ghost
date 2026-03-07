@@ -26,6 +26,7 @@ pub fn run() {
             commands::gateway::start_gateway,
             commands::gateway::stop_gateway,
             commands::gateway::gateway_status,
+            commands::gateway::gateway_port,
         ])
         .setup(|app| {
             // --- Tray (Tauri v2 API: build in setup, NOT .system_tray()) ---

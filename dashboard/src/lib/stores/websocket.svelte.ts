@@ -11,8 +11,7 @@
  * Ref: T-1.7.1, §5.1
  */
 
-import { BASE_URL } from '$lib/api';
-const WS_URL = BASE_URL.replace(/^http/, 'ws') + '/api/ws';
+import { getRuntime } from '$lib/platform/runtime';
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
@@ -70,7 +69,7 @@ class WebSocketStore {
   }
 
   /** Connect to the gateway WebSocket. */
-  connect() {
+  async connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -80,8 +79,11 @@ class WebSocketStore {
     // Followers don't open their own WS — they receive events via BroadcastChannel.
     if (!this.isLeader) return;
 
-    const token = sessionStorage.getItem('ghost-token');
-    const url = token ? `${WS_URL}?token=${encodeURIComponent(token)}` : WS_URL;
+    const runtime = await getRuntime();
+    const baseUrl = await runtime.getBaseUrl();
+    const token = await runtime.getToken();
+    const wsUrl = baseUrl.replace(/^http/, 'ws') + '/api/ws';
+    const url = token ? `${wsUrl}?token=${encodeURIComponent(token)}` : wsUrl;
 
     this.state = 'connecting';
     this.intentionalClose = false;
@@ -200,7 +202,7 @@ class WebSocketStore {
 
     this.reconnectTimer = setTimeout(() => {
       this.backoffMs = Math.min(this.backoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
-      this.connect();
+      void this.connect();
     }, delay);
   }
 
@@ -294,7 +296,7 @@ class WebSocketStore {
     if (this.isLeader) return;
     this.isLeader = true;
     // Open a new WS connection as the leader.
-    this.connect();
+    void this.connect();
   }
 
   private becomeFollower() {

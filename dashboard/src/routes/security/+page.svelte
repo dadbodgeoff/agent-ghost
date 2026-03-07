@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, BASE_URL } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import AuditTimeline from '../../components/AuditTimeline.svelte';
   import FilterBar from '../../components/FilterBar.svelte';
+  import type { Agent, AuditEntry, AuditExportParams } from '@ghost/sdk';
 
   // T-5.9.5: Replace `any` with proper types.
   interface KillState {
@@ -14,15 +15,6 @@
     activated_at?: string;
     trigger?: string;
     distributed_gate?: Record<string, unknown>;
-  }
-
-  interface AuditEntry {
-    id: string;
-    timestamp: string;
-    agent_id: string;
-    event_type: string;
-    severity: string;
-    details: string;
   }
 
   let killState: KillState | null = $state(null);
@@ -53,7 +45,8 @@
 
   async function refreshSafety() {
     try {
-      killState = await api.get('/api/safety/status');
+      const client = await getGhostClient();
+      killState = await client.safety.status();
     } catch { /* non-fatal refresh */ }
   }
 
@@ -61,14 +54,15 @@
     // Load initial data (fire-and-forget async).
     (async () => {
       try {
+        const client = await getGhostClient();
         const [safetyData, auditData, agentData] = await Promise.all([
-          api.get('/api/safety/status'),
-          api.get('/api/audit?page_size=50'),
-          api.get('/api/agents').catch(() => []),
+          client.safety.status(),
+          client.audit.query({ page_size: 50 }),
+          client.agents.list().catch(() => []),
         ]);
         killState = safetyData;
         auditEntries = auditData?.entries ?? [];
-        agents = (agentData ?? []).map((a: { id: string; name: string }) => ({ id: a.id, name: a.name }));
+        agents = (agentData ?? []).map((a: Agent) => ({ id: a.id, name: a.name }));
       } catch (e: unknown) {
         error = e instanceof Error ? e.message : 'Failed to load security data';
       }
@@ -92,16 +86,16 @@
 
   async function applyFilters(state: FilterState) {
     try {
-      const params = new URLSearchParams();
-      params.set('page_size', '50');
-      if (state.agentId) params.set('agent_id', state.agentId);
-      if (state.eventType) params.set('event_type', state.eventType);
-      if (state.severities?.length) params.set('severity', state.severities.join(','));
-      if (state.from) params.set('from', new Date(state.from).toISOString());
-      if (state.to) params.set('to', new Date(state.to).toISOString());
-      if (state.query) params.set('q', state.query);
-
-      const data = await api.get(`/api/audit?${params.toString()}`);
+      const client = await getGhostClient();
+      const data = await client.audit.query({
+        page_size: 50,
+        agent_id: state.agentId,
+        event_type: state.eventType,
+        severity: state.severities?.length ? state.severities.join(',') : undefined,
+        time_start: state.from ? new Date(state.from).toISOString() : undefined,
+        time_end: state.to ? new Date(state.to).toISOString() : undefined,
+        search: state.query,
+      });
       auditEntries = data?.entries ?? [];
     } catch (e: unknown) {
       // T-5.9.2: Show filter error instead of swallowing.
@@ -122,19 +116,18 @@
       return;
     }
     try {
-      await api.post('/api/safety/kill-all');
-      killState = await api.get('/api/safety/status');
+      const client = await getGhostClient();
+      await client.safety.killAll('Manual trigger from dashboard', 'dashboard_ui');
+      killState = await client.safety.status();
     } catch (e: unknown) {
       alert('Failed to trigger kill switch: ' + (e instanceof Error ? e.message : String(e)));
     }
   }
 
-  async function exportAudit(format: string) {
+  async function exportAudit(format: NonNullable<AuditExportParams['format']>) {
     try {
-      const blob = await fetch(
-        `${BASE_URL}/api/audit/export?format=${format}`,
-        { headers: { Authorization: `Bearer ${sessionStorage.getItem('ghost-token') ?? ''}` } }
-      ).then(r => r.blob());
+      const client = await getGhostClient();
+      const blob = await client.audit.exportBlob({ format });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

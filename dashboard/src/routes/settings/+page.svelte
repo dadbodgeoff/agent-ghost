@@ -33,8 +33,8 @@
     // 'dark' = no .light class = dark theme (default).
   }
 
-  function logout() {
-    clearToken();
+  async function logout() {
+    await clearToken();
     goto('/login');
   }
 </script>

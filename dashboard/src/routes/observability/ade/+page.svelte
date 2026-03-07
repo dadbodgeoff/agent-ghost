@@ -5,10 +5,10 @@
    * Ref: T-3.14.1
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { HealthStatus } from '@ghost/sdk';
 
-  interface HealthData {
-    status: string;
+  interface HealthData extends HealthStatus {
     uptime_secs?: number;
     db_size_bytes?: number;
     active_agents?: number;
@@ -75,7 +75,8 @@
   async function loadHealth() {
     refreshing = true;
     try {
-      health = await api.get('/api/health');
+      const client = await getGhostClient();
+      health = await client.health.check() as HealthData;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load health data';
     } finally {

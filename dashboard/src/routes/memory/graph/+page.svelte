@@ -4,33 +4,21 @@
    * Force-directed graph of memory entities using d3-force.
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import * as d3 from 'd3-force';
   import { select } from 'd3-selection';
   import { zoom as d3Zoom } from 'd3-zoom';
   import { drag as d3Drag } from 'd3-drag';
+  import type { MemoryEntry, MemoryGraphEdge, MemoryGraphNode as ApiMemoryGraphNode } from '@ghost/sdk';
 
-  interface MemoryGraphNode extends d3.SimulationNodeDatum {
-    id: string;
-    label: string;
-    type: 'entity' | 'event' | 'concept';
-    importance: number;
-    decayFactor: number;
-  }
-
-  interface MemoryGraphEdge {
-    source: string | MemoryGraphNode;
-    target: string | MemoryGraphNode;
-    relationship: string;
-    strength: number;
-  }
+  interface MemoryGraphNode extends ApiMemoryGraphNode, d3.SimulationNodeDatum {}
 
   let svgEl: SVGSVGElement;
   let loading = $state(true);
   let error = $state('');
   let searchQuery = $state('');
   let selectedNode: MemoryGraphNode | null = $state(null);
-  let nodeDetail: Record<string, unknown> | null = $state(null);
+  let nodeDetail: MemoryEntry | null = $state(null);
   let graphNodes: MemoryGraphNode[] = $state([]);
   let graphEdges: MemoryGraphEdge[] = $state([]);
   let filteredNodeIds: Set<string> | null = $state(null);
@@ -55,7 +43,8 @@
 
   async function loadGraph() {
     try {
-      const data = await api.get<{ nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[] }>('/api/memory/graph');
+      const client = await getGhostClient();
+      const data = await client.memory.graph();
       graphNodes = data?.nodes ?? [];
       graphEdges = data?.edges ?? [];
     } catch (e: unknown) {
@@ -66,7 +55,8 @@
 
   async function loadNodeDetail(nodeId: string) {
     try {
-      nodeDetail = await api.get<Record<string, unknown>>(`/api/memory/${nodeId}`);
+      const client = await getGhostClient();
+      nodeDetail = await client.memory.get(nodeId);
     } catch {
       nodeDetail = null;
     }

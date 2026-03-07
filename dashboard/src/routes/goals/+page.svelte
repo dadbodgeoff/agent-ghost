@@ -1,22 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import GoalCard from '../../components/GoalCard.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
-
-  interface Proposal {
-    id: string;
-    agent_id: string;
-    session_id: string;
-    proposer_type: string;
-    operation: string;
-    target_type: string;
-    decision: string | null;
-    dimension_scores: Record<string, number>;
-    flags: string[];
-    created_at: string;
-    resolved_at: string | null;
-  }
+  import type { Proposal } from '@ghost/sdk';
 
   let proposals: Proposal[] = $state([]);
   let loading = $state(true);
@@ -34,12 +21,12 @@
     try {
       loading = true;
       error = '';
-      const params = new URLSearchParams();
-      if (statusFilter !== 'all') params.set('status', statusFilter);
-      if (agentFilter) params.set('agent_id', agentFilter);
-      params.set('page_size', '100');
-
-      const data = await api.get(`/api/goals?${params}`);
+      const client = await getGhostClient();
+      const data = await client.goals.list({
+        status: statusFilter !== 'all' ? statusFilter : undefined,
+        agent_id: agentFilter || undefined,
+        page_size: 100,
+      });
       proposals = data?.proposals ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load goals';
@@ -74,10 +61,9 @@
     actionLoading = id;
     resolvedMessage = null;
     try {
-      const result = await api.post(`/api/goals/${id}/approve`);
-      proposals = proposals.map(p =>
-        p.id === id ? { ...p, decision: result?.decision ?? 'approved', resolved_at: result?.resolved_at ?? new Date().toISOString() } : p
-      );
+      const client = await getGhostClient();
+      await client.goals.approve(id);
+      await loadProposals();
     } catch (e: unknown) {
       if (e instanceof Error && (e.message.includes('already resolved') || e.message.includes('409'))) {
         resolvedMessage = `Proposal ${id.slice(0, 8)}… was already resolved by another user.`;
@@ -94,10 +80,9 @@
     actionLoading = id;
     resolvedMessage = null;
     try {
-      const result = await api.post(`/api/goals/${id}/reject`);
-      proposals = proposals.map(p =>
-        p.id === id ? { ...p, decision: result?.decision ?? 'rejected', resolved_at: result?.resolved_at ?? new Date().toISOString() } : p
-      );
+      const client = await getGhostClient();
+      await client.goals.reject(id);
+      await loadProposals();
     } catch (e: unknown) {
       if (e instanceof Error && (e.message.includes('already resolved') || e.message.includes('409'))) {
         resolvedMessage = `Proposal ${id.slice(0, 8)}… was already resolved by another user.`;

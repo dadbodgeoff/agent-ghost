@@ -7,6 +7,12 @@ import { GoalsAPI } from './goals.js';
 import { SkillsAPI } from './skills.js';
 import { SafetyAPI } from './safety.js';
 import { HealthAPI } from './health.js';
+import { AuthAPI } from './auth.js';
+import { AuditAPI } from './audit.js';
+import { CostsAPI } from './costs.js';
+import { MemoryAPI } from './memory.js';
+import { RuntimeSessionsAPI } from './runtime-sessions.js';
+import { TracesAPI } from './traces.js';
 import { GhostWebSocket, type GhostWebSocketOptions } from './websocket.js';
 
 // ── Types ──
@@ -40,6 +46,12 @@ export class GhostClient {
   readonly skills: SkillsAPI;
   readonly safety: SafetyAPI;
   readonly health: HealthAPI;
+  readonly auth: AuthAPI;
+  readonly audit: AuditAPI;
+  readonly costs: CostsAPI;
+  readonly memory: MemoryAPI;
+  readonly runtimeSessions: RuntimeSessionsAPI;
+  readonly traces: TracesAPI;
 
   private readonly options: GhostClientOptions;
 
@@ -58,6 +70,12 @@ export class GhostClient {
     this.skills = new SkillsAPI(request);
     this.safety = new SafetyAPI(request);
     this.health = new HealthAPI(request);
+    this.auth = new AuthAPI(request);
+    this.audit = new AuditAPI(request, this.options);
+    this.costs = new CostsAPI(request);
+    this.memory = new MemoryAPI(request);
+    this.runtimeSessions = new RuntimeSessionsAPI(request);
+    this.traces = new TracesAPI(request);
   }
 
   /** Create a WebSocket connection for real-time events. */

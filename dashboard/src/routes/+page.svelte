@@ -1,19 +1,21 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { Agent } from '@ghost/sdk';
   import ScoreGauge from '../components/ScoreGauge.svelte';
 
   let score = $state(0);
   let level = $state(0);
-  let agents: any[] = $state([]);
+  let agents: Agent[] = $state([]);
   let loading = $state(true);
   let error = $state('');
 
   onMount(async () => {
     try {
+      const client = await getGhostClient();
       const [convData, agentData] = await Promise.all([
-        api.get('/api/convergence/scores'),
-        api.get('/api/agents'),
+        client.convergence.scores(),
+        client.agents.list(),
       ]);
 
       // Fix: unwrap {scores: [...]} wrapper, read correct field names.

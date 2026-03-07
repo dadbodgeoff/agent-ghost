@@ -1,12 +1,12 @@
 /**
  * Audit store — Svelte 5 runes (new).
  *
- * REST query from GET /api/audit with filter params.
+ * SDK-backed audit query state.
  *
  * Ref: T-1.8.5, §5.1
  */
 
-import { api } from '$lib/api';
+import { getGhostClient } from '$lib/ghost-client';
 import { wsStore } from '$lib/stores/websocket.svelte';
 
 export interface AuditEntry {
@@ -56,24 +56,21 @@ class AuditStore {
     this.loading = true;
     this.error = '';
 
-    const params = new URLSearchParams();
-    if (filters.page) params.set('page', String(filters.page));
-    if (filters.page_size) params.set('page_size', String(filters.page_size));
-    if (filters.severity) params.set('severity', filters.severity);
-    if (filters.event_type) params.set('event_type', filters.event_type);
-    if (filters.agent_id) params.set('agent_id', filters.agent_id);
-    if (filters.from) params.set('from', filters.from);
-    if (filters.to) params.set('to', filters.to);
-    if (filters.search) params.set('search', filters.search);
-
-    const qs = params.toString();
-    const path = qs ? `/api/audit?${qs}` : '/api/audit';
-
     try {
-      const data = await api.get(path);
-      this.entries = data?.entries ?? [];
-      this.total = data?.total ?? this.entries.length;
-      this.page = data?.page ?? filters.page ?? 1;
+      const client = await getGhostClient();
+      const data = await client.audit.query({
+        page: filters.page,
+        page_size: filters.page_size,
+        severity: filters.severity,
+        event_type: filters.event_type,
+        agent_id: filters.agent_id,
+        time_start: filters.from,
+        time_end: filters.to,
+        search: filters.search,
+      });
+      this.entries = data.entries ?? [];
+      this.total = data.total ?? this.entries.length;
+      this.page = data.page ?? filters.page ?? 1;
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load audit entries';
     }

@@ -13,21 +13,21 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { tabStore } from '$lib/stores/tabs.svelte';
   import { shortcuts } from '$lib/shortcuts';
-  import { api, BASE_URL } from '$lib/api';
+  import { api } from '$lib/api';
+  import { clearToken } from '$lib/auth';
+  import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
+  import { GhostAPIError } from '@ghost/sdk';
 
-  const isTauri = typeof window !== 'undefined' && !!window.__TAURI__;
-
-  let token: string | null = null;
+  let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let showInstallPrompt = $state(false);
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
 
-  // Reactive binding to WS connection state for the indicator.
   let wsState = $derived(wsStore.state);
 
-  onMount(async () => {
-    // Theme detection: localStorage → prefers-color-scheme → dark default.
+  function applyTheme() {
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
@@ -36,45 +36,30 @@
         document.documentElement.classList.add('light');
       }
     }
-    // Default (null or 'dark') = no .light class = dark theme.
+  }
 
-    // Hydrate token from Tauri store before reading sessionStorage
-    if (isTauri) {
-      try {
-        const { getToken } = await import('$lib/auth');
-        const storedToken = await getToken();
-        if (storedToken) sessionStorage.setItem('ghost-token', storedToken);
-      } catch { /* auth module not yet available — non-fatal */ }
-    }
+  onMount(async () => {
+    applyTheme();
 
-    token = sessionStorage.getItem('ghost-token');
+    runtime = await getRuntime();
     const currentPath = $page.url.pathname;
-    if (!token && currentPath !== '/login') {
-      // Check if gateway requires auth before redirecting to login.
-      // If health endpoint works without a token, auth is not configured — skip login.
+
+    if (currentPath !== '/login') {
       try {
-        const healthResp = await fetch(`${BASE_URL}/api/agents`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!healthResp.ok) {
-          goto('/login');
-          return;
+        const client = await getGhostClient();
+        await client.agents.list();
+      } catch (error) {
+        if (error instanceof GhostAPIError && error.status === 401) {
+          await clearToken();
         }
-        // No auth required — set a dummy token so stores/WS work.
-        token = 'no-auth';
-        sessionStorage.setItem('ghost-token', token);
-      } catch {
         goto('/login');
         return;
       }
     }
 
-    // Connect WebSocket store (replaces old api.connectWebSocket()).
-    wsStore.connect();
+    await wsStore.connect();
 
-    // Initialize keyboard shortcuts system (Phase 2, Task 3.2).
     shortcuts.init();
-    // Note: cmd+k for command palette is handled directly by CommandPalette component.
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
     shortcuts.registerCommand('theme.toggle', () => {
       document.documentElement.classList.toggle('light');
@@ -83,7 +68,8 @@
     });
     shortcuts.registerCommand('killSwitch.activateAll', async () => {
       if (confirm('Kill all agents? This cannot be undone.')) {
-        await api.post('/api/safety/kill-all', { reason: 'Kill switch via keyboard shortcut' });
+        const client = await getGhostClient();
+        await client.safety.killAll('Kill switch via keyboard shortcut', 'dashboard_shortcut');
       }
     });
     shortcuts.registerCommand('search.global', () => goto('/search'));
@@ -102,12 +88,11 @@
       showInstallPrompt = true;
     });
 
-    // Service worker — browser only (Tauri doesn't need SW)
-    if (!isTauri && 'serviceWorker' in navigator) {
+    if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
 
-    subscribeToPush();
+    await subscribeToPush();
   });
 
   onDestroy(() => {
@@ -126,8 +111,7 @@
   }
 
   async function subscribeToPush() {
-    if (isTauri) {
-      // Use Tauri notification plugin instead of web push
+    if (runtime?.isDesktop()) {
       try {
         const { isPermissionGranted, requestPermission } = await import('@tauri-apps/plugin-notification');
         const granted = await isPermissionGranted();
@@ -144,7 +128,7 @@
       const sub = await reg.pushManager.getSubscription();
       if (sub) return;
 
-      const keyData = await api.get('/api/push/vapid-key');
+      const keyData = await api.get<{ key?: string }>('/api/push/vapid-key');
       const key = keyData.key;
       if (!key) return;
 

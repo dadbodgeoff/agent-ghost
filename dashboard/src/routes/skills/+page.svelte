@@ -1,22 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
+  import type { Skill } from '@ghost/sdk';
   import SkillCard from '../../components/SkillCard.svelte';
   import CapabilityBadge from '../../components/CapabilityBadge.svelte';
 
-  interface SkillInfo {
-    id: string;
-    name: string;
-    version: string;
-    description: string;
-    capabilities: string[];
-    source: string;
-    state: string;
-  }
-
-  let installed = $state<SkillInfo[]>([]);
-  let available = $state<SkillInfo[]>([]);
+  let installed = $state<Skill[]>([]);
+  let available = $state<Skill[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let actionLoading = $state<string | null>(null);
@@ -34,7 +25,8 @@
     loading = true;
     error = null;
     try {
-      const data = await api.get('/api/skills');
+      const client = await getGhostClient();
+      const data = await client.skills.list();
       installed = data.installed ?? [];
       available = data.available ?? [];
     } catch (e: unknown) {
@@ -45,9 +37,9 @@
     }
   }
 
-  let confirmSkill = $state<SkillInfo | null>(null);
+  let confirmSkill = $state<Skill | null>(null);
 
-  async function handleAction(skill: SkillInfo, action: 'install' | 'uninstall') {
+  async function handleAction(skill: Skill, action: 'install' | 'uninstall') {
     if (action === 'install') {
       confirmSkill = skill;
       return;
@@ -61,13 +53,14 @@
     confirmSkill = null;
   }
 
-  async function doAction(skill: SkillInfo, action: 'install' | 'uninstall') {
+  async function doAction(skill: Skill, action: 'install' | 'uninstall') {
     actionLoading = skill.id;
     try {
+      const client = await getGhostClient();
       if (action === 'install') {
-        await api.post(`/api/skills/${skill.name}/install`, {});
+        await client.skills.install(skill.name);
       } else {
-        await api.post(`/api/skills/${skill.name}/uninstall`, {});
+        await client.skills.uninstall(skill.name);
       }
       await loadSkills();
     } catch (e: unknown) {

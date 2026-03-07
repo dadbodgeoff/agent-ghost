@@ -5,11 +5,12 @@
    */
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { SessionEvent } from '@ghost/sdk';
   import HashChainStrip from '../../../components/HashChainStrip.svelte';
 
   let sessionId = $derived($page.params.id ?? '');
-  let events: any[] = $state([]);
+  let events: SessionEvent[] = $state([]);
   let loading = $state(true);
   let error = $state('');
   let chainValid = $state(true);
@@ -18,7 +19,8 @@
 
   onMount(async () => {
     try {
-      const data = await api.get(`/api/sessions/${sessionId}/events?limit=200`);
+      const client = await getGhostClient();
+      const data = await client.runtimeSessions.events(sessionId, { limit: 200 });
       events = data?.events ?? [];
       chainValid = data?.chain_valid ?? true;
       cumulativeCost = data?.cumulative_cost ?? 0;

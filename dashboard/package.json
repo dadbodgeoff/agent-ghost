@@ -11,6 +11,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@ghost/sdk": "workspace:*",
     "@codemirror/lang-markdown": "^6.3.1",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.5",

@@ -6,19 +6,13 @@
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import TimelineSlider from '../../../../components/TimelineSlider.svelte';
   import GateCheckBar from '../../../../components/GateCheckBar.svelte';
-
-  interface Bookmark {
-    id: string;
-    eventIndex: number;
-    label: string;
-    createdAt: string;
-  }
+  import type { SessionBookmark, SessionEvent } from '@ghost/sdk';
 
   let sessionId = $derived($page.params.id ?? '');
-  let events: any[] = $state([]);
+  let events: SessionEvent[] = $state([]);
   let loading = $state(true);
   let error = $state('');
   let total = $state(0);
@@ -30,7 +24,7 @@
   let playInterval: ReturnType<typeof setInterval> | null = null;
 
   // Bookmarks
-  let bookmarks: Bookmark[] = $state([]);
+  let bookmarks: SessionBookmark[] = $state([]);
   let newBookmarkLabel = $state('');
   let showBookmarkForm = $state(false);
 
@@ -38,7 +32,8 @@
 
   onMount(async () => {
     try {
-      const data = await api.get(`/api/sessions/${sessionId}/events?limit=500`);
+      const client = await getGhostClient();
+      const data = await client.runtimeSessions.events(sessionId, { limit: 500 });
       events = data?.events ?? [];
       total = data?.total ?? 0;
     } catch (e: unknown) {
@@ -48,7 +43,8 @@
 
     // Load bookmarks
     try {
-      const bData = await api.get(`/api/sessions/${sessionId}/bookmarks`);
+      const client = await getGhostClient();
+      const bData = await client.runtimeSessions.listBookmarks(sessionId);
       bookmarks = bData?.bookmarks ?? [];
     } catch { /* bookmarks not supported yet — non-fatal */ }
   });
@@ -104,7 +100,7 @@
 
   async function addBookmark() {
     const label = newBookmarkLabel.trim() || `Bookmark at event #${currentIndex}`;
-    const bookmark: Bookmark = {
+    const bookmark: SessionBookmark = {
       id: crypto.randomUUID(),
       eventIndex: currentIndex,
       label,
@@ -112,7 +108,8 @@
     };
 
     try {
-      await api.post(`/api/sessions/${sessionId}/bookmarks`, bookmark);
+      const client = await getGhostClient();
+      await client.runtimeSessions.createBookmark(sessionId, bookmark);
     } catch { /* persist failed — keep locally */ }
 
     bookmarks = [...bookmarks, bookmark].sort((a, b) => a.eventIndex - b.eventIndex);
@@ -120,20 +117,23 @@
     showBookmarkForm = false;
   }
 
-  function jumpToBookmark(bm: Bookmark) {
+  function jumpToBookmark(bm: SessionBookmark) {
     currentIndex = bm.eventIndex;
   }
 
   function removeBookmark(id: string) {
     bookmarks = bookmarks.filter(b => b.id !== id);
-    api.del(`/api/sessions/${sessionId}/bookmarks/${id}`).catch(() => {});
+    void getGhostClient()
+      .then((client) => client.runtimeSessions.deleteBookmark(sessionId, id))
+      .catch(() => {});
   }
 
   async function branchFromHere() {
     if (!confirm(`Branch a new session from event #${currentIndex}? Events up to this point will be copied.`)) return;
 
     try {
-      const result = await api.post<{ session_id: string }>(`/api/sessions/${sessionId}/branch`, {
+      const client = await getGhostClient();
+      const result = await client.runtimeSessions.branch(sessionId, {
         from_event_index: currentIndex,
       });
       if (result?.session_id) {

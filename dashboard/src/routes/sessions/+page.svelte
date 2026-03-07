@@ -1,29 +1,32 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type {
+    ListRuntimeSessionsCursorResult,
+    ListRuntimeSessionsPageResult,
+    RuntimeSession,
+  } from '@ghost/sdk';
 
-  interface Session {
-    session_id: string;
-    agents: string[];
-    started_at: string;
-    last_event_at: string;
-    event_count: number;
-  }
-
-  let sessions: Session[] = $state([]);
+  let sessions: RuntimeSession[] = $state([]);
   let loading = $state(true);
   let error = $state('');
 
   onMount(async () => {
     try {
-      const data = await api.get('/api/sessions');
-      // Fix: unwrap {sessions: [...]} wrapper.
-      sessions = data?.sessions ?? [];
+      const client = await getGhostClient();
+      const data = await client.runtimeSessions.list();
+      sessions = getSessions(data);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load sessions';
     }
     loading = false;
   });
+
+  function getSessions(
+    data: ListRuntimeSessionsPageResult | ListRuntimeSessionsCursorResult,
+  ): RuntimeSession[] {
+    return 'sessions' in data ? data.sessions : data.data;
+  }
 </script>
 
 <h1 class="page-title">Sessions</h1>

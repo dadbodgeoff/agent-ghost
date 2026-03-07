@@ -5,6 +5,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { studioChatStore } from '$lib/stores/studioChat.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
+  import { getToken, setToken } from '$lib/auth';
+  import { getGhostClient } from '$lib/ghost-client';
   import ChatMessage from '../../components/ChatMessage.svelte';
   import ToolCallIndicator from '../../components/ToolCallIndicator.svelte';
   import AgentTemplateSelector from '../../components/AgentTemplateSelector.svelte';
@@ -30,13 +32,15 @@
 
     // WP9-G: Check JWT expiry every 60s.
     authCheckInterval = setInterval(() => {
-      const token = sessionStorage.getItem('ghost-token');
-      if (!token) return;
-      try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        const expMs = (payload.exp ?? 0) * 1000;
-        authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
-      } catch { /* malformed token — ignore */ }
+      void (async () => {
+        const token = await getToken();
+        if (!token) return;
+        try {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          const expMs = (payload.exp ?? 0) * 1000;
+          authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
+        } catch { /* malformed token — ignore */ }
+      })();
     }, 60_000);
   });
 
@@ -227,7 +231,7 @@
       {#if wsStore.state === 'disconnected' || wsStore.state === 'reconnecting'}
         <div class="status-banner banner-error">
           <span>Connection lost — {wsStore.state === 'reconnecting' ? `reconnecting (attempt ${wsStore.reconnectAttempt})...` : 'disconnected'}</span>
-          <button class="banner-btn" onclick={() => wsStore.connect()}>Reconnect</button>
+          <button class="banner-btn" onclick={() => { void wsStore.connect(); }}>Reconnect</button>
         </div>
       {/if}
 
@@ -236,11 +240,10 @@
           <span>Session expiring soon</span>
           <button class="banner-btn" onclick={async () => {
             try {
-              const { api } = await import('$lib/api');
-              const data = await api.post('/api/auth/refresh', {}) as { token?: string };
-              if (data.token) {
-                const { setToken } = await import('$lib/auth');
-                await setToken(data.token);
+              const client = await getGhostClient();
+              const data = await client.auth.refresh();
+              if (data.access_token) {
+                await setToken(data.access_token);
                 authExpiryWarning = false;
               }
             } catch { /* refresh failed */ }

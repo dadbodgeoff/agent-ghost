@@ -6,36 +6,20 @@
    * Ref: T-3.8.2
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
+  import type {
+    ListRuntimeSessionsCursorResult,
+    ListRuntimeSessionsPageResult,
+    RuntimeSession,
+    SessionTrace,
+    TraceSpanRecord,
+  } from '@ghost/sdk';
   import TraceWaterfall from '../../components/TraceWaterfall.svelte';
 
-  interface Session {
-    session_id: string;
-    agent_id: string;
-    event_count: number;
-  }
-
-  interface SpanRecord {
-    span_id: string;
-    trace_id: string;
-    parent_span_id: string | null;
-    operation_name: string;
-    start_time: string;
-    end_time: string | null;
-    attributes: Record<string, unknown>;
-    status: string;
-  }
-
-  interface TraceResponse {
-    session_id: string;
-    traces: { trace_id: string; spans: SpanRecord[] }[];
-    total_spans: number;
-  }
-
-  let sessions: Session[] = $state([]);
+  let sessions: RuntimeSession[] = $state([]);
   let selectedSession: string | null = $state(null);
-  let spans: SpanRecord[] = $state([]);
+  let spans: TraceSpanRecord[] = $state([]);
   let totalSpans = $state(0);
   let loading = $state(false);
   let error: string | null = $state(null);
@@ -52,9 +36,9 @@
 
   async function loadSessions() {
     try {
-      const res = await api.get('/api/sessions?limit=50');
-      // T-5.9.4: Standardize — API returns { sessions: [...] }.
-      sessions = res?.sessions ?? [];
+      const client = await getGhostClient();
+      const res = await client.runtimeSessions.list({ limit: 50 });
+      sessions = getSessions(res);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load sessions';
     }
@@ -65,7 +49,8 @@
     loading = true;
     error = null;
     try {
-      const res: TraceResponse = await api.get(`/api/traces/${sessionId}`);
+      const client = await getGhostClient();
+      const res: SessionTrace = await client.traces.get(sessionId);
       spans = res.traces.flatMap(t => t.spans);
       totalSpans = res.total_spans;
     } catch (e: unknown) {
@@ -74,6 +59,12 @@
     } finally {
       loading = false;
     }
+  }
+
+  function getSessions(
+    data: ListRuntimeSessionsPageResult | ListRuntimeSessionsCursorResult,
+  ): RuntimeSession[] {
+    return 'sessions' in data ? data.sessions : data.data;
   }
 </script>
 

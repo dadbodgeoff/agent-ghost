@@ -1,35 +1,28 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { AgentCostInfo } from '@ghost/sdk';
 
-  interface AgentCost {
-    agent_id: string;
-    agent_name: string;
-    daily_total: number;
-    compaction_cost: number;
-    spending_cap: number;
-  }
-
-  let costs: AgentCost[] = $state([]);
+  let costs: AgentCostInfo[] = $state([]);
   let loading = $state(true);
   let error = $state('');
 
   onMount(async () => {
     try {
-      const data = await api.get('/api/costs');
-      // /api/costs returns a flat array of per-agent cost objects.
-      costs = Array.isArray(data) ? data : (data?.costs ?? []);
+      const client = await getGhostClient();
+      costs = await client.costs.list();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load cost data';
     }
     loading = false;
   });
 
-  function remaining(c: AgentCost): number {
-    return Math.max(0, c.spending_cap - c.daily_total);
+  function remaining(c: AgentCostInfo): number {
+    return Math.max(0, c.cap_remaining ?? c.spending_cap - c.daily_total);
   }
 
-  function utilization(c: AgentCost): number {
+  function utilization(c: AgentCostInfo): number {
+    if (c.cap_utilization_pct !== undefined) return Math.min(100, c.cap_utilization_pct);
     if (c.spending_cap <= 0) return 0;
     return Math.min(100, (c.daily_total / c.spending_cap) * 100);
   }

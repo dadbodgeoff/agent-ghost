@@ -5,7 +5,8 @@
    * Ref: T-3.11.2
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { Agent } from '@ghost/sdk';
 
   interface Channel {
     name: string;
@@ -23,10 +24,9 @@
 
   async function loadChannels() {
     try {
-      const res = await api.get('/api/agents');
-      // T-5.9.4: Standardize — API returns array directly for /api/agents.
-      const agents: Array<{ id: string; name: string; status?: string }> = Array.isArray(res) ? res : (res?.agents ?? []);
-      channels = agents.map((a: { id: string; name: string; status?: string }) => ({
+      const client = await getGhostClient();
+      const agents = await client.agents.list();
+      channels = agents.map((a: Agent) => ({
         name: a.name,
         type: 'agent',
         status: a.status ?? 'active',

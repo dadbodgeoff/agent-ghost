@@ -4,16 +4,17 @@
    * Supports text search, type/importance/confidence filtering.
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { MemoryEntry, MemorySearchResultEntry } from '@ghost/sdk';
   import MemoryCard from '../../components/MemoryCard.svelte';
 
-  interface Memory {
+  interface MemoryCardItem {
     memory_id: string;
-    snapshot: any;
+    snapshot: string;
     created_at: string;
   }
 
-  let memories: Memory[] = $state([]);
+  let memories: MemoryCardItem[] = $state([]);
   let loading = $state(true);
   let error = $state('');
   let searchQuery = $state('');
@@ -30,8 +31,9 @@
     try {
       loading = true;
       error = '';
-      const data = await api.get('/api/memory');
-      memories = data?.memories ?? [];
+      const client = await getGhostClient();
+      const data = await client.memory.list();
+      memories = (data.memories ?? []).map(toMemoryCardItem);
       isSearchMode = false;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load memories';
@@ -48,19 +50,15 @@
     try {
       loading = true;
       error = '';
-      const params = new URLSearchParams();
-      if (searchQuery.trim()) params.set('q', searchQuery.trim());
-      if (agentFilter) params.set('agent_id', agentFilter);
-      if (typeFilter) params.set('memory_type', typeFilter);
-      if (importanceFilter) params.set('importance', importanceFilter);
-      params.set('limit', '100');
-
-      const data = await api.get(`/api/memory/search?${params}`);
-      memories = (data?.results ?? []).map((r: any) => ({
-        memory_id: r.memory_id,
-        snapshot: typeof r.snapshot === 'string' ? r.snapshot : JSON.stringify(r.snapshot),
-        created_at: r.created_at,
-      }));
+      const client = await getGhostClient();
+      const data = await client.memory.search({
+        q: searchQuery.trim() || undefined,
+        agent_id: agentFilter || undefined,
+        memory_type: typeFilter || undefined,
+        importance: importanceFilter || undefined,
+        limit: 100,
+      });
+      memories = (data.results ?? []).map(toSearchMemoryCardItem);
       isSearchMode = true;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Search failed';
@@ -74,6 +72,22 @@
     typeFilter = '';
     importanceFilter = '';
     loadMemories();
+  }
+
+  function toMemoryCardItem(memory: MemoryEntry): MemoryCardItem {
+    return {
+      memory_id: memory.memory_id,
+      snapshot: typeof memory.snapshot === 'string' ? memory.snapshot : JSON.stringify(memory.snapshot),
+      created_at: memory.created_at,
+    };
+  }
+
+  function toSearchMemoryCardItem(memory: MemorySearchResultEntry): MemoryCardItem {
+    return {
+      memory_id: memory.memory_id,
+      snapshot: typeof memory.snapshot === 'string' ? memory.snapshot : JSON.stringify(memory.snapshot),
+      created_at: memory.created_at,
+    };
   }
 </script>
 
@@ -137,7 +151,7 @@
     {#each memories as mem (mem.memory_id)}
       <MemoryCard
         memory_id={mem.memory_id}
-        snapshot={typeof mem.snapshot === 'string' ? mem.snapshot : JSON.stringify(mem.snapshot)}
+        snapshot={mem.snapshot}
         created_at={mem.created_at}
       />
     {/each}

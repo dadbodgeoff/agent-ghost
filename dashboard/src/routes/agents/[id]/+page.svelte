@@ -4,10 +4,19 @@
    * audit entries, and lifecycle controls (pause/resume/quarantine).
    *
    * Ref: tasks.md T-1.10.3, ADE_DESIGN_PLAN §5.3
-   */
+  */
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type {
+    AgentCostInfo,
+    AuditEntry as AuditLogEntry,
+    ConvergenceScore,
+    ListRuntimeSessionsCursorResult,
+    ListRuntimeSessionsPageResult,
+    RuntimeSession,
+  } from '@ghost/sdk';
   import ScoreGauge from '../../../components/ScoreGauge.svelte';
   import CostBar from '../../../components/CostBar.svelte';
   import ConfirmDialog from '../../../components/ConfirmDialog.svelte';
@@ -20,44 +29,12 @@
     capabilities?: string[];
   }
 
-  interface AgentScore {
-    agent_id: string;
-    score: number;
-    level: number;
-    signal_scores: Record<string, number>;
-    computed_at: string | null;
-  }
-
-  interface AgentCost {
-    agent_id: string;
-    daily_total: number;
-    compaction_cost: number;
-    spending_cap: number;
-    cap_remaining: number;
-    cap_utilization_pct: number;
-  }
-
-  interface SessionSummary {
-    session_id: string;
-    started_at: string;
-    last_event_at: string;
-    event_count: number;
-  }
-
-  interface AuditEntry {
-    id: number;
-    timestamp: string;
-    event_type: string;
-    severity: string;
-    message: string;
-  }
-
   let agentId = $derived($page.params.id);
   let agent: AgentDetail | null = $state(null);
-  let score: AgentScore | null = $state(null);
-  let cost: AgentCost | null = $state(null);
-  let sessions: SessionSummary[] = $state([]);
-  let auditEntries: AuditEntry[] = $state([]);
+  let score: ConvergenceScore | null = $state(null);
+  let cost: AgentCostInfo | null = $state(null);
+  let sessions: RuntimeSession[] = $state([]);
+  let auditEntries: AuditLogEntry[] = $state([]);
   let crdtState: any = $state(null);
   let integrityReport: any = $state(null);
   let loading = $state(true);
@@ -76,13 +53,14 @@
     try {
       loading = true;
       error = '';
+      const client = await getGhostClient();
 
       const [agentsData, convData, costsData, sessionsData, auditData, crdtData, integrityData] = await Promise.all([
-        api.get('/api/agents'),
-        api.get('/api/convergence/scores').catch(() => ({ scores: [] })),
-        api.get('/api/costs').catch(() => []),
-        api.get(`/api/sessions?page_size=10`).catch(() => ({ sessions: [] })),
-        api.get(`/api/audit?agent_id=${agentId}&page_size=20`).catch(() => ({ entries: [] })),
+        client.agents.list(),
+        client.convergence.scores().catch(() => ({ scores: [] })),
+        client.costs.list().catch(() => []),
+        client.runtimeSessions.list({ page_size: 10 }).catch(() => ({ sessions: [] })),
+        client.audit.query({ agent_id: agentId, page_size: 20 }).catch(() => ({ entries: [] })),
         api.get(`/api/state/crdt/${agentId}?limit=50`).catch(() => null),
         api.get(`/api/integrity/chain/${agentId}`).catch(() => null),
       ]);
@@ -96,13 +74,13 @@
         return;
       }
 
-      const scores: AgentScore[] = convData?.scores ?? [];
+      const scores: ConvergenceScore[] = convData?.scores ?? [];
       score = scores.find(s => s.agent_id === agentId) ?? null;
 
-      const allCosts: AgentCost[] = costsData ?? [];
+      const allCosts: AgentCostInfo[] = costsData ?? [];
       cost = allCosts.find(c => c.agent_id === agentId) ?? null;
 
-      const allSessions: SessionSummary[] = sessionsData?.sessions ?? [];
+      const allSessions = getSessions(sessionsData);
       sessions = allSessions.filter(s =>
         s.session_id && typeof s.session_id === 'string'
       ).slice(0, 10);
@@ -120,7 +98,14 @@
     actionLoading = true;
     actionError = '';
     try {
-      await api.post(`/api/safety/${action}/${agentId}`, {});
+      const client = await getGhostClient();
+      if (action === 'pause') {
+        await client.safety.pause(agentId, 'Paused from dashboard');
+      } else if (action === 'resume') {
+        await client.safety.resume(agentId);
+      } else {
+        await client.safety.quarantine(agentId, 'Quarantined from dashboard');
+      }
       confirmAction = null;
       await loadData();
     } catch (e: unknown) {
@@ -157,6 +142,13 @@
     collaboration: 'Collaboration',
     learning_rate: 'Learning Rate',
   };
+
+  function getSessions(
+    data: ListRuntimeSessionsPageResult | ListRuntimeSessionsCursorResult | { sessions?: RuntimeSession[] },
+  ): RuntimeSession[] {
+    if ('sessions' in data) return data.sessions ?? [];
+    return data.data;
+  }
 </script>
 
 {#if loading}

@@ -8,7 +8,7 @@
  */
 
 import { wsStore, type WsMessage } from './websocket.svelte';
-import { api } from '$lib/api';
+import { getGhostClient } from '$lib/ghost-client';
 
 export interface AgentScore {
   agent_id: string;
@@ -44,8 +44,9 @@ class ConvergenceStore {
     this.error = '';
 
     try {
-      const data = await api.get('/api/convergence/scores');
-      this.scores = data?.scores ?? [];
+      const client = await getGhostClient();
+      const data = await client.convergence.scores();
+      this.scores = data.scores ?? [];
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load convergence data';
     }
@@ -90,8 +91,9 @@ class ConvergenceStore {
   /** Refresh convergence scores from REST. */
   async refresh() {
     try {
-      const data = await api.get('/api/convergence/scores');
-      this.scores = data?.scores ?? [];
+      const client = await getGhostClient();
+      const data = await client.convergence.scores();
+      this.scores = data.scores ?? [];
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to refresh convergence data';
     }
@@ -100,7 +102,8 @@ class ConvergenceStore {
   /** Poll monitor health (called periodically from layout). */
   async checkMonitorHealth() {
     try {
-      await api.get('/api/health');
+      const client = await getGhostClient();
+      await client.health.check();
       this.monitorOnline = true;
     } catch {
       this.monitorOnline = false;

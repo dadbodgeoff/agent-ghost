@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { BASE_URL } from '$lib/api';
   import { setToken } from '$lib/auth';
+  import { getGhostClient } from '$lib/ghost-client';
 
   let token = $state('');
   let error = $state('');
@@ -16,31 +16,18 @@
 
     loading = true;
     try {
-      const resp = await fetch(`${BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token.trim() }),
-        credentials: 'omit',
-      });
-
-      if (!resp.ok) {
-        const body = await resp.json().catch(() => null);
-        error = body?.error?.message ?? `Authentication failed (${resp.status})`;
-        loading = false;
-        return;
-      }
-
-      const data = await resp.json();
-      // Store access token — persists to Tauri store + sessionStorage.
+      const client = await getGhostClient();
+      const data = await client.auth.login({ token: token.trim() });
       if (data.access_token) {
         await setToken(data.access_token);
       } else {
-        // Legacy mode: gateway accepted the token directly.
         await setToken(token.trim());
       }
       goto('/');
     } catch (e: unknown) {
-      error = 'Gateway unreachable. Is ghost-gateway running? Check ghost.yml for the configured port.';
+      error = e instanceof Error
+        ? e.message
+        : 'Gateway unreachable. Is ghost-gateway running? Check ghost.yml for the configured port.';
     }
     loading = false;
   }

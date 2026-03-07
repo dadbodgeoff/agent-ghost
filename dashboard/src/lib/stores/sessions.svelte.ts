@@ -1,12 +1,12 @@
 /**
  * Sessions store — Svelte 5 runes.
  *
- * REST init from GET /api/sessions.
+ * SDK-backed runtime session state.
  *
  * Ref: T-1.8.4, §5.1
  */
 
-import { api } from '$lib/api';
+import { getGhostClient } from '$lib/ghost-client';
 import { wsStore } from '$lib/stores/websocket.svelte';
 
 export interface Session {
@@ -15,6 +15,15 @@ export interface Session {
   started_at: string;
   last_event_at: string;
   event_count: number;
+}
+
+function normalizeAgents(agents: string[] | string): string[] {
+  if (Array.isArray(agents)) return agents;
+  if (!agents) return [];
+  return agents
+    .split(',')
+    .map((agent) => agent.trim())
+    .filter(Boolean);
 }
 
 class SessionsStore {
@@ -35,8 +44,17 @@ class SessionsStore {
     this.error = '';
 
     try {
-      const data = await api.get('/api/sessions');
-      this.list = data?.sessions ?? [];
+      const client = await getGhostClient();
+      const data = await client.runtimeSessions.list();
+      this.list = 'sessions' in data
+        ? data.sessions.map((session) => ({
+            ...session,
+            agents: normalizeAgents(session.agents),
+          }))
+        : data.data.map((session) => ({
+            ...session,
+            agents: normalizeAgents(session.agents),
+          }));
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load sessions';
     }
@@ -54,8 +72,17 @@ class SessionsStore {
   /** Refresh sessions from REST. */
   async refresh() {
     try {
-      const data = await api.get('/api/sessions');
-      this.list = data?.sessions ?? [];
+      const client = await getGhostClient();
+      const data = await client.runtimeSessions.list();
+      this.list = 'sessions' in data
+        ? data.sessions.map((session) => ({
+            ...session,
+            agents: normalizeAgents(session.agents),
+          }))
+        : data.data.map((session) => ({
+            ...session,
+            agents: normalizeAgents(session.agents),
+          }));
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to refresh sessions';
     }

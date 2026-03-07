@@ -5,7 +5,7 @@
    * Ref: T-3.11.1
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
 
   interface SafetyStatus {
     kill_all_active: boolean;
@@ -25,7 +25,17 @@
 
   async function loadPolicies() {
     try {
-      safetyStatus = await api.get('/api/safety/status');
+      const client = await getGhostClient();
+      const status = await client.safety.status();
+      safetyStatus = {
+        kill_all_active: Boolean(status.platform_killed),
+        paused_agents: Object.entries(status.per_agent ?? {})
+          .filter(([, value]) => value.level?.toLowerCase() === 'pause')
+          .map(([agentId]) => agentId),
+        quarantined_agents: Object.entries(status.per_agent ?? {})
+          .filter(([, value]) => value.level?.toLowerCase() === 'quarantine')
+          .map(([agentId]) => agentId),
+      };
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load safety status';
     }

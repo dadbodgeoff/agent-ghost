@@ -1,13 +1,18 @@
 /**
  * Studio chat session store — Svelte 5 runes.
  *
- * DB-backed session persistence via REST API.
+ * DB-backed session persistence via the SDK-backed API.
  * Supports SSE streaming for real-time token display.
  * Persists activeSessionId to localStorage for cross-navigation restore.
  */
 
-import { api } from '$lib/api';
+import { getGhostClient } from '$lib/ghost-client';
 import { wsStore } from '$lib/stores/websocket.svelte';
+import type {
+  RecoverStreamResult,
+  StudioSession as ApiStudioSession,
+  StudioSessionWithMessages,
+} from '@ghost/sdk';
 
 export interface StudioSession {
   id: string;
@@ -38,16 +43,6 @@ export interface StudioMessage {
   toolCalls?: ToolCallEntry[];
   /** Stream completion status. Absent or 'complete' = normal. */
   status?: 'complete' | 'incomplete' | 'error';
-}
-
-/** Response from the stream recovery endpoint. */
-interface RecoverStreamResponse {
-  events: Array<{
-    seq: number;
-    event_type: string;
-    payload: Record<string, unknown>;
-    created_at: string;
-  }>;
 }
 
 const STORAGE_KEY = 'ghost-studio-active-session';
@@ -89,8 +84,9 @@ class StudioChatStore {
     this.loading = true;
     this.error = '';
     try {
-      const data = await api.get('/api/studio/sessions?limit=50');
-      const loaded = (data.sessions ?? []).map((s: any) => ({
+      const client = await getGhostClient();
+      const data = await client.sessions.list({ limit: 50 });
+      const loaded = (data.sessions ?? []).map((s: ApiStudioSession) => ({
         ...s,
         messages: s.messages ?? [],
       }));
@@ -127,10 +123,11 @@ class StudioChatStore {
           // full init() to avoid switching active session unexpectedly.
           setTimeout(async () => {
             try {
-              const data = await api.get('/api/studio/sessions?limit=50');
-              const refreshed = ((data as { sessions?: unknown[] }).sessions ?? []).map((s: unknown) => ({
-                ...(s as StudioSession),
-                messages: (s as StudioSession).messages ?? [],
+              const client = await getGhostClient();
+              const data = await client.sessions.list({ limit: 50 });
+              const refreshed = (data.sessions ?? []).map((s: ApiStudioSession) => ({
+                ...s,
+                messages: [],
               }));
               this.sessions = refreshed;
               this.hasMoreSessions = refreshed.length >= 50;
@@ -180,7 +177,8 @@ class StudioChatStore {
   }) {
     this.error = '';
     try {
-      const session = await api.post('/api/studio/sessions', {
+      const client = await getGhostClient();
+      const session = await client.sessions.create({
         title: opts?.title,
         model: opts?.model,
         system_prompt: opts?.system_prompt,
@@ -199,7 +197,8 @@ class StudioChatStore {
   async loadSession(id: string) {
     this.error = '';
     try {
-      const data = await api.get(`/api/studio/sessions/${id}`);
+      const client = await getGhostClient();
+      const data: StudioSessionWithMessages = await client.sessions.get(id);
       const loaded: StudioSession = {
         id: data.id,
         title: data.title,
@@ -228,7 +227,8 @@ class StudioChatStore {
   async deleteSession(id: string) {
     this.error = '';
     try {
-      await api.del(`/api/studio/sessions/${id}`);
+      const client = await getGhostClient();
+      await client.sessions.delete(id);
       this.sessions = this.sessions.filter((s) => s.id !== id);
 
       if (this.activeSessionId === id) {
@@ -250,9 +250,12 @@ class StudioChatStore {
     this.error = '';
     try {
       const lastSession = this.sessions[this.sessions.length - 1];
-      const cursor = lastSession ? encodeURIComponent(lastSession.updated_at) : '';
-      const data = await api.get(`/api/studio/sessions?limit=50&before=${cursor}`);
-      const more = (data.sessions ?? []).map((s: any) => ({
+      const client = await getGhostClient();
+      const data = await client.sessions.list({
+        limit: 50,
+        before: lastSession?.updated_at,
+      });
+      const more = (data.sessions ?? []).map((s: ApiStudioSession) => ({
         ...s,
         messages: s.messages ?? [],
       }));
@@ -312,7 +315,9 @@ class StudioChatStore {
 
     // WP9-L: Client heartbeat — POST every 30s so backend knows we're alive.
     const heartbeatInterval = setInterval(() => {
-      api.post(`/api/sessions/${session.id}/heartbeat`, {}).catch(() => {});
+      void getGhostClient()
+        .then((client) => client.runtimeSessions.heartbeat(session.id))
+        .catch(() => {});
     }, 30_000);
 
     // Activity-based idle timeout: if no meaningful event for 120s, abort.
@@ -330,8 +335,9 @@ class StudioChatStore {
     }, 5_000);
 
     try {
-      await api.streamPost(
-        `/api/studio/sessions/${session.id}/messages/stream`,
+      const client = await getGhostClient();
+      await client.chat.streamWithCallback(
+        session.id,
         { content },
         (eventType, data, eventId) => {
           // Track the last received sequence ID for recovery.
@@ -578,9 +584,11 @@ class StudioChatStore {
     assistantMsgIndex: number,
   ) {
     try {
-      const data = await api.get<RecoverStreamResponse>(
-        `/api/studio/sessions/${sessionId}/stream/recover?message_id=${encodeURIComponent(messageId)}&after_seq=${this.lastStreamSeq}`,
-      );
+      const client = await getGhostClient();
+      const data: RecoverStreamResult = await client.sessions.recoverStream(sessionId, {
+        message_id: messageId,
+        after_seq: this.lastStreamSeq,
+      });
 
       if (!data.events?.length) return;
 

@@ -1,12 +1,12 @@
 /**
  * Memory store — Svelte 5 runes.
  *
- * REST query from GET /api/memory.
+ * SDK-backed memory query state.
  *
  * Ref: T-1.8.7, §5.1
  */
 
-import { api } from '$lib/api';
+import { getGhostClient } from '$lib/ghost-client';
 import { wsStore } from '$lib/stores/websocket.svelte';
 
 export interface Memory {
@@ -34,8 +34,9 @@ class MemoryStore {
     this.error = '';
 
     try {
-      const data = await api.get('/api/memory');
-      this.memories = data?.memories ?? [];
+      const client = await getGhostClient();
+      const data = await client.memory.list();
+      this.memories = data.memories ?? [];
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load memories';
     }
@@ -52,8 +53,9 @@ class MemoryStore {
 
   async refresh() {
     try {
-      const data = await api.get('/api/memory');
-      this.memories = data?.memories ?? [];
+      const client = await getGhostClient();
+      const data = await client.memory.list();
+      this.memories = data.memories ?? [];
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to refresh memories';
     }

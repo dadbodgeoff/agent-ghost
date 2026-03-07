@@ -1,25 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
+  import type { Agent, ConvergenceScore } from '@ghost/sdk';
   import ScoreGauge from '../../components/ScoreGauge.svelte';
 
-  interface Agent {
-    id: string;
-    name: string;
-    status: string;
-    spending_cap?: number;
-    capabilities?: string[];
-  }
-
-  interface AgentScore {
-    agent_id: string;
-    score: number;
-    level: number;
-  }
-
   let agents: Agent[] = $state([]);
-  let scoreMap: Map<string, AgentScore> = $state(new Map());
+  let scoreMap: Map<string, ConvergenceScore> = $state(new Map());
   let loading = $state(true);
   let error = $state('');
 
@@ -32,13 +19,14 @@
 
   async function loadAgents() {
     try {
+      const client = await getGhostClient();
       const [agentData, convData] = await Promise.all([
-        api.get('/api/agents'),
-        api.get('/api/convergence/scores').catch(() => ({ scores: [] })),
+        client.agents.list(),
+        client.convergence.scores().catch(() => ({ scores: [] })),
       ]);
       agents = agentData ?? [];
-      const scores: AgentScore[] = convData?.scores ?? [];
-      scoreMap = new Map(scores.map((s: AgentScore) => [s.agent_id, s]));
+      const scores: ConvergenceScore[] = convData?.scores ?? [];
+      scoreMap = new Map(scores.map((s: ConvergenceScore) => [s.agent_id, s]));
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load agents';
     }
@@ -53,7 +41,7 @@
     return () => unsub();
   });
 
-  function getScore(agentId: string): AgentScore | undefined {
+  function getScore(agentId: string): ConvergenceScore | undefined {
     return scoreMap.get(agentId);
   }
 

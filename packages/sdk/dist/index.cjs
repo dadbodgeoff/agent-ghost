@@ -21,8 +21,11 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var index_exports = {};
 __export(index_exports, {
   AgentsAPI: () => AgentsAPI,
+  AuditAPI: () => AuditAPI,
+  AuthAPI: () => AuthAPI,
   ChatAPI: () => ChatAPI,
   ConvergenceAPI: () => ConvergenceAPI,
+  CostsAPI: () => CostsAPI,
   GhostAPIError: () => GhostAPIError,
   GhostClient: () => GhostClient,
   GhostError: () => GhostError,
@@ -31,9 +34,12 @@ __export(index_exports, {
   GhostWebSocket: () => GhostWebSocket,
   GoalsAPI: () => GoalsAPI,
   HealthAPI: () => HealthAPI,
+  MemoryAPI: () => MemoryAPI,
+  RuntimeSessionsAPI: () => RuntimeSessionsAPI,
   SafetyAPI: () => SafetyAPI,
   SessionsAPI: () => SessionsAPI,
-  SkillsAPI: () => SkillsAPI
+  SkillsAPI: () => SkillsAPI,
+  TracesAPI: () => TracesAPI
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -102,6 +108,7 @@ var SessionsAPI = class {
     const query = new URLSearchParams();
     if (params?.limit !== void 0) query.set("limit", String(params.limit));
     if (params?.offset !== void 0) query.set("offset", String(params.offset));
+    if (params?.before) query.set("before", params.before);
     const qs = query.toString();
     return this.request(
       "GET",
@@ -120,6 +127,16 @@ var SessionsAPI = class {
     return this.request(
       "DELETE",
       `/api/studio/sessions/${encodeURIComponent(id)}`
+    );
+  }
+  async recoverStream(id, params) {
+    const query = new URLSearchParams();
+    query.set("message_id", params.message_id);
+    if (params.after_seq !== void 0) query.set("after_seq", String(params.after_seq));
+    const qs = query.toString();
+    return this.request(
+      "GET",
+      `/api/studio/sessions/${encodeURIComponent(id)}/stream/recover?${qs}`
     );
   }
 };
@@ -209,6 +226,85 @@ var ChatAPI = class {
         }
       }
     } finally {
+      reader.releaseLock();
+    }
+  }
+  async streamWithCallback(sessionId, params, onEvent, signal) {
+    const baseUrl = this.options.baseUrl ?? "http://127.0.0.1:39780";
+    const url = `${baseUrl}/api/studio/sessions/${encodeURIComponent(sessionId)}/messages/stream`;
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream"
+    };
+    if (this.options.token) {
+      headers["Authorization"] = `Bearer ${this.options.token}`;
+    }
+    const fetchFn = this.options.fetch ?? globalThis.fetch;
+    let response;
+    try {
+      response = await fetchFn(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(params),
+        signal
+      });
+    } catch (err) {
+      throw new GhostNetworkError(
+        `Failed to connect to Ghost API at ${baseUrl}`,
+        err instanceof Error ? err : void 0
+      );
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new GhostAPIError(text || `HTTP ${response.status}`, response.status);
+    }
+    if (!response.body) {
+      throw new GhostNetworkError("Response body is null \u2014 streaming not supported in this environment");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      reader.cancel().catch(() => {
+      });
+    };
+    signal?.addEventListener("abort", onAbort);
+    try {
+      while (!aborted) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+        for (const eventBlock of events) {
+          if (!eventBlock.trim()) continue;
+          const lines = eventBlock.split("\n");
+          let eventType = "message";
+          let eventId;
+          const dataLines = [];
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ")) {
+              dataLines.push(line.slice(6));
+            } else if (line.startsWith("id: ")) {
+              eventId = line.slice(4).trim();
+            }
+          }
+          if (dataLines.length === 0) continue;
+          const dataStr = dataLines.join("\n");
+          try {
+            const data = JSON.parse(dataStr);
+            onEvent(eventType, data, eventId);
+          } catch {
+            onEvent(eventType, { message: dataStr }, eventId);
+          }
+        }
+      }
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
       reader.releaseLock();
     }
   }
@@ -339,6 +435,203 @@ var HealthAPI = class {
   }
 };
 
+// src/auth.ts
+var AuthAPI = class {
+  constructor(request) {
+    this.request = request;
+  }
+  async login(params) {
+    return this.request("POST", "/api/auth/login", params);
+  }
+  async refresh() {
+    return this.request("POST", "/api/auth/refresh");
+  }
+  async logout() {
+    return this.request("POST", "/api/auth/logout");
+  }
+};
+
+// src/audit.ts
+var AuditAPI = class {
+  constructor(request, options) {
+    this.request = request;
+    this.options = options;
+  }
+  async query(params) {
+    const query = new URLSearchParams();
+    if (params?.time_start) query.set("time_start", params.time_start);
+    if (params?.time_end) query.set("time_end", params.time_end);
+    if (params?.agent_id) query.set("agent_id", params.agent_id);
+    if (params?.event_type) query.set("event_type", params.event_type);
+    if (params?.severity) query.set("severity", params.severity);
+    if (params?.tool_name) query.set("tool_name", params.tool_name);
+    if (params?.search) query.set("search", params.search);
+    if (params?.page !== void 0) query.set("page", String(params.page));
+    if (params?.page_size !== void 0) query.set("page_size", String(params.page_size));
+    const qs = query.toString();
+    return this.request("GET", `/api/audit${qs ? `?${qs}` : ""}`);
+  }
+  async export(params) {
+    const query = new URLSearchParams();
+    if (params?.format) query.set("format", params.format);
+    if (params?.agent_id) query.set("agent_id", params.agent_id);
+    if (params?.time_start) query.set("time_start", params.time_start);
+    if (params?.time_end) query.set("time_end", params.time_end);
+    const qs = query.toString();
+    return this.request("GET", `/api/audit/export${qs ? `?${qs}` : ""}`);
+  }
+  async exportBlob(params) {
+    const query = new URLSearchParams();
+    if (params?.format) query.set("format", params.format);
+    if (params?.agent_id) query.set("agent_id", params.agent_id);
+    if (params?.time_start) query.set("time_start", params.time_start);
+    if (params?.time_end) query.set("time_end", params.time_end);
+    const qs = query.toString();
+    const baseUrl = this.options.baseUrl ?? "http://127.0.0.1:39780";
+    const url = `${baseUrl}/api/audit/export${qs ? `?${qs}` : ""}`;
+    const fetchFn = this.options.fetch ?? globalThis.fetch;
+    const headers = {};
+    if (this.options.token) {
+      headers["Authorization"] = `Bearer ${this.options.token}`;
+    }
+    let response;
+    try {
+      response = await fetchFn(url, { method: "GET", headers });
+    } catch (err) {
+      throw new GhostNetworkError(
+        `Failed to connect to Ghost API at ${baseUrl}`,
+        err instanceof Error ? err : void 0
+      );
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new GhostAPIError(text || `HTTP ${response.status}`, response.status);
+    }
+    return response.blob();
+  }
+};
+
+// src/costs.ts
+var CostsAPI = class {
+  constructor(request) {
+    this.request = request;
+  }
+  async list() {
+    return this.request("GET", "/api/costs");
+  }
+};
+
+// src/memory.ts
+var MemoryAPI = class {
+  constructor(request) {
+    this.request = request;
+  }
+  async list(params) {
+    const query = new URLSearchParams();
+    if (params?.agent_id) query.set("agent_id", params.agent_id);
+    if (params?.page !== void 0) query.set("page", String(params.page));
+    if (params?.page_size !== void 0) query.set("page_size", String(params.page_size));
+    if (params?.include_archived !== void 0) {
+      query.set("include_archived", String(params.include_archived));
+    }
+    const qs = query.toString();
+    return this.request("GET", `/api/memory${qs ? `?${qs}` : ""}`);
+  }
+  async get(id) {
+    return this.request("GET", `/api/memory/${encodeURIComponent(id)}`);
+  }
+  async graph() {
+    return this.request("GET", "/api/memory/graph");
+  }
+  async search(params) {
+    const query = new URLSearchParams();
+    if (params?.q) query.set("q", params.q);
+    if (params?.agent_id) query.set("agent_id", params.agent_id);
+    if (params?.memory_type) query.set("memory_type", params.memory_type);
+    if (params?.importance) query.set("importance", params.importance);
+    if (params?.confidence_min !== void 0) query.set("confidence_min", String(params.confidence_min));
+    if (params?.confidence_max !== void 0) query.set("confidence_max", String(params.confidence_max));
+    if (params?.limit !== void 0) query.set("limit", String(params.limit));
+    if (params?.include_archived !== void 0) {
+      query.set("include_archived", String(params.include_archived));
+    }
+    const qs = query.toString();
+    return this.request("GET", `/api/memory/search${qs ? `?${qs}` : ""}`);
+  }
+};
+
+// src/runtime-sessions.ts
+var RuntimeSessionsAPI = class {
+  constructor(request) {
+    this.request = request;
+  }
+  async list(params) {
+    const query = new URLSearchParams();
+    if (params?.page !== void 0) query.set("page", String(params.page));
+    if (params?.page_size !== void 0) query.set("page_size", String(params.page_size));
+    if (params?.cursor) query.set("cursor", params.cursor);
+    if (params?.limit !== void 0) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return this.request(
+      "GET",
+      `/api/sessions${qs ? `?${qs}` : ""}`
+    );
+  }
+  async events(sessionId, params) {
+    const query = new URLSearchParams();
+    if (params?.offset !== void 0) query.set("offset", String(params.offset));
+    if (params?.limit !== void 0) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return this.request(
+      "GET",
+      `/api/sessions/${encodeURIComponent(sessionId)}/events${qs ? `?${qs}` : ""}`
+    );
+  }
+  async listBookmarks(sessionId) {
+    return this.request(
+      "GET",
+      `/api/sessions/${encodeURIComponent(sessionId)}/bookmarks`
+    );
+  }
+  async createBookmark(sessionId, params) {
+    return this.request(
+      "POST",
+      `/api/sessions/${encodeURIComponent(sessionId)}/bookmarks`,
+      params
+    );
+  }
+  async deleteBookmark(sessionId, bookmarkId) {
+    return this.request(
+      "DELETE",
+      `/api/sessions/${encodeURIComponent(sessionId)}/bookmarks/${encodeURIComponent(bookmarkId)}`
+    );
+  }
+  async branch(sessionId, params) {
+    return this.request(
+      "POST",
+      `/api/sessions/${encodeURIComponent(sessionId)}/branch`,
+      params
+    );
+  }
+  async heartbeat(sessionId) {
+    await this.request(
+      "POST",
+      `/api/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+      {}
+    );
+  }
+};
+
+// src/traces.ts
+var TracesAPI = class {
+  constructor(request) {
+    this.request = request;
+  }
+  async get(sessionId) {
+    return this.request("GET", `/api/traces/${encodeURIComponent(sessionId)}`);
+  }
+};
+
 // src/websocket.ts
 var GhostWebSocket = class {
   constructor(clientOptions, wsOptions = {}) {
@@ -459,6 +752,12 @@ var GhostClient = class {
   skills;
   safety;
   health;
+  auth;
+  audit;
+  costs;
+  memory;
+  runtimeSessions;
+  traces;
   options;
   constructor(options) {
     this.options = {
@@ -474,6 +773,12 @@ var GhostClient = class {
     this.skills = new SkillsAPI(request);
     this.safety = new SafetyAPI(request);
     this.health = new HealthAPI(request);
+    this.auth = new AuthAPI(request);
+    this.audit = new AuditAPI(request, this.options);
+    this.costs = new CostsAPI(request);
+    this.memory = new MemoryAPI(request);
+    this.runtimeSessions = new RuntimeSessionsAPI(request);
+    this.traces = new TracesAPI(request);
   }
   /** Create a WebSocket connection for real-time events. */
   ws(options) {
@@ -560,8 +865,11 @@ var GhostClient = class {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AgentsAPI,
+  AuditAPI,
+  AuthAPI,
   ChatAPI,
   ConvergenceAPI,
+  CostsAPI,
   GhostAPIError,
   GhostClient,
   GhostError,
@@ -570,8 +878,11 @@ var GhostClient = class {
   GhostWebSocket,
   GoalsAPI,
   HealthAPI,
+  MemoryAPI,
+  RuntimeSessionsAPI,
   SafetyAPI,
   SessionsAPI,
-  SkillsAPI
+  SkillsAPI,
+  TracesAPI
 });
 //# sourceMappingURL=index.cjs.map

@@ -8,7 +8,7 @@
  */
 
 import { wsStore, type WsMessage } from './websocket.svelte';
-import { api } from '$lib/api';
+import { getGhostClient } from '$lib/ghost-client';
 
 export interface Agent {
   id: string;
@@ -42,8 +42,8 @@ class AgentsStore {
     this.error = '';
 
     try {
-      const data = await api.get('/api/agents');
-      this.list = Array.isArray(data) ? data : [];
+      const client = await getGhostClient();
+      this.list = await client.agents.list();
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load agents';
     }
@@ -53,7 +53,10 @@ class AgentsStore {
     this.unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
         const agentId = msg.agent_id as string;
-        const status = msg.status as string | undefined;
+        const status = (
+          msg.status ??
+          (msg as { new_state?: string }).new_state
+        ) as string | undefined;
         const idx = this.list.findIndex(a => a.id === agentId);
         if (idx >= 0 && status) {
           this.list[idx] = { ...this.list[idx], status };
@@ -71,8 +74,8 @@ class AgentsStore {
   /** Refresh agents from REST API. */
   async refresh() {
     try {
-      const data = await api.get('/api/agents');
-      this.list = Array.isArray(data) ? data : [];
+      const client = await getGhostClient();
+      this.list = await client.agents.list();
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to refresh agents';
     }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { getBaseUrl } from '$lib/api';
   import { getToken } from '$lib/auth';
 
   interface OAuthProvider {
@@ -19,12 +20,10 @@
   let connections: OAuthConnection[] = [];
   let loading = true;
   let error = '';
-
-  const API_BASE = '';
-
   async function fetchApi(path: string, options: RequestInit = {}) {
-    const token = getToken();
-    const resp = await fetch(`${API_BASE}${path}`, {
+    const baseUrl = await getBaseUrl();
+    const token = await getToken();
+    const resp = await fetch(`${baseUrl}${path}`, {
       ...options,
       credentials: 'omit',
       headers: {

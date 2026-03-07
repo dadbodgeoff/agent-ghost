@@ -37,6 +37,18 @@ export interface CreateSessionParams {
 export interface ListSessionsParams {
   limit?: number;
   offset?: number;
+  before?: string;
+}
+
+export interface RecoverStreamEvent {
+  seq: number;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RecoverStreamResult {
+  events: RecoverStreamEvent[];
 }
 
 // ── API ──
@@ -54,6 +66,7 @@ export class SessionsAPI {
     const query = new URLSearchParams();
     if (params?.limit !== undefined) query.set('limit', String(params.limit));
     if (params?.offset !== undefined) query.set('offset', String(params.offset));
+    if (params?.before) query.set('before', params.before);
     const qs = query.toString();
     return this.request<{ sessions: StudioSession[] }>(
       'GET',
@@ -74,6 +87,20 @@ export class SessionsAPI {
     return this.request<{ deleted: boolean }>(
       'DELETE',
       `/api/studio/sessions/${encodeURIComponent(id)}`,
+    );
+  }
+
+  async recoverStream(
+    id: string,
+    params: { message_id: string; after_seq?: number },
+  ): Promise<RecoverStreamResult> {
+    const query = new URLSearchParams();
+    query.set('message_id', params.message_id);
+    if (params.after_seq !== undefined) query.set('after_seq', String(params.after_seq));
+    const qs = query.toString();
+    return this.request<RecoverStreamResult>(
+      'GET',
+      `/api/studio/sessions/${encodeURIComponent(id)}/stream/recover?${qs}`,
     );
   }
 }

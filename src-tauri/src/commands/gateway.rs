@@ -243,3 +243,11 @@ pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopErr
         _ => Ok("unreachable".into()),
     }
 }
+
+#[tauri::command]
+pub fn gateway_port(handle: AppHandle) -> u16 {
+    handle
+        .try_state::<GatewayPort>()
+        .map(|p| p.0)
+        .unwrap_or(39780)
+}

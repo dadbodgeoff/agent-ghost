@@ -5,28 +5,9 @@
    */
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { ProposalDetail } from '@ghost/sdk';
   import ValidationMatrix from '../../../components/ValidationMatrix.svelte';
-
-  // T-5.9.5: Typed proposal detail.
-  interface ProposalDetail {
-    id: string;
-    agent_id: string;
-    session_id: string;
-    proposer_type: string;
-    operation: string;
-    target_type: string;
-    decision: string | null;
-    dimension_scores: Record<string, number>;
-    flags: string[];
-    created_at: string;
-    resolved_at: string | null;
-    content_diff?: string;
-    content?: string;
-    resolver?: string;
-    denial_reason?: string;
-    cited_memory_ids?: string[];
-  }
 
   let proposalId = $derived($page.params.id ?? '');
   let proposal: ProposalDetail | null = $state(null);
@@ -36,7 +17,8 @@
 
   onMount(async () => {
     try {
-      proposal = await api.get(`/api/goals/${proposalId}`);
+      const client = await getGhostClient();
+      proposal = await client.goals.get(proposalId);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load proposal';
     }
@@ -46,10 +28,13 @@
   async function handleAction(action: 'approve' | 'reject') {
     actionLoading = true;
     try {
-      await api.post(`/api/goals/${proposalId}/${action}`);
-      if (proposal) {
-        proposal = { ...proposal, decision: action === 'approve' ? 'approved' : 'rejected', resolved_at: new Date().toISOString() };
+      const client = await getGhostClient();
+      if (action === 'approve') {
+        await client.goals.approve(proposalId);
+      } else {
+        await client.goals.reject(proposalId);
       }
+      proposal = await client.goals.get(proposalId);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : `Failed to ${action} proposal`;
     }
