@@ -88,7 +88,7 @@ pub fn get_session(conn: &Connection, id: &str) -> CortexResult<Option<StudioSes
     let mut stmt = conn
         .prepare(
             "SELECT id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
-             FROM studio_chat_sessions WHERE id = ?1",
+             FROM studio_chat_sessions WHERE id = ?1 AND deleted_at IS NULL",
         )
         .map_err(|e| to_storage_err(e.to_string()))?;
 
@@ -178,39 +178,57 @@ pub fn soft_delete_inactive_sessions(
 }
 
 /// Hard-delete sessions that were soft-deleted before the given cutoff (WP9-D).
-/// Also cascades to messages and safety audits.
+/// Also cascades to messages and safety audits within a single transaction
+/// to prevent orphaned rows if the process crashes mid-operation.
 /// Returns the number of sessions permanently removed.
 pub fn hard_delete_old_sessions(
     conn: &Connection,
     deleted_before: &str,
 ) -> CortexResult<usize> {
-    // Delete messages and audits first (no FK CASCADE in SQLite without pragma).
-    conn.execute(
-        "DELETE FROM studio_chat_messages WHERE session_id IN (
-            SELECT id FROM studio_chat_sessions
-            WHERE deleted_at IS NOT NULL AND deleted_at < ?1
-        )",
-        params![deleted_before],
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| to_storage_err(format!("begin hard_delete transaction: {e}")))?;
 
-    conn.execute(
-        "DELETE FROM studio_chat_safety_audit WHERE session_id IN (
-            SELECT id FROM studio_chat_sessions
-            WHERE deleted_at IS NOT NULL AND deleted_at < ?1
-        )",
-        params![deleted_before],
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
-
-    let count = conn
-        .execute(
-            "DELETE FROM studio_chat_sessions
-             WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+    let result = (|| -> CortexResult<usize> {
+        // Delete messages and audits first (no FK CASCADE in SQLite without pragma).
+        conn.execute(
+            "DELETE FROM studio_chat_messages WHERE session_id IN (
+                SELECT id FROM studio_chat_sessions
+                WHERE deleted_at IS NOT NULL AND deleted_at < ?1
+            )",
             params![deleted_before],
         )
         .map_err(|e| to_storage_err(e.to_string()))?;
-    Ok(count)
+
+        conn.execute(
+            "DELETE FROM studio_chat_safety_audit WHERE session_id IN (
+                SELECT id FROM studio_chat_sessions
+                WHERE deleted_at IS NOT NULL AND deleted_at < ?1
+            )",
+            params![deleted_before],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+        let count = conn
+            .execute(
+                "DELETE FROM studio_chat_sessions
+                 WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+                params![deleted_before],
+            )
+            .map_err(|e| to_storage_err(e.to_string()))?;
+        Ok(count)
+    })();
+
+    match result {
+        Ok(count) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| to_storage_err(format!("commit hard_delete transaction: {e}")))?;
+            Ok(count)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
 
 pub fn delete_session(conn: &Connection, id: &str) -> CortexResult<bool> {

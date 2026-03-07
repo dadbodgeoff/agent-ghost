@@ -82,7 +82,11 @@
     collapsed?: boolean;
   } = $props();
 
-  /** WP9-C: Sanitize HTML content for safe iframe rendering. */
+  /** WP9-C: Sanitize HTML content for safe iframe rendering.
+   *  Uses ALLOWED_TAGS allowlist — any tag not listed is stripped.
+   *  ALLOW_DATA_ATTR=false prevents data-* attributes from being used as
+   *  attack vectors. DOMPurify strips all on* event handler attributes by
+   *  default when ALLOWED_ATTR is specified (they're not in the allowlist). */
   function sanitizeHtmlArtifact(content: string): string {
     return DOMPurify.sanitize(content, {
       ALLOWED_TAGS: [
@@ -100,9 +104,7 @@
         'stroke-width', 'cx', 'cy', 'r', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
         'points', 'transform', 'id',
       ],
-      // Strip script/iframe/object/embed even if passed in
-      FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'button'],
-      FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover'],
+      ALLOW_DATA_ATTR: false,
     });
   }
 

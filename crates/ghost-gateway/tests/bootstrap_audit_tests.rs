@@ -550,6 +550,8 @@ mod appstate_field_tests {
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             safety_skills: Arc::new(safety_skills),
+            client_heartbeats: Arc::new(dashmap::DashMap::new()),
+            session_ttl_days: 90,
         };
     }
 }

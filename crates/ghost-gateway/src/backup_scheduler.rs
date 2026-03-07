@@ -150,30 +150,89 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
             prune_old_backups(&backup_dir, retention_days);
 
             // Prune old stream event log entries (>24h).
-            prune_stream_events(&state);
+            prune_stream_events(&state).await;
+
+            // WP9-D: Session lifecycle cleanup.
+            prune_inactive_sessions(&state).await;
         }
 }
 
 /// Delete stream event log entries older than 24 hours.
 /// These are only needed for short-term SSE recovery, not long-term storage.
-fn prune_stream_events(state: &Arc<AppState>) {
+///
+/// Uses the writer connection — DELETE is a write operation and will fail
+/// on read-only connections (SQLITE_OPEN_READ_ONLY).
+async fn prune_stream_events(state: &Arc<AppState>) {
     let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    match state.db.read() {
-        Ok(conn) => {
-            match cortex_storage::queries::stream_event_queries::delete_events_before(&conn, &cutoff) {
-                Ok(count) if count > 0 => {
-                    tracing::info!(deleted = count, "Pruned old stream event log entries");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to prune stream event log");
-                }
-            }
+    let conn = state.db.write().await;
+    match cortex_storage::queries::stream_event_queries::delete_events_before(&conn, &cutoff) {
+        Ok(count) if count > 0 => {
+            tracing::info!(deleted = count, "Pruned old stream event log entries");
         }
+        Ok(_) => {}
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to acquire DB for stream event pruning");
+            tracing::warn!(error = %e, "Failed to prune stream event log");
+        }
+    }
+}
+
+/// WP9-D: Soft-delete sessions inactive beyond TTL, hard-delete beyond 2x TTL.
+///
+/// Uses the writer connection — UPDATE/DELETE are write operations.
+async fn prune_inactive_sessions(state: &Arc<AppState>) {
+    let ttl_days = state.session_ttl_days;
+    if ttl_days == 0 {
+        return; // TTL disabled
+    }
+
+    let now = chrono::Utc::now();
+
+    // Soft-delete: sessions inactive for > TTL days.
+    let soft_cutoff = (now - chrono::Duration::days(ttl_days as i64))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    // Hard-delete: sessions soft-deleted for > TTL days (i.e., deleted_at older than TTL ago).
+    let hard_cutoff = (now - chrono::Duration::days(ttl_days as i64 * 2))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let conn = state.db.write().await;
+
+    // Hard-delete first (removes sessions + messages + audits).
+    match cortex_storage::queries::studio_chat_queries::hard_delete_old_sessions(
+        &conn, &hard_cutoff,
+    ) {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                deleted = count,
+                cutoff = %hard_cutoff,
+                "Hard-deleted expired sessions (2x TTL)"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to hard-delete expired sessions");
+        }
+    }
+
+    // Soft-delete inactive sessions.
+    match cortex_storage::queries::studio_chat_queries::soft_delete_inactive_sessions(
+        &conn, &soft_cutoff,
+    ) {
+        Ok(count) if count > 0 => {
+            tracing::info!(
+                soft_deleted = count,
+                cutoff = %soft_cutoff,
+                ttl_days = ttl_days,
+                "Soft-deleted inactive sessions"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to soft-delete inactive sessions");
         }
     }
 }
