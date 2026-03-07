@@ -36,8 +36,8 @@ class SafetyStore {
     try {
       const data = await api.get('/api/safety/status');
       this.status = data;
-    } catch (e: any) {
-      this.error = e.message || 'Failed to load safety status';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to load safety status';
     }
     this.loading = false;
 
@@ -57,6 +57,10 @@ class SafetyStore {
           this.status = { ...this.status, per_agent: perAgent };
         }
       }),
+      wsStore.on('Resync', () => {
+        // Stagger to avoid thundering herd on reconnect
+        setTimeout(() => this.refresh(), Math.random() * 2000);
+      }),
     );
   }
 
@@ -64,8 +68,8 @@ class SafetyStore {
   async refresh() {
     try {
       this.status = await api.get('/api/safety/status');
-    } catch (e: any) {
-      this.error = e.message || 'Failed to refresh safety status';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to refresh safety status';
     }
   }
 

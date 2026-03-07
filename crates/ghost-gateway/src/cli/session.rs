@@ -67,7 +67,7 @@ pub async fn run_list(args: SessionListArgs, backend: &CliBackend) -> Result<(),
                 .unwrap_or_default()
         }
         CliBackend::Direct { db, .. } => {
-            let db = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+            let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
             query_sessions_direct(&db, args.agent.as_deref(), args.limit)?
         }
     };
@@ -163,7 +163,7 @@ pub async fn run_inspect(args: SessionInspectArgs, backend: &CliBackend) -> Resu
             }
         }
         CliBackend::Direct { db, .. } => {
-            let db = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+            let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
             let events = query_events_direct(&db, &args.session_id)?;
             let total = events.len() as u32;
             SessionDetail {
@@ -294,7 +294,7 @@ pub async fn run_replay(args: SessionReplayArgs, backend: &CliBackend) -> Result
                 .unwrap_or_default()
         }
         CliBackend::Direct { db, .. } => {
-            let db = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+            let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
             query_events_direct(&db, &args.session_id)?
         }
     };

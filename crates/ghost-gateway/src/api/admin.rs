@@ -74,13 +74,9 @@ fn require_admin(ext: &axum::http::Extensions) -> Result<(), ApiError> {
             return Ok(());
         }
     }
-    Err(ApiError {
-        status: axum::http::StatusCode::FORBIDDEN,
-        body: crate::api::error::ErrorResponse::new(
-            "FORBIDDEN",
-            "Admin role required for this operation",
-        ),
-    })
+    Err(ApiError::Forbidden(
+        "Admin role required for this operation".to_owned(),
+    ))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -142,7 +138,7 @@ pub async fn create_backup(
     };
 
     // Record in backup_manifest table.
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
     db.execute(
         "INSERT INTO backup_manifest (id, size_bytes, entry_count, blake3_checksum, status, metadata) \
          VALUES (?1, ?2, ?3, ?4, 'complete', ?5)",
@@ -157,7 +153,7 @@ pub async fn create_backup(
     .map_err(|e| ApiError::db_error("record backup manifest", e))?;
 
     // Broadcast WS event.
-    let _ = state.event_tx.send(crate::api::websocket::WsEvent::BackupComplete {
+    crate::api::websocket::broadcast_event(&state, crate::api::websocket::WsEvent::BackupComplete {
         backup_id: backup_id.clone(),
         status: "complete".into(),
         size_bytes,
@@ -244,7 +240,7 @@ pub async fn export_data(
         })
         .unwrap_or_else(|| "jsonl".into());
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("export_data", e))?;
 
     let table_queries: &[(&str, &str)] = &[
         ("agents", "SELECT id, name FROM agents LIMIT 10000"),
@@ -298,7 +294,7 @@ pub async fn list_backups(
 ) -> ApiResult<BackupListResponse> {
     require_admin(request.extensions())?;
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("list_backups", e))?;
     let mut stmt = db
         .prepare(
             "SELECT id, created_at, size_bytes, entry_count, blake3_checksum, status \

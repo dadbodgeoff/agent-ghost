@@ -19,8 +19,8 @@
       const data = await api.get('/api/sessions');
       // Fix: unwrap {sessions: [...]} wrapper.
       sessions = data?.sessions ?? [];
-    } catch (e: any) {
-      error = e.message || 'Failed to load sessions';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load sessions';
     }
     loading = false;
   });

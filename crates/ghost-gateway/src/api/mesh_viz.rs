@@ -41,7 +41,7 @@ pub async fn trust_graph(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<TrustGraphResponse> {
     let agents = state.agents.read().map_err(|_| ApiError::lock_poisoned("agents"))?;
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     let all = agents.all_agents();
     let mut nodes = Vec::with_capacity(all.len());
@@ -115,7 +115,7 @@ pub struct ConsensusRound {
 pub async fn consensus_state(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<ConsensusResponse> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     // Query recent proposals with vote counts from dimension_scores.
     // dimension_scores is JSON; non-null indicates a proposal that went through consensus.
@@ -182,7 +182,7 @@ pub struct SybilMetrics {
 pub async fn delegations(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<DelegationsResponse> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     let mut stmt = db
         .prepare(

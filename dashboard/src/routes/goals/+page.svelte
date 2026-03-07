@@ -41,8 +41,8 @@
 
       const data = await api.get(`/api/goals?${params}`);
       proposals = data?.proposals ?? [];
-    } catch (e: any) {
-      error = e.message || 'Failed to load goals';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load goals';
     }
     loading = false;
   }
@@ -78,12 +78,12 @@
       proposals = proposals.map(p =>
         p.id === id ? { ...p, decision: result?.decision ?? 'approved', resolved_at: result?.resolved_at ?? new Date().toISOString() } : p
       );
-    } catch (e: any) {
-      if (e.message?.includes('already resolved') || e.message?.includes('409')) {
+    } catch (e: unknown) {
+      if (e instanceof Error && (e.message.includes('already resolved') || e.message.includes('409'))) {
         resolvedMessage = `Proposal ${id.slice(0, 8)}… was already resolved by another user.`;
         await loadProposals();
       } else {
-        error = e.message || 'Failed to approve proposal';
+        error = e instanceof Error ? e.message : 'Failed to approve proposal';
       }
     } finally {
       actionLoading = null;
@@ -98,12 +98,12 @@
       proposals = proposals.map(p =>
         p.id === id ? { ...p, decision: result?.decision ?? 'rejected', resolved_at: result?.resolved_at ?? new Date().toISOString() } : p
       );
-    } catch (e: any) {
-      if (e.message?.includes('already resolved') || e.message?.includes('409')) {
+    } catch (e: unknown) {
+      if (e instanceof Error && (e.message.includes('already resolved') || e.message.includes('409'))) {
         resolvedMessage = `Proposal ${id.slice(0, 8)}… was already resolved by another user.`;
         await loadProposals();
       } else {
-        error = e.message || 'Failed to reject proposal';
+        error = e instanceof Error ? e.message : 'Failed to reject proposal';
       }
     } finally {
       actionLoading = null;

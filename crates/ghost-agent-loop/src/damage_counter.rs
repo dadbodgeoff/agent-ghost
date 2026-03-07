@@ -1,6 +1,8 @@
 //! Damage counter — monotonically non-decreasing failure counter (Req 12 AC4–AC5).
 //!
-//! Never resets within a run. Halts at threshold.
+//! Monotonically non-decreasing within a session. Halts at threshold.
+//! Resets between sessions via `reset()` so previous session damage
+//! does not block future sessions.
 //! Independent from CircuitBreaker (AC5).
 
 /// Monotonically non-decreasing damage counter.
@@ -40,6 +42,23 @@ impl DamageCounter {
 
     pub fn threshold(&self) -> u32 {
         self.threshold
+    }
+
+    /// Reset the counter to zero for a new session.
+    /// Threshold is preserved. Called between sessions so a previous
+    /// session's damage does not block future sessions.
+    pub fn reset(&mut self) {
+        tracing::debug!(
+            previous_count = self.count,
+            threshold = self.threshold,
+            "damage counter reset for new session"
+        );
+        self.count = 0;
+    }
+
+    /// Update the threshold value.
+    pub fn set_threshold(&mut self, threshold: u32) {
+        self.threshold = threshold;
     }
 }
 

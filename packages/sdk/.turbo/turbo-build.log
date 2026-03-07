@@ -1,0 +1,22 @@
+
+> @ghost/sdk@0.1.0 build /Users/geoffreyfernald/agent/packages/sdk
+> tsup
+
+CLI Building entry: src/index.ts
+CLI Using tsconfig: tsconfig.json
+CLI tsup v8.5.1
+CLI Using tsup config: /Users/geoffreyfernald/agent/packages/sdk/tsup.config.ts
+CLI Target: es2022
+CLI Cleaning output folder
+ESM Build start
+CJS Build start
+ESM dist/index.js     15.14 KB
+ESM dist/index.js.map 37.78 KB
+ESM ⚡️ Build success in 15ms
+CJS dist/index.cjs     16.59 KB
+CJS dist/index.cjs.map 39.72 KB
+CJS ⚡️ Build success in 15ms
+DTS Build start
+DTS ⚡️ Build success in 424ms
+DTS dist/index.d.ts  57.78 KB
+DTS dist/index.d.cts 57.78 KB

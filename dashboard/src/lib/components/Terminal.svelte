@@ -5,7 +5,7 @@
   import { WebLinksAddon } from '@xterm/addon-web-links';
   import '@xterm/xterm/css/xterm.css';
 
-  const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI__;
+  const isTauri = typeof window !== 'undefined' && !!window.__TAURI__;
 
   let containerEl: HTMLDivElement;
   let term: Terminal | null = null;
@@ -56,7 +56,10 @@
     resizeObserver.observe(containerEl);
 
     if (isTauri) {
-      await startPty();
+      // Don't block mount on PTY — fire and forget so the UI stays responsive.
+      startPty().catch((err) => {
+        term?.writeln(`Failed to start PTY: ${err}`);
+      });
     } else {
       term.writeln('Terminal is only available in the desktop app.');
       term.writeln('Run with `cargo tauri dev` to enable PTY support.');

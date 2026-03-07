@@ -69,6 +69,7 @@ pub fn list_sessions(
         .prepare(
             "SELECT id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
              FROM studio_chat_sessions
+             WHERE deleted_at IS NULL
              ORDER BY updated_at DESC
              LIMIT ?1 OFFSET ?2",
         )
@@ -132,6 +133,86 @@ pub fn update_session_settings(
     Ok(updated > 0)
 }
 
+/// List sessions with `active_since` filter (WP9-D).
+/// Only returns non-deleted sessions active since the given datetime.
+pub fn list_sessions_active_since(
+    conn: &Connection,
+    active_since: &str,
+    limit: u32,
+    offset: u32,
+) -> CortexResult<Vec<StudioSessionRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
+             FROM studio_chat_sessions
+             WHERE deleted_at IS NULL AND last_activity_at >= ?1
+             ORDER BY last_activity_at DESC
+             LIMIT ?2 OFFSET ?3",
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let rows = stmt
+        .query_map(params![active_since, limit, offset], map_session_row)
+        .map_err(|e| to_storage_err(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    Ok(rows)
+}
+
+/// Soft-delete sessions whose last_activity_at is older than the cutoff (WP9-D).
+/// Returns the number of sessions soft-deleted.
+pub fn soft_delete_inactive_sessions(
+    conn: &Connection,
+    cutoff: &str,
+) -> CortexResult<usize> {
+    let count = conn
+        .execute(
+            "UPDATE studio_chat_sessions
+             SET deleted_at = datetime('now')
+             WHERE deleted_at IS NULL AND last_activity_at < ?1",
+            params![cutoff],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+    Ok(count)
+}
+
+/// Hard-delete sessions that were soft-deleted before the given cutoff (WP9-D).
+/// Also cascades to messages and safety audits.
+/// Returns the number of sessions permanently removed.
+pub fn hard_delete_old_sessions(
+    conn: &Connection,
+    deleted_before: &str,
+) -> CortexResult<usize> {
+    // Delete messages and audits first (no FK CASCADE in SQLite without pragma).
+    conn.execute(
+        "DELETE FROM studio_chat_messages WHERE session_id IN (
+            SELECT id FROM studio_chat_sessions
+            WHERE deleted_at IS NOT NULL AND deleted_at < ?1
+        )",
+        params![deleted_before],
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
+
+    conn.execute(
+        "DELETE FROM studio_chat_safety_audit WHERE session_id IN (
+            SELECT id FROM studio_chat_sessions
+            WHERE deleted_at IS NOT NULL AND deleted_at < ?1
+        )",
+        params![deleted_before],
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let count = conn
+        .execute(
+            "DELETE FROM studio_chat_sessions
+             WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+            params![deleted_before],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+    Ok(count)
+}
+
 pub fn delete_session(conn: &Connection, id: &str) -> CortexResult<bool> {
     let deleted = conn
         .execute(
@@ -160,9 +241,9 @@ pub fn insert_message(
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
-    // Touch parent session's updated_at.
+    // Touch parent session's updated_at and last_activity_at (WP9-D).
     conn.execute(
-        "UPDATE studio_chat_sessions SET updated_at = datetime('now') WHERE id = ?1",
+        "UPDATE studio_chat_sessions SET updated_at = datetime('now'), last_activity_at = datetime('now') WHERE id = ?1",
         params![session_id],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;

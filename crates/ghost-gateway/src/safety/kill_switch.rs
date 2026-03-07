@@ -182,7 +182,13 @@ impl KillSwitch {
 
     /// Resume an agent from PAUSE (requires owner auth).
     /// Resuming from QUARANTINE requires forensic review + second confirmation (Req 14b AC4).
-    pub fn resume_agent(&self, agent_id: Uuid) -> Result<(), String> {
+    /// Resume an agent from paused/quarantined state.
+    ///
+    /// `expected_level` prevents TOCTOU races: the caller passes the level
+    /// they checked authorization for, and if the actual level inside the
+    /// write lock differs (e.g. escalated from Pause to Quarantine by another
+    /// thread), the resume is rejected.
+    pub fn resume_agent(&self, agent_id: Uuid, expected_level: Option<KillLevel>) -> Result<(), String> {
         let mut state = match self.state.write() {
             Ok(s) => s,
             Err(_) => return Err("kill switch RwLock poisoned".into()),
@@ -191,6 +197,21 @@ impl KillSwitch {
             .per_agent
             .get(&agent_id)
             .ok_or_else(|| format!("Agent {agent_id} not in kill state"))?;
+
+        // TOCTOU guard: if the caller expected a specific level, verify it
+        // hasn't changed since they checked (e.g. escalated concurrently).
+        if let Some(expected) = expected_level {
+            if agent_state.level != expected {
+                return Err(format!(
+                    "Agent kill level changed: expected {:?} but is now {:?}. \
+                     This is a time-of-check/time-of-use (TOCTOU) race — the kill level was \
+                     escalated between when you checked it and when you attempted to resume. \
+                     Please re-check the agent's current status with `ghost safety status` \
+                     and retry the resume operation with the correct expected level.",
+                    expected, agent_state.level
+                ));
+            }
+        }
 
         match agent_state.level {
             KillLevel::KillAll => {

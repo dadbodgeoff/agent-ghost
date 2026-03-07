@@ -177,25 +177,33 @@ pub async fn run_with_output(output: OutputFormat) -> Result<(), CliError> {
     });
 
     // 7. Convergence monitor reachability
-    let monitor_url = "http://127.0.0.1:18790";
-    let monitor_ok = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .unwrap_or_default()
-        .get(format!("{monitor_url}/health"))
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
-    checks.push(CheckResult {
-        name: "Convergence monitor".into(),
-        passed: monitor_ok,
-        detail: if monitor_ok {
-            format!("{monitor_url} — reachable")
-        } else {
-            format!("{monitor_url} — not reachable")
-        },
-    });
+    if config.convergence.monitor.enabled {
+        let monitor_url = format!("http://{}", config.convergence.monitor.address);
+        let monitor_ok = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default()
+            .get(format!("{monitor_url}/health"))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false);
+        checks.push(CheckResult {
+            name: "Convergence monitor".into(),
+            passed: monitor_ok,
+            detail: if monitor_ok {
+                format!("{monitor_url} — reachable")
+            } else {
+                format!("{monitor_url} — not reachable")
+            },
+        });
+    } else {
+        checks.push(CheckResult {
+            name: "Convergence monitor".into(),
+            passed: true,
+            detail: "disabled in config (convergence.monitor.enabled: false)".into(),
+        });
+    }
 
     let all_passed = checks.iter().all(|c| c.passed);
     let report = DoctorReport {

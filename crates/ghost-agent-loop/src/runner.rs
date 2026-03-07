@@ -93,6 +93,8 @@ pub enum AgentStreamEvent {
     TurnComplete { token_count: usize, safety_status: String },
     /// An error occurred.
     Error { message: String },
+    /// Heartbeat — agent is alive, transitioning between phases.
+    Heartbeat { phase: String },
 }
 
 /// The core agent runner.
@@ -505,6 +507,10 @@ impl AgentRunner {
         }
         tracing::debug!("step 8: session boundary clear");
 
+        // ── Step 8.5: Reset damage counter for new session ──────
+        // Previous session's damage must not block this session (WP3-A).
+        self.damage_counter.reset();
+
         // ── Step 9: Snapshot assembly (immutable for entire run) ────
         // Assemble the AgentSnapshot from multiple data sources.
         // Must produce a valid snapshot even when convergence data is
@@ -512,10 +518,22 @@ impl AgentRunner {
         // INV-PRE-06: snapshot is immutable — same object used for
         // entire recursive run.
         let intervention_level = shared_state.as_ref().map_or(0u8, |s| s.level);
-        let snapshot = Self::default_snapshot();
+        let convergence_score = shared_state.as_ref().map_or(0.0f64, |s| s.score);
+        let convergence_state = ConvergenceState {
+            score: convergence_score,
+            level: intervention_level,
+        };
+        let snapshot = AgentSnapshot::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            convergence_state,
+            simulation_boundary::prompt::SIMULATION_BOUNDARY_PROMPT.to_string(),
+        );
         tracing::debug!(
             intervention_level,
-            "step 9: snapshot assembled"
+            convergence_score,
+            "step 9: snapshot assembled with real convergence data"
         );
 
         // ── Step 10: RunContext construction ─────────────────────────
@@ -653,8 +671,10 @@ impl AgentRunner {
                 .complete(&conversation, &tool_schemas)
                 .await
                 .map_err(|e| {
-                    self.circuit_breaker.record_failure();
-                    RunError::LLMError(e.to_string())
+                    let error_str = e.to_string();
+                    let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
+                    self.circuit_breaker.record_classified_failure(failure_type);
+                    RunError::LLMError(error_str)
                 })?;
 
             // Record success + update context.
@@ -1010,6 +1030,9 @@ impl AgentRunner {
         let mut accumulated_output = String::new();
 
         loop {
+            // Emit heartbeat so frontend knows agent is alive between turns.
+            let _ = tx.send(AgentStreamEvent::Heartbeat { phase: "gate_check".into() }).await;
+
             // ── GATE CHECKS ──────────────────────────────────────────
             let mut gate_log = GateCheckLog::default();
             if let Err(e) = self.check_gates(ctx, &mut gate_log) {
@@ -1026,6 +1049,7 @@ impl AgentRunner {
             }
 
             // ── STREAMING LLM CALL ───────────────────────────────────
+            let _ = tx.send(AgentStreamEvent::Heartbeat { phase: "llm_streaming".into() }).await;
             let mut stream = get_stream(conversation.clone(), tool_schemas.clone());
             let mut segment_text = String::new();
             let mut segment_tool_calls: Vec<LLMToolCall> = Vec::new();
@@ -1057,13 +1081,16 @@ impl AgentRunner {
                     }
                     Ok(StreamChunk::Error(msg)) => {
                         let _ = tx.send(AgentStreamEvent::Error { message: msg.clone() }).await;
-                        self.circuit_breaker.record_failure();
+                        let failure_type = crate::circuit_breaker::classify_llm_error(&msg);
+                        self.circuit_breaker.record_classified_failure(failure_type);
                         return Err(RunError::LLMError(msg));
                     }
                     Err(e) => {
-                        let _ = tx.send(AgentStreamEvent::Error { message: e.to_string() }).await;
-                        self.circuit_breaker.record_failure();
-                        return Err(RunError::LLMError(e.to_string()));
+                        let error_str = e.to_string();
+                        let _ = tx.send(AgentStreamEvent::Error { message: error_str.clone() }).await;
+                        let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
+                        self.circuit_breaker.record_classified_failure(failure_type);
+                        return Err(RunError::LLMError(error_str));
                     }
                 }
             }
@@ -1210,9 +1237,37 @@ impl AgentRunner {
                             status: "running".into(),
                         }).await;
 
-                        let tool_result = self.tool_executor
-                            .execute(call, &self.tool_registry, &exec_ctx)
-                            .await;
+                        // Execute tool with concurrent heartbeat sender.
+                        // Sends a heartbeat every 15s during execution to prevent
+                        // frontend idle timeout (60s) from killing the SSE stream.
+                        // Uses tokio::select! so the heartbeat loop is cancelled
+                        // as soon as the tool execution completes.
+                        let heartbeat_tx = tx.clone();
+                        let heartbeat_tool_name = call.name.clone();
+                        let tool_result = {
+                            // Spawn heartbeat as a background task that we abort
+                            // when tool execution completes. This avoids select!
+                            // issues where channel closure could race the tool.
+                            let hb_tx = heartbeat_tx.clone();
+                            let hb_name = heartbeat_tool_name.clone();
+                            let heartbeat_handle = tokio::spawn(async move {
+                                let mut interval = tokio::time::interval(
+                                    std::time::Duration::from_secs(15),
+                                );
+                                interval.tick().await; // skip immediate first tick
+                                loop {
+                                    interval.tick().await;
+                                    if hb_tx.send(AgentStreamEvent::Heartbeat {
+                                        phase: format!("tool_exec:{}", hb_name),
+                                    }).await.is_err() {
+                                        break; // channel closed
+                                    }
+                                }
+                            });
+                            let result = self.tool_executor.execute(call, &self.tool_registry, &exec_ctx).await;
+                            heartbeat_handle.abort();
+                            result
+                        };
 
                         let (output, status) = match tool_result {
                             Ok(tr) => {

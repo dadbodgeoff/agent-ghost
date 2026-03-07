@@ -1,0 +1,51 @@
+[package]
+name = "ghost-drift"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drift MCP server — codebase intelligence for Ghost agents"
+
+[[bin]]
+name = "ghost-drift"
+path = "src/main.rs"
+
+[dependencies]
+# MCP protocol
+rmcp = { version = "0.16", features = ["server", "transport-io"] }
+
+# Async
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# JSON Schema for MCP tool parameters
+schemars = "1"
+
+# Database
+rusqlite = { workspace = true }
+
+# Hashing
+blake3 = { workspace = true }
+
+# Time & IDs
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Regex for symbol extraction
+regex = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Glob for file discovery
+glob = "0.3"

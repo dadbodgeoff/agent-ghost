@@ -33,8 +33,8 @@
       const data = await api.get('/api/memory');
       memories = data?.memories ?? [];
       isSearchMode = false;
-    } catch (e: any) {
-      error = e.message || 'Failed to load memories';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load memories';
     }
     loading = false;
   }
@@ -62,8 +62,8 @@
         created_at: r.created_at,
       }));
       isSearchMode = true;
-    } catch (e: any) {
-      error = e.message || 'Search failed';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Search failed';
     }
     loading = false;
   }

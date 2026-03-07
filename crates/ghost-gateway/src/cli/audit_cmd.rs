@@ -107,7 +107,7 @@ pub async fn run_query(args: AuditQueryArgs, backend: &CliBackend) -> Result<(),
             print_output(&result, args.output);
         }
         CliBackend::Direct { db, .. } => {
-            let db = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+            let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
             let engine = AuditQueryEngine::new(&db);
             let filter = AuditFilter {
                 agent_id: args.agent,
@@ -169,7 +169,7 @@ pub async fn run_export(args: AuditExportArgs, backend: &CliBackend) -> Result<(
             return Ok(());
         }
         CliBackend::Direct { db, .. } => {
-            let db = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+            let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
             let engine = AuditQueryEngine::new(&db);
             let filter = AuditFilter { page: 1, page_size: 10_000, ..Default::default() };
             engine

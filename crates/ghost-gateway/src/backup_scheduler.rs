@@ -115,7 +115,8 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
                         }
                         hasher.finalize().to_hex().to_string()
                     };
-                    if let Ok(db) = state.db.lock() {
+                    {
+                        let db = state.db.write().await;
                         let _ = db.execute(
                             "INSERT INTO backup_manifest (id, size_bytes, entry_count, blake3_checksum, status) \
                              VALUES (?1, ?2, ?3, ?4, 'complete')",
@@ -128,7 +129,7 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
                         );
                     }
 
-                    let _ = state.event_tx.send(WsEvent::BackupComplete {
+                    crate::api::websocket::broadcast_event(&state, WsEvent::BackupComplete {
                         backup_id,
                         status: "complete".into(),
                         size_bytes: size,
@@ -147,7 +148,34 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
 
             // Prune old backups.
             prune_old_backups(&backup_dir, retention_days);
+
+            // Prune old stream event log entries (>24h).
+            prune_stream_events(&state);
         }
+}
+
+/// Delete stream event log entries older than 24 hours.
+/// These are only needed for short-term SSE recovery, not long-term storage.
+fn prune_stream_events(state: &Arc<AppState>) {
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+    match state.db.read() {
+        Ok(conn) => {
+            match cortex_storage::queries::stream_event_queries::delete_events_before(&conn, &cutoff) {
+                Ok(count) if count > 0 => {
+                    tracing::info!(deleted = count, "Pruned old stream event log entries");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to prune stream event log");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to acquire DB for stream event pruning");
+        }
+    }
 }
 
 fn prune_old_backups(backup_dir: &str, retention_days: u64) {

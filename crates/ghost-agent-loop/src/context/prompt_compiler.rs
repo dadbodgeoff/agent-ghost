@@ -344,6 +344,12 @@ impl PromptCompiler {
 
         (layers, stats)
     }
+    /// WP9-J: Improved truncation with semantic boundary awareness.
+    ///
+    /// - L8 (conversation history): drops oldest messages (FIFO), keeping system +
+    ///   last N messages intact. Injects a truncation marker.
+    /// - L7 (memory logs): truncates at paragraph/entry boundaries.
+    /// - Other layers: byte-level truncation (unchanged).
     fn apply_truncation(&self, layers: &mut [PromptLayer], allocated: &[usize; 10]) {
         let total: usize = layers.iter().map(|l| l.token_count).sum();
 
@@ -365,14 +371,51 @@ impl PromptCompiler {
                 let can_trim = layer.token_count - budget.min(layer.token_count);
                 let trim = can_trim.min(excess);
                 let target_tokens = layer.token_count - trim;
+                let original_tokens = layer.token_count;
 
-                let target_chars = target_tokens * 4;
-                if target_chars < layer.content.len() {
-                    layer.content.truncate(target_chars);
-                    layer.token_count = self.counter.count(&layer.content);
+                match idx {
+                    // L8: Message-boundary truncation for conversation history.
+                    8 => {
+                        let truncated = truncate_at_message_boundary(
+                            &layer.content,
+                            target_tokens,
+                            &self.counter,
+                        );
+                        layer.content = truncated;
+                        layer.token_count = self.counter.count(&layer.content);
+                    }
+                    // L7: Paragraph-boundary truncation for memory logs.
+                    7 => {
+                        let truncated = truncate_at_paragraph_boundary(
+                            &layer.content,
+                            target_tokens,
+                            &self.counter,
+                        );
+                        layer.content = truncated;
+                        layer.token_count = self.counter.count(&layer.content);
+                    }
+                    // Other layers: byte-level truncation (unchanged).
+                    _ => {
+                        let target_chars = target_tokens * 4;
+                        if target_chars < layer.content.len() {
+                            layer.content.truncate(target_chars);
+                            layer.token_count = self.counter.count(&layer.content);
+                        }
+                    }
                 }
 
-                excess = excess.saturating_sub(trim);
+                let actually_trimmed = original_tokens.saturating_sub(layer.token_count);
+                if actually_trimmed > 0 {
+                    tracing::info!(
+                        layer = layer.name,
+                        original_tokens,
+                        final_tokens = layer.token_count,
+                        removed = actually_trimmed,
+                        "prompt layer truncated"
+                    );
+                }
+
+                excess = excess.saturating_sub(actually_trimmed);
             }
         }
     }
@@ -447,4 +490,103 @@ pub fn sanitize_environment_timestamps(content: &str) -> String {
     }
 
     result.into_owned()
+}
+
+/// WP9-J: Truncate L8 conversation history at message boundaries (FIFO).
+///
+/// Splits content by double-newline (message separator), drops oldest messages
+/// first while keeping the first (system) message and last N messages intact.
+/// Injects a `[CONTEXT TRUNCATED]` marker at the truncation point.
+fn truncate_at_message_boundary(
+    content: &str,
+    target_tokens: usize,
+    counter: &TokenCounter,
+) -> String {
+    // Split on double-newlines which typically separate messages.
+    let messages: Vec<&str> = content.split("\n\n").collect();
+    if messages.len() <= 2 {
+        // Too few messages to do boundary truncation; fall back to byte-level.
+        let target_chars = target_tokens * 4;
+        let mut result = content.to_string();
+        if target_chars < result.len() {
+            result.truncate(target_chars);
+        }
+        return result;
+    }
+
+    // Keep first message (system prompt context) and try to fit as many
+    // recent messages as possible within the target budget.
+    let first = messages[0];
+    let first_tokens = counter.count(first);
+
+    // Work backwards from the end to find how many recent messages fit.
+    let marker = "[CONTEXT TRUNCATED: older messages removed to fit context window]";
+    let marker_tokens = counter.count(marker);
+    let available = target_tokens.saturating_sub(first_tokens + marker_tokens + 10);
+
+    let mut kept_from_end: Vec<&str> = Vec::new();
+    let mut running_tokens = 0usize;
+
+    for &msg in messages[1..].iter().rev() {
+        let msg_tokens = counter.count(msg);
+        if running_tokens + msg_tokens > available {
+            break;
+        }
+        running_tokens += msg_tokens;
+        kept_from_end.push(msg);
+    }
+    kept_from_end.reverse();
+
+    let removed_count = messages.len() - 1 - kept_from_end.len();
+    if removed_count == 0 {
+        return content.to_string();
+    }
+
+    let mut result = String::with_capacity(content.len());
+    result.push_str(first);
+    result.push_str("\n\n");
+    result.push_str(&format!("[CONTEXT TRUNCATED: {removed_count} messages removed]"));
+    for msg in kept_from_end {
+        result.push_str("\n\n");
+        result.push_str(msg);
+    }
+    result
+}
+
+/// WP9-J: Truncate L7 memory logs at paragraph/entry boundaries.
+///
+/// Splits on double-newlines and drops trailing entries to fit budget,
+/// preserving complete memory entries rather than cutting mid-sentence.
+fn truncate_at_paragraph_boundary(
+    content: &str,
+    target_tokens: usize,
+    counter: &TokenCounter,
+) -> String {
+    let paragraphs: Vec<&str> = content.split("\n\n").collect();
+    if paragraphs.len() <= 1 {
+        let target_chars = target_tokens * 4;
+        let mut result = content.to_string();
+        if target_chars < result.len() {
+            result.truncate(target_chars);
+        }
+        return result;
+    }
+
+    // Keep paragraphs from the start until we exceed the budget.
+    let mut result = String::with_capacity(content.len());
+    let mut running_tokens = 0usize;
+
+    for (i, paragraph) in paragraphs.iter().enumerate() {
+        let para_tokens = counter.count(paragraph);
+        if running_tokens + para_tokens > target_tokens && i > 0 {
+            break;
+        }
+        if i > 0 {
+            result.push_str("\n\n");
+        }
+        result.push_str(paragraph);
+        running_tokens += para_tokens;
+    }
+
+    result
 }

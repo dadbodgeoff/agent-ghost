@@ -96,7 +96,7 @@ pub async fn list_profiles(
 ) -> ApiResult<ProfileListResponse> {
     let mut profiles = preset_profiles();
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("list_profiles", e))?;
 
     // Load custom profiles stored in convergence_profiles table (if exists).
     let custom: Vec<ProfileSummary> = db
@@ -151,7 +151,7 @@ pub async fn create_profile(
         return Err(ApiError::conflict("Cannot create profile with preset name"));
     }
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     // Table created by migration v025_convergence_profiles.
 
@@ -220,7 +220,7 @@ pub async fn update_profile(
         }
     }
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     // Get current values.
     let (cur_desc, cur_weights, cur_thresholds): (String, String, String) = db
@@ -270,7 +270,7 @@ pub async fn delete_profile(
         return Err(ApiError::bad_request("Cannot delete preset profiles"));
     }
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     let affected = db
         .execute(
@@ -292,7 +292,7 @@ pub async fn assign_profile(
     Path(agent_id): Path<String>,
     Json(req): Json<AssignProfileRequest>,
 ) -> ApiResult<AssignProfileResponse> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     // T-5.6.1: Verify profile exists before assignment.
     let profile_exists: bool = db

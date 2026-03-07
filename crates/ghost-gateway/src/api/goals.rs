@@ -36,12 +36,13 @@ pub async fn list_goals(
     let page_size = params.page_size.unwrap_or(50).min(200);
     let offset = (page.saturating_sub(1)) * page_size;
 
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to acquire DB read connection");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
+                Json(serde_json::json!({"error": "database connection error"})),
             );
         }
     };
@@ -178,15 +179,7 @@ pub async fn approve_goal(
 ) -> impl IntoResponse {
     tracing::info!(goal_id = %id, "Goal approval requested");
 
-    let db = match state.db.lock() {
-        Ok(db) => db,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
-            );
-        }
-    };
+    let db = state.db.write().await;
 
     let resolved_at = chrono::Utc::now().to_rfc3339();
     match cortex_storage::queries::goal_proposal_queries::resolve_proposal(
@@ -206,13 +199,11 @@ pub async fn approve_goal(
                 }
             };
 
-            if let Err(e) = state.event_tx.send(WsEvent::ProposalDecision {
+            crate::api::websocket::broadcast_event(&state, WsEvent::ProposalDecision {
                 proposal_id: id.clone(),
                 decision: "approved".into(),
                 agent_id,
-            }) {
-                tracing::warn!(error = %e, "Failed to broadcast proposal approval event");
-            }
+            });
 
             (
                 StatusCode::OK,
@@ -266,15 +257,7 @@ pub async fn reject_goal(
 ) -> impl IntoResponse {
     tracing::info!(goal_id = %id, "Goal rejection requested");
 
-    let db = match state.db.lock() {
-        Ok(db) => db,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
-            );
-        }
-    };
+    let db = state.db.write().await;
 
     let resolved_at = chrono::Utc::now().to_rfc3339();
     match cortex_storage::queries::goal_proposal_queries::resolve_proposal(
@@ -293,13 +276,11 @@ pub async fn reject_goal(
                 }
             };
 
-            if let Err(e) = state.event_tx.send(WsEvent::ProposalDecision {
+            crate::api::websocket::broadcast_event(&state, WsEvent::ProposalDecision {
                 proposal_id: id.clone(),
                 decision: "rejected".into(),
                 agent_id,
-            }) {
-                tracing::warn!(error = %e, "Failed to broadcast proposal rejection event");
-            }
+            });
 
             (
                 StatusCode::OK,
@@ -352,7 +333,7 @@ pub async fn get_goal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("goal_get", e))?;
 
     let proposal = db
         .query_row(

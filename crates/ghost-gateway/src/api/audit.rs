@@ -36,12 +36,12 @@ pub async fn query_audit(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AuditQueryParams>,
 ) -> impl IntoResponse {
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
+                Json(serde_json::json!({"error": "database read error"})),
             );
         }
     };
@@ -94,12 +94,12 @@ pub async fn audit_aggregation(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AuditQueryParams>,
 ) -> impl IntoResponse {
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
+                Json(serde_json::json!({"error": "database read error"})),
             );
         }
     };
@@ -142,13 +142,13 @@ pub async fn audit_export(
         _ => "application/json",
     };
 
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
-                "{\"error\": \"database lock poisoned\"}".to_string(),
+                "{\"error\": \"database read error\"}".to_string(),
             );
         }
     };

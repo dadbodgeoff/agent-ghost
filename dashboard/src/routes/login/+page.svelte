@@ -20,7 +20,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: token.trim() }),
-        credentials: 'include',
+        credentials: 'omit',
       });
 
       if (!resp.ok) {
@@ -39,8 +39,8 @@
         await setToken(token.trim());
       }
       goto('/');
-    } catch (e: any) {
-      error = 'Gateway unreachable. Is ghost-gateway running on port 39780?';
+    } catch (e: unknown) {
+      error = 'Gateway unreachable. Is ghost-gateway running? Check ghost.yml for the configured port.';
     }
     loading = false;
   }

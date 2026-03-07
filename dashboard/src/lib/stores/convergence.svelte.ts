@@ -46,8 +46,8 @@ class ConvergenceStore {
     try {
       const data = await api.get('/api/convergence/scores');
       this.scores = data?.scores ?? [];
-    } catch (e: any) {
-      this.error = e.message || 'Failed to load convergence data';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to load convergence data';
     }
     this.loading = false;
 
@@ -80,7 +80,21 @@ class ConvergenceStore {
           this.scores = [...this.scores];
         }
       }),
+      wsStore.on('Resync', () => {
+        // Stagger to avoid thundering herd on reconnect
+        setTimeout(() => this.refresh(), Math.random() * 2000);
+      }),
     );
+  }
+
+  /** Refresh convergence scores from REST. */
+  async refresh() {
+    try {
+      const data = await api.get('/api/convergence/scores');
+      this.scores = data?.scores ?? [];
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to refresh convergence data';
+    }
   }
 
   /** Poll monitor health (called periodically from layout). */

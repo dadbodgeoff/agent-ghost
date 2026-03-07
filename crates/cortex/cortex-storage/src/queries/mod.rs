@@ -19,3 +19,6 @@ pub mod timer_queries;
 pub mod pc_control_queries;
 pub mod convergence_propagation_queries;
 pub mod studio_chat_queries;
+pub mod marketplace_queries;
+pub mod stream_event_queries;
+pub mod revoked_token_queries;

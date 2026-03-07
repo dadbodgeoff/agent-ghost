@@ -59,11 +59,39 @@ impl Claims {
     }
 }
 
-/// In-memory JWT revocation set (jti values).
-/// Cleared on gateway restart. For production, back with Redis or DB.
-#[derive(Debug, Default)]
+/// Persistent JWT revocation set backed by SQLite (WP0-B).
+///
+/// Write-through: every `revoke()` call writes to both the in-memory set
+/// and the `revoked_tokens` DB table. On startup, `load_from_db()` hydrates
+/// the in-memory set from the DB so revocations survive restarts.
+///
+/// Uses a dedicated read-write `Connection` (not `DbPool::read()` which is
+/// read-only) to ensure INSERT operations succeed.
 pub struct RevocationSet {
     revoked: RwLock<HashSet<String>>,
+    /// Dedicated read-write connection for write-through persistence.
+    /// Using a standalone connection (not DbPool::read()) because read pool
+    /// connections are SQLITE_OPEN_READ_ONLY and cannot execute INSERT.
+    db_writer: RwLock<Option<Arc<std::sync::Mutex<rusqlite::Connection>>>>,
+}
+
+impl std::fmt::Debug for RevocationSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.revoked.read().map(|s| s.len()).unwrap_or(0);
+        f.debug_struct("RevocationSet")
+            .field("revoked_count", &count)
+            .field("db_attached", &self.db_writer.read().map(|d| d.is_some()).unwrap_or(false))
+            .finish()
+    }
+}
+
+impl Default for RevocationSet {
+    fn default() -> Self {
+        Self {
+            revoked: RwLock::new(HashSet::new()),
+            db_writer: RwLock::new(None),
+        }
+    }
 }
 
 impl RevocationSet {
@@ -71,10 +99,75 @@ impl RevocationSet {
         Self::default()
     }
 
-    pub fn revoke(&self, jti: &str) {
+    /// Attach a dedicated read-write DB connection for persistent revocation storage.
+    /// Call after DB pool is created during bootstrap.
+    pub fn set_db(&self, db: &Arc<crate::db_pool::DbPool>) {
+        match db.legacy_connection() {
+            Ok(conn) => {
+                if let Ok(mut slot) = self.db_writer.write() {
+                    *slot = Some(conn);
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to create write connection for RevocationSet — revocations will NOT persist across restarts");
+            }
+        }
+    }
+
+    /// Load active (non-expired) revocations from DB into the in-memory set.
+    /// Call once during bootstrap after migrations have run.
+    pub fn load_from_db(&self, conn: &rusqlite::Connection) {
+        match cortex_storage::queries::revoked_token_queries::load_active_revocations(conn) {
+            Ok(jtis) => {
+                let count = jtis.len();
+                if let Ok(mut set) = self.revoked.write() {
+                    for jti in jtis {
+                        set.insert(jti);
+                    }
+                }
+                if count > 0 {
+                    tracing::info!(count, "Loaded revoked tokens from DB");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load revoked tokens from DB — starting with empty set");
+            }
+        }
+        // Also clean up expired entries.
+        match cortex_storage::queries::revoked_token_queries::cleanup_expired(conn) {
+            Ok(n) if n > 0 => tracing::debug!(deleted = n, "Cleaned up expired revoked tokens"),
+            _ => {}
+        }
+    }
+
+    /// Revoke a token by JTI. Writes through to DB if available.
+    /// `expires_at` is the token's expiration as an ISO 8601 string.
+    pub fn revoke_with_expiry(&self, jti: &str, expires_at: &str) {
         if let Ok(mut set) = self.revoked.write() {
             set.insert(jti.to_string());
         }
+        // Write-through to DB via dedicated read-write connection.
+        if let Ok(db_guard) = self.db_writer.read() {
+            if let Some(ref conn_mutex) = *db_guard {
+                match conn_mutex.lock() {
+                    Ok(conn) => {
+                        if let Err(e) = cortex_storage::queries::revoked_token_queries::revoke_token(
+                            &conn, jti, expires_at,
+                        ) {
+                            tracing::warn!(jti, error = %e, "Failed to persist token revocation to DB");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(jti, error = %e, "Failed to acquire DB lock for token revocation");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Revoke a token by JTI (legacy API without expiry — uses far-future default).
+    pub fn revoke(&self, jti: &str) {
+        self.revoke_with_expiry(jti, "9999-12-31T23:59:59Z");
     }
 
     pub fn is_revoked(&self, jti: &str) -> bool {
@@ -618,7 +711,10 @@ pub async fn refresh(
 
     // Revoke the old refresh token (rotation — each refresh token is single-use).
     if !old_claims.jti.is_empty() {
-        revocation_set.revoke(&old_claims.jti);
+        let expires_at = chrono::DateTime::from_timestamp(old_claims.exp as i64, 0)
+            .unwrap_or_else(chrono::Utc::now)
+            .to_rfc3339();
+        revocation_set.revoke_with_expiry(&old_claims.jti, &expires_at);
     }
 
     let now = chrono::Utc::now().timestamp() as u64;
@@ -687,7 +783,10 @@ pub async fn logout(
         {
             if let Ok(claims) = decode_jwt_allow_expired(bearer, secret) {
                 if !claims.jti.is_empty() {
-                    revocation_set.revoke(&claims.jti);
+                    let expires_at = chrono::DateTime::from_timestamp(claims.exp as i64, 0)
+                        .unwrap_or_else(chrono::Utc::now)
+                        .to_rfc3339();
+                    revocation_set.revoke_with_expiry(&claims.jti, &expires_at);
                     tracing::info!(jti = %claims.jti, sub = %claims.sub, "Token revoked via logout");
                 }
             }
@@ -697,7 +796,10 @@ pub async fn logout(
         if let Some(refresh_token) = extract_refresh_cookie(&request) {
             if let Ok(claims) = decode_jwt_allow_expired(&refresh_token, secret) {
                 if !claims.jti.is_empty() {
-                    revocation_set.revoke(&claims.jti);
+                    let expires_at = chrono::DateTime::from_timestamp(claims.exp as i64, 0)
+                        .unwrap_or_else(chrono::Utc::now)
+                        .to_rfc3339();
+                    revocation_set.revoke_with_expiry(&claims.jti, &expires_at);
                 }
             }
         }

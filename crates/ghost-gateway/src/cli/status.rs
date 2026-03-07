@@ -54,10 +54,19 @@ pub async fn show_status(
         }
     }
 
-    // Try monitor health. Derive monitor URL from base by replacing port.
-    let monitor_url = base_url
-        .replace(":39780", ":39781")
-        .replace("/api", "");
+    // Try monitor health. Derive monitor URL by parsing the port and incrementing.
+    let monitor_url = {
+        let base = base_url.replace("/api", "");
+        if let Some(colon_pos) = base.rfind(':') {
+            if let Ok(port) = base[colon_pos + 1..].parse::<u16>() {
+                format!("{}{}", &base[..=colon_pos], port + 1)
+            } else {
+                base
+            }
+        } else {
+            base
+        }
+    };
     let monitor = match reqwest::get(format!("{monitor_url}/health")).await {
         Ok(resp) if resp.status().is_success() => "CONNECTED".to_string(),
         _ => "NOT AVAILABLE".to_string(),

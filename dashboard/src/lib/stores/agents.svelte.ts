@@ -24,7 +24,7 @@ class AgentsStore {
   loading = $state(false);
   error = $state('');
   private initialized = false;
-  private unsubscribe: (() => void) | null = null;
+  private unsubs: Array<() => void> = [];
 
   get count(): number {
     return this.list.length;
@@ -44,22 +44,38 @@ class AgentsStore {
     try {
       const data = await api.get('/api/agents');
       this.list = Array.isArray(data) ? data : [];
-    } catch (e: any) {
-      this.error = e.message || 'Failed to load agents';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to load agents';
     }
     this.loading = false;
 
     // Subscribe to real-time updates.
-    this.unsubscribe = wsStore.on('AgentStateChange', (msg: WsMessage) => {
-      const agentId = msg.agent_id as string;
-      const status = msg.status as string | undefined;
-      const idx = this.list.findIndex(a => a.id === agentId);
-      if (idx >= 0 && status) {
-        this.list[idx] = { ...this.list[idx], status };
-        // Trigger reactivity by reassigning.
-        this.list = [...this.list];
-      }
-    });
+    this.unsubs.push(
+      wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const agentId = msg.agent_id as string;
+        const status = msg.status as string | undefined;
+        const idx = this.list.findIndex(a => a.id === agentId);
+        if (idx >= 0 && status) {
+          this.list[idx] = { ...this.list[idx], status };
+          // Trigger reactivity by reassigning.
+          this.list = [...this.list];
+        }
+      }),
+      wsStore.on('Resync', () => {
+        // Stagger to avoid thundering herd on reconnect
+        setTimeout(() => this.refresh(), Math.random() * 2000);
+      }),
+    );
+  }
+
+  /** Refresh agents from REST API. */
+  async refresh() {
+    try {
+      const data = await api.get('/api/agents');
+      this.list = Array.isArray(data) ? data : [];
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to refresh agents';
+    }
   }
 
   /** Add a newly created agent to the local list. */
@@ -75,8 +91,8 @@ class AgentsStore {
   }
 
   destroy() {
-    this.unsubscribe?.();
-    this.unsubscribe = null;
+    for (const unsub of this.unsubs) unsub();
+    this.unsubs = [];
     this.initialized = false;
   }
 }

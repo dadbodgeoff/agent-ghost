@@ -57,11 +57,11 @@ pub async fn execute_skill(
         .get(&skill_name)
         .ok_or_else(|| ApiError::not_found(format!("Safety skill '{skill_name}' not found")))?;
 
-    // Acquire DB lock.
+    // Acquire DB read connection.
     let db = state
         .db
-        .lock()
-        .map_err(|_| ApiError::lock_poisoned("db"))?;
+        .read()
+        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     // Build skill context.
     let ctx = SkillContext {
@@ -77,54 +77,42 @@ pub async fn execute_skill(
         use ghost_skills::skill::SkillError;
         match &e {
             SkillError::InvalidInput(_) => ApiError::bad_request(e.to_string()),
-            SkillError::ConvergenceTooHigh { .. } => ApiError {
-                status: axum::http::StatusCode::FORBIDDEN,
-                body: crate::api::error::ErrorResponse::with_details(
-                    "CONVERGENCE_TOO_HIGH",
-                    e.to_string(),
-                    serde_json::json!({ "code": e.code() }),
-                ),
-            },
-            SkillError::BudgetExhausted { .. } => ApiError {
-                status: axum::http::StatusCode::TOO_MANY_REQUESTS,
-                body: crate::api::error::ErrorResponse::with_details(
-                    "BUDGET_EXHAUSTED",
-                    e.to_string(),
-                    serde_json::json!({ "code": e.code() }),
-                ),
-            },
-            SkillError::ReflectionConstraint(_) => ApiError {
-                status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-                body: crate::api::error::ErrorResponse::with_details(
-                    "REFLECTION_CONSTRAINT",
-                    e.to_string(),
-                    serde_json::json!({ "code": e.code() }),
-                ),
-            },
-            SkillError::PcControlBlocked(_) => ApiError {
-                status: axum::http::StatusCode::FORBIDDEN,
-                body: crate::api::error::ErrorResponse::with_details(
-                    "PC_CONTROL_BLOCKED",
-                    e.to_string(),
-                    serde_json::json!({ "code": e.code() }),
-                ),
-            },
-            SkillError::CircuitBreakerOpen(_) => ApiError {
-                status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                body: crate::api::error::ErrorResponse::with_details(
-                    "CIRCUIT_BREAKER_OPEN",
-                    e.to_string(),
-                    serde_json::json!({ "code": e.code() }),
-                ),
-            },
-            SkillError::DelegationFailed(_) => ApiError {
-                status: axum::http::StatusCode::CONFLICT,
-                body: crate::api::error::ErrorResponse::with_details(
-                    "DELEGATION_FAILED",
-                    e.to_string(),
-                    serde_json::json!({ "code": e.code() }),
-                ),
-            },
+            SkillError::ConvergenceTooHigh { .. } => ApiError::with_details(
+                axum::http::StatusCode::FORBIDDEN,
+                "CONVERGENCE_TOO_HIGH",
+                e.to_string(),
+                serde_json::json!({ "code": e.code() }),
+            ),
+            SkillError::BudgetExhausted { .. } => ApiError::with_details(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "BUDGET_EXHAUSTED",
+                e.to_string(),
+                serde_json::json!({ "code": e.code() }),
+            ),
+            SkillError::ReflectionConstraint(_) => ApiError::with_details(
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "REFLECTION_CONSTRAINT",
+                e.to_string(),
+                serde_json::json!({ "code": e.code() }),
+            ),
+            SkillError::PcControlBlocked(_) => ApiError::with_details(
+                axum::http::StatusCode::FORBIDDEN,
+                "PC_CONTROL_BLOCKED",
+                e.to_string(),
+                serde_json::json!({ "code": e.code() }),
+            ),
+            SkillError::CircuitBreakerOpen(_) => ApiError::with_details(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "CIRCUIT_BREAKER_OPEN",
+                e.to_string(),
+                serde_json::json!({ "code": e.code() }),
+            ),
+            SkillError::DelegationFailed(_) => ApiError::with_details(
+                axum::http::StatusCode::CONFLICT,
+                "DELEGATION_FAILED",
+                e.to_string(),
+                serde_json::json!({ "code": e.code() }),
+            ),
             _ => ApiError::internal(e.to_string()),
         }
     })?;

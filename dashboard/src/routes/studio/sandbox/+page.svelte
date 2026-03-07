@@ -83,8 +83,8 @@
       }
 
       completed = true;
-    } catch (e: any) {
-      error = e.message || 'Sandbox run failed';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Sandbox run failed';
     }
     running = false;
   }

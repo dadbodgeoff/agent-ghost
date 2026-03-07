@@ -180,6 +180,10 @@ enum Commands {
     /// Scheduled task management.
     #[command(subcommand)]
     Cron(CronCommands),
+
+    /// Dump the OpenAPI specification as JSON to stdout (for SDK type generation).
+    #[command(name = "openapi-dump")]
+    OpenapiDump,
 }
 
 // ─── Subcommand enums ─────────────────────────────────────────────────────────
@@ -438,6 +442,45 @@ enum CronCommands {
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 fn main() {
+    // WP9-A: When `otel` feature is enabled and GHOST_OTEL_ENABLED=true,
+    // initialize tracing with an OTLP exporter layer. Otherwise, use plain fmt.
+    #[cfg(feature = "otel")]
+    let _otel_guard = {
+        let otel_enabled = std::env::var("GHOST_OTEL_ENABLED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if otel_enabled {
+            let config = ghost_gateway::config::OtelConfig {
+                enabled: true,
+                endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                    .unwrap_or_else(|_| "http://localhost:4317".into()),
+                service_name: std::env::var("OTEL_SERVICE_NAME")
+                    .unwrap_or_else(|_| "ghost-gateway".into()),
+            };
+            match ghost_gateway::otel::init_otel_tracing(&config) {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    eprintln!("Failed to initialize OTEL tracing: {e} — falling back to fmt");
+                    tracing_subscriber::fmt()
+                        .with_env_filter(
+                            tracing_subscriber::EnvFilter::try_from_default_env()
+                                .unwrap_or_else(|_| "info".into()),
+                        )
+                        .init();
+                    None
+                }
+            }
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info".into()),
+                )
+                .init();
+            None
+        }
+    };
+    #[cfg(not(feature = "otel"))]
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -525,13 +568,13 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         Commands::Chat => cli::chat::run_interactive_chat().await,
 
         Commands::Status => {
-            let base_url = cli_args
-                .global
-                .gateway_url
-                .as_deref()
-                .unwrap_or("http://127.0.0.1:39780");
+            let config = load_config(cli_args.global.config.as_deref())?;
+            let base_url = resolve_gateway_url(
+                cli_args.global.gateway_url.as_deref(),
+                &config,
+            );
             cli::status::show_status(
-                base_url,
+                &base_url,
                 cli_args.global.config.as_deref(),
                 cli_args.global.output,
             )
@@ -662,7 +705,7 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             match sub {
                 DbCommands::Migrate => {
                     let backend = CliBackend::open_direct(&config)?;
-                    cli::db::run_migrate(DbMigrateArgs {}, &backend)
+                    cli::db::run_migrate(DbMigrateArgs {}, &backend).await
                 }
                 DbCommands::Status => {
                     let backend = CliBackend::open_direct(&config)?;
@@ -1042,6 +1085,16 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                     .await
                 }
             }
+        }
+
+        // ─── SDK: openapi-dump ────────────────────────────────────────
+        Commands::OpenapiDump => {
+            use utoipa::OpenApi;
+            let doc = ghost_gateway::api::openapi::ApiDoc::openapi();
+            let json = serde_json::to_string_pretty(&doc)
+                .map_err(|e| CliError::Internal(format!("serialize openapi: {e}")))?;
+            println!("{json}");
+            Ok(())
         }
     }
 }

@@ -35,7 +35,7 @@ pub async fn get_crdt_state(
     let limit = params.limit.unwrap_or(100).min(500);
     let offset = params.offset.unwrap_or(0);
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     // Build query based on whether memory_id filter is provided.
     let (query, count_query) = if params.memory_id.is_some() {

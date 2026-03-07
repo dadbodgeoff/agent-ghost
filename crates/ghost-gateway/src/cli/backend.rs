@@ -1,11 +1,10 @@
 //! CLI backend abstraction — HTTP vs direct DB (Task 6.6 — §3.2, F.12).
 
-use std::sync::{Arc, Mutex};
-
-use rusqlite::Connection;
+use std::sync::Arc;
 
 use crate::bootstrap::shellexpand_tilde;
 use crate::config::GhostConfig;
+use crate::db_pool::DbPool;
 
 use super::error::CliError;
 use super::http_client::GhostHttpClient;
@@ -17,7 +16,7 @@ pub enum CliBackend {
     /// Open the database directly (gateway not required).
     Direct {
         config: GhostConfig,
-        db: Arc<Mutex<Connection>>,
+        db: Arc<DbPool>,
     },
 }
 
@@ -68,14 +67,12 @@ impl CliBackend {
             return Err(CliError::NoBackend);
         }
 
-        let conn = Connection::open(&db_path)
-            .map_err(|e| CliError::Database(format!("open db: {e}")))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-            .map_err(|e| CliError::Database(format!("pragma: {e}")))?;
+        let pool = crate::db_pool::create_pool(std::path::PathBuf::from(&db_path))
+            .map_err(|e| CliError::Database(format!("open db pool: {e}")))?;
 
         Ok(Self::Direct {
             config: config.clone(),
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
         })
     }
 
@@ -108,8 +105,8 @@ impl CliBackend {
         }
     }
 
-    /// Get a reference to the DB connection (panics if Http).
-    pub fn db(&self) -> &Arc<Mutex<Connection>> {
+    /// Get a reference to the DB pool (panics if Http).
+    pub fn db(&self) -> &Arc<DbPool> {
         match self {
             Self::Direct { db, .. } => db,
             Self::Http { .. } => panic!("expected Direct backend"),

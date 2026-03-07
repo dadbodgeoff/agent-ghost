@@ -7,6 +7,7 @@
  */
 
 import { api } from '$lib/api';
+import { wsStore } from '$lib/stores/websocket.svelte';
 
 export interface Memory {
   memory_id: string;
@@ -20,6 +21,7 @@ class MemoryStore {
   loading = $state(false);
   error = $state('');
   private initialized = false;
+  private unsubs: Array<() => void> = [];
 
   get count(): number {
     return this.memories.length;
@@ -34,22 +36,32 @@ class MemoryStore {
     try {
       const data = await api.get('/api/memory');
       this.memories = data?.memories ?? [];
-    } catch (e: any) {
-      this.error = e.message || 'Failed to load memories';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to load memories';
     }
     this.loading = false;
+
+    // Subscribe to Resync events for full re-fetch on reconnect gap.
+    this.unsubs.push(
+      wsStore.on('Resync', () => {
+        // Stagger to avoid thundering herd on reconnect
+        setTimeout(() => this.refresh(), Math.random() * 2000);
+      }),
+    );
   }
 
   async refresh() {
     try {
       const data = await api.get('/api/memory');
       this.memories = data?.memories ?? [];
-    } catch (e: any) {
-      this.error = e.message || 'Failed to refresh memories';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to refresh memories';
     }
   }
 
   destroy() {
+    for (const unsub of this.unsubs) unsub();
+    this.unsubs = [];
     this.initialized = false;
   }
 }

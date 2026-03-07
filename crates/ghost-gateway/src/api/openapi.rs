@@ -26,7 +26,7 @@ use utoipa::OpenApi;
         license(name = "MIT OR Apache-2.0"),
     ),
     servers(
-        (url = "http://localhost:39780", description = "Local development"),
+        (url = "/", description = "Local development (relative — port from ghost.yml config)"),
     ),
     paths(
         health,

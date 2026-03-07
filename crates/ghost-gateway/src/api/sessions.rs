@@ -16,10 +16,15 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 /// Query parameters for session listing (F15 fix — was hardcoded LIMIT 100).
+/// Phase 2 Task 3.7: Supports both page-based (legacy) and cursor-based pagination.
 #[derive(Debug, Deserialize)]
 pub struct SessionQueryParams {
     pub page: Option<u32>,
     pub page_size: Option<u32>,
+    /// Cursor-based pagination: last item's `last_event_at` from previous page.
+    pub cursor: Option<String>,
+    /// Items per page for cursor mode (default 50, max 200).
+    pub limit: Option<u32>,
 }
 
 /// Query parameters for session events listing (T-2.1.1).
@@ -33,20 +38,20 @@ pub struct SessionEventParams {
 ///
 /// Groups itp_events by session_id, returning the first/last timestamp,
 /// event count, and sender (agent) for each session.
+///
+/// Phase 2 Task 3.7: Supports cursor-based pagination (`?cursor=<last_event_at>&limit=50`)
+/// alongside legacy page-based (`?page=1&page_size=50`).
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SessionQueryParams>,
 ) -> impl IntoResponse {
-    let page = params.page.unwrap_or(1);
-    let page_size = params.page_size.unwrap_or(50).min(200);
-    let offset = (page.saturating_sub(1)) * page_size;
-
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to acquire DB read connection");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
+                Json(serde_json::json!({"error": "database connection error"})),
             )
                 .into_response();
         }
@@ -68,9 +73,109 @@ pub async fn list_sessions(
         }
     };
 
-    // Use COALESCE on sender to handle NULLs cleanly (F3 fix).
-    // GROUP_CONCAT(DISTINCT sender) skips NULLs, but if ALL senders are NULL
-    // the result is SQL NULL which would fail row.get::<_, String>.
+    // Phase 2 Task 3.7: cursor-based pagination when `cursor` param is present.
+    if params.cursor.is_some() || (params.page.is_none() && params.limit.is_some()) {
+        let limit = params.limit.unwrap_or(50).min(200) as i64;
+
+        let (query, query_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(ref cursor) = params.cursor {
+                (
+                    "SELECT session_id, \
+                            MIN(timestamp) as started_at, \
+                            MAX(timestamp) as last_event_at, \
+                            COUNT(*) as event_count, \
+                            GROUP_CONCAT(DISTINCT COALESCE(sender, 'unknown')) as agents \
+                     FROM itp_events \
+                     GROUP BY session_id \
+                     HAVING last_event_at < ?1 \
+                     ORDER BY last_event_at DESC \
+                     LIMIT ?2".to_string(),
+                    vec![
+                        Box::new(cursor.clone()) as Box<dyn rusqlite::types::ToSql>,
+                        Box::new(limit + 1),
+                    ],
+                )
+            } else {
+                (
+                    "SELECT session_id, \
+                            MIN(timestamp) as started_at, \
+                            MAX(timestamp) as last_event_at, \
+                            COUNT(*) as event_count, \
+                            GROUP_CONCAT(DISTINCT COALESCE(sender, 'unknown')) as agents \
+                     FROM itp_events \
+                     GROUP BY session_id \
+                     ORDER BY last_event_at DESC \
+                     LIMIT ?1".to_string(),
+                    vec![Box::new(limit + 1) as Box<dyn rusqlite::types::ToSql>],
+                )
+            };
+
+        let mut stmt = match db.prepare(&query) {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("query prepare failed: {e}")})),
+                )
+                    .into_response();
+            }
+        };
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            query_params.iter().map(|p| p.as_ref()).collect();
+
+        let mut sessions = Vec::new();
+        match stmt.query_map(param_refs.as_slice(), |row| {
+            Ok(serde_json::json!({
+                "session_id": row.get::<_, String>(0)?,
+                "started_at": row.get::<_, String>(1)?,
+                "last_event_at": row.get::<_, String>(2)?,
+                "event_count": row.get::<_, i64>(3)?,
+                "agents": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            }))
+        }) {
+            Ok(rows) => {
+                for row in rows {
+                    match row {
+                        Ok(r) => sessions.push(r),
+                        Err(e) => tracing::warn!(error = %e, "skipping malformed session row"),
+                    }
+                }
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("query failed: {e}")})),
+                )
+                    .into_response();
+            }
+        }
+
+        let has_more = sessions.len() > limit as usize;
+        let data: Vec<serde_json::Value> = sessions.into_iter().take(limit as usize).collect();
+        let next_cursor = if has_more {
+            data.last().and_then(|s| s.get("last_event_at")).and_then(|v| v.as_str()).map(String::from)
+        } else {
+            None
+        };
+
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "data": data,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+                "total_count": total,
+            })),
+        )
+            .into_response();
+    }
+
+    // Legacy page-based pagination (backwards compatible).
+    let page = params.page.unwrap_or(1);
+    let page_size = params.page_size.unwrap_or(50).min(200);
+    let offset = (page.saturating_sub(1)) * page_size;
+
     let mut stmt = match db.prepare(
         "SELECT session_id, \
                 MIN(timestamp) as started_at, \
@@ -79,7 +184,7 @@ pub async fn list_sessions(
                 GROUP_CONCAT(DISTINCT COALESCE(sender, 'unknown')) as agents \
          FROM itp_events \
          GROUP BY session_id \
-         ORDER BY started_at DESC \
+         ORDER BY last_event_at DESC \
          LIMIT ?1 OFFSET ?2",
     ) {
         Ok(stmt) => stmt,
@@ -162,7 +267,7 @@ pub async fn session_events(
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(100).min(500);
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("session_events", e))?;
 
     // Total event count for this session.
     let total: u32 = db
@@ -283,4 +388,116 @@ pub async fn session_events(
         "chain_valid": chain_valid,
         "cumulative_cost": cumulative_cost,
     })))
+}
+
+// ── Session Bookmarks (Phase 3, Task 3.9) ──────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBookmarkRequest {
+    pub id: Option<String>,
+    #[serde(rename = "eventIndex")]
+    pub event_index: u32,
+    pub label: String,
+}
+
+/// GET /api/sessions/:id/bookmarks — list bookmarks for a session.
+pub async fn list_bookmarks(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let db = state.db.read().map_err(|e| ApiError::db_error("list_bookmarks", e))?;
+
+    let bookmarks: Vec<serde_json::Value> = match db.prepare(
+        "SELECT id, event_index, label, created_at FROM session_bookmarks \
+         WHERE session_id = ?1 ORDER BY event_index ASC"
+    ) {
+        Ok(mut stmt) => stmt
+            .query_map([&session_id], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "eventIndex": row.get::<_, u32>(1)?,
+                    "label": row.get::<_, String>(2)?,
+                    "createdAt": row.get::<_, String>(3)?,
+                }))
+            })
+            .map_err(|e| ApiError::db_error("list_bookmarks_query", e))?
+            .filter_map(|r| r.ok())
+            .collect(),
+        Err(_) => vec![],
+    };
+
+    Ok(Json(serde_json::json!({ "bookmarks": bookmarks })))
+}
+
+/// POST /api/sessions/:id/bookmarks — create a bookmark.
+pub async fn create_bookmark(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<CreateBookmarkRequest>,
+) -> ApiResult<serde_json::Value> {
+    let id = body.id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+
+    let db = state.db.write().await;
+    db.execute(
+        "INSERT INTO session_bookmarks (id, session_id, event_index, label) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, session_id, body.event_index, body.label],
+    ).map_err(|e| ApiError::db_error("create_bookmark", e))?;
+
+    Ok(Json(serde_json::json!({ "id": id, "status": "created" })))
+}
+
+/// DELETE /api/sessions/:id/bookmarks/:bookmark_id — remove a bookmark.
+pub async fn delete_bookmark(
+    State(state): State<Arc<AppState>>,
+    Path((_session_id, bookmark_id)): Path<(String, String)>,
+) -> ApiResult<serde_json::Value> {
+    let db = state.db.write().await;
+    db.execute("DELETE FROM session_bookmarks WHERE id = ?1", [&bookmark_id])
+        .map_err(|e| ApiError::db_error("delete_bookmark", e))?;
+
+    Ok(Json(serde_json::json!({ "status": "deleted" })))
+}
+
+/// POST /api/sessions/:id/branch — branch a new session from a checkpoint.
+#[derive(Debug, Deserialize)]
+pub struct BranchRequest {
+    pub from_event_index: u32,
+}
+
+pub async fn branch_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    Json(body): Json<BranchRequest>,
+) -> ApiResult<serde_json::Value> {
+    let new_session_id = uuid::Uuid::now_v7().to_string();
+
+    let db = state.db.write().await;
+
+    // Copy events up to the branch point into a new session.
+    let copied: usize = db.execute(
+        "INSERT INTO itp_events (id, session_id, event_type, sender, timestamp, sequence_number, \
+         content_hash, content_length, privacy_level, latency_ms, token_count, attributes) \
+         SELECT hex(randomblob(16)), ?1, event_type, sender, timestamp, sequence_number, \
+         content_hash, content_length, privacy_level, latency_ms, token_count, attributes \
+         FROM itp_events WHERE session_id = ?2 AND sequence_number <= ?3 \
+         ORDER BY sequence_number ASC",
+        rusqlite::params![new_session_id, session_id, body.from_event_index],
+    ).map_err(|e| ApiError::db_error("branch_session", e))?;
+
+    Ok(Json(serde_json::json!({
+        "session_id": new_session_id,
+        "branched_from": session_id,
+        "events_copied": copied,
+    })))
+}
+
+/// WP9-L: Client heartbeat endpoint.
+/// Frontend POSTs every 30s to indicate it's still consuming the SSE stream.
+/// Backend tracks the timestamp; the SSE producer pauses when stale >90s.
+pub async fn session_heartbeat(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    state.client_heartbeats.insert(session_id.clone(), std::time::Instant::now());
+    (StatusCode::NO_CONTENT, "")
 }

@@ -5,14 +5,17 @@
   import '../styles/global.css';
   import ConnectionIndicator from '../components/ConnectionIndicator.svelte';
   import CommandPalette from '../components/CommandPalette.svelte';
+  import Breadcrumb from '../components/Breadcrumb.svelte';
+  import NotificationPanel from '../components/NotificationPanel.svelte';
   import PanelLayout from '$lib/components/PanelLayout.svelte';
   import TabBar from '$lib/components/TabBar.svelte';
   import Terminal from '$lib/components/Terminal.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { tabStore } from '$lib/stores/tabs.svelte';
+  import { shortcuts } from '$lib/shortcuts';
   import { api, BASE_URL } from '$lib/api';
 
-  const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI__;
+  const isTauri = typeof window !== 'undefined' && !!window.__TAURI__;
 
   let token: string | null = null;
   let offline = $state(false);
@@ -50,7 +53,9 @@
       // Check if gateway requires auth before redirecting to login.
       // If health endpoint works without a token, auth is not configured — skip login.
       try {
-        const healthResp = await fetch(`${BASE_URL}/api/agents`);
+        const healthResp = await fetch(`${BASE_URL}/api/agents`, {
+          signal: AbortSignal.timeout(5000),
+        });
         if (!healthResp.ok) {
           goto('/login');
           return;
@@ -66,6 +71,23 @@
 
     // Connect WebSocket store (replaces old api.connectWebSocket()).
     wsStore.connect();
+
+    // Initialize keyboard shortcuts system (Phase 2, Task 3.2).
+    shortcuts.init();
+    // Note: cmd+k for command palette is handled directly by CommandPalette component.
+    shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
+    shortcuts.registerCommand('theme.toggle', () => {
+      document.documentElement.classList.toggle('light');
+      const isLight = document.documentElement.classList.contains('light');
+      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+    });
+    shortcuts.registerCommand('killSwitch.activateAll', async () => {
+      if (confirm('Kill all agents? This cannot be undone.')) {
+        await api.post('/api/safety/kill-all', { reason: 'Kill switch via keyboard shortcut' });
+      }
+    });
+    shortcuts.registerCommand('search.global', () => goto('/search'));
+    shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
     window.addEventListener('online', () => (offline = false));
@@ -90,6 +112,7 @@
 
   onDestroy(() => {
     wsStore.disconnect();
+    shortcuts.destroy();
   });
 
   async function installPWA() {
@@ -161,23 +184,27 @@
 {:else}
   <PanelLayout>
     {#snippet sidebar()}
-      <nav aria-label="Main navigation">
-        <div class="logo">GHOST</div>
-        <a href="/" class:active={$page.url.pathname === '/'}>Overview</a>
-        <a href="/convergence" class:active={$page.url.pathname === '/convergence'}>Convergence</a>
-        <a href="/memory" class:active={$page.url.pathname === '/memory'}>Memory</a>
-        <a href="/goals" class:active={$page.url.pathname === '/goals'}>Goals</a>
-        <a href="/sessions" class:active={$page.url.pathname === '/sessions'}>Sessions</a>
-        <a href="/agents" class:active={$page.url.pathname === '/agents'}>Agents</a>
-        <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')}>Workflows</a>
-        <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')}>Skills</a>
-        <a href="/studio" class:active={$page.url.pathname.startsWith('/studio')}>Studio</a>
-        <a href="/observability" class:active={$page.url.pathname.startsWith('/observability')}>Observability</a>
-        <a href="/orchestration" class:active={$page.url.pathname.startsWith('/orchestration')}>Orchestration</a>
-        <a href="/security" class:active={$page.url.pathname === '/security'}>Security</a>
-        <a href="/costs" class:active={$page.url.pathname === '/costs'}>Costs</a>
-        <a href="/search" class:active={$page.url.pathname === '/search'}>Search</a>
-        <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')}>Settings</a>
+      <nav aria-label="Primary navigation" role="navigation">
+        <div class="logo" role="banner">GHOST</div>
+        <a href="/" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
+        <a href="/convergence" class:active={$page.url.pathname === '/convergence'} aria-current={$page.url.pathname === '/convergence' ? 'page' : undefined}>Convergence</a>
+        <a href="/memory" class:active={$page.url.pathname.startsWith('/memory')} aria-current={$page.url.pathname.startsWith('/memory') ? 'page' : undefined}>Memory</a>
+        <a href="/goals" class:active={$page.url.pathname === '/goals'} aria-current={$page.url.pathname === '/goals' ? 'page' : undefined}>Goals</a>
+        <a href="/sessions" class:active={$page.url.pathname === '/sessions'} aria-current={$page.url.pathname === '/sessions' ? 'page' : undefined}>Sessions</a>
+        <a href="/agents" class:active={$page.url.pathname === '/agents'} aria-current={$page.url.pathname === '/agents' ? 'page' : undefined}>Agents</a>
+        <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')} aria-current={$page.url.pathname.startsWith('/workflows') ? 'page' : undefined}>Workflows</a>
+        <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')} aria-current={$page.url.pathname.startsWith('/skills') ? 'page' : undefined}>Skills</a>
+        <a href="/studio" class:active={$page.url.pathname.startsWith('/studio')} aria-current={$page.url.pathname.startsWith('/studio') ? 'page' : undefined}>Studio</a>
+        <a href="/channels" class:active={$page.url.pathname === '/channels'} aria-current={$page.url.pathname === '/channels' ? 'page' : undefined}>Channels</a>
+        <a href="/observability" class:active={$page.url.pathname.startsWith('/observability')} aria-current={$page.url.pathname.startsWith('/observability') ? 'page' : undefined}>Observability</a>
+        <a href="/orchestration" class:active={$page.url.pathname.startsWith('/orchestration')} aria-current={$page.url.pathname.startsWith('/orchestration') ? 'page' : undefined}>Orchestration</a>
+        <a href="/pc-control" class:active={$page.url.pathname === '/pc-control'} aria-current={$page.url.pathname === '/pc-control' ? 'page' : undefined}>PC Control</a>
+        <a href="/itp" class:active={$page.url.pathname === '/itp'} aria-current={$page.url.pathname === '/itp' ? 'page' : undefined}>ITP Events</a>
+        <a href="/approvals" class:active={$page.url.pathname === '/approvals'} aria-current={$page.url.pathname === '/approvals' ? 'page' : undefined}>Approvals</a>
+        <a href="/security" class:active={$page.url.pathname === '/security'} aria-current={$page.url.pathname === '/security' ? 'page' : undefined}>Security</a>
+        <a href="/costs" class:active={$page.url.pathname === '/costs'} aria-current={$page.url.pathname === '/costs' ? 'page' : undefined}>Costs</a>
+        <a href="/search" class:active={$page.url.pathname === '/search'} aria-current={$page.url.pathname === '/search' ? 'page' : undefined}>Search</a>
+        <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')} aria-current={$page.url.pathname.startsWith('/settings') ? 'page' : undefined}>Settings</a>
         {#if $page.url.pathname.startsWith('/settings')}
           <div class="settings-subnav">
             <a href="/settings/profiles" class:active={$page.url.pathname === '/settings/profiles'}>Profiles</a>
@@ -193,11 +220,15 @@
     {/snippet}
 
     {#snippet sidebarFooter()}
-      <ConnectionIndicator state={wsState} />
+      <div class="sidebar-footer-row">
+        <ConnectionIndicator state={wsState} />
+        <NotificationPanel />
+      </div>
     {/snippet}
 
     {#snippet main()}
       <TabBar />
+      <Breadcrumb />
       <slot />
     {/snippet}
 
@@ -299,5 +330,12 @@
   .install-banner button:last-child {
     background: transparent;
     color: var(--color-text-muted);
+  }
+
+  .sidebar-footer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-2);
   }
 </style>

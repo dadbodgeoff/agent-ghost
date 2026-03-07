@@ -12,7 +12,7 @@
  */
 
 const TOKEN_KEY = 'ghost-token';
-const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI__;
+const isTauri = typeof window !== 'undefined' && !!window.__TAURI__;
 
 let tauriStore: any = null;
 async function getStore() {

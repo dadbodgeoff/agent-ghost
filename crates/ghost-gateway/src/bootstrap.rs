@@ -6,10 +6,10 @@
 
 use thiserror::Error;
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use crate::agents::registry::AgentRegistry;
-use crate::api::websocket::WsEvent;
+use crate::api::websocket::{EventReplayBuffer, WsEnvelope};
 use crate::config::GhostConfig;
 use crate::gateway::{GatewaySharedState, GatewayState};
 use crate::health::MonitorConnection;
@@ -92,6 +92,35 @@ impl GatewayBootstrap {
         let config = Self::step1_load_config(config_path)?;
         tracing::info!("Step 1: Configuration loaded");
 
+        // Step 1.0: Validate production auth requirements (WP0-A).
+        // If GHOST_ENV=production and no auth is configured, this exits immediately.
+        crate::api::auth::AuthConfig::from_env().validate_production();
+
+        // Export gateway port for subsystems that need it (e.g. OAuth redirect URI).
+        // Uses the thread-safe key store instead of std::env::set_var (which is
+        // unsound in multi-threaded contexts since Rust 1.66).
+        crate::state::set_api_key("GHOST_GATEWAY_PORT", &config.gateway.port.to_string());
+
+        // Step 1a: Pre-launch check — detect stale gateway processes.
+        let pid_action = crate::pid::pre_launch_check(config.gateway.port).await;
+        match &pid_action {
+            crate::pid::PreLaunchAction::ProceedWithStartup => {
+                tracing::info!("Step 1a: No existing gateway — proceeding");
+            }
+            crate::pid::PreLaunchAction::ReuseExisting { url } => {
+                return Err(BootstrapError::Config(
+                    format!("Gateway already running at {url}. Kill it first or use a different port.")
+                ));
+            }
+            crate::pid::PreLaunchAction::CleanedStaleProcess { old_pid } => {
+                tracing::warn!(old_pid, "Step 1a: Cleaned stale PID file (process was dead)");
+            }
+            crate::pid::PreLaunchAction::KilledUnresponsive { old_pid } => {
+                tracing::warn!(old_pid, "Step 1a: Killed unresponsive previous gateway");
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+
         // Step 1b: Build SecretProvider from secrets config (Phase 10)
         let secret_provider = Self::build_secrets(&config)?;
         tracing::info!("Step 1b: SecretProvider initialized (provider: {})", config.secrets.provider);
@@ -111,15 +140,15 @@ impl GatewayBootstrap {
                     "gemini" => "GEMINI_API_KEY",
                     _ => continue,
                 });
-            // Only hydrate if env var is not already set (env takes precedence).
-            if std::env::var(env_name).ok().filter(|v| !v.is_empty()).is_some() {
+            // Only hydrate if key is not already set (env/store takes precedence).
+            if crate::state::get_api_key(env_name).is_some() {
                 continue;
             }
             if let Ok(secret) = secret_provider.get_secret(env_name) {
                 use ghost_secrets::ExposeSecret;
                 let value = secret.expose_secret().to_string();
                 if !value.is_empty() {
-                    unsafe { std::env::set_var(env_name, &value); }
+                    crate::state::set_api_key(env_name, &value);
                     tracing::info!(env_name = %env_name, "Hydrated provider API key from secret store");
                 }
             }
@@ -153,37 +182,42 @@ impl GatewayBootstrap {
             std::fs::create_dir_all(parent)
                 .map_err(|e| BootstrapError::Database(format!("create dir: {e}")))?;
         }
-        // Open a single DB connection — used for migrations AND kept for AppState.
-        // Previous code opened two connections (one for migrations, one for AppState),
-        // wasting a file descriptor and risking WAL contention during bootstrap.
-        let db_conn = rusqlite::Connection::open(&db_path)
-            .map_err(|e| BootstrapError::Database(format!("open db: {e}")))?;
-        db_conn
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
-            .map_err(|e| BootstrapError::Database(format!("pragma: {e}")))?;
-        cortex_storage::migrations::run_migrations(&db_conn)
-            .map_err(|e| BootstrapError::Database(e.to_string()))?;
-        tracing::info!("Step 2: Database migrations complete");
+        // Create read/write separated connection pool (1 writer + N readers).
+        // Migrations run on the writer connection before pool is fully available.
+        let db_path_buf = std::path::PathBuf::from(&db_path);
+        let db = crate::db_pool::create_pool(db_path_buf)
+            .map_err(|e| BootstrapError::Database(format!("db pool: {e}")))?;
 
-        // Ensure audit_log table exists (created by ghost-audit, not in migrations).
+        // Run migrations on the writer connection (with pre-migration backup).
         {
-            let engine = ghost_audit::AuditQueryEngine::new(&db_conn);
+            let writer = db.writer_for_migrations().await;
+            cortex_storage::migrations::run_migrations_with_backup(
+                &writer,
+                Some(std::path::Path::new(&db_path)),
+            )
+            .map_err(|e| BootstrapError::Database(e.to_string()))?;
+            tracing::info!("Step 2: Database migrations complete");
+
+            // Ensure audit_log table exists (created by ghost-audit, not in migrations).
+            let engine = ghost_audit::AuditQueryEngine::new(&writer);
             engine
                 .ensure_table()
                 .map_err(|e| BootstrapError::Database(format!("audit table: {e}")))?;
             tracing::info!("Audit log table ensured");
         }
 
-        // Wrap DB in Arc<Mutex<>> early so it can be shared with mesh router.
-        let db = Arc::new(Mutex::new(db_conn));
-
         // Step 3: Verify convergence monitor health (NEVER fatal).
-        // Runs concurrently with step 4 — no dependency between them.
-        // This avoids blocking agent init for up to 45s if the monitor is down.
-        let monitor_config = config.clone();
-        let monitor_handle = tokio::spawn(async move {
-            Self::step3_check_monitor(&monitor_config).await
-        });
+        // Skipped entirely when monitor is disabled in config.
+        let monitor_handle = if config.convergence.monitor.enabled {
+            // Runs concurrently with step 4 — no dependency between them.
+            let monitor_config = config.clone();
+            Some(tokio::spawn(async move {
+                Self::step3_check_monitor(&monitor_config).await
+            }))
+        } else {
+            tracing::info!("Step 3: Convergence monitor disabled — skipping health check");
+            None
+        };
 
         // Step 4: Initialize agent registry + channel adapters
         let agent_registry = Self::step4_init_agents_channels(&config)?;
@@ -203,10 +237,19 @@ impl GatewayBootstrap {
         }
 
         // Build shared application state for all route handlers.
-        // T-5.3.4: Increase broadcast capacity from 256 to 1024 (T-X.27).
-        let (event_tx, _) = tokio::sync::broadcast::channel::<WsEvent>(1024);
+        // WP7-B: Configurable broadcast capacity (default 1024).
+        let (event_tx, _) = tokio::sync::broadcast::channel::<WsEnvelope>(config.gateway.ws_broadcast_capacity);
+        // WP7-C: Configurable replay buffer size (default 1000).
+        let replay_buffer = Arc::new(EventReplayBuffer::new(config.gateway.ws_replay_buffer_size));
         let kill_switch = Arc::new(KillSwitch::new());
         let cost_tracker = Arc::new(crate::cost::tracker::CostTracker::new());
+
+        // WP4-A: Restore cost state from previous run (same day only).
+        if let Ok(conn) = db.read() {
+            if let Err(e) = cost_tracker.restore(&conn) {
+                tracing::warn!(error = %e, "failed to restore cost tracker state — starting fresh");
+            }
+        }
 
         // Build distributed kill gate bridge if mesh is enabled.
         let kill_gate = if config.mesh.enabled {
@@ -319,6 +362,7 @@ impl GatewayBootstrap {
             quarantine: Arc::new(RwLock::new(QuarantineManager::new())),
             db,
             event_tx,
+            replay_buffer,
             cost_tracker,
             kill_gate,
             secret_provider: Arc::from(secret_provider),
@@ -329,11 +373,15 @@ impl GatewayBootstrap {
             tools_config: config.tools.clone(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
-            background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
+            monitor_address: config.convergence.monitor.address.clone(),
+            monitor_enabled: config.convergence.monitor.enabled,
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            embedding_engine: Arc::new(Mutex::new(embedding_engine)),
+            embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             safety_skills: Arc::new(safety_skills),
+            client_heartbeats: Arc::new(dashmap::DashMap::new()),
+            session_ttl_days: config.gateway.session_ttl_days,
         });
 
         // Step 5: Start API server
@@ -349,6 +397,12 @@ impl GatewayBootstrap {
 
         // Step 5b: Spawn background tasks through the runtime's TaskTracker.
         // Every task goes through spawn_tracked() — guaranteed cancellation + await.
+        runtime.spawn_tracked(
+            "wal_checkpoint",
+            crate::db_pool::wal_checkpoint_task(Arc::clone(&app_state.db)),
+        );
+        tracing::info!("Step 5b: WAL checkpoint task started (every 5 min, tracked)");
+
         runtime.spawn_tracked(
             "convergence_watcher",
             crate::convergence_watcher::convergence_watcher_task(Arc::clone(&app_state)),
@@ -367,11 +421,123 @@ impl GatewayBootstrap {
         );
         tracing::info!("Step 5d: Backup scheduler started (tracked)");
 
+        // WP4-A: Periodic cost tracker persistence (every 5 minutes).
+        {
+            let ct = Arc::clone(&app_state.cost_tracker);
+            let db_for_cost = Arc::clone(&app_state.db);
+            runtime.spawn_tracked("cost_persist", async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    interval.tick().await;
+                    // Snapshot first (no DB lock needed), then acquire writer briefly.
+                    let snap = ct.snapshot();
+                    let conn = db_for_cost.write().await;
+                    if let Err(e) = crate::cost::tracker::CostTracker::persist_snapshot(&snap, &conn) {
+                        tracing::warn!(error = %e, "periodic cost persistence failed");
+                    }
+                    drop(conn); // Release writer lock immediately after persist.
+                }
+            });
+            tracing::info!("Step 5e: Cost persistence task started (every 5 min, tracked)");
+        }
+
+        // WP9-F: Pre-flight LLM provider health checks.
+        // Run health checks for all configured providers concurrently.
+        // Failures are logged as warnings — they don't block startup.
+        {
+            let providers = &app_state.model_providers;
+            if !providers.is_empty() {
+                tracing::info!(count = providers.len(), "Step 5e: Running LLM provider health checks");
+                for pc in providers {
+                    let provider: Option<Arc<dyn ghost_llm::provider::LLMProvider>> = match pc.name.as_str() {
+                        "anthropic" => {
+                            let key_env = pc.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY");
+                            let key = crate::state::get_api_key(key_env).unwrap_or_default();
+                            Some(Arc::new(ghost_llm::provider::AnthropicProvider {
+                                model: pc.model.clone().unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
+                                api_key: std::sync::RwLock::new(key),
+                            }))
+                        }
+                        "openai" => {
+                            let key_env = pc.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
+                            let key = crate::state::get_api_key(key_env).unwrap_or_default();
+                            Some(Arc::new(ghost_llm::provider::OpenAIProvider {
+                                model: pc.model.clone().unwrap_or_else(|| "gpt-4o".into()),
+                                api_key: std::sync::RwLock::new(key),
+                            }))
+                        }
+                        "gemini" => {
+                            let key_env = pc.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY");
+                            let key = crate::state::get_api_key(key_env).unwrap_or_default();
+                            Some(Arc::new(ghost_llm::provider::GeminiProvider {
+                                model: pc.model.clone().unwrap_or_else(|| "gemini-2.0-flash".into()),
+                                api_key: std::sync::RwLock::new(key),
+                            }))
+                        }
+                        "ollama" => {
+                            let base_url = pc.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into());
+                            let model = pc.model.clone().unwrap_or_else(|| "llama3.1".into());
+                            Some(Arc::new(ghost_llm::provider::OllamaProvider { model, base_url }))
+                        }
+                        _ => None,
+                    };
+                    if let Some(p) = provider {
+                        let name = pc.name.clone();
+                        match p.health_check().await {
+                            Ok(()) => tracing::info!(provider = %name, "LLM provider health check passed"),
+                            Err(e) => {
+                                tracing::warn!(provider = %name, error = %e, "LLM provider health check failed — provider may be unreachable or API key invalid");
+                                crate::api::websocket::broadcast_event(
+                                    &app_state,
+                                    crate::api::websocket::WsEvent::SystemWarning {
+                                        message: format!("LLM provider '{name}' health check failed: {e}"),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // WP4-C: Pre-flight check — warn if no backup passphrase is configured.
+        {
+            let has_passphrase = std::env::var("GHOST_BACKUP_PASSPHRASE")
+                .map(|p| !p.is_empty())
+                .unwrap_or(false);
+            if !has_passphrase {
+                let key_path = shellexpand_tilde("~/.ghost/backup.key");
+                let has_key_file = std::fs::read_to_string(&key_path)
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                if !has_key_file {
+                    tracing::warn!(
+                        "No backup passphrase configured. Set GHOST_BACKUP_PASSPHRASE \
+                         or create ~/.ghost/backup.key to enable encrypted backups."
+                    );
+                    crate::api::websocket::broadcast_event(
+                        &app_state,
+                        crate::api::websocket::WsEvent::SystemWarning {
+                            message: "No backup passphrase configured — encrypted backups are disabled".into(),
+                        },
+                    );
+                }
+            }
+        }
+
         // Await monitor health check result (started concurrently in step 3).
-        let monitor_state = monitor_handle.await.unwrap_or(MonitorConnection::Unreachable {
-            reason: "monitor health check task panicked".into(),
-        });
-        tracing::info!(monitor = ?monitor_state, "Step 3: Monitor health check complete");
+        let monitor_state = if let Some(handle) = monitor_handle {
+            let state = handle.await.unwrap_or(MonitorConnection::Unreachable {
+                reason: "monitor health check task panicked".into(),
+            });
+            tracing::info!(monitor = ?state, "Step 3: Monitor health check complete");
+            state
+        } else {
+            // Monitor disabled — treat as unreachable but go Healthy
+            MonitorConnection::Unreachable {
+                reason: "monitor disabled in config".into(),
+            }
+        };
 
         // Set initial monitor health from startup check result.
         app_state.monitor_healthy.store(
@@ -379,15 +545,21 @@ impl GatewayBootstrap {
             std::sync::atomic::Ordering::Relaxed,
         );
 
-        // Transition decision
-        match monitor_state {
-            MonitorConnection::Connected { .. } => {
+        // Transition decision — monitor disabled means go straight to Healthy.
+        match (&monitor_state, config.convergence.monitor.enabled) {
+            (MonitorConnection::Connected { .. }, _) => {
                 shared_state
                     .transition_to(GatewayState::Healthy)
                     .map_err(|e| BootstrapError::Config(e.to_string()))?;
                 tracing::info!("Gateway started. State: HEALTHY");
             }
-            MonitorConnection::Unreachable { reason } => {
+            (MonitorConnection::Unreachable { .. }, false) => {
+                shared_state
+                    .transition_to(GatewayState::Healthy)
+                    .map_err(|e| BootstrapError::Config(e.to_string()))?;
+                tracing::info!("Gateway started. State: HEALTHY (monitor disabled)");
+            }
+            (MonitorConnection::Unreachable { reason }, true) => {
                 shared_state
                     .transition_to(GatewayState::Degraded)
                     .map_err(|e| BootstrapError::Config(e.to_string()))?;
@@ -398,8 +570,13 @@ impl GatewayBootstrap {
             }
         }
 
-        // Spawn recurring MonitorHealthChecker (30s interval, 3-failure threshold → Degraded).
-        {
+        // Write PID file now that we're ready to bind.
+        if let Err(e) = crate::pid::write_pid_file(config.gateway.port) {
+            tracing::warn!(error = %e, "Failed to write PID file — continuing anyway");
+        }
+
+        // Spawn recurring MonitorHealthChecker only if monitor is enabled.
+        if config.convergence.monitor.enabled {
             use crate::gateway::GatewayState;
             use crate::health::{MonitorHealthChecker, MonitorHealthConfig, RecoveryCoordinator};
             use std::sync::atomic::Ordering;
@@ -420,9 +597,6 @@ impl GatewayBootstrap {
                     let ok = checker.check_once().await;
                     monitor_flag.store(ok, Ordering::Relaxed);
 
-                    // Recovery: monitor came back after being down.
-                    // check_once() handles Healthy → Degraded (via maybe_transition_to_degraded).
-                    // Here we handle Degraded → Recovering → Healthy.
                     if ok && gateway_shared.current_state() == GatewayState::Degraded {
                         if gateway_shared.transition_to(GatewayState::Recovering).is_ok() {
                             tracing::info!("Monitor recovered — initiating recovery sequence");
@@ -443,6 +617,8 @@ impl GatewayBootstrap {
                 failure_threshold = 3,
                 "MonitorHealthChecker background task spawned (tracked)"
             );
+        } else {
+            tracing::debug!("Monitor health checker skipped (convergence.monitor.enabled = false)");
         }
 
         Ok((runtime, config))
@@ -549,123 +725,181 @@ impl GatewayBootstrap {
     }
 
     /// Build the axum Router with all API routes mounted.
-    pub fn build_router(_config: &GhostConfig, app_state: Arc<AppState>, mesh_router: Option<axum::Router>) -> axum::Router {
+    ///
+    /// Routes are organized into groups by RBAC role requirement:
+    /// - **Public**: health, auth, openapi — no auth/RBAC
+    /// - **Read (no extra RBAC)**: GET endpoints for agents, sessions, etc.
+    /// - **Operator**: write operations (POST/PUT/DELETE on agents, sessions, studio, etc.)
+    /// - **Admin**: safety, admin, provider keys, webhooks, custom safety checks
+    /// - **SuperAdmin**: kill-all, data restore
+    pub fn build_router(config: &GhostConfig, app_state: Arc<AppState>, mesh_router: Option<axum::Router>) -> axum::Router {
         use axum::routing::{delete, get, post, put};
+        use crate::api::rbac;
 
-        let mut app = axum::Router::new()
-            // Health (public — no auth)
+        // ── Public routes (no auth, no RBAC) ──────────────────────────
+        let public_routes = axum::Router::new()
             .route("/api/health", get(crate::api::health::health_handler))
             .route("/api/ready", get(crate::api::health::ready_handler))
-            // Auth (public — no auth)
             .route("/api/auth/login", post(crate::api::auth::login))
             .route("/api/auth/refresh", post(crate::api::auth::refresh))
             .route("/api/auth/logout", post(crate::api::auth::logout))
-            // Agents
+            .route("/api/openapi.json", get(crate::api::openapi::openapi_spec));
+
+        // ── Read-only routes (authenticated, no minimum RBAC role) ────
+        // Any authenticated user (including Viewer) can access these.
+        let read_routes = axum::Router::new()
             .route("/api/agents", get(crate::api::agents::list_agents))
-            .route("/api/agents", post(crate::api::agents::create_agent))
-            .route("/api/agents/:id", delete(crate::api::agents::delete_agent))
-            // Audit
             .route("/api/audit", get(crate::api::audit::query_audit))
             .route("/api/audit/aggregation", get(crate::api::audit::audit_aggregation))
             .route("/api/audit/export", get(crate::api::audit::audit_export))
-            // Convergence
             .route("/api/convergence/scores", get(crate::api::convergence::get_scores))
-            // Goals (T-2.1.5, T-2.1.6)
             .route("/api/goals", get(crate::api::goals::list_goals))
             .route("/api/goals/:id", get(crate::api::goals::get_goal))
-            .route("/api/goals/:id/approve", post(crate::api::goals::approve_goal))
-            .route("/api/goals/:id/reject", post(crate::api::goals::reject_goal))
-            // Sessions (T-2.1.1)
             .route("/api/sessions", get(crate::api::sessions::list_sessions))
             .route("/api/sessions/:id/events", get(crate::api::sessions::session_events))
-            // Memory (T-2.1.2)
+            .route("/api/sessions/:id/bookmarks", get(crate::api::sessions::list_bookmarks))
             .route("/api/memory", get(crate::api::memory::list_memories))
-            .route("/api/memory", post(crate::api::memory::write_memory))
             .route("/api/memory/search", get(crate::api::memory::search_memories))
             .route("/api/memory/archived", get(crate::api::memory::list_archived))
             .route("/api/memory/:id", get(crate::api::memory::get_memory))
-            .route("/api/memory/:id/archive", post(crate::api::memory::archive_memory))
-            .route("/api/memory/:id/unarchive", post(crate::api::memory::unarchive_memory))
-            // CRDT State (T-2.1.3)
             .route("/api/state/crdt/:agent_id", get(crate::api::state::get_crdt_state))
-            // Integrity (T-2.1.4)
             .route("/api/integrity/chain/:agent_id", get(crate::api::integrity::verify_chain))
-            // Workflows (T-2.1.9)
             .route("/api/workflows", get(crate::api::workflows::list_workflows))
-            .route("/api/workflows", post(crate::api::workflows::create_workflow))
             .route("/api/workflows/:id", get(crate::api::workflows::get_workflow))
-            .route("/api/workflows/:id", put(crate::api::workflows::update_workflow))
-            .route("/api/workflows/:id/execute", post(crate::api::workflows::execute_workflow))
-            // Studio (T-2.7.1)
-            .route("/api/studio/run", post(crate::api::studio::run_prompt))
-            // Studio chat sessions — DB-backed persistence with safety pipeline
-            .route("/api/studio/sessions", get(crate::api::studio_sessions::list_sessions).post(crate::api::studio_sessions::create_session))
-            .route("/api/studio/sessions/:id", get(crate::api::studio_sessions::get_session).delete(crate::api::studio_sessions::delete_session))
-            .route("/api/studio/sessions/:id/messages", post(crate::api::studio_sessions::send_message))
-            .route("/api/studio/sessions/:id/messages/stream", post(crate::api::studio_sessions::send_message_stream))
-            // Agent chat — full agent loop via HTTP
-            .route("/api/agent/chat", post(crate::api::agent_chat::agent_chat))
-            // Traces (T-3.1.4)
+            .route("/api/workflows/:id/executions", get(crate::api::workflows::list_executions))
+            .route("/api/studio/sessions", get(crate::api::studio_sessions::list_sessions))
+            .route("/api/studio/sessions/:id", get(crate::api::studio_sessions::get_session))
+            .route("/api/studio/sessions/:id/stream/recover", get(crate::api::studio_sessions::recover_stream))
             .route("/api/traces/:session_id", get(crate::api::traces::get_traces))
-            // Mesh visualization (T-3.2.1–3.2.3)
             .route("/api/mesh/trust-graph", get(crate::api::mesh_viz::trust_graph))
             .route("/api/mesh/consensus", get(crate::api::mesh_viz::consensus_state))
             .route("/api/mesh/delegations", get(crate::api::mesh_viz::delegations))
-            // Profiles (T-3.3.1)
             .route("/api/profiles", get(crate::api::profiles::list_profiles))
-            .route("/api/profiles", post(crate::api::profiles::create_profile))
-            .route("/api/profiles/:name", put(crate::api::profiles::update_profile).delete(crate::api::profiles::delete_profile))
-            .route("/api/agents/:id/profile", post(crate::api::profiles::assign_profile))
-            // Unified search (T-3.5.1)
             .route("/api/search", get(crate::api::search::search))
-            // Admin (T-3.4.1–3.4.4)
-            .route("/api/admin/backup", post(crate::api::admin::create_backup))
-            .route("/api/admin/backups", get(crate::api::admin::list_backups))
-            .route("/api/admin/restore", post(crate::api::admin::restore_backup))
-            .route("/api/admin/export", get(crate::api::admin::export_data))
-            // Provider API key management
-            .route("/api/admin/provider-keys", get(crate::api::provider_keys::list_provider_keys).put(crate::api::provider_keys::set_provider_key))
-            .route("/api/admin/provider-keys/:env_name", delete(crate::api::provider_keys::delete_provider_key))
-            // Safety
-            .route("/api/safety/kill-all", post(crate::api::safety::kill_all))
-            .route("/api/safety/pause/:agent_id", post(crate::api::safety::pause_agent))
-            .route("/api/safety/resume/:agent_id", post(crate::api::safety::resume_agent))
-            .route("/api/safety/quarantine/:agent_id", post(crate::api::safety::quarantine_agent))
-            .route("/api/safety/status", get(crate::api::safety::safety_status))
-            // Custom safety checks (T-4.3.2)
-            .route("/api/safety/checks", get(crate::api::safety_checks::list_safety_checks).post(crate::api::safety_checks::register_safety_check))
-            .route("/api/safety/checks/:id", delete(crate::api::safety_checks::unregister_safety_check))
-            // Webhooks (T-4.3.1)
-            .route("/api/webhooks", get(crate::api::webhooks::list_webhooks).post(crate::api::webhooks::create_webhook))
-            .route("/api/webhooks/:id", put(crate::api::webhooks::update_webhook).delete(crate::api::webhooks::delete_webhook))
-            .route("/api/webhooks/:id/test", post(crate::api::webhooks::test_webhook))
-            // Skills (T-4.2.1)
             .route("/api/skills", get(crate::api::skills::list_skills))
-            .route("/api/skills/:id/install", post(crate::api::skills::install_skill))
-            .route("/api/skills/:id/uninstall", post(crate::api::skills::uninstall_skill))
-            // Safety skill execution (Phase 5)
-            .route("/api/skills/:name/execute", post(crate::api::skill_execute::execute_skill))
-            // Channel injection (T-4.6.1)
-            .route("/api/channels/:type/inject", post(crate::api::channels::inject_message))
-            // A2A gateway-mediated (T-4.1.2)
-            .route("/api/a2a/tasks", get(crate::api::a2a::list_tasks).post(crate::api::a2a::send_task))
+            .route("/api/a2a/tasks", get(crate::api::a2a::list_tasks))
             .route("/api/a2a/tasks/:task_id", get(crate::api::a2a::get_task))
             .route("/api/a2a/tasks/:task_id/stream", get(crate::api::a2a::stream_task))
             .route("/api/a2a/discover", get(crate::api::a2a::discover_agents))
-            // Cost
+            .route("/api/channels", get(crate::api::channels::list_channels))
             .route("/api/costs", get(crate::api::costs::get_costs))
-            // WebSocket
             .route("/api/ws", get(crate::api::websocket::ws_handler))
-            // OpenAPI spec (public — no auth)
-            .route("/api/openapi.json", get(crate::api::openapi::openapi_spec))
-            // OAuth
             .route("/api/oauth/providers", get(crate::api::oauth_routes::list_providers))
-            .route("/api/oauth/connect", post(crate::api::oauth_routes::connect))
             .route("/api/oauth/callback", get(crate::api::oauth_routes::callback))
             .route("/api/oauth/connections", get(crate::api::oauth_routes::list_connections))
+            .route("/api/marketplace/agents", get(crate::api::marketplace::list_agents))
+            .route("/api/marketplace/agents/:id", get(crate::api::marketplace::get_agent))
+            .route("/api/marketplace/skills", get(crate::api::marketplace::list_skills))
+            .route("/api/marketplace/skills/:name", get(crate::api::marketplace::get_skill))
+            .route("/api/marketplace/contracts", get(crate::api::marketplace::list_contracts))
+            .route("/api/marketplace/contracts/:id", get(crate::api::marketplace::get_contract))
+            .route("/api/marketplace/wallet", get(crate::api::marketplace::get_wallet))
+            .route("/api/marketplace/wallet/transactions", get(crate::api::marketplace::list_transactions))
+            .route("/api/marketplace/reviews/:agent_id", get(crate::api::marketplace::list_reviews));
+
+        // ── Operator routes (require Operator role) ───────────────────
+        // Write operations: creating agents, sessions, running prompts, etc.
+        let operator_routes = axum::Router::new()
+            .route("/api/agents", post(crate::api::agents::create_agent))
+            .route("/api/agents/:id", delete(crate::api::agents::delete_agent))
+            .route("/api/goals/:id/approve", post(crate::api::goals::approve_goal))
+            .route("/api/goals/:id/reject", post(crate::api::goals::reject_goal))
+            .route("/api/memory", post(crate::api::memory::write_memory))
+            .route("/api/memory/:id/archive", post(crate::api::memory::archive_memory))
+            .route("/api/memory/:id/unarchive", post(crate::api::memory::unarchive_memory))
+            .route("/api/workflows", post(crate::api::workflows::create_workflow))
+            .route("/api/workflows/:id", put(crate::api::workflows::update_workflow))
+            .route("/api/workflows/:id/execute", post(crate::api::workflows::execute_workflow))
+            .route("/api/workflows/:id/resume/:execution_id", post(crate::api::workflows::resume_execution))
+            .route("/api/sessions/:id/bookmarks", post(crate::api::sessions::create_bookmark))
+            .route("/api/sessions/:id/bookmarks/:bookmark_id", delete(crate::api::sessions::delete_bookmark))
+            .route("/api/sessions/:id/branch", post(crate::api::sessions::branch_session))
+            .route("/api/sessions/:id/heartbeat", post(crate::api::sessions::session_heartbeat))
+            .route("/api/studio/run", post(crate::api::studio::run_prompt))
+            .route("/api/studio/sessions", post(crate::api::studio_sessions::create_session))
+            .route("/api/studio/sessions/:id", delete(crate::api::studio_sessions::delete_session))
+            .route("/api/studio/sessions/:id/messages", post(crate::api::studio_sessions::send_message))
+            .route("/api/studio/sessions/:id/messages/stream", post(crate::api::studio_sessions::send_message_stream))
+            .route("/api/agent/chat", post(crate::api::agent_chat::agent_chat))
+            .route("/api/agent/chat/stream", post(crate::api::agent_chat::agent_chat_stream))
+            .route("/api/profiles", post(crate::api::profiles::create_profile))
+            .route("/api/profiles/:name", put(crate::api::profiles::update_profile).delete(crate::api::profiles::delete_profile))
+            .route("/api/agents/:id/profile", post(crate::api::profiles::assign_profile))
+            .route("/api/skills/:id/install", post(crate::api::skills::install_skill))
+            .route("/api/skills/:id/uninstall", post(crate::api::skills::uninstall_skill))
+            .route("/api/skills/:name/execute", post(crate::api::skill_execute::execute_skill))
+            .route("/api/channels", post(crate::api::channels::create_channel))
+            .route("/api/channels/:id/reconnect", post(crate::api::channels::reconnect_channel))
+            .route("/api/channels/:id", delete(crate::api::channels::delete_channel))
+            .route("/api/channels/:type/inject", post(crate::api::channels::inject_message))
+            .route("/api/a2a/tasks", post(crate::api::a2a::send_task))
+            .route("/api/oauth/connect", post(crate::api::oauth_routes::connect))
             .route("/api/oauth/connections/:ref_id", delete(crate::api::oauth_routes::disconnect))
             .route("/api/oauth/execute", post(crate::api::oauth_routes::execute_api_call))
-            // Inject shared state into all handlers
+            .route("/api/marketplace/agents", post(crate::api::marketplace::register_agent))
+            .route("/api/marketplace/agents/:id", delete(crate::api::marketplace::delist_agent))
+            .route("/api/marketplace/agents/:id/status", put(crate::api::marketplace::update_agent_status))
+            .route("/api/marketplace/skills", post(crate::api::marketplace::publish_skill))
+            .route("/api/marketplace/contracts", post(crate::api::marketplace::propose_contract))
+            .route("/api/marketplace/contracts/:id/accept", post(crate::api::marketplace::accept_contract))
+            .route("/api/marketplace/contracts/:id/reject", post(crate::api::marketplace::reject_contract))
+            .route("/api/marketplace/contracts/:id/start", post(crate::api::marketplace::start_contract))
+            .route("/api/marketplace/contracts/:id/complete", post(crate::api::marketplace::complete_contract))
+            .route("/api/marketplace/contracts/:id/dispute", post(crate::api::marketplace::dispute_contract))
+            .route("/api/marketplace/contracts/:id/cancel", post(crate::api::marketplace::cancel_contract))
+            .route("/api/marketplace/contracts/:id/resolve", post(crate::api::marketplace::resolve_contract))
+            .route("/api/marketplace/wallet/seed", post(crate::api::marketplace::seed_wallet))
+            .route("/api/marketplace/reviews", post(crate::api::marketplace::submit_review))
+            .route("/api/marketplace/discover", post(crate::api::marketplace::discover_agents))
+            .route_layer(axum::middleware::from_fn(rbac::operator));
+
+        // ── Admin routes (require Admin role) ─────────────────────────
+        // Safety operations, provider key management, webhooks, backups.
+        let admin_routes = axum::Router::new()
+            // Admin GET endpoints — require Admin role to view sensitive data.
+            .route("/api/safety/status", get(crate::api::safety::safety_status))
+            .route("/api/safety/checks", get(crate::api::safety_checks::list_safety_checks))
+            .route("/api/admin/backups", get(crate::api::admin::list_backups))
+            .route("/api/admin/export", get(crate::api::admin::export_data))
+            .route("/api/admin/provider-keys", get(crate::api::provider_keys::list_provider_keys))
+            // Admin write endpoints.
+            .route("/api/safety/pause/:agent_id", post(crate::api::safety::pause_agent))
+            .route("/api/safety/resume/:agent_id", post(crate::api::safety::resume_agent))
+            .route("/api/safety/quarantine/:agent_id", post(crate::api::safety::quarantine_agent))
+            .route("/api/safety/checks", post(crate::api::safety_checks::register_safety_check))
+            .route("/api/safety/checks/:id", delete(crate::api::safety_checks::unregister_safety_check))
+            .route("/api/webhooks", get(crate::api::webhooks::list_webhooks).post(crate::api::webhooks::create_webhook))
+            .route("/api/webhooks/:id", put(crate::api::webhooks::update_webhook).delete(crate::api::webhooks::delete_webhook))
+            .route("/api/webhooks/:id/test", post(crate::api::webhooks::test_webhook))
+            .route("/api/admin/backup", post(crate::api::admin::create_backup))
+            .route("/api/admin/provider-keys", put(crate::api::provider_keys::set_provider_key))
+            .route("/api/admin/provider-keys/:env_name", delete(crate::api::provider_keys::delete_provider_key))
+            .route_layer(axum::middleware::from_fn(rbac::admin));
+
+        // ── SuperAdmin routes (require SuperAdmin role) ───────────────
+        // Most destructive: kill-all, data restore.
+        let superadmin_routes = axum::Router::new()
+            .route("/api/safety/kill-all", post(crate::api::safety::kill_all))
+            .route("/api/admin/restore", post(crate::api::admin::restore_backup))
+            .route_layer(axum::middleware::from_fn(rbac::superadmin));
+
+        // Auth config — resolve once at startup, not per-request.
+        let auth_config = Arc::new(crate::api::auth::AuthConfig::from_env());
+        let revocation_set = Arc::new(crate::api::auth::RevocationSet::new());
+
+        // WP0-B: Load persisted revocations from DB and attach pool for write-through.
+        match app_state.db.read() {
+            Ok(reader) => revocation_set.load_from_db(&reader),
+            Err(e) => tracing::warn!(error = %e, "Failed to load revoked tokens — starting with empty set"),
+        }
+        revocation_set.set_db(&app_state.db);
+
+        // ── Merge all route groups ────────────────────────────────────
+        let mut app = public_routes
+            .merge(read_routes)
+            .merge(operator_routes)
+            .merge(admin_routes)
+            .merge(superadmin_routes)
             .with_state(app_state);
 
         // Mount mesh router (/.well-known/agent.json, /a2a) if mesh is enabled.
@@ -680,15 +914,12 @@ impl GatewayBootstrap {
         };
         app = app.merge(crate::api::push_routes::push_router(push_state));
 
-        // Build CORS layer — restricted when GHOST_CORS_ORIGINS is set.
-        let cors = Self::build_cors_layer();
+        // WP6-A: Build CORS layer — config first, then env var, then dev defaults.
+        let cors = Self::build_cors_layer(config);
 
         // Rate limiting state.
         let rate_limit_state = std::sync::Arc::new(crate::api::rate_limit::RateLimitState::new());
 
-        // Auth config — resolve once at startup, not per-request.
-        let auth_config = Arc::new(crate::api::auth::AuthConfig::from_env());
-        let revocation_set = Arc::new(crate::api::auth::RevocationSet::new());
         let ws_tracker = Arc::new(crate::api::websocket::WsConnectionTracker::new());
 
         let app = app
@@ -724,49 +955,64 @@ impl GatewayBootstrap {
 
         tracing::info!(
             routes = "health, ready, agents, audit, convergence, goals, sessions, memory, state, integrity, workflows, studio, traces, mesh-viz, profiles, search, admin, safety, safety-checks, webhooks, skills, a2a, costs, ws, oauth, auth, openapi",
-            "API router built"
+            "API router built with RBAC middleware (Task 1.12)"
         );
 
         app
     }
 
-    /// Build CORS layer — restricted when GHOST_CORS_ORIGINS is set.
+    /// Build CORS layer — WP6-A: config first, then env var, then dev defaults.
     ///
-    /// Default allowed origins: localhost:5173 (SvelteKit dev) + localhost:18789 (embedded).
-    /// Production: set GHOST_CORS_ORIGINS=https://your-domain.com
-    fn build_cors_layer() -> tower_http::cors::CorsLayer {
+    /// Priority: ghost.yml `security.cors_origins` → `GHOST_CORS_ORIGINS` env → dev defaults.
+    /// Production: must have origins configured via config or env var.
+    fn build_cors_layer(config: &GhostConfig) -> tower_http::cors::CorsLayer {
         use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
+        let gateway_port = config.gateway.port;
         let origins_env = std::env::var("GHOST_CORS_ORIGINS").ok();
         let is_production = std::env::var("GHOST_ENV")
             .map(|v| v.eq_ignore_ascii_case("production"))
             .unwrap_or(false);
 
-        // T-5.1.5: In production, GHOST_CORS_ORIGINS MUST be set.
-        if is_production && origins_env.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
+        // WP6-A: Check config first, then env var, then defaults.
+        let config_origins = &config.security.cors_origins;
+
+        // T-5.1.5: In production, origins MUST be set (config or env).
+        if is_production && config_origins.is_empty() && origins_env.as_ref().map(|v| v.is_empty()).unwrap_or(true) {
             eprintln!(
-                "FATAL: GHOST_ENV=production but GHOST_CORS_ORIGINS not set. \
-                 Set GHOST_CORS_ORIGINS to your production domain(s)."
+                "FATAL: GHOST_ENV=production but no CORS origins configured. \
+                 Set security.cors_origins in ghost.yml or GHOST_CORS_ORIGINS env var."
             );
             std::process::exit(1);
         }
 
-        let origins: Vec<String> = match origins_env {
-            Some(ref val) if !val.is_empty() => {
+        let explicit_origins: Vec<String> = if !config_origins.is_empty() {
+            // WP6-A: Use config origins.
+            tracing::info!(count = config_origins.len(), "CORS origins loaded from ghost.yml");
+            config_origins.clone()
+        } else if let Some(ref val) = origins_env {
+            if !val.is_empty() {
                 val.split(',').map(|s| s.trim().to_string()).collect()
+            } else {
+                Vec::new()
             }
-            _ => {
-                // T-5.1.5: Warn when using default dev origins.
-                tracing::warn!(
-                    "GHOST_CORS_ORIGINS not set — using default localhost origins (dev mode only)"
-                );
-                vec![
-                    "http://localhost:39781".into(),
-                    "http://localhost:39780".into(),
-                    "http://127.0.0.1:39781".into(),
-                    "http://127.0.0.1:39780".into(),
-                ]
-            }
+        } else {
+            Vec::new()
+        };
+
+        let origins: Vec<String> = if explicit_origins.is_empty() {
+            // T-5.1.5: Warn when using default dev origins.
+            tracing::warn!(
+                "No CORS origins configured — using default localhost origins (dev mode only)"
+            );
+            vec![
+                format!("http://localhost:{}", gateway_port + 1),
+                format!("http://localhost:{}", gateway_port),
+                format!("http://127.0.0.1:{}", gateway_port + 1),
+                format!("http://127.0.0.1:{}", gateway_port),
+            ]
+        } else {
+            explicit_origins
         };
 
         let parsed: Vec<axum::http::HeaderValue> = origins
@@ -940,7 +1186,7 @@ impl GatewayBootstrap {
     /// Returns the mesh axum Router to merge into the main router, or None if disabled.
     fn step4c_init_mesh(
         config: &GhostConfig,
-        db: Option<Arc<Mutex<rusqlite::Connection>>>,
+        db: Option<Arc<crate::db_pool::DbPool>>,
     ) -> Result<Option<axum::Router>, BootstrapError> {
         if !config.mesh.enabled {
             return Ok(None);

@@ -40,6 +40,8 @@ members = [
     "crates/cortex/cortex-embeddings",
     "crates/ghost-pc-control",
     "crates/ghost-integration-tests",
+    "crates/ghost-drift",
+    "crates/ghost-marketplace",
 ]
 
 [workspace.package]
@@ -154,6 +156,8 @@ ghost-mesh = { path = "crates/ghost-mesh" }
 ghost-kill-gates = { path = "crates/ghost-kill-gates" }
 cortex-embeddings = { path = "crates/cortex/cortex-embeddings" }
 ghost-pc-control = { path = "crates/ghost-pc-control" }
+ghost-drift = { path = "crates/ghost-drift" }
+ghost-marketplace = { path = "crates/ghost-marketplace" }
 
 # Secrets
 secrecy = { version = "0.10", features = ["serde"] }

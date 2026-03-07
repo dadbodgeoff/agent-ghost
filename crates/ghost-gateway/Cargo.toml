@@ -19,6 +19,7 @@ keychain = ["ghost-secrets/keychain"]
 vault = ["ghost-secrets/vault"]
 ebpf = ["ghost-egress/ebpf"]
 pf = ["ghost-egress/pf"]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
 # Workspace crates
@@ -48,6 +49,7 @@ ghost-mesh = { workspace = true }
 ghost-policy = { workspace = true }
 ghost-skills = { workspace = true }
 ghost-pc-control = { workspace = true }
+ghost-marketplace = { workspace = true }
 cortex-embeddings = { workspace = true }
 
 # Serialization
@@ -83,6 +85,8 @@ reqwest = { workspace = true }
 
 # Concurrency
 dashmap = { workspace = true }
+crossbeam-queue = "0.3"
+parking_lot = "0.12"
 
 # CLI
 clap = { workspace = true }
@@ -108,6 +112,9 @@ base64 = { workspace = true }
 # URL parsing (SSRF validation)
 url = { workspace = true }
 
+# Process management (PID file / signal handling)
+libc = "0.2"
+
 # File watching
 notify = { version = "6", default-features = false, features = ["macos_fsevent"] }
 
@@ -124,6 +131,12 @@ governor = { workspace = true }
 # OpenAPI
 utoipa = { workspace = true }
 
+# OpenTelemetry (behind `otel` feature flag)
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+
 # Email (for notification dispatcher)
 lettre = { workspace = true }
 
@@ -133,3 +146,5 @@ once_cell = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 assert_cmd = "2"
 predicates = "3"
+tempfile = "3"
+reqwest = { workspace = true }

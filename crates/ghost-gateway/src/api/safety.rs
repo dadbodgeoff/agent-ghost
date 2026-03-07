@@ -37,7 +37,7 @@ fn lookup_agent_id(state: &AppState, name_or_id: &str) -> Result<uuid::Uuid, (St
         Err(e) => {
             // T-5.4.3: Registry poisoned — fall back to DB lookup.
             tracing::error!(error = %e, "Agent registry RwLock poisoned — falling back to DB lookup");
-            if let Ok(db) = state.db.lock() {
+            if let Ok(db) = state.db.read() {
                 let result: Option<String> = db
                     .query_row(
                         "SELECT id FROM agents WHERE name = ?1 LIMIT 1",
@@ -61,14 +61,8 @@ fn lookup_agent_id(state: &AppState, name_or_id: &str) -> Result<uuid::Uuid, (St
 }
 
 /// Write a safety action to the audit_log table.
-fn write_audit_entry(state: &AppState, event_type: &str, severity: &str, agent_id: Option<&str>, details: &str) {
-    let db = match state.db.lock() {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::error!(error = %e, event_type = %event_type, "DB Mutex poisoned — safety audit entry LOST");
-            return;
-        }
-    };
+async fn write_audit_entry(state: &AppState, event_type: &str, severity: &str, agent_id: Option<&str>, details: &str) {
+    let db = state.db.write().await;
     let engine = ghost_audit::AuditQueryEngine::new(&db);
     let entry = ghost_audit::AuditEntry {
         id: uuid::Uuid::now_v7().to_string(),
@@ -120,15 +114,11 @@ pub async fn kill_all(
         "KILL_ALL requested via API"
     );
 
-    // Activate through the real KillSwitch.
-    let trigger = TriggerEvent::ManualKillAll {
-        reason: body.reason.clone(),
-        initiated_by: body.initiated_by.clone(),
-    };
-    state.kill_switch.activate_kill_all(&trigger);
-
-    // Persist kill_state.json for crash recovery.
+    // INVARIANT: File write (with fsync) MUST complete before atomic bool is set.
+    // This ensures crash recovery always finds the kill state on disk.
     let kill_state = serde_json::json!({
+        "active": true,
+        "level": "KillAll",
         "reason": body.reason,
         "initiated_by": body.initiated_by,
         "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -139,41 +129,63 @@ pub async fn kill_all(
             tracing::error!(error = %e, "Failed to create kill_state directory");
         }
     }
-    if let Err(e) = std::fs::write(&kill_path, kill_state.to_string()) {
-        tracing::error!(error = %e, "Failed to persist kill_state.json");
+    // Atomic write: temp file → fsync → rename (prevents partial writes on crash).
+    let tmp_path = format!("{}.tmp", kill_path);
+    match std::fs::File::create(&tmp_path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            let json_bytes = serde_json::to_string_pretty(&kill_state).unwrap_or_default();
+            if let Err(e) = file.write_all(json_bytes.as_bytes()) {
+                tracing::error!(error = %e, "Failed to write kill_state.json.tmp");
+            } else if let Err(e) = file.sync_all() {
+                tracing::error!(error = %e, "Failed to fsync kill_state.json.tmp");
+            } else if let Err(e) = std::fs::rename(&tmp_path, &kill_path) {
+                tracing::error!(error = %e, "Failed to rename kill_state.json.tmp to kill_state.json");
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to create kill_state.json.tmp");
+        }
     }
 
+    // THEN set atomic bool — file is durable on disk before in-memory state changes.
+    let trigger = TriggerEvent::ManualKillAll {
+        reason: body.reason.clone(),
+        initiated_by: body.initiated_by.clone(),
+    };
+    state.kill_switch.activate_kill_all(&trigger);
+
     // Broadcast to WebSocket clients.
-    if let Err(e) = state.event_tx.send(WsEvent::KillSwitchActivation {
+    crate::api::websocket::broadcast_event(&state, WsEvent::KillSwitchActivation {
         level: "KILL_ALL".into(),
         agent_id: None,
         reason: body.reason.clone(),
-    }) {
-        tracing::error!(error = %e, "Failed to broadcast KILL_ALL event to WebSocket clients");
-    }
+    });
 
     // Propagate through distributed kill gate if available.
-    if let Some(ref gate) = state.kill_gate {
+    // Scoped block ensures RwLockWriteGuard is dropped before any .await (Send requirement).
+    let gate_poisoned = if let Some(ref gate) = state.kill_gate {
         match gate.write() {
             Ok(mut bridge) => {
                 bridge.close_and_propagate(body.reason.clone());
                 tracing::info!("KILL_ALL propagated through distributed kill gate");
+                None
             }
             Err(e) => {
                 // T-5.4.2: RwLock poisoned — fall back to HTTP fanout.
                 // Kill signal MUST reach peers; silent failure causes split-brain.
-                tracing::error!(
-                    error = %e,
-                    "CRITICAL: Kill gate RwLock poisoned — falling back to HTTP fanout"
-                );
-                // Write audit entry for the poisoning event.
-                write_audit_entry(
-                    &state, "kill_gate_poison", "critical", None,
-                    &format!("Kill gate RwLock poisoned during KILL_ALL. Error: {e}. Falling back to HTTP fanout."),
-                );
-                // HTTP fanout will be triggered below — this is the fallback path.
+                let err_msg = format!("Kill gate RwLock poisoned during KILL_ALL. Error: {e}. Falling back to HTTP fanout.");
+                tracing::error!("CRITICAL: {}", err_msg);
+                Some(err_msg)
             }
         }
+    } else {
+        None
+    };
+    if let Some(ref err_msg) = gate_poisoned {
+        write_audit_entry(
+            &state, "kill_gate_poison", "critical", None, err_msg,
+        ).await;
     }
 
     // HTTP fanout to mesh peers (T-X.25).
@@ -183,12 +195,12 @@ pub async fn kill_all(
     write_audit_entry(
         &state, "kill_all", "critical", None,
         &format!("KILL_ALL activated by {}. Reason: {}", body.initiated_by, body.reason),
-    );
+    ).await;
 
     // Fire webhooks for kill_switch event (T-4.3.1).
     {
         let db = Arc::clone(&state.db);
-        let tx = state.event_tx.clone();
+        let state_ref = Arc::clone(&state);
         let payload = serde_json::json!({
             "event": "kill_switch",
             "level": "KILL_ALL",
@@ -197,7 +209,7 @@ pub async fn kill_all(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         tokio::spawn(async move {
-            crate::api::webhooks::fire_webhooks(&db, &tx, "kill_switch", payload).await;
+            crate::api::webhooks::fire_webhooks(&db, &state_ref, "kill_switch", payload).await;
         });
     }
 
@@ -242,24 +254,22 @@ pub async fn pause_agent(
     state.kill_switch.activate_agent(agent_id, KillLevel::Pause, &trigger);
 
     // Broadcast to WebSocket clients.
-    if let Err(e) = state.event_tx.send(WsEvent::KillSwitchActivation {
+    crate::api::websocket::broadcast_event(&state, WsEvent::KillSwitchActivation {
         level: "PAUSE".into(),
         agent_id: Some(agent_id.to_string()),
         reason: body.reason.clone(),
-    }) {
-        tracing::warn!(error = %e, "Failed to broadcast PAUSE event to WebSocket clients");
-    }
+    });
 
     // Write to audit log.
     write_audit_entry(
         &state, "pause_agent", "high", Some(&agent_id.to_string()),
         &format!("Agent paused. Reason: {}", body.reason),
-    );
+    ).await;
 
     // Fire webhooks for intervention_change event (T-4.3.1).
     {
         let db = Arc::clone(&state.db);
-        let tx = state.event_tx.clone();
+        let state_ref = Arc::clone(&state);
         let payload = serde_json::json!({
             "event": "intervention_change",
             "action": "pause",
@@ -268,7 +278,7 @@ pub async fn pause_agent(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         tokio::spawn(async move {
-            crate::api::webhooks::fire_webhooks(&db, &tx, "intervention_change", payload).await;
+            crate::api::webhooks::fire_webhooks(&db, &state_ref, "intervention_change", payload).await;
         });
     }
 
@@ -342,7 +352,7 @@ pub async fn resume_agent(
             write_audit_entry(
                 &state, "forensic_review", "critical", Some(&agent_id.to_string()),
                 &format!("Forensic review completed by {actor_id} (role: {actor_role}) for quarantine resume"),
-            );
+            ).await;
 
             if !body.second_confirmation.unwrap_or(false) {
                 return (
@@ -375,25 +385,27 @@ pub async fn resume_agent(
         _ => {}
     }
 
-    match state.kill_switch.resume_agent(agent_id) {
+    // Pass expected_level to prevent TOCTOU: if the level was escalated
+    // between our check above and the actual resume inside the write lock,
+    // the resume will be rejected.
+    let expected = agent_state.map(|s| s.level);
+    match state.kill_switch.resume_agent(agent_id, expected) {
         Ok(()) => {
             tracing::info!(agent_id = %agent_id, "Agent resumed via API");
             let is_quarantine = agent_state.map(|s| s.level) == Some(KillLevel::Quarantine);
 
             // Broadcast state change to WebSocket clients.
-            if let Err(e) = state.event_tx.send(WsEvent::AgentStateChange {
+            crate::api::websocket::broadcast_event(&state, WsEvent::AgentStateChange {
                 agent_id: agent_id.to_string(),
                 new_state: "resumed".into(),
-            }) {
-                tracing::warn!(error = %e, "Failed to broadcast resume event to WebSocket clients");
-            }
+            });
 
             // Write to audit log.
             let severity = if is_quarantine { "critical" } else { "high" };
             write_audit_entry(
                 &state, "resume_agent", severity, Some(&agent_id.to_string()),
                 &format!("Agent resumed (from {})", if is_quarantine { "quarantine" } else { "pause" }),
-            );
+            ).await;
 
             (
                 StatusCode::OK,
@@ -443,24 +455,22 @@ pub async fn quarantine_agent(
     state.kill_switch.activate_agent(agent_id, KillLevel::Quarantine, &trigger);
 
     // Broadcast to WebSocket clients.
-    if let Err(e) = state.event_tx.send(WsEvent::KillSwitchActivation {
+    crate::api::websocket::broadcast_event(&state, WsEvent::KillSwitchActivation {
         level: "QUARANTINE".into(),
         agent_id: Some(agent_id.to_string()),
         reason: body.reason.clone(),
-    }) {
-        tracing::warn!(error = %e, "Failed to broadcast QUARANTINE event to WebSocket clients");
-    }
+    });
 
     // Write to audit log.
     write_audit_entry(
         &state, "quarantine_agent", "critical", Some(&agent_id.to_string()),
         &format!("Agent quarantined. Reason: {}", body.reason),
-    );
+    ).await;
 
     // Fire webhooks for intervention_change event (T-4.3.1).
     {
         let db = Arc::clone(&state.db);
-        let tx = state.event_tx.clone();
+        let state_ref = Arc::clone(&state);
         let payload = serde_json::json!({
             "event": "intervention_change",
             "action": "quarantine",
@@ -469,7 +479,7 @@ pub async fn quarantine_agent(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         tokio::spawn(async move {
-            crate::api::webhooks::fire_webhooks(&db, &tx, "intervention_change", payload).await;
+            crate::api::webhooks::fire_webhooks(&db, &state_ref, "intervention_change", payload).await;
         });
     }
 

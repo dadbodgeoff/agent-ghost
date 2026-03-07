@@ -1,0 +1,203 @@
+import type { GhostClientOptions } from './client.js';
+
+// ── Types ──
+
+/** All possible server-to-client WebSocket events. */
+export type WsEvent =
+  | {
+      type: 'ScoreUpdate';
+      agent_id: string;
+      score: number;
+      level: number;
+      signals: number[];
+    }
+  | {
+      type: 'InterventionChange';
+      agent_id: string;
+      old_level: number;
+      new_level: number;
+    }
+  | {
+      type: 'KillSwitchActivation';
+      level: string;
+      agent_id?: string;
+      reason: string;
+    }
+  | {
+      type: 'ProposalDecision';
+      proposal_id: string;
+      decision: 'approved' | 'rejected';
+      agent_id: string;
+    }
+  | {
+      type: 'AgentStateChange';
+      agent_id: string;
+      new_state: string;
+    }
+  | {
+      type: 'SessionEvent';
+      session_id: string;
+      event_id: string;
+      event_type: string;
+      sender?: string;
+      sequence_number: number;
+    }
+  | {
+      type: 'ChatMessage';
+      session_id: string;
+      message_id: string;
+      role: 'user' | 'assistant';
+      content: string;
+      safety_status: 'clean' | 'warning' | 'blocked';
+    }
+  | { type: 'Ping' }
+  | { type: 'Resync'; missed_events: number }
+  | { type: string; [key: string]: unknown };
+
+export interface GhostWebSocketOptions {
+  /** Topics to subscribe to on connect. */
+  topics?: string[];
+  /** Auto-reconnect on disconnect. Default: true. */
+  autoReconnect?: boolean;
+  /** Max reconnect delay in ms. Default: 30000. */
+  maxReconnectDelay?: number;
+  /** Max reconnect attempts before giving up. Default: 10. Set to 0 for unlimited. */
+  maxReconnectAttempts?: number;
+  /** Called when reconnection is abandoned after maxReconnectAttempts. */
+  onReconnectFailed?: () => void;
+}
+
+type EventHandler = (event: WsEvent) => void;
+
+// ── Implementation ──
+
+export class GhostWebSocket {
+  private ws: WebSocket | null = null;
+  private handlers = new Map<string, Set<EventHandler>>();
+  private globalHandlers = new Set<EventHandler>();
+  private subscribedTopics: string[] = [];
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private closed = false;
+
+  constructor(
+    private clientOptions: GhostClientOptions,
+    private wsOptions: GhostWebSocketOptions = {},
+  ) {
+    this.subscribedTopics = wsOptions.topics ?? [];
+  }
+
+  /** Open the WebSocket connection. */
+  connect(): this {
+    this.closed = false;
+    this.reconnectAttempt = 0;
+    this.doConnect();
+    return this;
+  }
+
+  /** Close the WebSocket connection. */
+  disconnect(): void {
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws?.close();
+    this.ws = null;
+  }
+
+  /** Subscribe to additional topics. */
+  subscribe(topics: string[]): void {
+    this.subscribedTopics.push(...topics);
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'Subscribe', topics }));
+    }
+  }
+
+  /** Unsubscribe from topics. */
+  unsubscribe(topics: string[]): void {
+    this.subscribedTopics = this.subscribedTopics.filter((t) => !topics.includes(t));
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'Unsubscribe', topics }));
+    }
+  }
+
+  /** Listen for a specific event type. */
+  on(eventType: string, handler: EventHandler): () => void {
+    let set = this.handlers.get(eventType);
+    if (!set) {
+      set = new Set();
+      this.handlers.set(eventType, set);
+    }
+    set.add(handler);
+    return () => set!.delete(handler);
+  }
+
+  /** Listen for all events. */
+  onAny(handler: EventHandler): () => void {
+    this.globalHandlers.add(handler);
+    return () => this.globalHandlers.delete(handler);
+  }
+
+  private doConnect(): void {
+    const baseUrl = this.clientOptions.baseUrl ?? 'http://127.0.0.1:39780';
+    const wsUrl = baseUrl.replace(/^http/, 'ws') + '/api/ws';
+
+    const protocols = this.clientOptions.token
+      ? [`ghost-token.${this.clientOptions.token}`]
+      : undefined;
+
+    this.ws = new WebSocket(wsUrl, protocols);
+
+    this.ws.onopen = () => {
+      this.reconnectAttempt = 0;
+      if (this.subscribedTopics.length > 0) {
+        this.ws!.send(
+          JSON.stringify({ type: 'Subscribe', topics: this.subscribedTopics }),
+        );
+      }
+    };
+
+    this.ws.onmessage = (msg) => {
+      try {
+        const event: WsEvent = JSON.parse(String(msg.data));
+        // Dispatch to type-specific handlers
+        const typeHandlers = this.handlers.get(event.type);
+        if (typeHandlers) {
+          for (const h of typeHandlers) h(event);
+        }
+        // Dispatch to global handlers
+        for (const h of this.globalHandlers) h(event);
+      } catch {
+        // Ignore malformed messages
+      }
+    };
+
+    this.ws.onclose = () => {
+      this.ws = null;
+      if (!this.closed && (this.wsOptions.autoReconnect ?? true)) {
+        this.scheduleReconnect();
+      }
+    };
+
+    this.ws.onerror = () => {
+      // onclose will fire after onerror
+    };
+  }
+
+  private scheduleReconnect(): void {
+    const maxAttempts = this.wsOptions.maxReconnectAttempts ?? 10;
+    if (maxAttempts > 0 && this.reconnectAttempt >= maxAttempts) {
+      this.closed = true;
+      this.wsOptions.onReconnectFailed?.();
+      return;
+    }
+    const maxDelay = this.wsOptions.maxReconnectDelay ?? 30_000;
+    const delay = Math.min(1000 * 2 ** this.reconnectAttempt, maxDelay);
+    this.reconnectAttempt++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.doConnect();
+    }, delay);
+  }
+}

@@ -23,8 +23,8 @@
       chainValid = data?.chain_valid ?? true;
       cumulativeCost = data?.cumulative_cost ?? 0;
       total = data?.total ?? 0;
-    } catch (e: any) {
-      error = e.message || 'Failed to load session';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load session';
     }
     loading = false;
   });

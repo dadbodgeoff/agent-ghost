@@ -28,8 +28,8 @@ pub struct MeshRouteState {
     pub dispatcher: Arc<A2ADispatcher>,
     /// Known agent public keys for signature verification (agent_name → pubkey bytes).
     pub known_keys: Arc<Vec<Vec<u8>>>,
-    /// Optional DB connection for delegation state persistence.
-    pub db: Option<Arc<Mutex<rusqlite::Connection>>>,
+    /// Optional DB pool for delegation state persistence.
+    pub db: Option<Arc<crate::db_pool::DbPool>>,
 }
 
 /// Build the mesh router with A2A endpoints.
@@ -43,7 +43,7 @@ pub fn mesh_router(state: Arc<Mutex<A2AServerState>>, known_keys: Vec<Vec<u8>>) 
 pub fn mesh_router_with_db(
     state: Arc<Mutex<A2AServerState>>,
     known_keys: Vec<Vec<u8>>,
-    db: Option<Arc<Mutex<rusqlite::Connection>>>,
+    db: Option<Arc<crate::db_pool::DbPool>>,
 ) -> axum::Router {
     let route_state = MeshRouteState {
         dispatcher: Arc::new(A2ADispatcher::new(state)),
@@ -139,24 +139,18 @@ async fn handle_a2a(
 
     // Persist delegation state transitions for delegation-related methods.
     if let Some(ref db) = state.db {
-        persist_delegation_from_message(&msg, db);
+        persist_delegation_from_message(&msg, db).await;
     }
 
     (StatusCode::OK, Json(response))
 }
 
 /// Persist delegation state transitions based on the incoming A2A message.
-fn persist_delegation_from_message(
+async fn persist_delegation_from_message(
     msg: &MeshMessage,
-    db: &Arc<Mutex<rusqlite::Connection>>,
+    db: &Arc<crate::db_pool::DbPool>,
 ) {
-    let conn = match db.lock() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to lock DB for delegation persistence");
-            return;
-        }
-    };
+    let conn = db.write().await;
     let params = match &msg.params {
         Some(p) => p,
         None => return,

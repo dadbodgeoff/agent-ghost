@@ -76,7 +76,7 @@ pub async fn install_skill(
     let skill = state.safety_skills.get(&skill_name)
         .ok_or_else(|| ApiError::not_found(format!("Skill '{skill_name}' not found")))?;
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     // Check not already installed.
     let exists: bool = db
@@ -110,7 +110,7 @@ pub async fn install_skill(
     .map_err(|e| ApiError::db_error("install skill", e))?;
 
     // Broadcast event.
-    let _ = state.event_tx.send(WsEvent::SkillChange {
+    crate::api::websocket::broadcast_event(&state, WsEvent::SkillChange {
         skill_name: skill_name.clone(),
         action: "installed".into(),
     });
@@ -141,7 +141,7 @@ pub async fn uninstall_skill(
         }
     }
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     let affected = db
         .execute(
@@ -157,7 +157,7 @@ pub async fn uninstall_skill(
     }
 
     // Broadcast event.
-    let _ = state.event_tx.send(WsEvent::SkillChange {
+    crate::api::websocket::broadcast_event(&state, WsEvent::SkillChange {
         skill_name: skill_name.clone(),
         action: "uninstalled".into(),
     });

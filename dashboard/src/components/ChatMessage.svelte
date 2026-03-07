@@ -74,6 +74,7 @@
         'p', 'br', 'strong', 'em', 'code', 'pre', 'span', 'ul', 'ol', 'li',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'blockquote', 'table',
         'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'del', 'img',
+        'details', 'summary', 'mark', 'kbd', 'sub', 'sup', 'figure', 'figcaption',
       ],
       ALLOWED_ATTR: ['class', 'href', 'target', 'rel', 'src', 'alt', 'title'],
     });
@@ -104,6 +105,8 @@
   class:user={message.role === 'user'}
   class:assistant={message.role === 'assistant'}
   class:streaming={isStreaming}
+  role="article"
+  aria-label="{message.role === 'user' ? 'User' : 'Assistant'} message"
 >
   <div class="msg-avatar">
     {#if message.role === 'user'}
@@ -155,6 +158,16 @@
             {/if}
           </div>
         {/each}
+      </div>
+    {/if}
+
+    {#if message.status === 'incomplete'}
+      <div class="incomplete-banner">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span>Stream interrupted — response may be incomplete</span>
+        {#if onRetry}
+          <button class="incomplete-retry-btn" onclick={onRetry}>Retry</button>
+        {/if}
       </div>
     {/if}
 
@@ -427,5 +440,35 @@
     white-space: nowrap;
     flex: 1;
     min-width: 0;
+  }
+
+  /* Incomplete stream banner */
+  .incomplete-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-2);
+    margin-top: var(--spacing-2);
+    padding: var(--spacing-2) var(--spacing-3);
+    background: color-mix(in srgb, orange 10%, transparent);
+    border: 1px solid color-mix(in srgb, orange 30%, transparent);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    color: orange;
+  }
+
+  .incomplete-retry-btn {
+    margin-left: auto;
+    padding: 2px 10px;
+    background: none;
+    border: 1px solid orange;
+    border-radius: var(--radius-sm);
+    color: orange;
+    cursor: pointer;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .incomplete-retry-btn:hover {
+    background: color-mix(in srgb, orange 15%, transparent);
   }
 </style>

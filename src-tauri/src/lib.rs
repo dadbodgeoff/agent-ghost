@@ -1,4 +1,5 @@
 mod commands;
+pub mod error;
 mod menu;
 mod tray;
 
@@ -36,8 +37,30 @@ pub fn run() {
             // --- Auto-start gateway sidecar ---
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = commands::gateway::auto_start(handle).await {
+                if let Err(e) = commands::gateway::auto_start(handle.clone()).await {
                     log::error!("Failed to start gateway: {e}");
+                }
+                // Inject the resolved port into the webview so the dashboard
+                // can connect to the correct gateway URL.
+                if let Some(port_state) = handle.try_state::<commands::gateway::GatewayPort>() {
+                    let port = port_state.0;
+                    if let Some(window) = handle.get_webview_window("main") {
+                        // Inject gateway port for dashboard API client.
+                        let _ = window.eval(&format!(
+                            "window.__GHOST_GATEWAY_PORT__ = {};",
+                            port
+                        ));
+                        // WP6-B: Inject tightened CSP now that the gateway port is known.
+                        let _ = window.eval(&format!(
+                            r#"{{
+                                const meta = document.createElement('meta');
+                                meta.httpEquiv = 'Content-Security-Policy';
+                                meta.content = "default-src 'self'; connect-src 'self' http://127.0.0.1:{port} ws://127.0.0.1:{port}; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'";
+                                document.head.appendChild(meta);
+                            }}"#,
+                            port = port
+                        ));
+                    }
                 }
             });
 

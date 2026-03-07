@@ -1,0 +1,47 @@
+
+> ghost-dashboard@0.1.0 build /Users/geoffreyfernald/agent/dashboard
+> vite build
+
+vite v5.4.21 building SSR bundle for production...
+2:12:21 PM [vite-plugin-svelte] src/routes/+layout.svelte:181:2 Using `<slot>` to render parent content is deprecated. Use `{@render ...}` tags instead
+https://svelte.dev/e/slot_element_deprecated
+179: 
+180: {#if $page.url.pathname === '/login'}
+181:   <slot />
+               ^
+182: {:else}
+183:   <PanelLayout>
+2:12:21 PM [vite-plugin-svelte] src/routes/+layout.svelte:185:43 Redundant role 'navigation'
+https://svelte.dev/e/a11y_no_redundant_roles
+183:   <PanelLayout>
+184:     {#snippet sidebar()}
+185:       <nav aria-label="Primary navigation" role="navigation">
+                                                                 ^
+186:         <div class="logo" role="banner">GHOST</div>
+187:         <a href="/" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
+2:12:21 PM [vite-plugin-svelte] src/routes/+layout.svelte:230:6 Using `<slot>` to render parent content is deprecated. Use `{@render ...}` tags instead
+https://svelte.dev/e/slot_element_deprecated
+228:       <TabBar />
+229:       <Breadcrumb />
+230:       <slot />
+                   ^
+231:     {/snippet}
+232: 
+transforming...
+2:12:21 PM [vite-plugin-svelte] src/routes/channels/+page.svelte:176:8 `<button>` cannot have role 'listitem'
+https://svelte.dev/e/a11y_no_interactive_element_to_noninteractive_role
+174:     <div class="channel-list" role="list">
+175:       {#each channels as channel (channel.id)}
+176:         <button
+                    ^
+177:           class="channel-card"
+178:           class:selected={selectedChannel?.id === channel.id}
+2:12:21 PM [vite-plugin-svelte] src/routes/channels/+page.svelte:410:2 Unused CSS selector ".detail-list h3"
+https://svelte.dev/e/css_unused_selector
+408:   }
+409: 
+410:   .detail-list h3 {
+                      ^
+411:     font-size: var(--font-size-sm);
+412:     margin: var(--spacing-3) 0 var(--spacing-2);
+ ELIFECYCLE  Command failed.

@@ -22,8 +22,8 @@
         level = convData.scores[0].level ?? 0;
       }
       agents = agentData ?? [];
-    } catch (e: any) {
-      error = e.message || 'Failed to load dashboard data';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load dashboard data';
       console.error('Failed to load dashboard data:', e);
     }
     loading = false;

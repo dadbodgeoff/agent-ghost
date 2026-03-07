@@ -88,11 +88,21 @@ impl GatewayRuntime {
         router: axum::Router,
         bind_addr: &str,
     ) -> Result<(), crate::gateway::GatewayError> {
-        let listener = tokio::net::TcpListener::bind(bind_addr)
-            .await
-            .map_err(|e| {
-                crate::gateway::GatewayError::BootstrapFailed(format!("bind failed: {e}"))
-            })?;
+        let listener = match tokio::net::TcpListener::bind(bind_addr).await {
+            Ok(l) => l,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                let port = bind_addr.rsplit(':').next().unwrap_or("?");
+                return Err(crate::gateway::GatewayError::BootstrapFailed(format!(
+                    "Port {port} is already in use. Another process may be bound to this port. \
+                     Check with: lsof -i :{port} | grep LISTEN"
+                )));
+            }
+            Err(e) => {
+                return Err(crate::gateway::GatewayError::BootstrapFailed(
+                    format!("bind failed: {e}")
+                ));
+            }
+        };
 
         tracing::info!(addr = %bind_addr, "Gateway API server listening");
 
@@ -129,10 +139,10 @@ impl GatewayRuntime {
         }
 
         // Step 1: Stop accepting new connections (already done — axum server returned).
-        tracing::info!("shutdown step 1/7: connections stopped");
+        tracing::info!("shutdown step 1/8: connections stopped");
 
         // Step 2: Cancel all tracked background tasks and await completion.
-        tracing::info!("shutdown step 2/7: cancelling background tasks");
+        tracing::info!("shutdown step 2/8: cancelling background tasks");
         self.shutdown_token.cancel();
         self.task_tracker.close();
 
@@ -157,7 +167,7 @@ impl GatewayRuntime {
                     .app_state
                     .background_tasks
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                    .await;
                 std::mem::take(&mut *tasks)
             };
             if !legacy_tasks.is_empty() {
@@ -166,42 +176,56 @@ impl GatewayRuntime {
                 self.app_state.shutdown_token.cancel();
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                 for handle in legacy_tasks {
-                    if tokio::time::timeout_at(deadline, handle).await.is_err() {
-                        tracing::warn!("legacy background task did not complete — aborting");
+                    match tokio::time::timeout_at(deadline, handle).await {
+                        Err(_elapsed) => {
+                            tracing::warn!("legacy background task did not complete within deadline");
+                            // Remaining tasks share the same deadline and will also time out.
+                            // The AppState shutdown_token was already cancelled above,
+                            // so well-behaved tasks will exit on their own.
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "legacy background task panicked");
+                        }
+                        Ok(Ok(())) => {}
                     }
                 }
             }
         }
 
         // Step 3: Flush sessions — allow in-flight API handlers a brief window.
-        tracing::info!("shutdown step 3/7: flushing in-flight requests");
+        tracing::info!("shutdown step 3/8: flushing in-flight requests");
         tokio::time::sleep(
             Duration::from_millis(500).min(self.shutdown_config.flush_total_timeout),
         )
         .await;
 
         // Step 4: Persist cost tracker (in-memory → DB).
-        tracing::info!("shutdown step 4/7: persisting cost data");
+        tracing::info!("shutdown step 4/8: persisting cost data");
         // Future: self.app_state.cost_tracker.persist(&self.app_state.db);
 
         // Step 5: Notify convergence monitor of shutdown.
-        tracing::info!("shutdown step 5/7: notifying convergence monitor");
-        // Best-effort HTTP notification.
-        let _ = notify_monitor_shutdown(&self.app_state).await;
+        if self.app_state.monitor_enabled {
+            tracing::info!("shutdown step 5/8: notifying convergence monitor");
+            let _ = notify_monitor_shutdown(&self.app_state).await;
+        } else {
+            tracing::debug!("shutdown step 5/8: skipped (monitor disabled)");
+        }
 
         // Step 6: Close WebSocket broadcast channel.
         // Dropping the broadcast Sender causes all WS handler receive loops
         // to get `RecvError::Closed` and exit cleanly.
-        tracing::info!("shutdown step 6/7: closing broadcast channel");
+        tracing::info!("shutdown step 6/8: closing broadcast channel");
         // The broadcast sender lives inside AppState. We'll drop AppState below.
 
         // Step 7: WAL checkpoint and DB close.
-        tracing::info!("shutdown step 7/7: WAL checkpoint");
-        if let Ok(db) = self.app_state.db.lock() {
-            if let Err(e) = db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
-                tracing::warn!(error = %e, "WAL checkpoint failed");
-            }
+        tracing::info!("shutdown step 7/8: WAL checkpoint");
+        if let Err(e) = self.app_state.db.checkpoint().await {
+            tracing::warn!(error = %e, "WAL checkpoint failed");
         }
+
+        // Step 8: Remove PID file.
+        tracing::info!("shutdown step 8/8: removing PID file");
+        crate::pid::remove_pid_file();
 
         tracing::info!("shutdown sequence complete");
 
@@ -221,16 +245,15 @@ impl Drop for GatewayRuntime {
             self.shutdown_token.cancel();
             self.task_tracker.close();
         }
+        // Safety net: always try to clean up PID file on drop.
+        crate::pid::remove_pid_file();
     }
 }
 
 /// Best-effort HTTP notification to the convergence monitor that the
 /// gateway is shutting down.
-async fn notify_monitor_shutdown(_state: &AppState) -> Result<(), ()> {
-    // Read the monitor address from the gateway state.
-    // The monitor health checker knows the address, but we don't have it
-    // stored on AppState. Use a reasonable default.
-    let url = "http://127.0.0.1:39790/gateway-shutdown";
+async fn notify_monitor_shutdown(state: &AppState) -> Result<(), ()> {
+    let url = format!("http://{}/gateway-shutdown", state.monitor_address);
     match reqwest::Client::new()
         .post(url)
         .timeout(Duration::from_secs(2))

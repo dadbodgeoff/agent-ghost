@@ -47,7 +47,7 @@ pub async fn convergence_watcher_task(state: Arc<AppState>) {
                 .collect()
         };
 
-        let db = match state.db.lock() {
+        let db = match state.db.read() {
             Ok(db) => db,
             Err(_) => continue,
         };
@@ -90,24 +90,20 @@ pub async fn convergence_watcher_task(state: Arc<AppState>) {
                     .unwrap_or(0);
 
                 // Broadcast ScoreUpdate (Finding #13).
-                if let Err(e) = state.event_tx.send(WsEvent::ScoreUpdate {
+                crate::api::websocket::broadcast_event(&state, WsEvent::ScoreUpdate {
                     agent_id: agent_id.clone(),
                     score: new_score,
                     level: new_level,
                     signals: signals.clone(),
-                }) {
-                    tracing::warn!(error = %e, agent_id = %agent_id, "Failed to broadcast ScoreUpdate — no subscribers");
-                }
+                });
 
                 // Broadcast InterventionChange if level changed (Finding #14).
                 if old_level != new_level {
-                    if let Err(e) = state.event_tx.send(WsEvent::InterventionChange {
+                    crate::api::websocket::broadcast_event(&state, WsEvent::InterventionChange {
                         agent_id: agent_id.clone(),
                         old_level,
                         new_level,
-                    }) {
-                        tracing::warn!(error = %e, agent_id = %agent_id, "Failed to broadcast InterventionChange — no subscribers");
-                    }
+                    });
                 }
 
                 previous.insert(

@@ -7,6 +7,7 @@
  */
 
 import { api } from '$lib/api';
+import { wsStore } from '$lib/stores/websocket.svelte';
 
 export interface Session {
   session_id: string;
@@ -21,6 +22,7 @@ class SessionsStore {
   loading = $state(false);
   error = $state('');
   private initialized = false;
+  private unsubs: Array<() => void> = [];
 
   get count(): number {
     return this.list.length;
@@ -35,10 +37,18 @@ class SessionsStore {
     try {
       const data = await api.get('/api/sessions');
       this.list = data?.sessions ?? [];
-    } catch (e: any) {
-      this.error = e.message || 'Failed to load sessions';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to load sessions';
     }
     this.loading = false;
+
+    // Subscribe to Resync events for full re-fetch on reconnect gap.
+    this.unsubs.push(
+      wsStore.on('Resync', () => {
+        // Stagger to avoid thundering herd on reconnect
+        setTimeout(() => this.refresh(), Math.random() * 2000);
+      }),
+    );
   }
 
   /** Refresh sessions from REST. */
@@ -46,12 +56,14 @@ class SessionsStore {
     try {
       const data = await api.get('/api/sessions');
       this.list = data?.sessions ?? [];
-    } catch (e: any) {
-      this.error = e.message || 'Failed to refresh sessions';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to refresh sessions';
     }
   }
 
   destroy() {
+    for (const unsub of this.unsubs) unsub();
+    this.unsubs = [];
     this.initialized = false;
   }
 }

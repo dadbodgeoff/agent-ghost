@@ -14,13 +14,13 @@
     {
       "identifier": "shell:allow-execute",
       "allow": [
-        { "name": "binaries/ghost", "sidecar": true, "args": true }
+        { "name": "ghost", "sidecar": true, "args": true }
       ]
     },
     {
       "identifier": "shell:allow-spawn",
       "allow": [
-        { "name": "binaries/ghost", "sidecar": true, "args": true }
+        { "name": "ghost", "sidecar": true, "args": true }
       ]
     },
     "shell:allow-stdin-write",

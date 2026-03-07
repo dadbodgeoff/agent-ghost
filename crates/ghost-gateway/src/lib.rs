@@ -8,6 +8,7 @@ pub mod api;
 pub mod auth;
 pub mod backup_scheduler;
 pub mod bootstrap;
+pub mod db_pool;
 pub mod config_watcher;
 pub mod cli;
 pub mod config;
@@ -19,8 +20,12 @@ pub mod itp_buffer;
 pub mod itp_router;
 pub mod messaging;
 pub mod periodic;
+pub mod pid;
 pub mod runtime;
 pub mod safety;
 pub mod session;
 pub mod shutdown;
 pub mod state;
+
+#[cfg(feature = "otel")]
+pub mod otel;

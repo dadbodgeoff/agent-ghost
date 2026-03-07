@@ -110,8 +110,8 @@
       auditEntries = auditData?.entries ?? [];
       crdtState = crdtData;
       integrityReport = integrityData;
-    } catch (e: any) {
-      error = e.message || 'Failed to load agent details';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load agent details';
     }
     loading = false;
   }
@@ -123,8 +123,8 @@
       await api.post(`/api/safety/${action}/${agentId}`, {});
       confirmAction = null;
       await loadData();
-    } catch (e: any) {
-      actionError = e.message || `Failed to ${action} agent`;
+    } catch (e: unknown) {
+      actionError = e instanceof Error ? e.message : `Failed to ${action} agent`;
     }
     actionLoading = false;
   }

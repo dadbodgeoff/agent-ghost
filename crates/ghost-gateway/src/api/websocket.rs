@@ -4,8 +4,9 @@
 //! kill switch activations, and proposal decisions to connected clients.
 //! Supports per-client topic subscriptions (T-2.1.8).
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -16,6 +17,78 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::auth::{AuthConfig, RevocationSet};
 use crate::state::AppState;
+
+/// Global monotonic sequence counter for WS events.
+static EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Envelope wrapping every WS event with sequence metadata.
+///
+/// Wire format: `{ "seq": N, "timestamp": "...", "event": { "type": "...", ... } }`
+/// Using a nested `event` field (not `serde(flatten)`) to avoid fragile
+/// deserialization edge cases and field name conflicts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsEnvelope {
+    pub seq: u64,
+    pub timestamp: String,
+    pub event: WsEvent,
+}
+
+/// Ring buffer for event replay on reconnect.
+pub struct EventReplayBuffer {
+    buffer: parking_lot::RwLock<VecDeque<WsEnvelope>>,
+    capacity: usize,
+}
+
+impl EventReplayBuffer {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            buffer: parking_lot::RwLock::new(VecDeque::with_capacity(capacity)),
+            capacity,
+        }
+    }
+
+    pub fn push(&self, envelope: WsEnvelope) {
+        let mut buf = self.buffer.write();
+        if buf.len() >= self.capacity {
+            buf.pop_front();
+        }
+        buf.push_back(envelope);
+    }
+
+    /// Replay events after `last_seq`. Returns None if gap too large
+    /// (including when the buffer is empty after a server restart).
+    pub fn replay_after(&self, last_seq: u64) -> Option<Vec<WsEnvelope>> {
+        let buf = self.buffer.read();
+        if buf.is_empty() {
+            // Buffer is empty (e.g., server just restarted). We cannot
+            // guarantee continuity, so signal a gap to force full re-fetch.
+            return None;
+        }
+        let first_available = buf.front().map(|e| e.seq).unwrap_or(0);
+        if last_seq < first_available {
+            return None; // Gap too large — events were evicted
+        }
+        Some(buf.iter().filter(|e| e.seq > last_seq).cloned().collect())
+    }
+}
+
+/// Helper: wrap a WsEvent in an envelope and push to replay buffer.
+///
+/// Uses SeqCst ordering on the sequence counter and assigns the sequence
+/// number inside the replay buffer's write lock to guarantee monotonic
+/// ordering in the buffer even under concurrent calls.
+pub fn broadcast_event(state: &crate::state::AppState, event: WsEvent) {
+    let seq = EVENT_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
+    let envelope = WsEnvelope {
+        seq,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        event,
+    };
+    state.replay_buffer.push(envelope.clone());
+    if state.event_tx.send(envelope).is_err() {
+        tracing::debug!("broadcast_event: no WebSocket receivers");
+    }
+}
 
 /// Query parameters for WebSocket connection (token auth).
 #[derive(Debug, Deserialize)]
@@ -122,6 +195,10 @@ pub enum WsEvent {
     /// T-5.3.4 (T-X.28): Resync signal — sent when client lagged behind broadcast.
     /// Client should perform a full REST re-fetch on all stores.
     Resync { missed_events: u64 },
+    /// WP4-C/WP9-J: System-level warning for dashboard display.
+    SystemWarning { message: String },
+    /// WP9-J: Context window pressure — a prompt layer was truncated.
+    ContextTruncated { layer: String, removed_tokens: usize },
 }
 
 impl WsEvent {
@@ -152,6 +229,7 @@ impl WsEvent {
             WsEvent::A2ATaskUpdate { .. } => vec!["a2a:tasks".to_string()],
             WsEvent::ChatMessage { session_id, .. } => vec![format!("studio:session:{session_id}")],
             WsEvent::Ping | WsEvent::Resync { .. } => vec![],
+            WsEvent::SystemWarning { .. } | WsEvent::ContextTruncated { .. } => vec!["system:warning".to_string()],
         }
     }
 }
@@ -294,14 +372,25 @@ pub async fn ws_handler(
         .into_response()
 }
 
+/// Client reconnect message: `{ "last_seq": N }`.
+#[derive(Debug, Deserialize)]
+struct ReconnectMessage {
+    last_seq: u64,
+}
+
 async fn handle_socket(
     mut socket: WebSocket,
     state: Arc<AppState>,
     ws_tracker: Arc<WsConnectionTracker>,
     client_ip: IpAddr,
 ) {
-    // Send initial ping.
-    let ping = match serde_json::to_string(&WsEvent::Ping) {
+    // Send initial ping (wrapped in envelope).
+    let ping_envelope = WsEnvelope {
+        seq: 0,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        event: WsEvent::Ping,
+    };
+    let ping = match serde_json::to_string(&ping_envelope) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "failed to serialize WebSocket ping");
@@ -322,11 +411,74 @@ async fn handle_socket(
     let mut event_rx = state.event_tx.subscribe();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
+    // Wait briefly for a potential reconnect message with last_seq.
+    // Use a short timeout so fresh connections aren't delayed.
+    let reconnect_check = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        socket.recv(),
+    ).await;
+
+    if let Ok(Some(Ok(Message::Text(text)))) = reconnect_check {
+        if let Ok(reconnect) = serde_json::from_str::<ReconnectMessage>(&text) {
+            tracing::info!(last_seq = reconnect.last_seq, "WS client reconnecting with last_seq");
+            match state.replay_buffer.replay_after(reconnect.last_seq) {
+                Some(missed) => {
+                    tracing::info!(count = missed.len(), "Replaying missed events");
+                    for envelope in missed {
+                        let json = match serde_json::to_string(&envelope) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        if socket.send(Message::Text(json)).await.is_err() {
+                            ws_tracker.release(client_ip);
+                            return;
+                        }
+                    }
+                }
+                None => {
+                    // Gap too large — send Resync directly to THIS client only.
+                    // Do NOT broadcast to all clients (they are not affected).
+                    tracing::warn!(last_seq = reconnect.last_seq, "Replay gap too large — sending Resync to reconnecting client");
+                    let resync_envelope = WsEnvelope {
+                        seq: 0,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        event: WsEvent::Resync { missed_events: 0 },
+                    };
+                    if let Ok(json) = serde_json::to_string(&resync_envelope) {
+                        if socket.send(Message::Text(json)).await.is_err() {
+                            ws_tracker.release(client_ip);
+                            return;
+                        }
+                    }
+                }
+            }
+        } else if let Ok(client_msg) = serde_json::from_str::<WsClientMessage>(&text) {
+            // Not a reconnect message — handle as normal Subscribe/Unsubscribe.
+            match client_msg {
+                WsClientMessage::Subscribe { topics } => {
+                    for topic in topics {
+                        subscribed_topics.insert(topic);
+                    }
+                }
+                WsClientMessage::Unsubscribe { topics } => {
+                    for topic in &topics {
+                        subscribed_topics.remove(topic);
+                    }
+                }
+            }
+        }
+    }
+
     loop {
         tokio::select! {
-            // Keepalive ping every 30s.
+            // Keepalive ping every 30s (wrapped in envelope).
             _ = interval.tick() => {
-                let ping = match serde_json::to_string(&WsEvent::Ping) {
+                let ping_envelope = WsEnvelope {
+                    seq: 0,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    event: WsEvent::Ping,
+                };
+                let ping = match serde_json::to_string(&ping_envelope) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::error!(error = %e, "failed to serialize WebSocket ping");
@@ -337,21 +489,21 @@ async fn handle_socket(
                     break;
                 }
             }
-            // Forward broadcast events to this WebSocket client.
+            // Forward broadcast events (WsEnvelope) to this WebSocket client.
             event = event_rx.recv() => {
                 match event {
-                    Ok(ws_event) => {
+                    Ok(envelope) => {
                         // Topic filtering (T-2.1.8): if client has subscriptions,
                         // only forward events matching subscribed topics.
                         // Pings always pass through.
                         if !subscribed_topics.is_empty() {
-                            let keys = ws_event.topic_keys();
+                            let keys = envelope.event.topic_keys();
                             if !keys.is_empty() && !keys.iter().any(|k| subscribed_topics.contains(k)) {
                                 continue;
                             }
                         }
 
-                        let json = match serde_json::to_string(&ws_event) {
+                        let json = match serde_json::to_string(&envelope) {
                             Ok(s) => s,
                             Err(e) => {
                                 tracing::warn!(error = %e, "Failed to serialize WebSocket event");
@@ -366,8 +518,12 @@ async fn handle_socket(
                         // T-5.3.4 (T-X.28): Send Resync event on Lagged.
                         // Client must perform full REST re-fetch to guarantee consistency.
                         tracing::warn!(lagged = n, "WebSocket client lagged — sending Resync");
-                        let resync = WsEvent::Resync { missed_events: n };
-                        if let Ok(json) = serde_json::to_string(&resync) {
+                        let resync_envelope = WsEnvelope {
+                            seq: 0,
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            event: WsEvent::Resync { missed_events: n },
+                        };
+                        if let Ok(json) = serde_json::to_string(&resync_envelope) {
                             if socket.send(Message::Text(json)).await.is_err() {
                                 break;
                             }
@@ -412,9 +568,14 @@ async fn handle_socket(
     ws_tracker.release(client_ip);
 }
 
-/// Push an event to a WebSocket client.
+/// Push an event to a WebSocket client (wrapped in envelope).
 pub async fn push_event(socket: &mut WebSocket, event: &WsEvent) -> Result<(), String> {
-    let json = serde_json::to_string(event).map_err(|e| e.to_string())?;
+    let envelope = WsEnvelope {
+        seq: 0,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        event: event.clone(),
+    };
+    let json = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
     socket
         .send(Message::Text(json))
         .await

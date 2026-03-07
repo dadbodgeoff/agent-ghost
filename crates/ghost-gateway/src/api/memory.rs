@@ -48,12 +48,13 @@ pub async fn list_memories(
     let page_size = params.page_size.unwrap_or(50).min(200);
     let offset = (page.saturating_sub(1)) * page_size;
 
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to acquire DB read connection");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
+                Json(serde_json::json!({"error": "database connection error"})),
             );
         }
     };
@@ -218,12 +219,13 @@ pub async fn get_memory(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to acquire DB read connection");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
+                Json(serde_json::json!({"error": "database connection error"})),
             );
         }
     };
@@ -293,7 +295,7 @@ pub async fn search_memories(
     let limit = params.limit.unwrap_or(50).min(200);
     let include_archived = params.include_archived.unwrap_or(false);
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("search_memories", e))?;
 
     // T-5.6.5: Validate confidence bounds.
     if let (Some(cmin), Some(cmax)) = (params.confidence_min, params.confidence_max) {
@@ -346,7 +348,7 @@ pub async fn search_memories(
     // Embed the query for vector similarity scoring.
     let query_embedding = if let Some(ref q) = params.q {
         if !q.trim().is_empty() {
-            state.embedding_engine.lock().ok().map(|mut engine| engine.embed_query(q))
+            Some(state.embedding_engine.lock().await.embed_query(q))
         } else {
             None
         }
@@ -617,15 +619,7 @@ pub async fn write_memory(
     State(state): State<Arc<AppState>>,
     Json(body): Json<WriteMemoryRequest>,
 ) -> impl IntoResponse {
-    let db = match state.db.lock() {
-        Ok(db) => db,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
-            );
-        }
-    };
+    let db = state.db.write().await;
 
     let event_hash = blake3::hash(body.memory_id.as_bytes());
 
@@ -661,7 +655,8 @@ pub async fn write_memory(
     // 4. Generate and store embedding if snapshot was provided.
     if let Some(ref snapshot) = body.snapshot {
         if let Ok(memory) = serde_json::from_str::<cortex_core::memory::BaseMemory>(snapshot) {
-            if let Ok(mut engine) = state.embedding_engine.lock() {
+            {
+                let mut engine = state.embedding_engine.lock().await;
                 let embedding = engine.embed_memory(&memory);
                 if cortex_storage::queries::embedding_queries::embeddings_available(&db) {
                     if let Err(e) = cortex_storage::queries::embedding_queries::upsert_embedding(
@@ -712,7 +707,7 @@ pub async fn archive_memory(
     Path(memory_id): Path<String>,
     Json(body): Json<ArchiveMemoryRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     // Verify the memory exists.
     let exists: bool = db
@@ -772,7 +767,7 @@ pub async fn unarchive_memory(
     State(state): State<Arc<AppState>>,
     Path(memory_id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     if !cortex_storage::queries::archival_queries::is_archived(&db, &memory_id)
         .map_err(|e| ApiError::internal(e.to_string()))?
@@ -811,7 +806,7 @@ pub async fn unarchive_memory(
 pub async fn list_archived(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("list_archived", e))?;
 
     let rows = cortex_storage::queries::archival_queries::query_archived(&db, 200)
         .map_err(|e| ApiError::internal(e.to_string()))?;

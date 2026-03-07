@@ -132,12 +132,10 @@ pub async fn create_agent(
     }
 
     // Broadcast agent creation event.
-    if let Err(e) = state.event_tx.send(WsEvent::AgentStateChange {
+    crate::api::websocket::broadcast_event(&state, WsEvent::AgentStateChange {
         agent_id: agent_id.to_string(),
         new_state: "Starting".into(),
-    }) {
-        tracing::warn!(error = %e, "Failed to broadcast agent creation event");
-    }
+    });
 
     tracing::info!(
         agent_id = %agent_id,
@@ -218,12 +216,10 @@ pub async fn delete_agent(
     };
     match agents.unregister(agent_id) {
         Some(agent) => {
-            if let Err(e) = state.event_tx.send(WsEvent::AgentStateChange {
+            crate::api::websocket::broadcast_event(&state, WsEvent::AgentStateChange {
                 agent_id: agent_id.to_string(),
                 new_state: "Stopped".into(),
-            }) {
-                tracing::warn!(error = %e, "Failed to broadcast agent deletion event");
-            }
+            });
 
             tracing::info!(
                 agent_id = %agent_id,

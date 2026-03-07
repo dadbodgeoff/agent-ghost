@@ -492,13 +492,17 @@ mod db_pragma_tests {
 mod appstate_field_tests {
     /// Verify AppState has all expected fields by constructing one.
     /// This is a compile-time check — if a field is missing, this won't compile.
-    #[test]
-    fn appstate_has_all_fields() {
+    #[tokio::test]
+    async fn appstate_has_all_fields() {
         use ghost_gateway::state::AppState;
-        use std::sync::{Arc, Mutex, RwLock};
+        use std::sync::{Arc, RwLock};
 
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        cortex_storage::migrations::run_migrations(&conn).unwrap();
+        let db = ghost_gateway::db_pool::create_pool(":memory:".into())
+            .expect("in-memory pool");
+        {
+            let writer = db.write().await;
+            cortex_storage::migrations::run_migrations(&writer).unwrap();
+        }
 
         let (event_tx, _) = tokio::sync::broadcast::channel(16);
         let kill_switch = Arc::new(ghost_gateway::safety::kill_switch::KillSwitch::new());
@@ -526,8 +530,9 @@ mod appstate_field_tests {
             agents: Arc::new(RwLock::new(ghost_gateway::agents::registry::AgentRegistry::new())),
             kill_switch,
             quarantine: Arc::new(RwLock::new(ghost_gateway::safety::quarantine::QuarantineManager::new())),
-            db: Arc::new(Mutex::new(conn)),
+            db,
             event_tx,
+            replay_buffer: Arc::new(ghost_gateway::api::websocket::EventReplayBuffer::new(100)),
             cost_tracker: Arc::new(ghost_gateway::cost::tracker::CostTracker::new()),
             kill_gate: None,
             secret_provider: Arc::new(ghost_secrets::EnvProvider),
@@ -538,10 +543,12 @@ mod appstate_field_tests {
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
-            background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             safety_cooldown: Arc::new(ghost_gateway::api::rate_limit::SafetyCooldown::new()),
+            monitor_address: "127.0.0.1:18790".into(),
+            monitor_enabled: false,
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            embedding_engine: Arc::new(Mutex::new(embedding_engine)),
+            embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             safety_skills: Arc::new(safety_skills),
         };
     }

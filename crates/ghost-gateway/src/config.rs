@@ -46,6 +46,41 @@ pub struct GhostConfig {
     /// Tool configuration — web_search, web_fetch, http_request, shell.
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// OpenTelemetry configuration (WP9-A). Only active with `otel` feature.
+    #[serde(default)]
+    pub otel: OtelConfig,
+}
+
+/// OpenTelemetry exporter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtelConfig {
+    /// Enable OTEL exporter. Requires `otel` feature flag at compile time.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OTLP endpoint (default: http://localhost:4317 for gRPC).
+    #[serde(default = "default_otel_endpoint")]
+    pub endpoint: String,
+    /// Service name reported to the collector.
+    #[serde(default = "default_otel_service_name")]
+    pub service_name: String,
+}
+
+fn default_otel_endpoint() -> String {
+    "http://localhost:4317".into()
+}
+
+fn default_otel_service_name() -> String {
+    "ghost-gateway".into()
+}
+
+impl Default for OtelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_otel_endpoint(),
+            service_name: default_otel_service_name(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +91,16 @@ pub struct GatewayConfig {
     pub port: u16,
     #[serde(default = "default_db_path")]
     pub db_path: String,
+    /// WP7-B: WebSocket broadcast channel capacity.
+    #[serde(default = "default_ws_broadcast_capacity")]
+    pub ws_broadcast_capacity: usize,
+    /// WP7-C: WebSocket event replay buffer size.
+    #[serde(default = "default_ws_replay_buffer_size")]
+    pub ws_replay_buffer_size: usize,
+    /// WP9-D: Session TTL in days. Sessions inactive beyond this are soft-deleted.
+    /// Hard-deleted after 2x TTL. Default: 90 days.
+    #[serde(default = "default_session_ttl_days")]
+    pub session_ttl_days: u32,
 }
 
 impl Default for GatewayConfig {
@@ -64,9 +109,15 @@ impl Default for GatewayConfig {
             bind: default_bind(),
             port: default_port(),
             db_path: default_db_path(),
+            ws_broadcast_capacity: default_ws_broadcast_capacity(),
+            ws_replay_buffer_size: default_ws_replay_buffer_size(),
+            session_ttl_days: default_session_ttl_days(),
         }
     }
 }
+
+/// WP9-D: Default session TTL in days.
+fn default_session_ttl_days() -> u32 { 90 }
 
 fn default_bind() -> String { "127.0.0.1".into() }
 fn default_port() -> u16 { 39780 }
@@ -203,13 +254,20 @@ fn default_profile() -> String { "standard".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorConfig {
+    /// Whether convergence monitor health checking is enabled.
+    /// When false, the gateway skips monitor checks and starts as Healthy.
+    #[serde(default)]
+    pub enabled: bool,
     #[serde(default = "default_monitor_address")]
     pub address: String,
 }
 
 impl Default for MonitorConfig {
     fn default() -> Self {
-        Self { address: default_monitor_address() }
+        Self {
+            enabled: false,
+            address: default_monitor_address(),
+        }
     }
 }
 
@@ -225,7 +283,15 @@ pub struct ContactConfig {
 pub struct SecurityConfig {
     #[serde(default = "default_soul_drift_threshold")]
     pub soul_drift_threshold: f64,
+    /// WP6-A: Allowed CORS origins. When empty, falls back to env var / dev defaults.
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
+
+/// WP7-B: WebSocket broadcast channel capacity.
+fn default_ws_broadcast_capacity() -> usize { 1024 }
+/// WP7-C: WebSocket event replay buffer size.
+fn default_ws_replay_buffer_size() -> usize { 1000 }
 
 fn default_soul_drift_threshold() -> f64 { 0.15 }
 
@@ -501,6 +567,34 @@ pub fn build_secret_provider(
 }
 
 impl GhostConfig {
+    /// Create a minimal test configuration.
+    ///
+    /// Uses the given port, binds to 127.0.0.1, sets `db_path` to the
+    /// provided path (should be a tempfile), and disables the convergence
+    /// monitor and mesh networking.
+    pub fn test_config(port: u16, db_path: &str) -> Self {
+        Self {
+            gateway: GatewayConfig {
+                port,
+                bind: "127.0.0.1".to_string(),
+                db_path: db_path.to_string(),
+                ..Default::default()
+            },
+            convergence: ConvergenceGatewayConfig {
+                monitor: MonitorConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            mesh: MeshConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     /// Load configuration from a file path, with env var substitution.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         if !path.exists() {
@@ -601,6 +695,7 @@ impl Default for GhostConfig {
             mesh: MeshConfig::default(),
             pc_control: ghost_pc_control::safety::PcControlConfig::default(),
             tools: ToolsConfig::default(),
+            otel: OtelConfig::default(),
         }
     }
 }

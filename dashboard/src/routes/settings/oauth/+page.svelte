@@ -26,7 +26,7 @@
     const token = getToken();
     const resp = await fetch(`${API_BASE}${path}`, {
       ...options,
-      credentials: 'include',
+      credentials: 'omit',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
@@ -45,8 +45,8 @@
         fetchApi('/api/oauth/providers'),
         fetchApi('/api/oauth/connections'),
       ]);
-    } catch (e: any) {
-      error = e.message || 'Failed to load OAuth data';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load OAuth data';
     } finally {
       loading = false;
     }
@@ -59,8 +59,8 @@
         body: JSON.stringify({ provider: name, scopes }),
       });
       window.location.href = data.authorization_url;
-    } catch (e: any) {
-      error = `Connect failed: ${e.message}`;
+    } catch (e: unknown) {
+      error = `Connect failed: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
 
@@ -68,8 +68,8 @@
     try {
       await fetchApi(`/api/oauth/connections/${refId}`, { method: 'DELETE' });
       await loadData();
-    } catch (e: any) {
-      error = `Disconnect failed: ${e.message}`;
+    } catch (e: unknown) {
+      error = `Disconnect failed: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
 

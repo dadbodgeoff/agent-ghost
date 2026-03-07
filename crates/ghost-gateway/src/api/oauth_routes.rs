@@ -39,7 +39,8 @@ pub struct ConnectRequest {
 }
 
 fn default_redirect_uri() -> String {
-    "http://localhost:39780/api/oauth/callback".into()
+    let port = crate::state::get_api_key("GHOST_GATEWAY_PORT").unwrap_or_else(|| "39780".into());
+    format!("http://localhost:{port}/api/oauth/callback")
 }
 
 /// POST /api/oauth/connect — initiate OAuth flow.

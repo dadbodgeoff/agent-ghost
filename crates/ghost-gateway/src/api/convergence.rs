@@ -42,12 +42,12 @@ pub async fn get_scores(
                 .into_response();
         }
     };
-    let db = match state.db.lock() {
+    let db = match state.db.read() {
         Ok(db) => db,
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "database lock poisoned"})),
+                Json(serde_json::json!({"error": "database read error"})),
             )
                 .into_response();
         }

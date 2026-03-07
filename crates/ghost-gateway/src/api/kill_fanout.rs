@@ -35,9 +35,9 @@ pub fn propagate_kill(
     reason: &str,
     agent_id: Option<&str>,
 ) {
-    // T-5.4.1: Handle mutex poisoning with fail-safe.
+    // T-5.4.1: Handle pool exhaustion with fail-safe.
     // Kill signal MUST reach all reachable peers OR the process MUST crash.
-    let peers: Vec<String> = match state.db.lock() {
+    let peers: Vec<String> = match state.db.read() {
         Ok(db) => {
             db.prepare("SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL")
                 .and_then(|mut stmt| {
@@ -47,11 +47,11 @@ pub fn propagate_kill(
                 .unwrap_or_default()
         }
         Err(e) => {
-            // T-5.4.1: Mutex poisoned — cannot query peers. This is fatal for kill propagation.
+            // T-5.4.1: DB pool error — cannot query peers. This is fatal for kill propagation.
             // Attempt to log, then force process exit so orchestrator can restart and re-propagate.
             tracing::error!(
                 error = %e,
-                "FATAL: DB mutex poisoned during kill fanout — peers NOT notified. Forcing process exit."
+                "FATAL: DB pool error during kill fanout — peers NOT notified. Forcing process exit."
             );
             // Exit with code 70 (EX_SOFTWARE) to signal internal error to orchestrator.
             std::process::exit(70);

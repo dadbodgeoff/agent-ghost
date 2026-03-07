@@ -2,22 +2,46 @@
   /**
    * Prompt Playground / Agent Studio — Enterprise chat with SSE streaming.
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { studioChatStore } from '$lib/stores/studioChat.svelte';
+  import { wsStore } from '$lib/stores/websocket.svelte';
   import ChatMessage from '../../components/ChatMessage.svelte';
   import ToolCallIndicator from '../../components/ToolCallIndicator.svelte';
   import AgentTemplateSelector from '../../components/AgentTemplateSelector.svelte';
+  import ArtifactPanel, { extractArtifacts, type Artifact } from '../../components/ArtifactPanel.svelte';
+  import StudioInput from '../../components/StudioInput.svelte';
+  import VirtualMessageList from '../../components/VirtualMessageList.svelte';
   import 'highlight.js/styles/github-dark.css';
 
-  let userMessage = $state('');
   let responseTime = $state(0);
   let searchQuery = $state('');
-  let chatContainer: HTMLElement | null = $state(null);
-  let isUserScrolledUp = $state(false);
   let selectedTemplate = $state<any>(null);
+  let artifacts = $state<Artifact[]>([]);
+  let showArtifacts = $state(false);
+  let chatAreaHeight = $state(0);
+  let studioInputRef: StudioInput;
+
+  // WP9-G: Auth expiry detection.
+  let authExpiryWarning = $state(false);
+  let authCheckInterval: ReturnType<typeof setInterval> | null = null;
 
   onMount(() => {
     studioChatStore.init();
+
+    // WP9-G: Check JWT expiry every 60s.
+    authCheckInterval = setInterval(() => {
+      const token = sessionStorage.getItem('ghost-token');
+      if (!token) return;
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        const expMs = (payload.exp ?? 0) * 1000;
+        authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
+      } catch { /* malformed token — ignore */ }
+    }, 60_000);
+  });
+
+  onDestroy(() => {
+    if (authCheckInterval) clearInterval(authCheckInterval);
   });
 
   // Derived state.
@@ -31,40 +55,25 @@
       : studioChatStore.sessions,
   );
 
-  // Auto-scroll on new streaming content.
+  // Extract artifacts from messages when they change.
   $effect(() => {
-    const _ = studioChatStore.streamingContent;
-    if (!isUserScrolledUp && chatContainer) {
-      requestAnimationFrame(() => {
-        chatContainer?.scrollTo({ top: chatContainer.scrollHeight });
-      });
+    const msgs = messages;
+    const allArtifacts: Artifact[] = [];
+    for (const msg of msgs) {
+      if (msg.role === 'assistant' && msg.content) {
+        allArtifacts.push(...extractArtifacts(msg.content));
+      }
     }
+    artifacts = allArtifacts;
+    if (allArtifacts.length > 0) showArtifacts = true;
   });
 
-  function handleScroll() {
-    if (!chatContainer) return;
-    const { scrollTop, scrollHeight, clientHeight } = chatContainer;
-    isUserScrolledUp = scrollHeight - scrollTop - clientHeight > 100;
-  }
-
-  async function sendMessage() {
-    if (!userMessage.trim() || studioChatStore.sending) return;
-    const msg = userMessage;
-    userMessage = '';
-    isUserScrolledUp = false;
+  async function handleSend(content: string) {
+    if (!content.trim() || studioChatStore.sending) return;
 
     const start = performance.now();
-    await studioChatStore.sendMessage(msg);
+    await studioChatStore.sendMessage(content);
     responseTime = Math.round(performance.now() - start);
-  }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      sendMessage();
-    }
-    if (e.key === 'Escape' && studioChatStore.streaming) {
-      studioChatStore.cancelStreaming();
-    }
   }
 
   function handleTemplateSelect(template: any) {
@@ -127,6 +136,7 @@
         type="text"
         class="search-input"
         placeholder="Search sessions..."
+        aria-label="Search sessions"
         bind:value={searchQuery}
       />
     </div>
@@ -150,9 +160,17 @@
               class="session-delete"
               onclick={(e) => { e.stopPropagation(); studioChatStore.deleteSession(s.id); }}
               title="Delete session"
+              aria-label="Delete session {s.title}"
             >&times;</button>
           </li>
         {/each}
+        {#if studioChatStore.hasMoreSessions && !searchQuery.trim()}
+          <li class="session-load-more">
+            <button class="load-more-btn" onclick={() => studioChatStore.loadMoreSessions()}>
+              Load more sessions
+            </button>
+          </li>
+        {/if}
       </ul>
     {/if}
 
@@ -205,9 +223,45 @@
         </div>
       </div>
 
-      <!-- Messages -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="chat-messages" bind:this={chatContainer} onscroll={handleScroll}>
+      <!-- WP9-G: Status banners -->
+      {#if wsStore.state === 'disconnected' || wsStore.state === 'reconnecting'}
+        <div class="status-banner banner-error">
+          <span>Connection lost — {wsStore.state === 'reconnecting' ? `reconnecting (attempt ${wsStore.reconnectAttempt})...` : 'disconnected'}</span>
+          <button class="banner-btn" onclick={() => wsStore.connect()}>Reconnect</button>
+        </div>
+      {/if}
+
+      {#if authExpiryWarning}
+        <div class="status-banner banner-warning">
+          <span>Session expiring soon</span>
+          <button class="banner-btn" onclick={async () => {
+            try {
+              const { api } = await import('$lib/api');
+              const data = await api.post('/api/auth/refresh', {}) as { token?: string };
+              if (data.token) {
+                const { setToken } = await import('$lib/auth');
+                await setToken(data.token);
+                authExpiryWarning = false;
+              }
+            } catch { /* refresh failed */ }
+          }}>Refresh</button>
+        </div>
+      {/if}
+
+      {#if studioChatStore.providerError}
+        <div class="status-banner banner-warning">
+          <span>{studioChatStore.providerError}</span>
+        </div>
+      {/if}
+
+      {#if studioChatStore.persistenceWarning}
+        <div class="status-banner banner-amber">
+          <span>{studioChatStore.persistenceWarning}</span>
+        </div>
+      {/if}
+
+      <!-- Messages (virtual scrolling for 500+ messages) -->
+      <div class="chat-messages" bind:clientHeight={chatAreaHeight}>
         {#if messages.length === 0}
           <div class="empty-state">
             <p>Send a message to start the conversation.</p>
@@ -216,32 +270,32 @@
             {/if}
           </div>
         {:else}
-          {#each messages as msg, i (msg.id || i)}
-            <ChatMessage
-              message={msg}
-              isStreaming={studioChatStore.streaming && i === messages.length - 1 && msg.role === 'assistant'}
-            />
-          {/each}
+          <VirtualMessageList {messages} containerHeight={chatAreaHeight}>
+            {#snippet children({ message })}
+              <ChatMessage
+                {message}
+                isStreaming={studioChatStore.streaming && message.id === messages[messages.length - 1]?.id && message.role === 'assistant'}
+              />
+            {/snippet}
+          </VirtualMessageList>
         {/if}
-
       </div>
 
-      <!-- Error -->
+      <!-- Error with retry -->
       {#if studioChatStore.error}
-        <div class="error-box">{studioChatStore.error}</div>
+        <div class="error-box">
+          <span>{studioChatStore.error}</span>
+          <button class="error-retry-btn" onclick={() => studioChatStore.retryLastMessage()}>Retry</button>
+        </div>
       {/if}
 
-      <!-- Input -->
+      <!-- Input (CodeMirror 6 with markdown highlighting) -->
       <div class="chat-input">
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <textarea
-          bind:value={userMessage}
-          rows="3"
-          class="prompt-area"
-          placeholder="Type your message... (Cmd+Enter to send)"
-          onkeydown={handleKeydown}
+        <StudioInput
+          bind:this={studioInputRef}
+          onSend={handleSend}
           disabled={studioChatStore.sending}
-        ></textarea>
+        />
         {#if studioChatStore.streaming}
           <button class="btn-stop" onclick={() => studioChatStore.cancelStreaming()}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
@@ -250,8 +304,11 @@
         {:else}
           <button
             class="btn-primary"
-            disabled={studioChatStore.sending || !userMessage.trim()}
-            onclick={sendMessage}
+            disabled={studioChatStore.sending}
+            onclick={() => {
+              const val = studioInputRef?.getValue()?.trim();
+              if (val) { studioInputRef.clear(); handleSend(val); }
+            }}
           >
             {studioChatStore.sending ? 'Sending...' : 'Send'}
           </button>
@@ -259,6 +316,11 @@
       </div>
     {/if}
   </div>
+
+  <!-- Artifact Panel (Phase 2 Task 3.4) -->
+  {#if artifacts.length > 0}
+    <ArtifactPanel {artifacts} collapsed={!showArtifacts} />
+  {/if}
 </div>
 
 <style>
@@ -268,6 +330,9 @@
     gap: 0;
     height: calc(100vh - 80px);
     overflow: hidden;
+  }
+  .studio-page:has(.artifact-panel) {
+    grid-template-columns: 260px 1fr minmax(300px, 35%);
   }
 
   /* ── Sidebar ── */
@@ -411,6 +476,19 @@
   .session-item:hover .session-delete { opacity: 1; }
   .session-delete:hover { color: var(--color-severity-hard); }
 
+  .session-load-more { padding: var(--spacing-2) var(--spacing-3); text-align: center; }
+  .load-more-btn {
+    width: 100%;
+    padding: var(--spacing-1) var(--spacing-2);
+    background: none;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--color-interactive-primary);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+  }
+  .load-more-btn:hover { background: var(--color-bg-elevated-2); }
+
   .template-section {
     padding: var(--spacing-2) var(--spacing-3);
     border-top: 1px solid var(--color-border-subtle);
@@ -522,7 +600,7 @@
   /* ── Messages ── */
   .chat-messages {
     flex: 1;
-    overflow-y: auto;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
   }
@@ -542,6 +620,10 @@
   .hint { font-size: var(--font-size-xs); opacity: 0.6; margin-top: var(--spacing-1); }
 
   .error-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-2);
     padding: var(--spacing-2) var(--spacing-4);
     background: color-mix(in srgb, var(--color-severity-hard) 10%, transparent);
     border-top: 1px solid var(--color-severity-hard);
@@ -549,6 +631,55 @@
     font-size: var(--font-size-sm);
     flex-shrink: 0;
   }
+  .error-retry-btn {
+    padding: 2px 10px;
+    background: none;
+    border: 1px solid var(--color-severity-hard);
+    border-radius: var(--radius-sm);
+    color: var(--color-severity-hard);
+    cursor: pointer;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    white-space: nowrap;
+  }
+  .error-retry-btn:hover { background: color-mix(in srgb, var(--color-severity-hard) 15%, transparent); }
+
+  /* WP9-G: Status banners */
+  .status-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--spacing-2) var(--spacing-4);
+    font-size: var(--font-size-xs);
+    flex-shrink: 0;
+  }
+  .banner-error {
+    background: color-mix(in srgb, var(--color-severity-hard) 10%, transparent);
+    border-bottom: 1px solid var(--color-severity-hard);
+    color: var(--color-severity-hard);
+  }
+  .banner-warning {
+    background: color-mix(in srgb, orange 10%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, orange 40%, transparent);
+    color: orange;
+  }
+  .banner-amber {
+    background: color-mix(in srgb, #f59e0b 10%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, #f59e0b 40%, transparent);
+    color: #f59e0b;
+  }
+  .banner-btn {
+    padding: 2px 10px;
+    background: none;
+    border: 1px solid currentColor;
+    border-radius: var(--radius-sm);
+    color: inherit;
+    cursor: pointer;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    white-space: nowrap;
+  }
+  .banner-btn:hover { opacity: 0.8; }
 
   /* ── Input Bar ── */
   .chat-input {
@@ -558,23 +689,6 @@
     border-top: 1px solid var(--color-border-subtle);
     background: var(--color-bg-elevated-1);
     flex-shrink: 0;
-  }
-
-  .prompt-area {
-    flex: 1;
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    padding: var(--spacing-2);
-    font-size: var(--font-size-sm);
-    color: var(--color-text-primary);
-    font-family: var(--font-family-mono);
-    resize: none;
-  }
-
-  .prompt-area:focus {
-    outline: none;
-    border-color: var(--color-interactive-primary);
   }
 
   .btn-primary {
@@ -612,5 +726,6 @@
   @media (max-width: 768px) {
     .studio-page { grid-template-columns: 1fr; }
     .session-sidebar { display: none; }
+    :global(.artifact-panel) { display: none; }
   }
 </style>

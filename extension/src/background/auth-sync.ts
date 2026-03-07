@@ -17,7 +17,7 @@ export interface AuthState {
 
 let currentState: AuthState = {
   authenticated: false,
-  gatewayUrl: 'http://localhost:18789',
+  gatewayUrl: 'http://localhost:39780',
   token: null,
   lastValidated: 0,
 };
@@ -27,7 +27,7 @@ let currentState: AuthState = {
  */
 export async function initAuthSync(): Promise<AuthState> {
   const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:18789';
+  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
   currentState.token = stored[JWT_TOKEN_KEY] || null;
 
   if (currentState.token) {

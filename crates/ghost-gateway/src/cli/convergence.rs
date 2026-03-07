@@ -170,7 +170,7 @@ pub async fn run_history(
                 .collect()
         }
         CliBackend::Direct { db, .. } => {
-            let db = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+            let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
             query_history_direct(&db, &args.agent_id, args.since.as_deref())?
         }
     };

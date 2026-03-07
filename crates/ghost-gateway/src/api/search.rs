@@ -76,7 +76,7 @@ pub async fn search(
     let like_pattern = format!("%{escaped}%");
     let per_type_limit = (params.limit as usize / types.len().max(1)).max(5);
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("search", e))?;
     let mut results = Vec::new();
 
     if types.contains(&"agents") {

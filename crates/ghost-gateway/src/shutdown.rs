@@ -66,7 +66,7 @@ pub async fn execute_shutdown(
 
         // Await background task handles with timeout.
         let bg_tasks: Vec<tokio::task::JoinHandle<()>> = {
-            let mut tasks = state.background_tasks.lock().unwrap_or_else(|e| e.into_inner());
+            let mut tasks = state.background_tasks.lock().await;
             std::mem::take(&mut *tasks)
         };
 
@@ -92,10 +92,16 @@ pub async fn execute_shutdown(
     }
     steps += 1;
 
-    // Step 4: Persist cost tracker state to DB.
+    // Step 4: Persist cost tracker state to DB (WP4-A).
     tracing::info!("Shutdown step 4: Persisting cost data");
-    // Cost tracker is in-memory only; on shutdown we log that it will be lost.
-    // A future enhancement can persist to DB here.
+    if let Some(state) = state {
+        let conn = state.db.write().await;
+        if let Err(e) = state.cost_tracker.persist(&conn) {
+            tracing::warn!(error = %e, "failed to persist cost tracker during shutdown");
+        } else {
+            tracing::info!("cost tracker state persisted to DB");
+        }
+    }
     steps += 1;
 
     // Step 5: Notify monitor of shutdown.
@@ -115,9 +121,8 @@ pub async fn execute_shutdown(
     // Step 7: WAL checkpoint and DB close.
     tracing::info!("Shutdown step 7: WAL checkpoint");
     if let Some(state) = state {
-        if let Ok(db) = state.db.lock() {
-            // Force a WAL checkpoint to ensure all data is in the main DB file.
-            let _ = db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+        if let Err(e) = state.db.checkpoint().await {
+            tracing::warn!(error = %e, "WAL checkpoint failed during shutdown");
         }
     }
     steps += 1;

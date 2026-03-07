@@ -32,7 +32,7 @@ pub async fn verify_chain(
 ) -> ApiResult<serde_json::Value> {
     let chain_type = params.chain.unwrap_or_else(|| "both".to_string());
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("verify_chain", e))?;
 
     let mut results = serde_json::Map::new();
 

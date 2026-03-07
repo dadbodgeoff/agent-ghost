@@ -133,6 +133,13 @@ pub trait LLMProvider: Send + Sync {
     /// for auth profile rotation on 401/429). Default is no-op for
     /// providers that don't support runtime auth changes.
     fn update_auth(&self, _api_key: &str, _org_id: Option<&str>) {}
+
+    /// WP9-F: Lightweight health check to verify API key and connectivity.
+    /// Called at startup to detect bad keys before first user message.
+    /// Default implementation returns Ok (for providers without health endpoints).
+    async fn health_check(&self) -> Result<(), LLMError> {
+        Ok(())
+    }
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────
@@ -530,6 +537,35 @@ impl LLMProvider for AnthropicProvider {
             Err(e) => tracing::error!(provider = "anthropic", error = %e, "Failed to update API key — RwLock poisoned"),
         }
     }
+
+    async fn health_check(&self) -> Result<(), LLMError> {
+        let api_key = self.api_key.read()
+            .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
+            .clone();
+        let client = build_client(Duration::from_secs(10))?;
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let resp = client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LLMError::Other(format!("health check request failed: {e}")))?;
+        if resp.status().is_success() || resp.status().as_u16() == 200 {
+            Ok(())
+        } else {
+            Err(LLMError::Other(format!(
+                "Anthropic health check failed: HTTP {}",
+                resp.status()
+            )))
+        }
+    }
 }
 
 // ── OpenAI provider ─────────────────────────────────────────────────────
@@ -573,6 +609,27 @@ impl LLMProvider for OpenAIProvider {
         match self.api_key.write() {
             Ok(mut key) => *key = api_key.to_string(),
             Err(e) => tracing::error!(provider = "openai", error = %e, "Failed to update API key — RwLock poisoned"),
+        }
+    }
+
+    async fn health_check(&self) -> Result<(), LLMError> {
+        let api_key = self.api_key.read()
+            .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
+            .clone();
+        let client = build_client(Duration::from_secs(10))?;
+        let resp = client
+            .get("https://api.openai.com/v1/models")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .send()
+            .await
+            .map_err(|e| LLMError::Other(format!("health check request failed: {e}")))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(LLMError::Other(format!(
+                "OpenAI health check failed: HTTP {}",
+                resp.status()
+            )))
         }
     }
 }
@@ -787,6 +844,26 @@ impl LLMProvider for GeminiProvider {
             Err(e) => tracing::error!(provider = "gemini", error = %e, "Failed to update API key — RwLock poisoned"),
         }
     }
+
+    async fn health_check(&self) -> Result<(), LLMError> {
+        let api_key = self.api_key.read()
+            .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
+            .clone();
+        let client = build_client(Duration::from_secs(10))?;
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        );
+        let resp = client.get(&url).send().await
+            .map_err(|e| LLMError::Other(format!("health check request failed: {e}")))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(LLMError::Other(format!(
+                "Gemini health check failed: HTTP {}",
+                resp.status()
+            )))
+        }
+    }
 }
 
 // ── Ollama local provider ───────────────────────────────────────────────
@@ -816,13 +893,7 @@ impl LLMProvider for OllamaProvider {
         let client = build_client(LOCAL_TIMEOUT)?;
 
         let ollama_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
-            let role = match m.role {
-                MessageRole::System => "system",
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Tool => "tool",
-            };
-            serde_json::json!({ "role": role, "content": m.content })
+            ollama_format_message(m)
         }).collect();
 
         let mut body = serde_json::json!({
@@ -863,6 +934,21 @@ impl LLMProvider for OllamaProvider {
     fn token_pricing(&self) -> TokenPricing {
         TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 } // local
     }
+
+    async fn health_check(&self) -> Result<(), LLMError> {
+        let client = build_client(Duration::from_secs(5))?;
+        let url = format!("{}/api/tags", self.base_url);
+        let resp = client.get(&url).send().await
+            .map_err(|e| LLMError::Other(format!("Ollama health check failed: {e}")))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(LLMError::Other(format!(
+                "Ollama health check failed: HTTP {}",
+                resp.status()
+            )))
+        }
+    }
 }
 
 impl OllamaProvider {
@@ -880,13 +966,7 @@ impl OllamaProvider {
 
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
         let ollama_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
-            let role = match m.role {
-                MessageRole::System => "system",
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Tool => "tool",
-            };
-            serde_json::json!({ "role": role, "content": m.content })
+            ollama_format_message(m)
         }).collect();
 
         let mut body = serde_json::json!({
@@ -1011,6 +1091,36 @@ impl OllamaProvider {
             let _ = model_name; // suppress unused warning
         })
     }
+}
+
+/// Format a ChatMessage for Ollama's native /api/chat endpoint.
+/// Includes tool_calls on assistant messages and tool_call_id on tool messages
+/// so that multi-turn tool-use conversations are correctly represented.
+fn ollama_format_message(m: &ChatMessage) -> serde_json::Value {
+    let role = match m.role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    };
+    let mut msg = serde_json::json!({ "role": role, "content": m.content });
+
+    // Attach tool_calls to assistant messages so Ollama knows a tool was invoked.
+    if let Some(ref calls) = m.tool_calls {
+        let tc: Vec<serde_json::Value> = calls.iter().map(|c| {
+            serde_json::json!({
+                "function": {
+                    "name": c.name,
+                    "arguments": c.arguments,
+                }
+            })
+        }).collect();
+        if !tc.is_empty() {
+            msg["tool_calls"] = serde_json::Value::Array(tc);
+        }
+    }
+
+    msg
 }
 
 /// Format tools for Ollama's native /api/chat endpoint.

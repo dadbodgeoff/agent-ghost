@@ -66,7 +66,7 @@ const VALID_EVENTS: &[&str] = &[
 pub async fn list_webhooks(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<WebhookListResponse> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("list_webhooks", e))?;
 
     // T-5.8.2: Do NOT query secret in list endpoint — secrets should never leave DB
     // except during webhook fire.
@@ -153,7 +153,7 @@ pub async fn create_webhook(
     }
     // T-5.3.10: Cap total webhook count at 50.
     {
-        let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+        let db = state.db.read().map_err(|e| ApiError::db_error("webhook_count_check", e))?;
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM webhooks", [], |row| row.get(0))
             .unwrap_or(0);
@@ -175,7 +175,7 @@ pub async fn create_webhook(
     let headers_json = serde_json::to_string(&req.headers.unwrap_or(serde_json::json!({})))
         .map_err(|e| ApiError::internal(format!("serialize headers: {e}")))?;
 
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
     db.execute(
         "INSERT INTO webhooks (id, name, url, secret, events, headers) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -200,7 +200,7 @@ pub async fn update_webhook(
     Path(id): Path<String>,
     Json(req): Json<UpdateWebhookRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     // Build dynamic UPDATE.
     let mut sets: Vec<String> = vec!["updated_at = datetime('now')".into()];
@@ -258,7 +258,7 @@ pub async fn delete_webhook(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.write().await;
 
     let affected = db
         .execute("DELETE FROM webhooks WHERE id = ?1", rusqlite::params![id])
@@ -277,7 +277,7 @@ pub async fn test_webhook(
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
     let (url, secret, headers_json) = {
-        let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+        let db = state.db.read().map_err(|e| ApiError::db_error("test_webhook", e))?;
         let result: (String, String, String) = db
             .query_row(
                 "SELECT url, secret, headers FROM webhooks WHERE id = ?1",
@@ -297,7 +297,7 @@ pub async fn test_webhook(
     let status = fire_single_webhook(&url, &secret, &headers_json, &payload).await;
 
     // Broadcast result.
-    let _ = state.event_tx.send(WsEvent::WebhookFired {
+    crate::api::websocket::broadcast_event(&state, WsEvent::WebhookFired {
         webhook_id: id.clone(),
         event_type: "test".into(),
         status_code: status,
@@ -321,13 +321,13 @@ const MAX_CONCURRENT_WEBHOOKS: usize = 32;
 /// `MAX_CONCURRENT_WEBHOOKS` requests are in flight at any time.
 /// Tracks JoinHandles in a JoinSet for graceful shutdown.
 pub async fn fire_webhooks(
-    db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
-    event_tx: &tokio::sync::broadcast::Sender<WsEvent>,
+    db: &std::sync::Arc<crate::db_pool::DbPool>,
+    app_state: &std::sync::Arc<crate::state::AppState>,
     event_type: &str,
     payload: serde_json::Value,
 ) {
     let matching = {
-        let Ok(conn) = db.lock() else { return };
+        let Ok(conn) = db.read() else { return };
         let Ok(mut stmt) = conn.prepare(
             "SELECT id, url, secret, headers, events FROM webhooks WHERE active = 1",
         ) else {
@@ -370,13 +370,13 @@ pub async fn fire_webhooks(
         let payload = payload.clone();
         let wh_id_clone = wh_id.clone();
         let event_type_owned = event_type.to_string();
-        let tx = event_tx.clone();
+        let state_ref = Arc::clone(app_state);
         let sem = semaphore.clone();
 
         join_set.spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
             let status = fire_single_webhook(&url, &secret, &headers_json, &payload).await;
-            let _ = tx.send(WsEvent::WebhookFired {
+            crate::api::websocket::broadcast_event(&state_ref, WsEvent::WebhookFired {
                 webhook_id: wh_id_clone,
                 event_type: event_type_owned,
                 status_code: status,

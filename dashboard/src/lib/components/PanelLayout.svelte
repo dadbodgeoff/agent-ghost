@@ -21,7 +21,7 @@
 <div class="panel-layout">
   <Splitpanes horizontal={false}>
     <Pane minSize={10} size={15} maxSize={25}>
-      <div class="sidebar-pane">
+      <div class="sidebar-pane" role="complementary" aria-label="Sidebar">
         <div class="sidebar-content">
           {@render sidebar()}
         </div>
@@ -38,7 +38,7 @@
         {#if bottom && !bottomCollapsed}
           <Splitpanes horizontal={true}>
             <Pane minSize={30}>
-              <div class="main-content">
+              <div class="main-content" role="main" aria-label="Main content">
                 {@render main()}
               </div>
             </Pane>
@@ -55,7 +55,7 @@
             </Pane>
           </Splitpanes>
         {:else}
-          <div class="main-content">
+          <div class="main-content" role="main" aria-label="Main content">
             {@render main()}
           </div>
           {#if bottom && bottomCollapsed}

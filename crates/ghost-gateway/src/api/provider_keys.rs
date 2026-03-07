@@ -23,13 +23,9 @@ fn require_admin(ext: &axum::http::Extensions) -> Result<(), ApiError> {
             return Ok(());
         }
     }
-    Err(ApiError {
-        status: axum::http::StatusCode::FORBIDDEN,
-        body: crate::api::error::ErrorResponse::new(
-            "FORBIDDEN",
-            "Admin role required for this operation",
-        ),
-    })
+    Err(ApiError::Forbidden(
+        "Admin role required for this operation".to_owned(),
+    ))
 }
 
 // ── Types ───────────────────────────────────────────────────────────
@@ -123,7 +119,7 @@ pub async fn list_provider_keys(
             .clone()
             .unwrap_or_else(|| default_key_env(&p.name).to_string());
 
-        let current_value = std::env::var(&env_name).ok().filter(|v| !v.is_empty());
+        let current_value = crate::state::get_api_key(&env_name);
 
         providers.push(ProviderKeyInfo {
             provider_name: p.name.clone(),
@@ -183,13 +179,8 @@ pub async fn set_provider_key(
         );
     }
 
-    // 2. Set env var for immediate pickup by provider builders.
-    // SAFETY: This is single-threaded at the point of the HTTP handler;
-    // the env var is read fresh by build_fallback_chain_from_providers()
-    // on each subsequent request.
-    unsafe {
-        std::env::set_var(&body.env_name, &body.value);
-    }
+    // 2. Set key in thread-safe store for immediate pickup by provider builders.
+    crate::state::set_api_key(&body.env_name, &body.value);
 
     let preview = mask_key(&body.value);
     tracing::info!(env_name = %body.env_name, preview = %preview, "Provider API key updated via dashboard");
@@ -232,10 +223,8 @@ pub async fn delete_provider_key(
         tracing::warn!(env_name = %env_name, error = %e, "Could not remove key from secret provider");
     }
 
-    // 2. Remove env var.
-    unsafe {
-        std::env::remove_var(&env_name);
-    }
+    // 2. Remove key from thread-safe store.
+    crate::state::remove_api_key(&env_name);
 
     tracing::info!(env_name = %env_name, "Provider API key removed via dashboard");
 

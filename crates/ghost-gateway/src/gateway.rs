@@ -9,6 +9,43 @@ use std::sync::Arc;
 use thiserror::Error;
 
 /// The 6 gateway states. Stored as AtomicU8 for lock-free reads.
+///
+/// ## Valid State Transitions
+///
+/// ```text
+///                   ┌──────────────┐
+///                   │ Initializing │
+///                   └──────┬───────┘
+///                    ╱     │     ╲
+///                   ╱      │      ╲
+///                  ▼       ▼       ▼
+///          ┌─────────┐ ┌────────┐ ┌────────────┐
+///          │ Healthy  │ │Degraded│ │ FatalError │ (terminal)
+///          └────┬─────┘ └──┬──┬──┘ └────────────┘
+///               │     ╱    │  │
+///               │    ╱     │  │
+///               ▼   ▼      │  │
+///          ┌──────────┐    │  │
+///          │Recovering│◄───┘  │
+///          └──┬───┬───┘       │
+///             │   │           │
+///             │   └──►Degraded│
+///             ▼               ▼
+///          Healthy      ShuttingDown (terminal)
+/// ```
+///
+/// - **Initializing → Healthy**: Bootstrap succeeded, monitor reachable (or disabled).
+/// - **Initializing → Degraded**: Bootstrap succeeded, monitor unreachable.
+/// - **Initializing → FatalError**: Bootstrap failed (config, DB, etc.). Only reachable from Initializing.
+/// - **Healthy → Degraded**: Monitor connection lost during operation.
+/// - **Healthy → ShuttingDown**: Graceful shutdown requested (Ctrl-C / SIGTERM).
+/// - **Degraded → Recovering**: Monitor reconnected, syncing missed state.
+/// - **Degraded → ShuttingDown**: Shutdown requested while degraded.
+/// - **Recovering → Healthy**: Recovery sync completed successfully.
+/// - **Recovering → Degraded**: Monitor lost again during recovery.
+/// - **Recovering → ShuttingDown**: Shutdown requested during recovery.
+///
+/// **FatalError** and **ShuttingDown** are terminal — no transitions out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum GatewayState {
@@ -22,7 +59,7 @@ pub enum GatewayState {
     Recovering = 3,
     /// Graceful shutdown in progress. Terminal state.
     ShuttingDown = 4,
-    /// Fatal error during bootstrap. Terminal state.
+    /// Fatal error during bootstrap. Terminal state. Only reachable from Initializing.
     FatalError = 5,
 }
 
@@ -87,18 +124,12 @@ impl GatewaySharedState {
     }
 
     /// Attempt a state transition. Returns error on illegal transition.
-    /// In debug builds, illegal transitions panic. In release, they log and return error.
     pub fn transition_to(&self, to: GatewayState) -> Result<(), GatewayError> {
         let from = self.current_state();
         if !from.can_transition_to(to) {
             let err = GatewayError::IllegalTransition { from, to };
-            #[cfg(debug_assertions)]
-            panic!("{}", err);
-            #[cfg(not(debug_assertions))]
-            {
-                tracing::error!(%err, "Illegal state transition ignored");
-                return Err(err);
-            }
+            tracing::error!(%err, "Illegal gateway state transition");
+            return Err(err);
         }
         self.state.store(to as u8, Ordering::Release);
         tracing::info!(from = ?from, to = ?to, "Gateway state transition");
@@ -154,7 +185,7 @@ impl Gateway {
         router: Option<axum::Router>,
         bind_addr: Option<&str>,
     ) -> Result<(), GatewayError> {
-        let addr = bind_addr.unwrap_or("127.0.0.1:39780");
+        let addr = bind_addr.unwrap_or("127.0.0.1:0");
 
         if let Some(router) = router {
             let listener = tokio::net::TcpListener::bind(addr)

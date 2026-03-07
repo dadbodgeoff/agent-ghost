@@ -47,7 +47,7 @@ fn build_fallback_chain() -> ghost_agent_loop::runner::LLMFallbackChain {
                 }
                 "anthropic" => {
                     let key_env = p.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY");
-                    if let Ok(key) = std::env::var(key_env) {
+                    if let Some(key) = crate::state::get_api_key(key_env) {
                         if !key.is_empty() {
                             let model = p.model.clone()
                                 .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
@@ -66,7 +66,7 @@ fn build_fallback_chain() -> ghost_agent_loop::runner::LLMFallbackChain {
                 }
                 "openai" => {
                     let key_env = p.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
-                    if let Ok(key) = std::env::var(key_env) {
+                    if let Some(key) = crate::state::get_api_key(key_env) {
                         if !key.is_empty() {
                             let model = p.model.clone()
                                 .unwrap_or_else(|| "gpt-4o".into());
@@ -85,7 +85,7 @@ fn build_fallback_chain() -> ghost_agent_loop::runner::LLMFallbackChain {
                 }
                 "gemini" => {
                     let key_env = p.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY");
-                    if let Ok(key) = std::env::var(key_env) {
+                    if let Some(key) = crate::state::get_api_key(key_env) {
                         if !key.is_empty() {
                             let model = p.model.clone()
                                 .unwrap_or_else(|| "gemini-2.0-flash".into());
@@ -104,7 +104,7 @@ fn build_fallback_chain() -> ghost_agent_loop::runner::LLMFallbackChain {
                 }
                 "openai_compat" => {
                     let key_env = p.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
-                    if let Ok(key) = std::env::var(key_env) {
+                    if let Some(key) = crate::state::get_api_key(key_env) {
                         if !key.is_empty() {
                             let base_url = p.base_url.clone()
                                 .unwrap_or_else(|| "http://localhost:8080".into());

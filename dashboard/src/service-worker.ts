@@ -235,11 +235,33 @@ async function replayPendingActions(): Promise<void> {
         if (isSafetyPath(action.url)) continue;
 
         try {
-          await fetch(action.url, {
+          // WP9-N: Include session sequence for staleness detection.
+          const headers: Record<string, string> = { ...action.headers };
+          if (action.session_seq != null) {
+            headers['X-Ghost-Expected-Seq'] = String(action.session_seq);
+          }
+
+          const resp = await fetch(action.url, {
             method: action.method,
-            headers: action.headers,
+            headers,
             body: action.body,
           });
+
+          // WP9-N: 409 Conflict = session changed while offline — discard stale action.
+          if (resp.status === 409) {
+            const deleteTx = db.transaction('pending_actions', 'readwrite');
+            deleteTx.objectStore('pending_actions').delete(action.id);
+            // Notify user via postMessage to all clients.
+            const clients = await self.clients.matchAll({ type: 'window' });
+            for (const client of clients) {
+              client.postMessage({
+                type: 'ghost-sync-conflict',
+                message: 'Message outdated — session changed while offline',
+                actionId: action.id,
+              });
+            }
+            continue;
+          }
 
           // Remove from queue on success.
           const deleteTx = db.transaction('pending_actions', 'readwrite');
@@ -312,4 +334,6 @@ interface PendingAction {
   method: string;
   headers: Record<string, string>;
   body: string | null;
+  /** WP9-N: Session sequence at time of queuing — for staleness detection. */
+  session_seq?: number;
 }

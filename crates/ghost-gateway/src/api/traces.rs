@@ -41,7 +41,7 @@ pub async fn get_traces(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> ApiResult<TraceResponse> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("get_traces", e))?;
 
     let mut stmt = db
         .prepare(

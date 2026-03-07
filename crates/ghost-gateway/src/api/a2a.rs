@@ -12,7 +12,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::api::error::{ApiError, ApiResult};
-use crate::api::websocket::WsEvent;
+use crate::api::websocket::{WsEnvelope, WsEvent};
 use crate::state::AppState;
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ pub async fn send_task(
     // This prevents TOCTOU race: crash between response and DB write.
     let input_str = serde_json::to_string(&req.input).unwrap_or_else(|_| "null".into());
     {
-        let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+        let db = state.db.write().await;
         db.execute(
             "INSERT INTO a2a_tasks (id, target_agent, target_url, method, status, input, output, created_at) \
              VALUES (?1, ?2, ?3, ?4, 'pending', ?5, NULL, ?6)",
@@ -131,7 +131,7 @@ pub async fn send_task(
 
     // T-5.10.1: Update task status after HTTP response.
     {
-        let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+        let db = state.db.write().await;
         let _ = db.execute(
             "UPDATE a2a_tasks SET status = ?1, output = ?2 WHERE id = ?3",
             rusqlite::params![
@@ -154,7 +154,7 @@ pub async fn send_task(
     };
 
     // Broadcast WS event.
-    let _ = state.event_tx.send(WsEvent::A2ATaskUpdate {
+    crate::api::websocket::broadcast_event(&state, WsEvent::A2ATaskUpdate {
         task_id: task_id.clone(),
         status: task_status.into(),
         agent_name,
@@ -168,7 +168,7 @@ pub async fn get_task(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,
 ) -> ApiResult<A2ATask> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("get_task", e))?;
 
     let task = db
         .query_row(
@@ -199,7 +199,7 @@ pub async fn get_task(
 pub async fn list_tasks(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<TaskListResponse> {
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("list_tasks", e))?;
 
     let mut stmt = db
         .prepare(
@@ -252,7 +252,7 @@ pub async fn stream_task(
 
         loop {
             match tokio::time::timeout(inactivity_timeout, rx.recv()).await {
-                Ok(Ok(WsEvent::A2ATaskUpdate { task_id: tid, status, agent_name })) => {
+                Ok(Ok(WsEnvelope { event: WsEvent::A2ATaskUpdate { task_id: tid, status, agent_name }, .. })) => {
                     if tid == task_id_owned {
                         let data = serde_json::json!({
                             "task_id": tid,
@@ -301,7 +301,7 @@ pub async fn discover_agents(
 ) -> ApiResult<DiscoverResponse> {
     // 1. Collect known peer endpoint URLs from the DB.
     let peer_urls: Vec<String> = {
-        let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+        let db = state.db.read().map_err(|e| ApiError::db_error("discover_agents_read_peers", e))?;
         let mut urls = Vec::new();
         let stmt_result = db.prepare(
             "SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL",
@@ -407,7 +407,7 @@ pub async fn discover_agents(
 
     // 4. Upsert probed results back into the DB.
     {
-        let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+        let db = state.db.write().await;
         for agent in &probed_agents {
             let caps_json = serde_json::to_string(&agent.capabilities).unwrap_or_else(|_| "[]".into());
             let _ = db.execute(
@@ -427,7 +427,7 @@ pub async fn discover_agents(
     }
 
     // 5. Re-read the full table so we return any agents not in our probe list too.
-    let db = state.db.lock().map_err(|_| ApiError::lock_poisoned("db"))?;
+    let db = state.db.read().map_err(|e| ApiError::db_error("discover_agents_reread", e))?;
     let mut agents: Vec<DiscoveredAgent> = Vec::new();
 
     let stmt_result = db.prepare(

@@ -124,8 +124,8 @@
     try {
       await api.post('/api/safety/kill-all');
       killState = await api.get('/api/safety/status');
-    } catch (e: any) {
-      alert('Failed to trigger kill switch: ' + e.message);
+    } catch (e: unknown) {
+      alert('Failed to trigger kill switch: ' + (e instanceof Error ? e.message : String(e)));
     }
   }
 
@@ -141,8 +141,8 @@
       a.download = `audit-export.${format}`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (e: any) {
-      alert('Export failed: ' + e.message);
+    } catch (e: unknown) {
+      alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
     }
   }
 </script>

@@ -15,6 +15,14 @@ function getBaseUrl(): string {
     const override = localStorage.getItem('ghost-gateway-url');
     if (override) return override;
   }
+  // Port injected by Tauri via window.eval at startup.
+  if (typeof window !== 'undefined' && window.__GHOST_GATEWAY_PORT__) {
+    return `http://127.0.0.1:${window.__GHOST_GATEWAY_PORT__}`;
+  }
+  // Vite env override for standalone dashboard dev.
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GHOST_GATEWAY_URL) {
+    return import.meta.env.VITE_GHOST_GATEWAY_URL;
+  }
   return 'http://127.0.0.1:39780';
 }
 const BASE_URL = getBaseUrl();
@@ -32,14 +40,14 @@ function headers(): HeadersInit {
 }
 
 export const api = {
-  async get(path: string): Promise<any> {
+  async get<T = unknown>(path: string): Promise<T> {
     const resp = await fetch(`${BASE_URL}${path}`, {
       headers: headers(),
-      credentials: 'include',
+      credentials: 'omit',
     });
     if (resp.status === 401) {
       // Token expired or invalid — redirect to login.
-      clearToken();
+      await clearToken();
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
@@ -53,15 +61,15 @@ export const api = {
     return resp.json();
   },
 
-  async post(path: string, body?: any): Promise<any> {
+  async post<T = unknown>(path: string, body?: unknown): Promise<T | null> {
     const resp = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
       headers: headers(),
-      credentials: 'include',
+      credentials: 'omit',
       body: body ? JSON.stringify(body) : undefined,
     });
     if (resp.status === 401) {
-      clearToken();
+      await clearToken();
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
@@ -77,15 +85,15 @@ export const api = {
     return text ? JSON.parse(text) : null;
   },
 
-  async put(path: string, body?: any): Promise<any> {
+  async put<T = unknown>(path: string, body?: unknown): Promise<T | null> {
     const resp = await fetch(`${BASE_URL}${path}`, {
       method: 'PUT',
       headers: headers(),
-      credentials: 'include',
+      credentials: 'omit',
       body: body ? JSON.stringify(body) : undefined,
     });
     if (resp.status === 401) {
-      clearToken();
+      await clearToken();
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
@@ -106,20 +114,20 @@ export const api = {
    */
   async streamPost(
     path: string,
-    body: any,
-    onEvent: (eventType: string, data: any) => void,
+    body: unknown,
+    onEvent: (eventType: string, data: unknown, eventId?: string) => void,
     signal?: AbortSignal,
   ): Promise<void> {
     const resp = await fetch(`${BASE_URL}${path}`, {
       method: 'POST',
       headers: headers(),
-      credentials: 'include',
+      credentials: 'omit',
       body: JSON.stringify(body),
       signal,
     });
 
     if (resp.status === 401) {
-      clearToken();
+      await clearToken();
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
@@ -165,6 +173,7 @@ export const api = {
 
           const lines = eventBlock.split('\n');
           let eventType = 'message';
+          let eventId: string | undefined;
           const dataLines: string[] = [];
 
           for (const line of lines) {
@@ -172,6 +181,8 @@ export const api = {
               eventType = line.slice(7).trim();
             } else if (line.startsWith('data: ')) {
               dataLines.push(line.slice(6));
+            } else if (line.startsWith('id: ')) {
+              eventId = line.slice(4).trim();
             }
             // Comments (: ping) are ignored.
           }
@@ -180,9 +191,9 @@ export const api = {
             const dataStr = dataLines.join('\n');
             try {
               const data = JSON.parse(dataStr);
-              onEvent(eventType, data);
+              onEvent(eventType, data, eventId);
             } catch {
-              onEvent(eventType, dataStr);
+              onEvent(eventType, dataStr, eventId);
             }
           }
         }
@@ -193,14 +204,14 @@ export const api = {
     }
   },
 
-  async del(path: string): Promise<any> {
+  async del<T = unknown>(path: string): Promise<T | null> {
     const resp = await fetch(`${BASE_URL}${path}`, {
       method: 'DELETE',
       headers: headers(),
-      credentials: 'include',
+      credentials: 'omit',
     });
     if (resp.status === 401) {
-      clearToken();
+      await clearToken();
       if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
         window.location.href = '/login';
       }

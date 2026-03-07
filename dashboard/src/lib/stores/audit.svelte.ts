@@ -7,6 +7,7 @@
  */
 
 import { api } from '$lib/api';
+import { wsStore } from '$lib/stores/websocket.svelte';
 
 export interface AuditEntry {
   id: string;
@@ -35,8 +36,23 @@ class AuditStore {
   page = $state(1);
   loading = $state(false);
   error = $state('');
+  private lastFilters: AuditFilters = {};
+  private unsubs: Array<() => void> = [];
+  private resyncRegistered = false;
 
   async query(filters: AuditFilters = {}) {
+    this.lastFilters = filters;
+
+    // Register Resync handler on first query.
+    if (!this.resyncRegistered) {
+      this.resyncRegistered = true;
+      this.unsubs.push(
+        wsStore.on('Resync', () => {
+          // Stagger to avoid thundering herd on reconnect
+          setTimeout(() => this.query(this.lastFilters), Math.random() * 2000);
+        }),
+      );
+    }
     this.loading = true;
     this.error = '';
 
@@ -58,10 +74,16 @@ class AuditStore {
       this.entries = data?.entries ?? [];
       this.total = data?.total ?? this.entries.length;
       this.page = data?.page ?? filters.page ?? 1;
-    } catch (e: any) {
-      this.error = e.message || 'Failed to load audit entries';
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : 'Failed to load audit entries';
     }
     this.loading = false;
+  }
+
+  destroy() {
+    for (const unsub of this.unsubs) unsub();
+    this.unsubs = [];
+    this.resyncRegistered = false;
   }
 }
 

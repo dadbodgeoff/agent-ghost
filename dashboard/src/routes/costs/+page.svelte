@@ -19,8 +19,8 @@
       const data = await api.get('/api/costs');
       // /api/costs returns a flat array of per-agent cost objects.
       costs = Array.isArray(data) ? data : (data?.costs ?? []);
-    } catch (e: any) {
-      error = e.message || 'Failed to load cost data';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to load cost data';
     }
     loading = false;
   });

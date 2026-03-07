@@ -31,6 +31,8 @@ export type WsEventType =
   | 'WebhookFired'
   | 'SkillChange'
   | 'A2ATaskUpdate'
+  | 'SessionEvent'
+  | 'ChatMessage'
   | 'Resync'
   | 'Ping';
 
@@ -54,6 +56,7 @@ class WebSocketStore {
   private isLeader = true;
   private bc: BroadcastChannel | null = null;
   private intentionalClose = false;
+  private lastSeq = 0;
 
   /** Subscribe to a specific WS event type. Returns an unsubscribe function. */
   on(type: WsEventType, handler: EventHandler): () => void {
@@ -74,6 +77,9 @@ class WebSocketStore {
 
     this.initLeaderElection();
 
+    // Followers don't open their own WS — they receive events via BroadcastChannel.
+    if (!this.isLeader) return;
+
     const token = sessionStorage.getItem('ghost-token');
     const url = token ? `${WS_URL}?token=${encodeURIComponent(token)}` : WS_URL;
 
@@ -93,11 +99,29 @@ class WebSocketStore {
       this.backoffMs = INITIAL_BACKOFF_MS;
       this.reconnectAttempt = 0;
       this.lastError = '';
+
+      // Task 1.6: On reconnect, send last_seq to request missed event replay.
+      if (this.lastSeq > 0 && this.ws) {
+        this.ws.send(JSON.stringify({ last_seq: this.lastSeq }));
+      }
     };
 
     this.ws.onmessage = (event: MessageEvent) => {
       try {
-        const msg: WsMessage = JSON.parse(event.data);
+        // Task 1.6: Parse envelope and extract nested event.
+        // Wire format: { seq, timestamp, event: { type, ...fields } }
+        const envelope = JSON.parse(event.data) as {
+          seq?: number;
+          timestamp?: string;
+          event?: WsMessage;
+          // Backward compat: flattened format has `type` at top level.
+          type?: string;
+        };
+        if (envelope.seq && envelope.seq > this.lastSeq) {
+          this.lastSeq = envelope.seq;
+        }
+        // Extract inner event. Support both nested and legacy flat formats.
+        const msg: WsMessage = envelope.event ?? (envelope as unknown as WsMessage);
         this.lastMessage = msg;
 
         if (msg.type === 'Ping') {
@@ -187,30 +211,103 @@ class WebSocketStore {
     }
   }
 
-  /** Multi-tab leader election via BroadcastChannel. */
+  /**
+   * Multi-tab leader election via Web Locks API + BroadcastChannel.
+   *
+   * The tab that holds the 'ghost-ws-leader' lock is the leader and
+   * owns the WebSocket connection. Follower tabs close their WS and
+   * receive events via BroadcastChannel instead.
+   *
+   * If Web Locks is not available (older browsers), all tabs are leaders
+   * (each opens its own WS — safe but wasteful).
+   */
   private initLeaderElection() {
-    // Skip in Tauri — single window, no leader election needed
-    if (typeof window !== 'undefined' && (window as any).__TAURI__) return;
+    // Skip in Tauri — single window, no leader election needed.
+    if (typeof window !== 'undefined' && window.__TAURI__) return;
     if (this.bc) return;
+
     try {
       this.bc = new BroadcastChannel('ghost-ws-leader');
       this.bc.onmessage = (event: MessageEvent) => {
-        // If we receive a message from another tab, we're a follower.
-        // Process the forwarded WS message.
-        if (!this.isLeader) {
-          const msg = event.data as WsMessage;
-          this.lastMessage = msg;
-          const typeHandlers = this.handlers.get(msg.type);
-          if (typeHandlers) {
-            for (const handler of typeHandlers) {
+        if (this.isLeader) return; // Leaders ignore broadcast — they have their own WS.
+        const msg = event.data as WsMessage;
+        this.lastMessage = msg;
+
+        // Update lastSeq from forwarded messages so follower→leader
+        // promotion can reconnect from the right position.
+        if ((msg as unknown as { seq?: number }).seq) {
+          const seq = (msg as unknown as { seq: number }).seq;
+          if (seq > this.lastSeq) this.lastSeq = seq;
+        }
+
+        // Route Resync to handlers.
+        if (msg.type === 'Resync') {
+          const resyncHandlers = this.handlers.get('Resync');
+          if (resyncHandlers) {
+            for (const handler of resyncHandlers) {
               try { handler(msg); } catch { /* swallow */ }
             }
+          }
+          return;
+        }
+
+        // Route to registered handlers.
+        const typeHandlers = this.handlers.get(msg.type);
+        if (typeHandlers) {
+          for (const handler of typeHandlers) {
+            try { handler(msg); } catch { /* swallow */ }
           }
         }
       };
     } catch {
       // BroadcastChannel not supported — single-tab mode.
+      return;
     }
+
+    // Use Web Locks API for leader election if available.
+    if (typeof navigator !== 'undefined' && navigator.locks) {
+      // Request the lock without stealing. Only one tab can hold it.
+      // When a leader tab closes, the lock is released and the next
+      // waiting tab becomes leader.
+      navigator.locks.request('ghost-ws-leader', { ifAvailable: true }, async (lock) => {
+        if (lock) {
+          // We got the lock — we are the leader.
+          this.becomeLeader();
+          // Hold the lock forever (until tab closes).
+          // Return a promise that never resolves so the lock is held.
+          return new Promise<void>(() => {});
+        } else {
+          // Another tab is already the leader — become follower.
+          this.becomeFollower();
+          // Wait for the lock (will fire when current leader tab closes).
+          navigator.locks.request('ghost-ws-leader', async () => {
+            this.becomeLeader();
+            return new Promise<void>(() => {});
+          });
+        }
+      });
+    }
+    // If Web Locks not available, isLeader stays true (default) — single-leader fallback.
+  }
+
+  private becomeLeader() {
+    if (this.isLeader) return;
+    this.isLeader = true;
+    // Open a new WS connection as the leader.
+    this.connect();
+  }
+
+  private becomeFollower() {
+    if (!this.isLeader) return;
+    this.isLeader = false;
+    this.state = 'connected'; // We're "connected" via BroadcastChannel.
+    // Close our own WS — the leader will forward events via BroadcastChannel.
+    if (this.ws) {
+      this.intentionalClose = true;
+      this.ws.close(1000, 'Follower — deferring to leader');
+      this.ws = null;
+    }
+    this.clearReconnectTimer();
   }
 }
 

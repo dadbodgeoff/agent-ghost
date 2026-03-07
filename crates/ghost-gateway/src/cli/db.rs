@@ -14,10 +14,10 @@ use super::output::{OutputFormat, TableDisplay, print_output};
 pub struct DbMigrateArgs {}
 
 /// Run `ghost db migrate`.
-pub fn run_migrate(_args: DbMigrateArgs, backend: &CliBackend) -> Result<(), CliError> {
+pub async fn run_migrate(_args: DbMigrateArgs, backend: &CliBackend) -> Result<(), CliError> {
     backend.require(BackendRequirement::DirectOnly)?;
     let db = backend.db();
-    let conn = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+    let conn = db.write().await;
 
     let before = current_version(&conn).map_err(|e| CliError::Database(e.to_string()))?;
     run_migrations(&conn).map_err(|e| CliError::Database(format!("migration failed: {e}")))?;
@@ -85,7 +85,7 @@ impl TableDisplay for DbStatusResult {
 pub fn run_status(args: DbStatusArgs, backend: &CliBackend) -> Result<(), CliError> {
     backend.require(BackendRequirement::DirectOnly)?;
     let db = backend.db();
-    let conn = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+    let conn = db.read().map_err(|e| CliError::Database(e.to_string()))?;
 
     let version = current_version(&conn).map_err(|e| CliError::Database(e.to_string()))?;
 
@@ -147,7 +147,7 @@ pub struct DbVerifyArgs {
 pub fn run_verify(args: DbVerifyArgs, backend: &CliBackend) -> Result<(), CliError> {
     backend.require(BackendRequirement::DirectOnly)?;
     let db = backend.db();
-    let conn = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+    let conn = db.read().map_err(|e| CliError::Database(e.to_string()))?;
 
     let start = std::time::Instant::now();
 
@@ -258,7 +258,7 @@ pub async fn run_compact(args: DbCompactArgs, backend: &CliBackend) -> Result<()
 
     if args.dry_run {
         let db = backend.db();
-        let conn = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+        let conn = db.read().map_err(|e| CliError::Database(e.to_string()))?;
         let db_path = get_db_path(&conn);
         let wal_size = db_path
             .as_ref()
@@ -308,7 +308,7 @@ pub async fn run_compact(args: DbCompactArgs, backend: &CliBackend) -> Result<()
     }
 
     let db = backend.db();
-    let conn = db.lock().map_err(|_| CliError::Database("lock poisoned".into()))?;
+    let conn = db.write().await;
 
     // Memory event compaction (summarize old events into snapshots).
     if !args.vacuum_only {

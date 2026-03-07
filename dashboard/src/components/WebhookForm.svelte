@@ -46,8 +46,8 @@
         await api.post('/api/webhooks', { name, url, secret, events: selectedEvents });
       }
       onSaved();
-    } catch (e: any) {
-      error = e.message || 'Failed to save webhook';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to save webhook';
     } finally {
       saving = false;
     }
