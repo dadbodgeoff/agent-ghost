@@ -236,6 +236,37 @@ export type {
   DiscoverA2AAgentsResult,
 } from './a2a.js';
 
+// ── Studio ──
+export { StudioAPI } from './studio.js';
+export type {
+  StudioRunMessageInput,
+  StudioRunParams,
+  StudioRunResult,
+} from './studio.js';
+
+// ── Approvals ──
+export { ApprovalsAPI } from './approvals.js';
+export type {
+  Approval,
+  ApprovalDetails,
+  ApprovalRiskLevel,
+  ApprovalStatus,
+  ApprovalType,
+  ListApprovalsParams,
+  ListApprovalsResult,
+  ApproveApprovalParams,
+} from './approvals.js';
+
+// ── PC Control ──
+export { PcControlAPI } from './pc-control.js';
+export type {
+  SafeZone,
+  ActionBudget,
+  PcControlStatus,
+  PcControlActionLogEntry,
+  PcControlActionLogResult,
+} from './pc-control.js';
+
 // ── WebSocket ──
 export { GhostWebSocket } from './websocket.js';
 export type { WsEvent, GhostWebSocketOptions } from './websocket.js';

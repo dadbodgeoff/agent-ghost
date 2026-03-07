@@ -3,7 +3,7 @@
    * Simulation Sandbox (T-2.7.3).
    * MVP "dry run" mode: logs what the agent would do without real tool execution.
    */
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import GateCheckBar from '../../../components/GateCheckBar.svelte';
 
   let systemPrompt = $state('You are an AI agent. Plan tasks step-by-step.');
@@ -45,7 +45,8 @@
     completed = false;
 
     try {
-      const data = await api.post('/api/studio/run', {
+      const client = await getGhostClient();
+      const data = await client.studio.run({
         system_prompt: systemPrompt + '\n\nIMPORTANT: This is a DRY RUN simulation. Do NOT execute any real actions. Instead, describe each step you would take, what tool you would call, and what arguments you would use. Format each step as: STEP N: [action description]. Return all steps in your response.',
         messages: [{ role: 'user', content: userGoal }],
         model,

@@ -4,40 +4,13 @@
    * Configures and monitors PC control safety features.
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type {
+    PcControlActionLogEntry as ActionLogEntry,
+    PcControlStatus,
+    SafeZone,
+  } from '@ghost/sdk';
   import { wsStore } from '$lib/stores/websocket.svelte';
-
-  interface SafeZone {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    label: string;
-  }
-
-  interface ActionBudget {
-    max_per_minute: number;
-    max_per_hour: number;
-    used_this_minute: number;
-    used_this_hour: number;
-  }
-
-  interface PcControlStatus {
-    enabled: boolean;
-    action_budget: ActionBudget;
-    allowed_apps: string[];
-    safe_zones: SafeZone[];
-    blocked_hotkeys: string[];
-    circuit_breaker_state: string;
-  }
-
-  interface ActionLogEntry {
-    id: string;
-    action_type: string;
-    target: string;
-    timestamp: string;
-    result: string;
-  }
 
   let status: PcControlStatus | null = $state(null);
   let actionLog: ActionLogEntry[] = $state([]);
@@ -60,7 +33,8 @@
 
   async function loadStatus() {
     try {
-      status = await api.get<PcControlStatus>('/api/pc-control/status');
+      const client = await getGhostClient();
+      status = await client.pcControl.getStatus();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load PC control status';
     }
@@ -69,7 +43,8 @@
 
   async function loadActionLog() {
     try {
-      const data = await api.get<{ actions: ActionLogEntry[] }>('/api/pc-control/actions?limit=100');
+      const client = await getGhostClient();
+      const data = await client.pcControl.listActions(100);
       actionLog = data?.actions ?? [];
     } catch { /* non-fatal */ }
   }
@@ -77,8 +52,8 @@
   async function toggleEnabled() {
     if (!status) return;
     try {
-      await api.put('/api/pc-control/status', { enabled: !status.enabled });
-      status.enabled = !status.enabled;
+      const client = await getGhostClient();
+      status = await client.pcControl.updateStatus(!status.enabled);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to toggle PC control';
     }
@@ -88,8 +63,8 @@
     if (!newApp.trim() || !status) return;
     try {
       const apps = [...status.allowed_apps, newApp.trim()];
-      await api.put('/api/pc-control/allowed-apps', { apps });
-      status.allowed_apps = apps;
+      const client = await getGhostClient();
+      status = await client.pcControl.setAllowedApps(apps);
       newApp = '';
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to add app';
@@ -100,8 +75,8 @@
     if (!status) return;
     try {
       const apps = status.allowed_apps.filter(a => a !== app);
-      await api.put('/api/pc-control/allowed-apps', { apps });
-      status.allowed_apps = apps;
+      const client = await getGhostClient();
+      status = await client.pcControl.setAllowedApps(apps);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove app';
     }
@@ -111,8 +86,8 @@
     if (!newHotkey.trim() || !status) return;
     try {
       const hotkeys = [...status.blocked_hotkeys, newHotkey.trim()];
-      await api.put('/api/pc-control/blocked-hotkeys', { hotkeys });
-      status.blocked_hotkeys = hotkeys;
+      const client = await getGhostClient();
+      status = await client.pcControl.setBlockedHotkeys(hotkeys);
       newHotkey = '';
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to add hotkey';
@@ -123,8 +98,8 @@
     if (!status) return;
     try {
       const hotkeys = status.blocked_hotkeys.filter(h => h !== key);
-      await api.put('/api/pc-control/blocked-hotkeys', { hotkeys });
-      status.blocked_hotkeys = hotkeys;
+      const client = await getGhostClient();
+      status = await client.pcControl.setBlockedHotkeys(hotkeys);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove hotkey';
     }
@@ -134,8 +109,8 @@
     if (!status) return;
     try {
       const zones = [...status.safe_zones, zone];
-      await api.put('/api/pc-control/safe-zones', { zones });
-      status.safe_zones = zones;
+      const client = await getGhostClient();
+      status = await client.pcControl.setSafeZones(zones);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to add safe zone';
     }
@@ -145,8 +120,8 @@
     if (!status) return;
     try {
       const zones = status.safe_zones.filter((_, i) => i !== idx);
-      await api.put('/api/pc-control/safe-zones', { zones });
-      status.safe_zones = zones;
+      const client = await getGhostClient();
+      status = await client.pcControl.setSafeZones(zones);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove safe zone';
     }

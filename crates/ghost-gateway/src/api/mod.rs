@@ -1,9 +1,9 @@
 //! REST API and WebSocket server (Req 25).
 
-use ghost_agent_loop::tools::builtin::web_search::{WebSearchConfig, SearchBackend};
-use ghost_agent_loop::tools::builtin::web_fetch::FetchConfig;
 use ghost_agent_loop::tools::builtin::http_request::HttpRequestConfig;
 use ghost_agent_loop::tools::builtin::shell::ShellToolConfig;
+use ghost_agent_loop::tools::builtin::web_fetch::FetchConfig;
+use ghost_agent_loop::tools::builtin::web_search::{SearchBackend, WebSearchConfig};
 
 /// Apply tool configurations from ghost.yml to an AgentRunner's ToolExecutor.
 pub fn apply_tool_configs(
@@ -62,11 +62,13 @@ pub mod goals;
 pub mod health;
 pub mod integrity;
 pub mod kill_fanout;
+pub mod marketplace;
 pub mod memory;
 pub mod mesh_routes;
 pub mod mesh_viz;
 pub mod oauth_routes;
 pub mod openapi;
+pub mod pc_control;
 pub mod profiles;
 pub mod provider_keys;
 pub mod push_routes;
@@ -74,16 +76,15 @@ pub mod rate_limit;
 pub mod rbac;
 pub mod safety;
 pub mod safety_checks;
-pub mod ssrf;
 pub mod search;
 pub mod sessions;
 pub mod skill_execute;
 pub mod skills;
+pub mod ssrf;
 pub mod state;
 pub mod studio;
 pub mod studio_sessions;
 pub mod traces;
 pub mod webhooks;
 pub mod websocket;
-pub mod marketplace;
 pub mod workflows;

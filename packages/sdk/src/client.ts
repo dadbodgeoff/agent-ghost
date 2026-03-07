@@ -25,6 +25,9 @@ import { StateAPI } from './state.js';
 import { IntegrityAPI } from './integrity.js';
 import { MeshAPI } from './mesh.js';
 import { A2AAPI } from './a2a.js';
+import { StudioAPI } from './studio.js';
+import { ApprovalsAPI } from './approvals.js';
+import { PcControlAPI } from './pc-control.js';
 import { GhostWebSocket, type GhostWebSocketOptions } from './websocket.js';
 
 // ── Types ──
@@ -76,6 +79,9 @@ export class GhostClient {
   readonly integrity: IntegrityAPI;
   readonly mesh: MeshAPI;
   readonly a2a: A2AAPI;
+  readonly studio: StudioAPI;
+  readonly approvals: ApprovalsAPI;
+  readonly pcControl: PcControlAPI;
 
   private readonly options: GhostClientOptions;
 
@@ -112,6 +118,9 @@ export class GhostClient {
     this.integrity = new IntegrityAPI(request);
     this.mesh = new MeshAPI(request);
     this.a2a = new A2AAPI(request);
+    this.studio = new StudioAPI(request);
+    this.approvals = new ApprovalsAPI(request);
+    this.pcControl = new PcControlAPI(request);
   }
 
   /** Create a WebSocket connection for real-time events. */

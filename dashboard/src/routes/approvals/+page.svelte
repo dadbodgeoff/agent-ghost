@@ -6,26 +6,11 @@
    * Real-time updates via WS ProposalDecision events.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { Approval } from '@ghost/sdk';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
 
-  interface Proposal {
-    id: string;
-    agent_id: string;
-    agent_name: string;
-    type: 'tool_call' | 'spend' | 'escalation' | 'goal_change';
-    description: string;
-    details: {
-      tool?: string;
-      args?: Record<string, unknown>;
-      cost_estimate?: number;
-      risk_level?: 'low' | 'medium' | 'high';
-    };
-    status: 'pending' | 'approved' | 'denied' | 'modified';
-    created_at: string;
-    decided_at?: string;
-    decided_by?: string;
-  }
+  type Proposal = Approval & { status: Approval['status'] | 'modified' };
 
   let proposals = $state<Proposal[]>([]);
   let loading = $state(false);
@@ -48,7 +33,7 @@
         if (idx >= 0) {
           proposals[idx] = {
             ...proposals[idx],
-            status: data.decision ?? 'approved',
+            status: data.decision === 'rejected' ? 'denied' : 'approved',
             decided_at: new Date().toISOString(),
             decided_by: data.decided_by ?? 'system',
           };
@@ -69,8 +54,9 @@
     loading = true;
     error = '';
     try {
-      const data = await api.get('/api/approvals');
-      proposals = Array.isArray(data) ? data : (data as any).proposals ?? [];
+      const client = await getGhostClient();
+      const data = await client.approvals.list();
+      proposals = data.proposals ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load proposals';
     }
@@ -79,7 +65,8 @@
 
   async function approveProposal(id: string) {
     try {
-      await api.post(`/api/approvals/${id}/approve`);
+      const client = await getGhostClient();
+      await client.approvals.approve(id);
       const idx = proposals.findIndex(p => p.id === id);
       if (idx >= 0) {
         proposals[idx] = { ...proposals[idx], status: 'approved', decided_at: new Date().toISOString() };
@@ -92,7 +79,8 @@
 
   async function denyProposal(id: string) {
     try {
-      await api.post(`/api/approvals/${id}/deny`);
+      const client = await getGhostClient();
+      await client.approvals.deny(id);
       const idx = proposals.findIndex(p => p.id === id);
       if (idx >= 0) {
         proposals[idx] = { ...proposals[idx], status: 'denied', decided_at: new Date().toISOString() };
@@ -106,7 +94,8 @@
   async function modifyAndApprove(id: string) {
     try {
       const parsedArgs = JSON.parse(modifiedArgs);
-      await api.post(`/api/approvals/${id}/approve`, { modified_args: parsedArgs });
+      const client = await getGhostClient();
+      await client.approvals.approve(id, { modified_args: parsedArgs });
       const idx = proposals.findIndex(p => p.id === id);
       if (idx >= 0) {
         proposals[idx] = { ...proposals[idx], status: 'modified', decided_at: new Date().toISOString() };

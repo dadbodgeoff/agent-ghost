@@ -117,11 +117,19 @@ impl Default for GatewayConfig {
 }
 
 /// WP9-D: Default session TTL in days.
-fn default_session_ttl_days() -> u32 { 90 }
+fn default_session_ttl_days() -> u32 {
+    90
+}
 
-fn default_bind() -> String { "127.0.0.1".into() }
-fn default_port() -> u16 { 39780 }
-fn default_db_path() -> String { "~/.ghost/data/ghost.db".into() }
+fn default_bind() -> String {
+    "127.0.0.1".into()
+}
+fn default_port() -> u16 {
+    39780
+}
+fn default_db_path() -> String {
+    "~/.ghost/data/ghost.db".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -143,7 +151,9 @@ pub struct AgentConfig {
     pub network: Option<NetworkEgressGatewayConfig>,
 }
 
-fn default_spending_cap() -> f64 { 5.0 }
+fn default_spending_cap() -> f64 {
+    5.0
+}
 
 /// Per-agent network egress configuration in ghost.yml (Phase 11).
 ///
@@ -187,7 +197,9 @@ impl Default for NetworkEgressGatewayConfig {
     }
 }
 
-fn default_egress_policy() -> String { "unrestricted".into() }
+fn default_egress_policy() -> String {
+    "unrestricted".into()
+}
 
 fn default_egress_allowed_domains() -> Vec<String> {
     ghost_egress::config::DEFAULT_ALLOWED_DOMAINS
@@ -196,11 +208,17 @@ fn default_egress_allowed_domains() -> Vec<String> {
         .collect()
 }
 
-fn default_true_config() -> bool { true }
+fn default_true_config() -> bool {
+    true
+}
 
-fn default_egress_violation_threshold() -> u32 { 5 }
+fn default_egress_violation_threshold() -> u32 {
+    5
+}
 
-fn default_egress_violation_window() -> u32 { 10 }
+fn default_egress_violation_window() -> u32 {
+    10
+}
 
 /// Convert gateway config to ghost-egress config.
 pub fn build_egress_config(
@@ -250,7 +268,9 @@ pub struct ConvergenceGatewayConfig {
     pub contacts: Vec<ContactConfig>,
 }
 
-fn default_profile() -> String { "standard".into() }
+fn default_profile() -> String {
+    "standard".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorConfig {
@@ -271,7 +291,9 @@ impl Default for MonitorConfig {
     }
 }
 
-fn default_monitor_address() -> String { "127.0.0.1:18790".into() }
+fn default_monitor_address() -> String {
+    "127.0.0.1:18790".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContactConfig {
@@ -289,11 +311,17 @@ pub struct SecurityConfig {
 }
 
 /// WP7-B: WebSocket broadcast channel capacity.
-fn default_ws_broadcast_capacity() -> usize { 1024 }
+fn default_ws_broadcast_capacity() -> usize {
+    1024
+}
 /// WP7-C: WebSocket event replay buffer size.
-fn default_ws_replay_buffer_size() -> usize { 1000 }
+fn default_ws_replay_buffer_size() -> usize {
+    1000
+}
 
-fn default_soul_drift_threshold() -> f64 { 0.15 }
+fn default_soul_drift_threshold() -> f64 {
+    0.15
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelsConfig {
@@ -347,9 +375,15 @@ pub struct WebSearchToolConfig {
     pub max_results: usize,
 }
 
-fn default_search_backend() -> String { "searxng".into() }
-fn default_searxng_url() -> String { "http://localhost:8888".into() }
-fn default_search_max_results() -> usize { 5 }
+fn default_search_backend() -> String {
+    "searxng".into()
+}
+fn default_searxng_url() -> String {
+    "http://localhost:8888".into()
+}
+fn default_search_max_results() -> usize {
+    5
+}
 
 impl Default for WebSearchToolConfig {
     fn default() -> Self {
@@ -374,8 +408,12 @@ pub struct WebFetchToolConfig {
     pub timeout_secs: u64,
 }
 
-fn default_fetch_max_bytes() -> u64 { 1_048_576 }
-fn default_fetch_timeout() -> u64 { 15 }
+fn default_fetch_max_bytes() -> u64 {
+    1_048_576
+}
+fn default_fetch_timeout() -> u64 {
+    15
+}
 
 impl Default for WebFetchToolConfig {
     fn default() -> Self {
@@ -398,7 +436,10 @@ pub struct HttpRequestToolConfig {
 
 impl Default for HttpRequestToolConfig {
     fn default() -> Self {
-        Self { allow_http: false, allowed_domains: vec![] }
+        Self {
+            allow_http: false,
+            allowed_domains: vec![],
+        }
     }
 }
 
@@ -411,7 +452,9 @@ pub struct ShellToolOverrides {
     pub timeout_secs: u64,
 }
 
-fn default_shell_timeout() -> u64 { 30 }
+fn default_shell_timeout() -> u64 {
+    30
+}
 
 /// Secrets infrastructure configuration (Phase 10).
 ///
@@ -502,8 +545,12 @@ impl Default for MeshConfig {
     }
 }
 
-fn default_min_trust() -> f64 { 0.3 }
-fn default_max_delegation_depth() -> u32 { 3 }
+fn default_min_trust() -> f64 {
+    0.3
+}
+fn default_max_delegation_depth() -> u32 {
+    3
+}
 
 /// A known agent for mesh discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -541,16 +588,14 @@ pub fn build_secret_provider(
                         "secrets.provider is 'vault' but secrets.vault section is missing".into(),
                     )
                 })?;
-                let token_value = std::env::var(&vault_cfg.token_env).map_err(|_| {
-                    ConfigError::EnvVarNotFound(vault_cfg.token_env.clone())
-                })?;
+                let token_value = std::env::var(&vault_cfg.token_env)
+                    .map_err(|_| ConfigError::EnvVarNotFound(vault_cfg.token_env.clone()))?;
                 let token = ghost_secrets::SecretString::from(token_value);
-                let provider = ghost_secrets::VaultProvider::new(
-                    &vault_cfg.endpoint,
-                    &vault_cfg.mount,
-                    token,
-                )
-                .map_err(|e| ConfigError::ValidationError(format!("Vault provider init: {e}")))?;
+                let provider =
+                    ghost_secrets::VaultProvider::new(&vault_cfg.endpoint, &vault_cfg.mount, token)
+                        .map_err(|e| {
+                            ConfigError::ValidationError(format!("Vault provider init: {e}"))
+                        })?;
                 Ok(Box::new(provider))
             }
             #[cfg(not(feature = "vault"))]
@@ -602,52 +647,72 @@ impl GhostConfig {
         }
         let raw = std::fs::read_to_string(path)?;
         let substituted = substitute_env_vars(&raw)?;
-        let config: GhostConfig =
-            serde_yaml::from_str(&substituted).map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        let config: GhostConfig = serde_yaml::from_str(&substituted)
+            .map_err(|e| ConfigError::ParseError(e.to_string()))?;
         config.validate()?;
         Ok(config)
     }
 
-    /// Load from default locations:
-    /// CLI arg > env > ~/.ghost/config/ghost.yml > ./ghost.yml > <exe_dir>/ghost.yml
-    pub fn load_default(cli_path: Option<&str>) -> Result<Self, ConfigError> {
+    /// Resolve the preferred config path:
+    /// CLI arg > env > ~/.ghost/config/ghost.yml > ./ghost.yml > <exe_dir>/ghost.yml.
+    ///
+    /// If no file exists yet, this returns the home config path as the default
+    /// creation target.
+    pub fn default_path(cli_path: Option<&str>) -> PathBuf {
         if let Some(p) = cli_path {
-            return Self::load(Path::new(p));
+            return PathBuf::from(p);
         }
         if let Ok(p) = std::env::var("GHOST_CONFIG") {
-            return Self::load(Path::new(&p));
+            return PathBuf::from(p);
         }
-        let home_config = PathBuf::from(crate::bootstrap::shellexpand_tilde("~/.ghost/config/ghost.yml"));
+
+        let home_config = PathBuf::from(crate::bootstrap::shellexpand_tilde(
+            "~/.ghost/config/ghost.yml",
+        ));
         if home_config.exists() {
-            return Self::load(&home_config);
+            return home_config;
         }
-        let local = Path::new("ghost.yml");
+
+        let local = PathBuf::from("ghost.yml");
         if local.exists() {
-            return Self::load(local);
+            return local;
         }
-        // Fallback: check relative to the executable's directory (handles cwd != project root,
-        // e.g. when launched by Tauri with cwd set to dashboard/).
+
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {
-                // Check exe_dir itself (e.g. target/release/ghost.yml — unlikely but possible).
                 let beside_exe = exe_dir.join("ghost.yml");
                 if beside_exe.exists() {
-                    return Self::load(&beside_exe);
+                    return beside_exe;
                 }
-                // Walk up from exe dir to find a project root containing ghost.yml.
-                // Typically exe is at <project>/target/release/ghost, so ../../ghost.yml.
+
                 let mut ancestor = exe_dir.to_path_buf();
                 for _ in 0..3 {
                     if let Some(parent) = ancestor.parent() {
                         ancestor = parent.to_path_buf();
                         let candidate = ancestor.join("ghost.yml");
                         if candidate.exists() {
-                            return Self::load(&candidate);
+                            return candidate;
                         }
                     }
                 }
             }
         }
+
+        home_config
+    }
+
+    /// Load from default locations:
+    /// CLI arg > env > ~/.ghost/config/ghost.yml > ./ghost.yml > <exe_dir>/ghost.yml
+    pub fn load_default(cli_path: Option<&str>) -> Result<Self, ConfigError> {
+        if cli_path.is_some() || std::env::var("GHOST_CONFIG").is_ok() {
+            return Self::load(&Self::default_path(cli_path));
+        }
+
+        let path = Self::default_path(None);
+        if path.exists() {
+            return Self::load(&path);
+        }
+
         // Return default config if no file found
         Ok(GhostConfig::default())
     }
@@ -712,4 +777,3 @@ fn substitute_env_vars(input: &str) -> Result<String, ConfigError> {
     }
     Ok(result)
 }
-
