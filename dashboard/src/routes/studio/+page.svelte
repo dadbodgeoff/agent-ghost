@@ -21,7 +21,7 @@
   let artifacts = $state<Artifact[]>([]);
   let showArtifacts = $state(false);
   let chatAreaHeight = $state(0);
-  let studioInputRef: StudioInput;
+  let studioInputRef = $state<StudioInput | null>(null);
 
   // WP9-G: Auth expiry detection.
   let authExpiryWarning = $state(false);
@@ -125,7 +125,7 @@
   }
 </script>
 
-<div class="studio-page">
+<div class="studio-page" class:has-artifacts={artifacts.length > 0}>
   <!-- Session Sidebar -->
   <aside class="session-sidebar">
     <div class="sidebar-header">
@@ -334,7 +334,7 @@
     height: calc(100vh - 80px);
     overflow: hidden;
   }
-  .studio-page:has(.artifact-panel) {
+  .studio-page.has-artifacts {
     grid-template-columns: 260px 1fr minmax(300px, 35%);
   }
 

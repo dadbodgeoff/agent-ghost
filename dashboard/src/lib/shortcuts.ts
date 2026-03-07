@@ -8,7 +8,9 @@
  * the matching context is active.
  */
 
-const isTauri = typeof window !== 'undefined' && !!window.__TAURI__;
+import { isTauriEnvironment } from '$lib/platform/runtime';
+
+const isTauri = isTauriEnvironment();
 
 export interface ShortcutBinding {
   key: string;          // e.g., "cmd+shift+k"

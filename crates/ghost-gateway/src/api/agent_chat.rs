@@ -18,12 +18,18 @@ use ghost_llm::provider::{AnthropicProvider, GeminiProvider, OllamaProvider, Ope
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::websocket::WsEvent;
 use crate::config::ProviderConfig;
+use crate::runtime_safety::{
+    RuntimeSafetyBuilder, RuntimeSafetyContext, RuntimeSafetyError, RunnerBuildOptions,
+    API_SYNTHETIC_AGENT_NAME,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct AgentChatRequest {
     /// User message.
     pub message: String,
+    /// Optional durable agent identity (UUID or registered agent name).
+    pub agent_id: Option<String>,
     /// Optional session ID for multi-turn conversations.
     pub session_id: Option<Uuid>,
     /// Optional model override.
@@ -164,54 +170,22 @@ pub async fn agent_chat(
         ));
     }
 
-    // 1. Build AgentRunner
-    let mut runner = ghost_agent_loop::runner::AgentRunner::new(128_000);
-    ghost_agent_loop::tools::executor::register_builtin_tools(&mut runner.tool_registry);
+    let builder = RuntimeSafetyBuilder::new(&state);
+    let agent = builder
+        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
+        .map_err(map_runtime_safety_error)?;
+    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
+    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
+    let mut runner = builder
+        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
+        .map_err(map_runtime_safety_error)?;
 
-    // 2. Wire DB from AppState (legacy Mutex<Connection> for agent loop)
-    runner.db = state.db.legacy_connection().ok();
-
-    // 3. Configure filesystem tool with current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        runner.tool_executor.set_workspace_root(cwd);
-    }
-
-    // 3b. Apply tool configurations from ghost.yml.
-    crate::api::apply_tool_configs(&mut runner.tool_executor, &state.tools_config);
-
-    // 4. Load SOUL.md (L2)
-    let soul_path = crate::bootstrap::ghost_home().join("config").join("SOUL.md");
-    if let Ok(content) = std::fs::read_to_string(&soul_path) {
-        if !content.is_empty() {
-            runner.soul_identity = content;
-        }
-    }
-
-    // 5. Build environment context (L4)
-    runner.environment = ghost_agent_loop::context::environment::build_environment_context(
-        std::env::current_dir().ok().as_deref(),
-    );
-
-    // 6. Wire skills via SkillBridge (legacy Mutex<Connection> for skill bridge)
-    let legacy_db = state.db.legacy_connection()
-        .map_err(|e| crate::api::error::ApiError::internal(format!("db pool: {e}")))?;
-    let bridge = ghost_agent_loop::tools::skill_bridge::SkillBridge::new(
-        Arc::clone(&state.safety_skills),
-        legacy_db,
-        state.convergence_profile.clone(),
-    );
-    ghost_agent_loop::tools::skill_bridge::register_skills(&bridge, &mut runner.tool_registry, None);
-    runner.tool_executor.set_skill_bridge(bridge);
-
-    // 7. Build LLM fallback chain from configured providers
+    // 1. Build LLM fallback chain from configured providers
     let mut fallback_chain = build_fallback_chain_from_providers(&state.model_providers);
 
-    // 8. Run pre_loop + run_turn
-    let agent_id = Uuid::now_v7();
-    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
-
+    // 2. Run pre_loop + run_turn
     let mut ctx = runner
-        .pre_loop(agent_id, session_id, "api", &req.message)
+        .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "api", &req.message)
         .await
         .map_err(|e| ApiError::internal(format!("agent pre-loop failed: {e}")))?;
 
@@ -247,40 +221,17 @@ pub async fn agent_chat_stream(
         ));
     }
 
-    // 1. Build AgentRunner (same setup as blocking endpoint)
-    let mut runner = ghost_agent_loop::runner::AgentRunner::new(128_000);
-    ghost_agent_loop::tools::executor::register_builtin_tools(&mut runner.tool_registry);
-    runner.db = state.db.legacy_connection().ok();
-
-    if let Ok(cwd) = std::env::current_dir() {
-        runner.tool_executor.set_workspace_root(cwd);
-    }
-    crate::api::apply_tool_configs(&mut runner.tool_executor, &state.tools_config);
-
-    let soul_path = crate::bootstrap::ghost_home().join("config").join("SOUL.md");
-    if let Ok(content) = std::fs::read_to_string(&soul_path) {
-        if !content.is_empty() {
-            runner.soul_identity = content;
-        }
-    }
-
-    runner.environment = ghost_agent_loop::context::environment::build_environment_context(
-        std::env::current_dir().ok().as_deref(),
-    );
-
-    let legacy_db = state.db.legacy_connection()
-        .map_err(|e| ApiError::internal(format!("db pool: {e}")))?;
-    let bridge = ghost_agent_loop::tools::skill_bridge::SkillBridge::new(
-        Arc::clone(&state.safety_skills),
-        legacy_db,
-        state.convergence_profile.clone(),
-    );
-    ghost_agent_loop::tools::skill_bridge::register_skills(&bridge, &mut runner.tool_registry, None);
-    runner.tool_executor.set_skill_bridge(bridge);
+    let builder = RuntimeSafetyBuilder::new(&state);
+    let agent = builder
+        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
+        .map_err(map_runtime_safety_error)?;
+    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
+    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
+    let mut runner = builder
+        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
+        .map_err(map_runtime_safety_error)?;
 
     // 2. IDs
-    let agent_id = Uuid::now_v7();
-    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
     let session_id_str = session_id.to_string();
     let message_id = Uuid::now_v7().to_string();
 
@@ -295,7 +246,10 @@ pub async fn agent_chat_stream(
     tokio::spawn(async move {
         let tx_timeout = tx.clone();
         let turn_result = tokio::time::timeout(std::time::Duration::from_secs(300), async move {
-            let mut ctx = match runner.pre_loop(agent_id, session_id, "api", &user_message).await {
+            let mut ctx = match runner
+                .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "api", &user_message)
+                .await
+            {
                 Ok(ctx) => ctx,
                 Err(e) => {
                     let _ = tx.send(AgentStreamEvent::Error {
@@ -523,4 +477,11 @@ pub async fn agent_chat_stream(
             .interval(std::time::Duration::from_secs(15))
             .text("ping"),
     ))
+}
+
+fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
+    match error {
+        RuntimeSafetyError::AgentNotFound(message) => ApiError::bad_request(message),
+        _ => ApiError::internal(error.to_string()),
+    }
 }

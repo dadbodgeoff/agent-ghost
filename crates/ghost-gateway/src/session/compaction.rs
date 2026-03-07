@@ -114,17 +114,17 @@ pub struct SessionCompactor {
     config: CompactionConfig,
     /// Injected FlushExecutor to break circular dependency (A34 Gap 2).
     /// When set, Phase 2 (memory flush) uses this executor.
-    flush_executor: Option<Arc<dyn FlushExecutor>>,
+    _flush_executor: Option<Arc<dyn FlushExecutor>>,
 }
 
 impl SessionCompactor {
     pub fn new(config: CompactionConfig) -> Self {
-        Self { config, flush_executor: None }
+        Self { config, _flush_executor: None }
     }
 
     /// Create with an injected FlushExecutor for memory flush phase.
     pub fn with_flush_executor(config: CompactionConfig, executor: Arc<dyn FlushExecutor>) -> Self {
-        Self { config, flush_executor: Some(executor) }
+        Self { config, _flush_executor: Some(executor) }
     }
 
     /// Check if compaction should trigger.
@@ -330,6 +330,6 @@ impl SessionCompactor {
 
 impl Default for SessionCompactor {
     fn default() -> Self {
-        Self { config: CompactionConfig::default(), flush_executor: None }
+        Self { config: CompactionConfig::default(), _flush_executor: None }
     }
 }

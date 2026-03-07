@@ -15,7 +15,7 @@ pub struct DiscordAdapter {
     /// Channel ID for outbound messages (set from last received message).
     last_channel_id: Option<String>,
     /// Bot's own user ID (set after READY event).
-    bot_user_id: Option<String>,
+    _bot_user_id: Option<String>,
 }
 
 impl DiscordAdapter {
@@ -24,7 +24,7 @@ impl DiscordAdapter {
             connected: false,
             bot_token: bot_token.into(),
             last_channel_id: None,
-            bot_user_id: None,
+            _bot_user_id: None,
         }
     }
 }

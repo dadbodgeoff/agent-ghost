@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[derive(Debug, Error)]
 pub enum ValidationError {
     #[error("missing required field: {field}")]
+    #[allow(dead_code)]
     MissingField { field: String },
 
     #[error("clock skew: event timestamp {event_time} is {skew_secs}s in the future (max {max_secs}s)")]
@@ -32,6 +33,7 @@ pub enum ValidationError {
     EmptySessionId,
 
     #[error("malformed event: {reason}")]
+    #[allow(dead_code)]
     Malformed { reason: String },
 }
 

@@ -146,7 +146,15 @@
 
 {#if confirmSkill}
   <div class="confirm-overlay" onclick={() => (confirmSkill = null)} role="presentation">
-    <div class="confirm-dialog" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Review capabilities">
+    <div
+      class="confirm-dialog"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
+      role="dialog"
+      tabindex="-1"
+      aria-modal="true"
+      aria-label="Review capabilities"
+    >
       <h2>Review Capabilities</h2>
       <p>The skill <strong>{confirmSkill.name}</strong> requests the following capabilities:</p>
       <div class="capability-list">

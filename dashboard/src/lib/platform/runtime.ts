@@ -13,7 +13,7 @@ export interface RuntimePlatform {
 
 let runtimePromise: Promise<RuntimePlatform> | null = null;
 
-function isTauriEnvironment(): boolean {
+export function isTauriEnvironment(): boolean {
   return typeof window !== 'undefined' && '__TAURI__' in window;
 }
 

@@ -34,6 +34,8 @@
     barWidth: number;
   }
 
+  let selectedSpanId = $state<string | null>(null);
+
   let rootSpans: SpanNode[] = $derived.by(() => {
     if (spans.length === 0) return [];
 
@@ -148,6 +150,7 @@
         class="span-row"
         class:expanded={expandedIds.has(span.span_id)}
         role="treeitem"
+        aria-selected={selectedSpanId === span.span_id}
         aria-expanded={span.children.length > 0 ? expandedIds.has(span.span_id) : undefined}
         aria-level={span.depth + 1}
         style="padding-left: {span.depth * 20 + 8}px"

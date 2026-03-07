@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use crate::{BackupError, BackupManifest, BackupResult, ManifestEntry};
+use crate::{BackupError, BackupManifest, BackupResult};
 
 /// Imports and restores from a `.ghost-backup` archive.
 pub struct BackupImporter {
@@ -19,7 +19,7 @@ impl BackupImporter {
     }
 
     /// Import from a backup archive, verifying integrity.
-    pub fn import(&self, archive_path: &Path, passphrase: &str) -> BackupResult<BackupManifest> {
+    pub fn import(&self, archive_path: &std::path::Path, passphrase: &str) -> BackupResult<BackupManifest> {
         let encrypted = fs::read(archive_path)?;
 
         // Decrypt

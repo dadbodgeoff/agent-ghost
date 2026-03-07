@@ -18,6 +18,7 @@ pub struct SessionState {
 }
 
 /// Provisional tracking for unknown agents (Req 9 AC10).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ProvisionalAgent {
     session_count: u32,
@@ -31,8 +32,10 @@ pub struct SessionRegistry {
     /// Agent → active session IDs (supports overlapping sessions, AC11).
     agent_sessions: BTreeMap<Uuid, Vec<Uuid>>,
     /// Provisional tracking for unknown agents (AC10).
+    #[allow(dead_code)]
     provisional: BTreeMap<Uuid, ProvisionalAgent>,
     /// Max provisional sessions before dropping (default 3).
+    #[allow(dead_code)]
     max_provisional: u32,
 }
 
@@ -103,11 +106,13 @@ impl SessionRegistry {
     }
 
     /// Check if an agent is provisionally tracked (unknown agent, AC10).
+    #[allow(dead_code)]
     pub fn is_provisional(&self, agent_id: &Uuid) -> bool {
         self.provisional.contains_key(agent_id)
     }
 
     /// Register a provisional agent. Returns false if max sessions exceeded.
+    #[allow(dead_code)]
     pub fn register_provisional(&mut self, agent_id: Uuid, now: DateTime<Utc>) -> bool {
         let entry = self.provisional.entry(agent_id).or_insert(ProvisionalAgent {
             session_count: 0,
@@ -118,6 +123,7 @@ impl SessionRegistry {
     }
 
     /// Get a session by ID.
+    #[allow(dead_code)]
     pub fn get_session(&self, session_id: &Uuid) -> Option<&SessionState> {
         self.sessions.get(session_id)
     }

@@ -7,6 +7,13 @@
     goto(tab.href);
   }
 
+  function handleActivateKeydown(e: KeyboardEvent, tab: Tab) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      activate(tab);
+    }
+  }
+
   function close(e: MouseEvent, tab: Tab) {
     e.stopPropagation();
     const wasActive = tabStore.activeId === tab.id;
@@ -20,22 +27,25 @@
 
 <div class="tab-bar" role="tablist">
   {#each tabStore.tabs as tab (tab.id)}
-    <button
+    <div
       class="tab"
       class:active={tabStore.activeId === tab.id}
       role="tab"
+      tabindex="0"
       aria-selected={tabStore.activeId === tab.id}
       onclick={() => activate(tab)}
+      onkeydown={(e) => handleActivateKeydown(e, tab)}
     >
       <span class="tab-label">{tab.label}</span>
       {#if tab.closable}
         <button
+          type="button"
           class="tab-close"
           aria-label="Close {tab.label}"
           onclick={(e) => close(e, tab)}
         >&times;</button>
       {/if}
-    </button>
+    </div>
   {/each}
 </div>
 

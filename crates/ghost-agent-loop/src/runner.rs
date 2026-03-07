@@ -971,7 +971,7 @@ impl AgentRunner {
         use crate::output_inspector::InspectionResult;
         use crate::proposal::extractor::ProposalExtractor;
         use crate::tools::plan_validator::PlanValidationResult;
-        use ghost_llm::provider::{ChatMessage, LLMResponse, LLMToolCall, MessageRole};
+        use ghost_llm::provider::{ChatMessage, LLMToolCall, MessageRole};
         use ghost_llm::streaming::StreamChunk;
         use futures::StreamExt;
 
@@ -1127,7 +1127,7 @@ impl AgentRunner {
                     // Pure text — inspect for safety, accumulate, continue loop.
                     let inspection = self.output_inspector.scan(&segment_text, ctx.agent_id);
                     let final_text = match inspection {
-                        InspectionResult::KillAll { pattern_name, .. } => {
+                        InspectionResult::KillAll { pattern_name: _, .. } => {
                             self.kill_switch.store(true, Ordering::SeqCst);
                             result.halted_by = Some("credential_exfiltration".into());
                             result.total_tokens = ctx.total_tokens;

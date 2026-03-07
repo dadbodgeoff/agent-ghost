@@ -5,6 +5,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+const DURABLE_AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x6ba7b812_9dad_11d1_80b4_00c04fd430c8);
+
+pub fn durable_agent_id(name: &str) -> Uuid {
+    Uuid::new_v5(&DURABLE_AGENT_NAMESPACE, name.as_bytes())
+}
+
 /// Agent lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentLifecycleState {
@@ -81,6 +87,13 @@ impl AgentRegistry {
 
     pub fn lookup_by_id_mut(&mut self, id: Uuid) -> Option<&mut RegisteredAgent> {
         self.agents_by_id.get_mut(&id)
+    }
+
+    pub fn default_agent(&self) -> Option<&RegisteredAgent> {
+        self.name_to_id
+            .values()
+            .next()
+            .and_then(|id| self.agents_by_id.get(id))
     }
 
     pub fn all_agents(&self) -> Vec<&RegisteredAgent> {

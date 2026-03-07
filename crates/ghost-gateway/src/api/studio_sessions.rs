@@ -24,12 +24,17 @@ use ghost_agent_loop::runner::AgentStreamEvent;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::websocket::WsEvent;
+use crate::runtime_safety::{
+    parse_or_stable_uuid, RuntimeSafetyBuilder, RuntimeSafetyContext, RuntimeSafetyError,
+    RunnerBuildOptions, STUDIO_SYNTHETIC_AGENT_NAME,
+};
 use crate::state::AppState;
 
 // ── Request / Response types ───────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
+    pub agent_id: Option<String>,
     pub title: Option<String>,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
@@ -40,6 +45,7 @@ pub struct CreateSessionRequest {
 #[derive(Debug, Serialize)]
 pub struct SessionResponse {
     pub id: String,
+    pub agent_id: String,
     pub title: String,
     pub model: String,
     pub system_prompt: String,
@@ -125,6 +131,10 @@ pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> ApiResult<SessionResponse> {
+    let builder = RuntimeSafetyBuilder::new(&state);
+    let agent = builder
+        .resolve_agent(req.agent_id.as_deref(), STUDIO_SYNTHETIC_AGENT_NAME)
+        .map_err(map_runtime_safety_error)?;
     let id = Uuid::now_v7().to_string();
     let title = req.title.unwrap_or_else(|| "New Chat".into());
     let model = req.model.unwrap_or_else(|| "qwen3.5:9b".into());
@@ -135,13 +145,21 @@ pub async fn create_session(
     {
         let db = state.db.write().await;
         cortex_storage::queries::studio_chat_queries::create_session(
-            &db, &id, &title, &model, &system_prompt, temperature, max_tokens,
+            &db,
+            &id,
+            &agent.id.to_string(),
+            &title,
+            &model,
+            &system_prompt,
+            temperature,
+            max_tokens,
         )
         .map_err(|e| ApiError::db_error("create_session", e))?;
     }
 
     Ok(Json(SessionResponse {
         id,
+        agent_id: agent.id.to_string(),
         title,
         model,
         system_prompt,
@@ -277,13 +295,16 @@ pub async fn send_message(
             .ok_or_else(|| ApiError::not_found(format!("session {session_id} not found")))?
     };
 
-    let agent_id = Uuid::now_v7();
-    let runner_session_id = Uuid::now_v7();
+    let builder = RuntimeSafetyBuilder::new(&state);
+    let agent = builder
+        .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
+        .map_err(map_runtime_safety_error)?;
+    let runtime_session_id = parse_or_stable_uuid(&session_id, "studio-session");
     let user_msg_id = Uuid::now_v7().to_string();
 
     // 2. Run OutputInspector on user input (before DB write to avoid orphans).
     let inspector = OutputInspector::new();
-    let input_inspection = inspector.scan(&req.content, agent_id);
+    let input_inspection = inspector.scan(&req.content, agent.id);
     let user_safety_status = match &input_inspection {
         InspectionResult::Clean => "clean",
         InspectionResult::Warning { .. } => "warning",
@@ -344,50 +365,7 @@ pub async fn send_message(
         ));
     }
 
-    // 4. Build AgentRunner with full tool/skill wiring (mirrors agent_chat.rs).
-    let mut runner = ghost_agent_loop::runner::AgentRunner::new(128_000);
-    ghost_agent_loop::tools::executor::register_builtin_tools(&mut runner.tool_registry);
-
-    // Wire DB (legacy Mutex<Connection> for agent loop).
-    runner.db = state.db.legacy_connection().ok();
-
-    // Configure filesystem tool with cwd.
-    if let Ok(cwd) = std::env::current_dir() {
-        runner.tool_executor.set_workspace_root(cwd);
-    }
-
-    // Apply tool configurations from ghost.yml.
-    crate::api::apply_tool_configs(&mut runner.tool_executor, &state.tools_config);
-
-    // Load SOUL.md (L2) — or use session's custom system prompt.
-    if !session.system_prompt.is_empty() {
-        runner.soul_identity = session.system_prompt.clone();
-    } else {
-        let soul_path = crate::bootstrap::ghost_home().join("config").join("SOUL.md");
-        if let Ok(content) = std::fs::read_to_string(&soul_path) {
-            if !content.is_empty() {
-                runner.soul_identity = content;
-            }
-        }
-    }
-
-    // Build environment context (L4).
-    runner.environment = ghost_agent_loop::context::environment::build_environment_context(
-        std::env::current_dir().ok().as_deref(),
-    );
-
-    // Wire skills via SkillBridge (legacy Mutex<Connection> for skill bridge).
-    let legacy_db = state.db.legacy_connection()
-        .map_err(|e| crate::api::error::ApiError::internal(format!("db pool: {e}")))?;
-    let bridge = ghost_agent_loop::tools::skill_bridge::SkillBridge::new(
-        Arc::clone(&state.safety_skills),
-        legacy_db,
-        state.convergence_profile.clone(),
-    );
-    ghost_agent_loop::tools::skill_bridge::register_skills(&bridge, &mut runner.tool_registry, None);
-    runner.tool_executor.set_skill_bridge(bridge);
-
-    // 5. Inject conversation history for multi-turn.
+    // 4. Build AgentRunner with the canonical runtime safety builder.
     // Exclude the just-inserted user message (last in history) — it's sent as the user_message param.
     let history_cutoff: Vec<_> = if !history.is_empty() && history.last().map(|m| m.id.as_str()) == Some(&user_msg_id) {
         history[..history.len() - 1].to_vec()
@@ -395,26 +373,23 @@ pub async fn send_message(
         history
     };
 
-    for msg in &history_cutoff {
-        let role = match msg.role.as_str() {
-            "user" => ghost_llm::provider::MessageRole::User,
-            "assistant" => ghost_llm::provider::MessageRole::Assistant,
-            "system" => ghost_llm::provider::MessageRole::System,
-            _ => ghost_llm::provider::MessageRole::User,
-        };
-        runner.conversation_history.push(ghost_llm::provider::ChatMessage {
-            role,
-            content: msg.content.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-        });
-    }
+    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
+    let mut runner = builder
+        .build_live_runner(
+            &runtime_ctx,
+            RunnerBuildOptions {
+                system_prompt: Some(session.system_prompt.clone()),
+                conversation_history: build_conversation_history(&history_cutoff),
+                skill_allowlist: None,
+            },
+        )
+        .map_err(map_runtime_safety_error)?;
 
-    // 6. Build LLM fallback chain and run the agent turn.
+    // 5. Build LLM fallback chain and run the agent turn.
     let mut fallback_chain = super::agent_chat::build_fallback_chain_from_providers(&state.model_providers);
 
     let mut ctx = runner
-        .pre_loop(agent_id, runner_session_id, "studio", &req.content)
+        .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "studio", &req.content)
         .await
         .map_err(|e| ApiError::internal(format!("agent pre-loop failed: {e}")))?;
 
@@ -429,7 +404,7 @@ pub async fn send_message(
     // 7. Determine output safety status.
     // The AgentRunner's OutputInspector already scanned the output.
     // We do a secondary scan here for audit logging.
-    let output_inspection = inspector.scan(&response_content, agent_id);
+    let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
     let output_safety_status = match &output_inspection {
         InspectionResult::Clean => "clean",
         InspectionResult::Warning { .. } => "warning",
@@ -539,14 +514,17 @@ pub async fn send_message_stream(
             .ok_or_else(|| ApiError::not_found(format!("session {session_id} not found")))?
     };
 
-    let agent_id = Uuid::now_v7();
-    let runner_session_id = Uuid::now_v7();
+    let builder = RuntimeSafetyBuilder::new(&state);
+    let agent = builder
+        .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
+        .map_err(map_runtime_safety_error)?;
+    let runtime_session_id = parse_or_stable_uuid(&session_id, "studio-session");
     let user_msg_id = Uuid::now_v7().to_string();
     let assistant_msg_id = Uuid::now_v7().to_string();
 
     // 2. Run OutputInspector on user input (before DB write to avoid orphans).
     let inspector = OutputInspector::new();
-    let input_inspection = inspector.scan(&req.content, agent_id);
+    let input_inspection = inspector.scan(&req.content, agent.id);
     let user_safety_status = match &input_inspection {
         InspectionResult::Clean => "clean",
         InspectionResult::Warning { .. } => "warning",
@@ -607,67 +585,26 @@ pub async fn send_message_stream(
         ));
     }
 
-    // 4. Build AgentRunner with full tool/skill wiring.
-    let mut runner = ghost_agent_loop::runner::AgentRunner::new(128_000);
-    ghost_agent_loop::tools::executor::register_builtin_tools(&mut runner.tool_registry);
-
-    runner.db = state.db.legacy_connection().ok();
-
-    if let Ok(cwd) = std::env::current_dir() {
-        runner.tool_executor.set_workspace_root(cwd);
-    }
-
-    // Apply tool configurations from ghost.yml.
-    crate::api::apply_tool_configs(&mut runner.tool_executor, &state.tools_config);
-
-    if !session.system_prompt.is_empty() {
-        runner.soul_identity = session.system_prompt.clone();
-    } else {
-        let soul_path = crate::bootstrap::ghost_home().join("config").join("SOUL.md");
-        if let Ok(content) = std::fs::read_to_string(&soul_path) {
-            if !content.is_empty() {
-                runner.soul_identity = content;
-            }
-        }
-    }
-
-    runner.environment = ghost_agent_loop::context::environment::build_environment_context(
-        std::env::current_dir().ok().as_deref(),
-    );
-
-    let legacy_db = state.db.legacy_connection()
-        .map_err(|e| crate::api::error::ApiError::internal(format!("db pool: {e}")))?;
-    let bridge = ghost_agent_loop::tools::skill_bridge::SkillBridge::new(
-        Arc::clone(&state.safety_skills),
-        legacy_db,
-        state.convergence_profile.clone(),
-    );
-    ghost_agent_loop::tools::skill_bridge::register_skills(&bridge, &mut runner.tool_registry, None);
-    runner.tool_executor.set_skill_bridge(bridge);
-
-    // 5. Inject conversation history for multi-turn.
+    // 4. Build AgentRunner with the canonical runtime safety builder.
     let history_cutoff: Vec<_> = if !history.is_empty() && history.last().map(|m| m.id.as_str()) == Some(&user_msg_id) {
         history[..history.len() - 1].to_vec()
     } else {
         history
     };
 
-    for msg in &history_cutoff {
-        let role = match msg.role.as_str() {
-            "user" => ghost_llm::provider::MessageRole::User,
-            "assistant" => ghost_llm::provider::MessageRole::Assistant,
-            "system" => ghost_llm::provider::MessageRole::System,
-            _ => ghost_llm::provider::MessageRole::User,
-        };
-        runner.conversation_history.push(ghost_llm::provider::ChatMessage {
-            role,
-            content: msg.content.clone(),
-            tool_calls: None,
-            tool_call_id: None,
-        });
-    }
+    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
+    let mut runner = builder
+        .build_live_runner(
+            &runtime_ctx,
+            RunnerBuildOptions {
+                system_prompt: Some(session.system_prompt.clone()),
+                conversation_history: build_conversation_history(&history_cutoff),
+                skill_allowlist: None,
+            },
+        )
+        .map_err(map_runtime_safety_error)?;
 
-    // 6. Collect all configured providers for fallback (WP2-A).
+    // 5. Collect all configured providers for fallback (WP2-A).
     let all_providers = state.model_providers.clone();
 
     // 7. Create channel for streaming events.
@@ -685,7 +622,7 @@ pub async fn send_message_stream(
         let tx_timeout = tx.clone();
         let turn_result = tokio::time::timeout(std::time::Duration::from_secs(300), async move {
         let mut ctx = match runner
-            .pre_loop(agent_id, runner_session_id, "studio", &user_content)
+            .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "studio", &user_content)
             .await
         {
             Ok(ctx) => ctx,
@@ -757,7 +694,7 @@ pub async fn send_message_stream(
 
                 // Determine output safety status.
                 let inspector = OutputInspector::new();
-                let output_inspection = inspector.scan(&response_content, agent_id);
+                let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
                 let output_safety_status = match &output_inspection {
                     InspectionResult::Clean => "clean",
                     InspectionResult::Warning { .. } => "warning",
@@ -1128,6 +1065,7 @@ fn session_row_to_response(
 ) -> SessionResponse {
     SessionResponse {
         id: row.id,
+        agent_id: row.agent_id,
         title: row.title,
         model: row.model,
         system_prompt: row.system_prompt,
@@ -1148,6 +1086,32 @@ fn message_row_to_response(
         token_count: row.token_count,
         safety_status: row.safety_status,
         created_at: row.created_at,
+    }
+}
+
+fn build_conversation_history(
+    history: &[cortex_storage::queries::studio_chat_queries::StudioMessageRow],
+) -> Vec<ghost_llm::provider::ChatMessage> {
+    history
+        .iter()
+        .map(|msg| ghost_llm::provider::ChatMessage {
+            role: match msg.role.as_str() {
+                "user" => ghost_llm::provider::MessageRole::User,
+                "assistant" => ghost_llm::provider::MessageRole::Assistant,
+                "system" => ghost_llm::provider::MessageRole::System,
+                _ => ghost_llm::provider::MessageRole::User,
+            },
+            content: msg.content.clone(),
+            tool_calls: None,
+            tool_call_id: None,
+        })
+        .collect()
+}
+
+fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
+    match error {
+        RuntimeSafetyError::AgentNotFound(message) => ApiError::bad_request(message),
+        _ => ApiError::internal(error.to_string()),
     }
 }
 

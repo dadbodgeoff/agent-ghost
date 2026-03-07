@@ -3,8 +3,6 @@
 //! The agent interacts with OAuth connections via opaque ref_ids.
 //! Raw tokens are NEVER exposed — the broker handles token injection.
 
-use std::sync::Arc;
-
 use ghost_llm::provider::ToolSchema;
 
 use super::registry::RegisteredTool;

@@ -21,14 +21,18 @@ pub enum SignalFrequencyTier {
     EveryMessage,
     Every5thMessage,
     SessionBoundary,
+    #[allow(dead_code)]
     Every5Minutes,
+    #[allow(dead_code)]
     Every15Minutes,
 }
 
 /// What triggered the computation check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComputeTrigger {
+    #[allow(dead_code)]
     MessageReceived,
+    #[allow(dead_code)]
     SessionBoundary,
     Timer5Min,
     Timer15Min,
@@ -146,6 +150,7 @@ impl SignalScheduler {
     }
 
     /// Get the message count for an agent.
+    #[allow(dead_code)]
     pub fn message_count(&self, agent_id: Uuid) -> u64 {
         self.message_counter.get(&agent_id).copied().unwrap_or(0)
     }

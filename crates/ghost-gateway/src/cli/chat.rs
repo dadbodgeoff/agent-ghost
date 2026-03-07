@@ -371,7 +371,19 @@ async fn run_interactive_chat_inner() {
     // Build fallback chain from ghost.yml config / environment variables.
     let mut fallback_chain = build_fallback_chain();
 
-    let agent_id = Uuid::now_v7();
+    let cli_agent = load_ghost_config().and_then(|cfg| cfg.agents.first().cloned());
+    if let Some(agent) = &cli_agent {
+        runner.spending_cap = agent.spending_cap;
+    }
+
+    let agent_id = cli_agent
+        .as_ref()
+        .map(|agent| crate::agents::registry::durable_agent_id(&agent.name))
+        .unwrap_or_else(|| {
+            crate::agents::registry::durable_agent_id(
+                crate::runtime_safety::CLI_SYNTHETIC_AGENT_NAME,
+            )
+        });
     let session_id = Uuid::now_v7();
 
     loop {

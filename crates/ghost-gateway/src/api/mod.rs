@@ -61,6 +61,7 @@ pub mod error;
 pub mod goals;
 pub mod health;
 pub mod integrity;
+pub mod itp;
 pub mod kill_fanout;
 pub mod marketplace;
 pub mod memory;

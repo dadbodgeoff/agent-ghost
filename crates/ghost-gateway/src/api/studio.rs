@@ -53,11 +53,11 @@ pub async fn run_prompt(
     }
 
     let model = req.model.unwrap_or_else(|| "claude-sonnet-4-6".to_string());
-    let temperature = req.temperature.unwrap_or(0.5);
-    let max_tokens = req.max_tokens.unwrap_or(4096);
+    let _temperature = req.temperature.unwrap_or(0.5);
+    let _max_tokens = req.max_tokens.unwrap_or(4096);
 
     // Extract the last user message for simulation
-    let last_user_msg = req
+    let _last_user_msg = req
         .messages
         .iter()
         .rev()
@@ -243,6 +243,7 @@ pub fn build_default_system_prompt() -> String {
 }
 
 /// Truncate a string to at most `max_bytes` without splitting a UTF-8 codepoint.
+#[allow(dead_code)]
 fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;

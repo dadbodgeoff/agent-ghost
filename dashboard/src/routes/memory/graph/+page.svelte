@@ -13,7 +13,7 @@
 
   interface MemoryGraphNode extends ApiMemoryGraphNode, d3.SimulationNodeDatum {}
 
-  let svgEl: SVGSVGElement;
+  let svgEl = $state<SVGSVGElement | null>(null);
   let loading = $state(true);
   let error = $state('');
   let searchQuery = $state('');

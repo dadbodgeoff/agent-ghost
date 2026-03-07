@@ -4,7 +4,7 @@
    * 8-axis radar chart, sparkline trends, agent selector, threshold config.
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import ScoreGauge from '../../components/ScoreGauge.svelte';
   import SignalChart from '../../components/SignalChart.svelte';
@@ -67,9 +67,10 @@
 
   async function loadScores() {
     try {
+      const client = await getGhostClient();
       const [scoreData, healthData] = await Promise.all([
-        api.get<{ scores: AgentScore[] }>('/api/convergence/scores'),
-        api.get<Record<string, any>>('/api/health').catch(() => null),
+        client.convergence.scores(),
+        client.health.check().catch(() => null),
       ]);
       scores = scoreData?.scores ?? [];
 

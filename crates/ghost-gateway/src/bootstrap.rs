@@ -724,7 +724,7 @@ impl GatewayBootstrap {
             }
 
             let registered = crate::agents::registry::RegisteredAgent {
-                id: uuid::Uuid::now_v7(),
+                id: crate::agents::registry::durable_agent_id(&agent.name),
                 name: agent.name.clone(),
                 state: crate::agents::registry::AgentLifecycleState::Starting,
                 channel_bindings: Vec::new(),
@@ -880,6 +880,7 @@ impl GatewayBootstrap {
             .route("/api/a2a/discover", get(crate::api::a2a::discover_agents))
             .route("/api/channels", get(crate::api::channels::list_channels))
             .route("/api/costs", get(crate::api::costs::get_costs))
+            .route("/api/itp/events", get(crate::api::itp::list_events))
             .route("/api/ws", get(crate::api::websocket::ws_handler))
             .route(
                 "/api/oauth/providers",

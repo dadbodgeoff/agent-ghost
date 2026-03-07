@@ -72,6 +72,7 @@ impl SignalComputer {
     }
 
     /// Set a signal value directly (used when receiving computed signals).
+    #[allow(dead_code)]
     pub fn set_signal(&mut self, agent_id: Uuid, signal_index: usize, value: f64) {
         if signal_index < 8 {
             let entry = self.cache.entry(agent_id).or_insert_with(|| SignalCache {

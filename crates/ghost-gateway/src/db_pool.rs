@@ -20,9 +20,6 @@ use tokio::sync::Semaphore;
 
 /// Maximum number of overflow connections allowed beyond the pool.
 const MAX_OVERFLOW_CONNECTIONS: usize = 4;
-/// Timeout for acquiring an overflow permit.
-const OVERFLOW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Read/write separated connection pool for SQLite WAL mode.
 pub struct DbPool {
     writer: TokioMutex<Connection>,

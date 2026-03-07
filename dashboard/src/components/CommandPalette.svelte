@@ -43,6 +43,7 @@
   let selectedIndex = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let mode = $state<'search' | 'commands'>('search');
+  let inputEl = $state<HTMLInputElement | null>(null);
 
   const TYPE_LINKS: Record<string, (id: string) => string> = {
     agent: (id) => `/agents/${id}`,
@@ -203,6 +204,12 @@
     }
   }
 
+  $effect(() => {
+    if (open && inputEl) {
+      requestAnimationFrame(() => inputEl?.focus());
+    }
+  });
+
   function handleInput() {
     if (debounceTimer) clearTimeout(debounceTimer);
 
@@ -319,16 +326,16 @@
 
 {#if open}
   <div class="overlay" onclick={() => open = false} role="presentation">
-    <div class="palette" role="dialog" aria-modal="true" aria-label="Command Palette" onclick={(e) => e.stopPropagation()}>
+    <div class="palette" role="dialog" tabindex="-1" aria-modal="true" aria-label="Command Palette" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
       <div class="input-row">
         <input
           type="text"
+          bind:this={inputEl}
           bind:value={query}
           oninput={handleInput}
           onkeydown={handleKeydown}
           placeholder="Search or type > for commands, @ for agents, # sessions, / settings"
           class="palette-input"
-          autofocus
         />
         <kbd class="shortcut">ESC</kbd>
       </div>
@@ -342,23 +349,25 @@
       {:else if displayItems.length > 0}
         <ul class="result-list" role="listbox">
           {#each displayItems as item, i}
-            <li
-              class="result-item"
-              class:selected={i === selectedIndex}
-              role="option"
-              aria-selected={i === selectedIndex}
-              onclick={() => {
-                if (item.type === 'command') {
-                  frecencyTracker.record(item.item.id);
-                  item.item.action();
-                } else {
-                  const r = item.item;
-                  const link = TYPE_LINKS[r.result_type]?.(r.id) ?? '/search';
-                  goto(link);
-                }
-                open = false;
-              }}
-            >
+            <li>
+              <button
+                type="button"
+                class="result-item"
+                class:selected={i === selectedIndex}
+                role="option"
+                aria-selected={i === selectedIndex}
+                onclick={() => {
+                  if (item.type === 'command') {
+                    frecencyTracker.record(item.item.id);
+                    item.item.action();
+                  } else {
+                    const r = item.item;
+                    const link = TYPE_LINKS[r.result_type]?.(r.id) ?? '/search';
+                    goto(link);
+                  }
+                  open = false;
+                }}
+              >
               {#if item.type === 'command'}
                 <span class="result-type cmd-type">{item.item.category}</span>
                 <span class="result-title">{item.item.label}</span>
@@ -372,6 +381,7 @@
                   <span class="result-snippet">{item.item.snippet.slice(0, 60)}</span>
                 {/if}
               {/if}
+              </button>
             </li>
           {/each}
         </ul>

@@ -49,6 +49,7 @@ impl WindowManager {
     }
 
     /// Get session count for an agent.
+    #[allow(dead_code)]
     pub fn session_count(&self, agent_id: &Uuid) -> u32 {
         self.agents.get(agent_id).map_or(0, |w| w.session_count)
     }

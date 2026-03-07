@@ -3,7 +3,7 @@
 //! All paths are resolved relative to the agent's workspace root.
 //! Path traversal outside the workspace is rejected.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use thiserror::Error;
 

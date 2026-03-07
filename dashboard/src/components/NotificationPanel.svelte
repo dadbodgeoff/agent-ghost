@@ -8,8 +8,9 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
+  import { isTauriEnvironment } from '$lib/platform/runtime';
 
-  const isTauri = typeof window !== 'undefined' && !!window.__TAURI__;
+  const isTauri = isTauriEnvironment();
 
   export interface AppNotification {
     id: string;
@@ -194,17 +195,20 @@
       {:else}
         <ul class="notification-list">
           {#each notifications as n}
-            <li
-              class="notification-item"
-              class:unread={!n.read}
-              onclick={() => handleNotificationClick(n)}
-            >
-              <div class="notification-indicator" style="background: {severityColor(n.severity)}"></div>
-              <div class="notification-body">
-                <div class="notification-title">{n.title}</div>
-                <div class="notification-message">{n.message}</div>
-                <div class="notification-time">{relativeTime(n.timestamp)}</div>
-              </div>
+            <li>
+              <button
+                type="button"
+                class="notification-item"
+                class:unread={!n.read}
+                onclick={() => handleNotificationClick(n)}
+              >
+                <div class="notification-indicator" style="background: {severityColor(n.severity)}"></div>
+                <div class="notification-body">
+                  <div class="notification-title">{n.title}</div>
+                  <div class="notification-message">{n.message}</div>
+                  <div class="notification-time">{relativeTime(n.timestamp)}</div>
+                </div>
+              </button>
             </li>
           {/each}
         </ul>
@@ -309,7 +313,11 @@
   .notification-item {
     display: flex;
     gap: var(--spacing-2);
+    width: 100%;
     padding: var(--spacing-2) var(--spacing-3);
+    background: transparent;
+    border: none;
+    text-align: left;
     cursor: pointer;
     border-bottom: 1px solid var(--color-border-subtle);
     transition: background 0.1s;

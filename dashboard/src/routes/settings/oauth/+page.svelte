@@ -1,11 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getBaseUrl } from '$lib/api';
-  import { getToken } from '$lib/auth';
+  import { getGhostClient } from '$lib/ghost-client';
 
   interface OAuthProvider {
     name: string;
-    scopes: Record<string, string[]>;
   }
 
   interface OAuthConnection {
@@ -20,29 +18,15 @@
   let connections: OAuthConnection[] = [];
   let loading = true;
   let error = '';
-  async function fetchApi(path: string, options: RequestInit = {}) {
-    const baseUrl = await getBaseUrl();
-    const token = await getToken();
-    const resp = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      credentials: 'omit',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        ...options.headers,
-      },
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return resp.json();
-  }
 
   async function loadData() {
     try {
       loading = true;
       error = '';
+      const client = await getGhostClient();
       [providers, connections] = await Promise.all([
-        fetchApi('/api/oauth/providers'),
-        fetchApi('/api/oauth/connections'),
+        client.oauth.providers(),
+        client.oauth.connections(),
       ]);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load OAuth data';
@@ -53,10 +37,8 @@
 
   async function connectProvider(name: string, scopes: string[]) {
     try {
-      const data = await fetchApi('/api/oauth/connect', {
-        method: 'POST',
-        body: JSON.stringify({ provider: name, scopes }),
-      });
+      const client = await getGhostClient();
+      const data = await client.oauth.connect({ provider: name, scopes });
       window.location.href = data.authorization_url;
     } catch (e: unknown) {
       error = `Connect failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -65,7 +47,8 @@
 
   async function disconnectConnection(refId: string) {
     try {
-      await fetchApi(`/api/oauth/connections/${refId}`, { method: 'DELETE' });
+      const client = await getGhostClient();
+      await client.oauth.disconnect(refId);
       await loadData();
     } catch (e: unknown) {
       error = `Disconnect failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -117,17 +100,12 @@
           {:else}
             <button
               class="btn-connect"
-              onclick={() => connectProvider(provider.name, Object.values(provider.scopes).flat())}
+              onclick={() => connectProvider(provider.name, [])}
               aria-label="Connect {provider.name}"
             >
               Connect
             </button>
           {/if}
-        </div>
-        <div class="scopes">
-          {#each Object.entries(provider.scopes) as [group]}
-            <span class="scope-group">{group}</span>
-          {/each}
         </div>
       </div>
     {/each}
@@ -256,20 +234,6 @@
 
   .badge-connected {
     background: var(--color-severity-normal);
-  }
-
-  .scopes {
-    display: flex;
-    gap: var(--spacing-1);
-    flex-wrap: wrap;
-  }
-
-  .scope-group {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
-    background: var(--color-bg-elevated-3);
-    padding: var(--spacing-0-5) var(--spacing-1);
-    border-radius: var(--radius-sm);
   }
 
   .connection-meta {

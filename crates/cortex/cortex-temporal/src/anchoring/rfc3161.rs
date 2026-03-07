@@ -45,18 +45,18 @@ pub struct TimestampAnchorRecord {
 
 /// RFC 3161 anchor — requests a signed timestamp from a TSA.
 pub struct RFC3161Anchor {
-    config: Rfc3161Config,
+    _config: Rfc3161Config,
 }
 
 impl RFC3161Anchor {
     pub fn new() -> Self {
         Self {
-            config: Rfc3161Config::default(),
+            _config: Rfc3161Config::default(),
         }
     }
 
     pub fn with_config(config: Rfc3161Config) -> Self {
-        Self { config }
+        Self { _config: config }
     }
 
     /// Anchor a Merkle root by requesting an RFC 3161 timestamp.
@@ -72,7 +72,7 @@ impl RFC3161Anchor {
         &self,
         merkle_root: &[u8; 32],
     ) -> Result<TimestampAnchorRecord, Rfc3161Error> {
-        if !self.config.enabled {
+        if !self._config.enabled {
             return Err(Rfc3161Error::Disabled);
         }
 
@@ -83,7 +83,7 @@ impl RFC3161Anchor {
         let digest = sha256_hash(merkle_root);
         let tsq = build_timestamp_request(&digest);
 
-        let response = ureq::post(&self.config.tsa_url)
+        let response = ureq::post(&self._config.tsa_url)
             .set("Content-Type", "application/timestamp-query")
             .send_bytes(&tsq)
             .map_err(|e| Rfc3161Error::RequestFailed(format!("{e}")))?;
@@ -110,7 +110,7 @@ impl RFC3161Anchor {
         Ok(TimestampAnchorRecord {
             merkle_root: *merkle_root,
             tsa_response: body,
-            tsa_url: self.config.tsa_url.clone(),
+            tsa_url: self._config.tsa_url.clone(),
             requested_at: chrono::Utc::now().to_rfc3339(),
         })
     }
@@ -147,6 +147,7 @@ pub enum Rfc3161Error {
     NotAvailable(String),
 }
 
+#[allow(dead_code)]
 /// SHA-256 hash (used for the TimeStampReq messageImprint).
 /// We use a minimal implementation to avoid pulling in a full SHA-2 crate.
 fn sha256_hash(data: &[u8]) -> [u8; 32] {
@@ -157,6 +158,7 @@ fn sha256_hash(data: &[u8]) -> [u8; 32] {
     *blake3::hash(data).as_bytes()
 }
 
+#[allow(dead_code)]
 /// Build a minimal DER-encoded TimeStampReq (RFC 3161 §2.4.1).
 ///
 /// Structure:
@@ -209,6 +211,7 @@ fn build_timestamp_request(digest: &[u8; 32]) -> Vec<u8> {
     tsq
 }
 
+#[allow(dead_code)]
 /// Push a DER length encoding.
 fn der_push_length(buf: &mut Vec<u8>, len: usize) {
     if len < 0x80 {

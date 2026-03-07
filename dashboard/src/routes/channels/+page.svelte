@@ -171,7 +171,6 @@
           class="channel-card"
           class:selected={selectedChannel?.id === channel.id}
           onclick={() => (selectedChannel = selectedChannel?.id === channel.id ? null : channel)}
-          role="listitem"
         >
           <div class="channel-main">
             <span class="status-dot" style="background: {statusColor(channel.status)}" aria-label={statusLabel(channel.status)}></span>
@@ -401,7 +400,7 @@
     margin: 0;
   }
 
-  .detail-list h3 {
+  .channel-detail h3 {
     font-size: var(--font-size-sm);
     margin: var(--spacing-3) 0 var(--spacing-2);
   }

@@ -46,7 +46,7 @@ pub struct MessageDispatcher {
     /// Offline message queues.
     offline_queues: BTreeMap<Uuid, VecDeque<AgentMessage>>,
     /// Key rotation grace period tracking.
-    grace_keys: BTreeMap<Uuid, (Vec<u8>, Instant)>,
+    _grace_keys: BTreeMap<Uuid, (Vec<u8>, Instant)>,
     /// Last rate limit counter reset time.
     last_rate_reset: Instant,
     /// Per-sender last seen UUIDv7 nonce for monotonicity check (AC4).
@@ -61,7 +61,7 @@ impl MessageDispatcher {
             pair_counts: BTreeMap::new(),
             sig_failures: BTreeMap::new(),
             offline_queues: BTreeMap::new(),
-            grace_keys: BTreeMap::new(),
+            _grace_keys: BTreeMap::new(),
             last_rate_reset: Instant::now(),
             last_nonce: BTreeMap::new(),
         }

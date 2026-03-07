@@ -28,6 +28,8 @@ import { A2AAPI } from './a2a.js';
 import { StudioAPI } from './studio.js';
 import { ApprovalsAPI } from './approvals.js';
 import { PcControlAPI } from './pc-control.js';
+import { OAuthAPI } from './oauth.js';
+import { ItpAPI } from './itp.js';
 import { GhostWebSocket, type GhostWebSocketOptions } from './websocket.js';
 
 // ── Types ──
@@ -82,6 +84,8 @@ export class GhostClient {
   readonly studio: StudioAPI;
   readonly approvals: ApprovalsAPI;
   readonly pcControl: PcControlAPI;
+  readonly oauth: OAuthAPI;
+  readonly itp: ItpAPI;
 
   private readonly options: GhostClientOptions;
 
@@ -121,6 +125,8 @@ export class GhostClient {
     this.studio = new StudioAPI(request);
     this.approvals = new ApprovalsAPI(request);
     this.pcControl = new PcControlAPI(request);
+    this.oauth = new OAuthAPI(request);
+    this.itp = new ItpAPI(request);
   }
 
   /** Create a WebSocket connection for real-time events. */

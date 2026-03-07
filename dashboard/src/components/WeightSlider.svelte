@@ -23,9 +23,10 @@
     disabled?: boolean;
   }
 
-  let { weights = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125], onchange, disabled = false }: Props = $props();
+  const DEFAULT_WEIGHTS = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125];
+  let { weights = DEFAULT_WEIGHTS, onchange, disabled = false }: Props = $props();
 
-  let localWeights = $state([...weights]);
+  let localWeights = $state([...DEFAULT_WEIGHTS]);
 
   $effect(() => {
     localWeights = [...weights];

@@ -165,7 +165,6 @@ pub fn datamark(text: &str, marker: char) -> String {
         return String::new();
     }
 
-    let marker_str = marker.to_string();
     let escaped_marker = format!("{}{}", marker, marker);
 
     let chars: Vec<String> = text

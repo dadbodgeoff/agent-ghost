@@ -42,6 +42,7 @@
   <div
     class="dialog"
     role="alertdialog"
+    tabindex="-1"
     aria-modal="true"
     aria-labelledby="confirm-title"
     aria-describedby="confirm-message"

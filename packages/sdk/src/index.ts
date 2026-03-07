@@ -267,6 +267,24 @@ export type {
   PcControlActionLogResult,
 } from './pc-control.js';
 
+// ── OAuth ──
+export { OAuthAPI } from './oauth.js';
+export type {
+  OAuthProvider,
+  OAuthConnection,
+  ConnectOAuthProviderParams,
+  ConnectOAuthProviderResult,
+  DisconnectOAuthConnectionResult,
+} from './oauth.js';
+
+// ── ITP ──
+export { ItpAPI } from './itp.js';
+export type {
+  ItpEvent,
+  ListItpEventsParams,
+  ListItpEventsResult,
+} from './itp.js';
+
 // ── WebSocket ──
 export { GhostWebSocket } from './websocket.js';
 export type { WsEvent, GhostWebSocketOptions } from './websocket.js';

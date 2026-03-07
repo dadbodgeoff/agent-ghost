@@ -204,8 +204,9 @@
 
             {#if modifyingId === proposal.id}
               <div class="modify-panel">
-                <label class="modify-label">Modify arguments:</label>
+                <label class="modify-label" for="modify-args-{proposal.id}">Modify arguments:</label>
                 <textarea
+                  id="modify-args-{proposal.id}"
                   class="modify-textarea"
                   bind:value={modifiedArgs}
                   rows="5"

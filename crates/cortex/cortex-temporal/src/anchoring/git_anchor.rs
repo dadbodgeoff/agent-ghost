@@ -109,7 +109,3 @@ pub enum AnchorError {
     #[error("git anchor not available: {0}")]
     NotAvailable(String),
 }
-
-fn hex_encode(bytes: &[u8; 32]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}

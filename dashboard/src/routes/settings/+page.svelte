@@ -124,7 +124,6 @@
     margin-top: var(--spacing-2);
   }
 
-  .section-hint code,
   .section-desc code {
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);

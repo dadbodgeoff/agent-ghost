@@ -1,16 +1,13 @@
 /*
  * GHOST ADE — Font Face Declarations
  *
- * Self-hosted variable fonts for consistent rendering.
- * font-display: swap avoids FOIT (flash of invisible text).
- *
- * If woff2 files are not yet downloaded to /fonts/, the system
- * font stack in tokens.css provides a graceful fallback.
+ * Prefer locally-installed variable fonts when available.
+ * The semantic font stacks in tokens.css provide the stable fallback.
  */
 
 @font-face {
   font-family: 'Inter';
-  src: url('/fonts/Inter-Variable.woff2') format('woff2');
+  src: local('Inter Variable'), local('Inter');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -18,7 +15,7 @@
 
 @font-face {
   font-family: 'JetBrains Mono';
-  src: url('/fonts/JetBrainsMono-Variable.woff2') format('woff2');
+  src: local('JetBrains Mono Variable'), local('JetBrains Mono');
   font-weight: 100 800;
   font-style: normal;
   font-display: swap;

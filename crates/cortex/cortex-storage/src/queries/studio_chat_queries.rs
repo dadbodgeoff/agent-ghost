@@ -9,6 +9,7 @@ use crate::to_storage_err;
 #[derive(Debug, Clone)]
 pub struct StudioSessionRow {
     pub id: String,
+    pub agent_id: String,
     pub title: String,
     pub model: String,
     pub system_prompt: String,
@@ -45,6 +46,7 @@ pub struct StudioSafetyAuditRow {
 pub fn create_session(
     conn: &Connection,
     id: &str,
+    agent_id: &str,
     title: &str,
     model: &str,
     system_prompt: &str,
@@ -52,9 +54,9 @@ pub fn create_session(
     max_tokens: i64,
 ) -> CortexResult<()> {
     conn.execute(
-        "INSERT INTO studio_chat_sessions (id, title, model, system_prompt, temperature, max_tokens)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, title, model, system_prompt, temperature, max_tokens],
+        "INSERT INTO studio_chat_sessions (id, agent_id, title, model, system_prompt, temperature, max_tokens)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![id, agent_id, title, model, system_prompt, temperature, max_tokens],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())
@@ -67,7 +69,7 @@ pub fn list_sessions(
 ) -> CortexResult<Vec<StudioSessionRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
+            "SELECT id, agent_id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
              FROM studio_chat_sessions
              WHERE deleted_at IS NULL
              ORDER BY updated_at DESC
@@ -87,7 +89,7 @@ pub fn list_sessions(
 pub fn get_session(conn: &Connection, id: &str) -> CortexResult<Option<StudioSessionRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
+            "SELECT id, agent_id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
              FROM studio_chat_sessions WHERE id = ?1 AND deleted_at IS NULL",
         )
         .map_err(|e| to_storage_err(e.to_string()))?;
@@ -143,7 +145,7 @@ pub fn list_sessions_active_since(
 ) -> CortexResult<Vec<StudioSessionRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
+            "SELECT id, agent_id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
              FROM studio_chat_sessions
              WHERE deleted_at IS NULL AND last_activity_at >= ?1
              ORDER BY last_activity_at DESC
@@ -313,13 +315,14 @@ pub fn insert_safety_audit(
 fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StudioSessionRow> {
     Ok(StudioSessionRow {
         id: row.get(0)?,
-        title: row.get(1)?,
-        model: row.get(2)?,
-        system_prompt: row.get(3)?,
-        temperature: row.get(4)?,
-        max_tokens: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        agent_id: row.get(1)?,
+        title: row.get(2)?,
+        model: row.get(3)?,
+        system_prompt: row.get(4)?,
+        temperature: row.get(5)?,
+        max_tokens: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 

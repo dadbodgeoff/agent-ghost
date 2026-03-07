@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::parsers;
 use crate::timeline::{ReconstructedSession, TimelineReconstructor};
-use crate::{ExportError, ExportResult, NormalizedMessage};
+use crate::{ExportError, ExportResult};
 
 /// Result of analyzing an export file.
 #[derive(Debug, Clone, Serialize, Deserialize)]

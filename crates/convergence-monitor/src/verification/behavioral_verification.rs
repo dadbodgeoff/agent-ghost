@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Result of a post-redirect behavioral verification.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationResult {
     /// Cosine similarity between pre- and post-redirect embeddings.
@@ -28,6 +29,7 @@ pub struct VerificationResult {
 /// Deceptive compliance: agent changes surface outputs to satisfy the
 /// redirect but the underlying intent (captured via embeddings) remains
 /// nearly identical. Detected when cosine similarity > threshold.
+#[allow(dead_code)]
 pub struct PostRedirectVerifier {
     /// Similarity threshold above which behavior is considered deceptive.
     similarity_threshold: f64,
@@ -36,6 +38,7 @@ pub struct PostRedirectVerifier {
 }
 
 impl PostRedirectVerifier {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             similarity_threshold: 0.85,
@@ -50,6 +53,7 @@ impl PostRedirectVerifier {
     ///
     /// Returns a `VerificationResult` with similarity, deception flag,
     /// and score amplification factor.
+    #[allow(dead_code)]
     pub fn verify(
         &self,
         pre_embedding: &[f64],
@@ -72,6 +76,7 @@ impl PostRedirectVerifier {
 
     /// Apply amplification to a convergence score if deceptive compliance
     /// is detected. Score is clamped to [0.0, 1.0].
+    #[allow(dead_code)]
     pub fn amplify_score(&self, score: f64, result: &VerificationResult) -> f64 {
         (score * result.amplification_factor).clamp(0.0, 1.0)
     }
@@ -86,6 +91,7 @@ impl Default for PostRedirectVerifier {
 /// Cosine similarity between two vectors.
 ///
 /// Returns 0.0 if either vector has zero magnitude.
+#[allow(dead_code)]
 fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;

@@ -262,7 +262,7 @@
         {#if simNodes.length === 0}
           <p class="empty">No agents registered. Trust graph requires multiple agents.</p>
         {:else}
-          <svg viewBox="{viewBox.x} {viewBox.y} {viewBox.w} {viewBox.h}" class="graph-svg"
+          <svg viewBox="{viewBox.x} {viewBox.y} {viewBox.w} {viewBox.h}" class="graph-svg" role="img" aria-label="Trust graph"
             ontouchstart={handleGraphTouchStart}
             ontouchmove={handleGraphTouchMove}
             ontouchend={handleGraphTouchEnd}>

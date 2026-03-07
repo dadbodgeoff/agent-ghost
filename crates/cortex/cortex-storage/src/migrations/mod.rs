@@ -32,19 +32,20 @@ pub mod v040_phase3_tables;
 pub mod v041_revoked_tokens;
 pub mod v042_cost_snapshots;
 pub mod v043_session_lifecycle;
+pub mod v044_studio_session_agent_id;
 
 use rusqlite::Connection;
 use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
 
-pub const LATEST_VERSION: u32 = 43;
+pub const LATEST_VERSION: u32 = 44;
 
 /// Maximum number of migration backup files to retain.
 const MAX_MIGRATION_BACKUPS: usize = 3;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 28] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 29] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -73,6 +74,7 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 28] = [
     (41, "revoked_tokens", v041_revoked_tokens::migrate),
     (42, "cost_snapshots", v042_cost_snapshots::migrate),
     (43, "session_lifecycle", v043_session_lifecycle::migrate),
+    (44, "studio_session_agent_id", v044_studio_session_agent_id::migrate),
 ];
 
 /// Query the current schema version from the database.

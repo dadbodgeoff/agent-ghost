@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use ghost_llm::provider::ToolSchema;
-use ghost_skills::registry::SkillSource;
 use ghost_skills::skill::{Skill, SkillContext, SkillError};
 use rusqlite::Connection;
 use uuid::Uuid;

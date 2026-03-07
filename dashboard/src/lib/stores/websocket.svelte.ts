@@ -11,7 +11,7 @@
  * Ref: T-1.7.1, §5.1
  */
 
-import { getRuntime } from '$lib/platform/runtime';
+import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
@@ -30,6 +30,7 @@ export type WsEventType =
   | 'WebhookFired'
   | 'SkillChange'
   | 'A2ATaskUpdate'
+  | 'ItpEvent'
   | 'SessionEvent'
   | 'ChatMessage'
   | 'Resync'
@@ -225,7 +226,7 @@ class WebSocketStore {
    */
   private initLeaderElection() {
     // Skip in Tauri — single window, no leader election needed.
-    if (typeof window !== 'undefined' && window.__TAURI__) return;
+    if (isTauriEnvironment()) return;
     if (this.bc) return;
 
     try {

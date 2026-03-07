@@ -2,7 +2,6 @@
 
 use serde::Serialize;
 
-use super::backend::CliBackend;
 use super::error::CliError;
 use super::output::{OutputFormat, TableDisplay, print_output};
 

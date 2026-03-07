@@ -5,6 +5,8 @@
 //!
 //! Ref: ADE_DESIGN_PLAN §17.3, tasks.md T-1.3.1
 
+#![allow(dead_code)]
+
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;

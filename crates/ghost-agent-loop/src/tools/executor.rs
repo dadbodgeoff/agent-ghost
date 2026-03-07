@@ -59,7 +59,7 @@ pub struct ToolResult {
 
 /// Executes tool calls with timeout enforcement and audit logging.
 pub struct ToolExecutor {
-    default_timeout: Duration,
+    _default_timeout: Duration,
     plan_validator: PlanValidator,
     filesystem: Option<FilesystemTool>,
     shell_config: ShellToolConfig,
@@ -75,7 +75,7 @@ pub struct ToolExecutor {
 impl ToolExecutor {
     pub fn new(default_timeout: Duration) -> Self {
         Self {
-            default_timeout,
+            _default_timeout: default_timeout,
             plan_validator: PlanValidator::default(),
             filesystem: None,
             shell_config: ShellToolConfig::default(),
@@ -90,7 +90,7 @@ impl ToolExecutor {
     /// Create a ToolExecutor with a custom PlanValidator.
     pub fn with_plan_validator(default_timeout: Duration, plan_validator: PlanValidator) -> Self {
         Self {
-            default_timeout,
+            _default_timeout: default_timeout,
             plan_validator,
             filesystem: None,
             shell_config: ShellToolConfig::default(),

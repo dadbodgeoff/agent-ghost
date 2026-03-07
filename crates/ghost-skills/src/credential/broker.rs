@@ -25,7 +25,7 @@ struct CredentialEntry {
     secret: String,
     max_uses: u32,
     use_count: u32,
-    created_at: DateTime<Utc>,
+    _created_at: DateTime<Utc>,
     expires_at: Option<DateTime<Utc>>,
 }
 
@@ -62,7 +62,7 @@ impl CredentialBroker {
                 secret,
                 max_uses,
                 use_count: 0,
-                created_at: Utc::now(),
+                _created_at: Utc::now(),
                 expires_at,
             },
         );

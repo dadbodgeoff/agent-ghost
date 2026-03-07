@@ -286,7 +286,7 @@ async fn session_soft_delete_and_hard_delete() {
     // Create a session.
     let session_id = "test-lifecycle-session";
     cortex_storage::queries::studio_chat_queries::create_session(
-        &conn, session_id, "Old Session", "test-model", "", 0.5, 4096,
+        &conn, session_id, "agent-lifecycle", "Old Session", "test-model", "", 0.5, 4096,
     )
     .unwrap();
 
@@ -359,11 +359,11 @@ async fn list_sessions_active_since_filter() {
 
     // Create two sessions.
     cortex_storage::queries::studio_chat_queries::create_session(
-        &conn, "recent", "Recent", "m", "", 0.5, 4096,
+        &conn, "recent", "agent-recent", "Recent", "m", "", 0.5, 4096,
     )
     .unwrap();
     cortex_storage::queries::studio_chat_queries::create_session(
-        &conn, "old", "Old", "m", "", 0.5, 4096,
+        &conn, "old", "agent-old", "Old", "m", "", 0.5, 4096,
     )
     .unwrap();
 

@@ -93,6 +93,7 @@ impl CooldownManager {
     }
 
     /// Cancel a pending dual-key change.
+    #[allow(dead_code)]
     pub fn cancel_dual_key_change(&mut self) {
         self.dual_key_pending = false;
         self.dual_key_token = None;

@@ -252,7 +252,7 @@ impl KillGate {
     pub fn is_propagation_timed_out(&self) -> bool {
         let inner = match self.inner.read() {
             Ok(guard) => guard,
-            Err(poisoned) => {
+            Err(_poisoned) => {
                 tracing::error!(
                     node_id = %self.node_id,
                     "kill gate RwLock poisoned during timeout check — fail-closed"

@@ -4,8 +4,8 @@
    * Live tail of ITP events from the browser extension and other sources.
    * Privacy-level masking for content display.
    */
-  import { onMount, onDestroy } from 'svelte';
-  import { api } from '$lib/api';
+  import { onMount } from 'svelte';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
 
   interface ItpEvent {
@@ -29,7 +29,7 @@
   let bufferCount = $state(0);
   let autoScroll = $state(true);
 
-  let logContainer: HTMLDivElement;
+  let logContainer = $state<HTMLDivElement | null>(null);
 
   function maskContent(content: string | undefined, level: PrivacyLevel): string {
     if (!content) return '—';
@@ -61,7 +61,8 @@
 
   async function loadEvents() {
     try {
-      const data = await api.get<{ events: ItpEvent[]; buffer_count: number; extension_connected: boolean }>('/api/itp/events?limit=200');
+      const client = await getGhostClient();
+      const data = await client.itp.list({ limit: 200 });
       events = data?.events ?? [];
       bufferCount = data?.buffer_count ?? 0;
       extensionConnected = data?.extension_connected ?? false;
@@ -149,9 +150,9 @@
 
   <div class="status-bar">
     <span>Buffer: {bufferCount} events</span>
-    <span>Source: extension</span>
+    <span>Source: gateway stream</span>
     <span class="ext-status" class:ext-connected={extensionConnected}>
-      Extension: {extensionConnected ? 'Connected' : 'Disconnected'}
+      Monitor link: {extensionConnected ? 'Connected' : 'Unavailable'}
     </span>
     {#if paused}
       <span class="paused-indicator">Paused</span>

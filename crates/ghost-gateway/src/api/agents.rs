@@ -85,7 +85,7 @@ pub async fn create_agent(
         }
     }
 
-    let agent_id = uuid::Uuid::now_v7();
+    let agent_id = crate::agents::registry::durable_agent_id(&body.name);
     let spending_cap = body.spending_cap.unwrap_or(5.0);
 
     // Generate keypair if requested.

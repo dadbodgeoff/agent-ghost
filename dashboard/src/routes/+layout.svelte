@@ -18,6 +18,7 @@
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
   import { GhostAPIError } from '@ghost/sdk';
 
+  let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let showInstallPrompt = $state(false);
@@ -169,11 +170,11 @@
 {/if}
 
 {#if $page.url.pathname === '/login'}
-  <slot />
+  {@render children?.()}
 {:else}
   <PanelLayout>
     {#snippet sidebar()}
-      <nav aria-label="Primary navigation" role="navigation">
+      <nav aria-label="Primary navigation">
         <div class="logo" role="banner">GHOST</div>
         <a href="/" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
         <a href="/convergence" class:active={$page.url.pathname === '/convergence'} aria-current={$page.url.pathname === '/convergence' ? 'page' : undefined}>Convergence</a>
@@ -218,7 +219,7 @@
     {#snippet main()}
       <TabBar />
       <Breadcrumb />
-      <slot />
+      {@render children?.()}
     {/snippet}
 
     {#snippet bottom()}

@@ -23,7 +23,7 @@
   let newHotkey = $state('');
 
   // Safe zone editor
-  let svgEl: SVGSVGElement;
+  let svgEl = $state<SVGSVGElement | null>(null);
   let drawing = $state(false);
   let drawStart = $state({ x: 0, y: 0 });
   let drawCurrent = $state({ x: 0, y: 0 });

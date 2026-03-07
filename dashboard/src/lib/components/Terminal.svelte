@@ -3,9 +3,10 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
+  import { isTauriEnvironment } from '$lib/platform/runtime';
   import '@xterm/xterm/css/xterm.css';
 
-  const isTauri = typeof window !== 'undefined' && !!window.__TAURI__;
+  const isTauri = isTauriEnvironment();
 
   let containerEl: HTMLDivElement;
   let term: Terminal | null = null;
