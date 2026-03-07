@@ -23,6 +23,9 @@ Thumbs.db
 node_modules/
 package-lock.json
 
+# SDK build output
+packages/sdk/dist/
+
 # SvelteKit
 .svelte-kit/
 build/
