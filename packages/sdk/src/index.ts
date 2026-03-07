@@ -116,9 +116,125 @@ export type {
   ListRuntimeSessionsCursorResult,
 } from './runtime-sessions.js';
 
+// ── Search ──
+export { SearchAPI } from './search.js';
+export type { SearchParams, SearchResult, SearchResponse } from './search.js';
+
 // ── Traces ──
 export { TracesAPI } from './traces.js';
 export type { TraceSpanRecord, TraceGroup, SessionTrace } from './traces.js';
+
+// ── Workflows ──
+export { WorkflowsAPI } from './workflows.js';
+export type {
+  Workflow,
+  ListWorkflowsParams,
+  ListWorkflowsResult,
+  CreateWorkflowParams,
+  CreateWorkflowResult,
+  UpdateWorkflowParams,
+  UpdateWorkflowResult,
+  ExecuteWorkflowParams,
+  WorkflowExecutionStep,
+  ExecuteWorkflowResult,
+} from './workflows.js';
+
+// ── Profiles ──
+export { ProfilesAPI } from './profiles.js';
+export type {
+  Profile,
+  ListProfilesResult,
+  CreateProfileParams,
+  UpdateProfileParams,
+  DeleteProfileResult,
+} from './profiles.js';
+
+// ── Webhooks ──
+export { WebhooksAPI } from './webhooks.js';
+export type {
+  WebhookEventType,
+  WebhookSummary,
+  ListWebhooksResult,
+  CreateWebhookParams,
+  UpdateWebhookParams,
+  DeleteWebhookResult,
+  TestWebhookResult,
+} from './webhooks.js';
+
+// ── Backups ──
+export { BackupsAPI } from './backups.js';
+export type { Backup, ListBackupsResult } from './backups.js';
+
+// ── Provider Keys ──
+export { ProviderKeysAPI } from './provider-keys.js';
+export type {
+  ProviderKeyInfo,
+  ListProviderKeysResult,
+  SetProviderKeyParams,
+  SetProviderKeyResult,
+  DeleteProviderKeyResult,
+} from './provider-keys.js';
+
+// ── Push ──
+export { PushAPI } from './push.js';
+export type {
+  PushSubscriptionKeys,
+  PushSubscriptionPayload,
+  VapidKeyResult,
+} from './push.js';
+
+// ── Channels ──
+export { ChannelsAPI } from './channels.js';
+export type {
+  ChannelInfo,
+  ListChannelsResult,
+  CreateChannelParams,
+  CreateChannelResult,
+  ReconnectChannelResult,
+  DeleteChannelResult,
+} from './channels.js';
+
+// ── State ──
+export { StateAPI } from './state.js';
+export type {
+  CrdtDelta,
+  GetCrdtStateParams,
+  CrdtStateResult,
+} from './state.js';
+
+// ── Integrity ──
+export { IntegrityAPI } from './integrity.js';
+export type {
+  IntegrityBreak,
+  ItpEventsIntegrity,
+  MemoryEventsIntegrity,
+  IntegrityChains,
+  VerifyChainParams,
+  VerifyChainResult,
+} from './integrity.js';
+
+// ── Mesh ──
+export { MeshAPI } from './mesh.js';
+export type {
+  TrustNode,
+  TrustEdge,
+  TrustGraphResult,
+  ConsensusRound,
+  ConsensusResult,
+  Delegation,
+  SybilMetrics,
+  DelegationsResult,
+} from './mesh.js';
+
+// ── A2A ──
+export { A2AAPI } from './a2a.js';
+export type {
+  A2ATask,
+  SendA2ATaskParams,
+  ListA2ATasksResult,
+  DiscoveredA2AAgent,
+  DiscoverA2AAgentsResult,
+} from './a2a.js';
 
 // ── WebSocket ──
 export { GhostWebSocket } from './websocket.js';

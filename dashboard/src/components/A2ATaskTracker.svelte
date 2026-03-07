@@ -1,22 +1,15 @@
 <script lang="ts">
-  import { api } from '$lib/api';
+  import type { A2ATask } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
   import { onMount } from 'svelte';
-
-  interface A2ATask {
-    task_id: string;
-    target_agent: string;
-    target_url: string;
-    method: string;
-    status: string;
-    created_at: string;
-  }
 
   let tasks = $state<A2ATask[]>([]);
   let loading = $state(true);
 
   onMount(async () => {
     try {
-      const data = await api.get('/api/a2a/tasks');
+      const client = await getGhostClient();
+      const data = await client.a2a.listTasks();
       tasks = data.tasks ?? [];
     } catch {
       // Silently fail — table shows empty.

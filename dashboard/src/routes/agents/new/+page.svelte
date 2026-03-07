@@ -5,7 +5,7 @@
    * Steps: Identity → Model → System Prompt → Tools → Safety → Channels → Review
    */
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
 
   interface WizardData {
     // Step 1: Identity
@@ -160,23 +160,13 @@
     submitting = true;
     error = '';
     try {
-      const result = await api.post('/api/agents', {
+      const client = await getGhostClient();
+      const result = await client.agents.create({
         name: data.name,
-        description: data.description,
-        icon: data.icon,
-        provider: data.provider,
-        model: data.model,
-        temperature: data.temperature,
-        max_tokens: data.max_tokens,
-        system_prompt: data.system_prompt,
-        tools: data.tools,
-        tool_configs: data.tool_configs,
+        capabilities: data.tools,
         spending_cap: data.spending_cap,
-        intervention_level: data.intervention_level,
-        convergence_profile: data.convergence_profile,
-        channels: data.channels,
       });
-      const agentId = (result as any)?.id ?? (result as any)?.agent_id;
+      const agentId = result?.id;
       if (agentId) {
         goto(`/agents/${agentId}`);
       } else {
@@ -184,6 +174,7 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to create agent';
+    } finally {
       submitting = false;
     }
   }

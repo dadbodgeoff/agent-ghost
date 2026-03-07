@@ -6,16 +6,9 @@
    * Ref: T-3.10.1
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import type { Profile } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
   import WeightSlider from '../../../components/WeightSlider.svelte';
-
-  interface Profile {
-    name: string;
-    description: string;
-    is_preset: boolean;
-    weights: number[];
-    thresholds: number[];
-  }
 
   let profiles: Profile[] = $state([]);
   let selectedProfile: Profile | null = $state(null);
@@ -32,7 +25,8 @@
 
   async function loadProfiles() {
     try {
-      const res = await api.get('/api/profiles');
+      const client = await getGhostClient();
+      const res = await client.profiles.list();
       profiles = res.profiles ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load profiles';
@@ -51,7 +45,8 @@
     error = null;
     success = null;
     try {
-      await api.put(`/api/profiles/${selectedProfile.name}`, {
+      const client = await getGhostClient();
+      await client.profiles.update(selectedProfile.name, {
         weights: editWeights,
         thresholds: editThresholds,
       });
@@ -69,7 +64,8 @@
     saving = true;
     error = null;
     try {
-      await api.post('/api/profiles', {
+      const client = await getGhostClient();
+      await client.profiles.create({
         name: newProfileName.trim(),
         weights: editWeights,
         thresholds: editThresholds,
@@ -90,7 +86,8 @@
     saving = true;
     error = null;
     try {
-      await api.del(`/api/profiles/${selectedProfile.name}`);
+      const client = await getGhostClient();
+      await client.profiles.delete(selectedProfile.name);
       selectedProfile = null;
       success = 'Profile deleted.';
       await loadProfiles();

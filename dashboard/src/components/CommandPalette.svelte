@@ -11,7 +11,7 @@
    * Ref: T-3.13.2
    */
   import { goto } from '$app/navigation';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
   import { frecencyTracker } from '$lib/frecency';
   import { shortcuts } from '$lib/shortcuts';
@@ -98,17 +98,13 @@
     for (const agent of agents) {
       commands.push(
         {
-          id: `start-${agent.id}`,
-          label: `Start Agent: ${agent.name}`,
-          category: 'agent',
-          action: () => api.post(`/api/agents/${agent.id}/start`),
-          frecencyScore: 0,
-        },
-        {
           id: `pause-${agent.id}`,
           label: `Pause Agent: ${agent.name}`,
           category: 'agent',
-          action: () => api.post(`/api/safety/pause/${agent.id}`),
+          action: async () => {
+            const client = await getGhostClient();
+            await client.safety.pause(agent.id, 'Paused via command palette');
+          },
           frecencyScore: 0,
         },
         {
@@ -127,7 +123,8 @@
       shortcut: shortcuts.getShortcutDisplay('killSwitch.activateAll'),
       action: async () => {
         if (confirm('Kill all agents? This cannot be undone.')) {
-          await api.post('/api/safety/kill-all', { reason: 'Manual kill via command palette' });
+          const client = await getGhostClient();
+          await client.safety.killAll('Manual kill via command palette', 'dashboard_command_palette');
         }
       },
       frecencyScore: 0,
@@ -247,7 +244,8 @@
     if (!query.trim()) return;
     loading = true;
     try {
-      const res = await api.get(`/api/search?q=${encodeURIComponent(query.trim())}&limit=10`);
+      const client = await getGhostClient();
+      const res = await client.search.query({ q: query.trim(), limit: 10 });
       results = res.results ?? [];
       // If no command matches but search results exist, switch to search mode
       if (paletteCommands.length === 0 && results.length > 0) {

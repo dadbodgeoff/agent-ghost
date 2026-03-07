@@ -5,17 +5,9 @@
    * Ref: T-3.12.1
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import type { Backup } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
-
-  interface Backup {
-    backup_id: string;
-    created_at: string;
-    size_bytes: number;
-    entry_count: number;
-    blake3_checksum: string;
-    status: string;
-  }
 
   let backups: Backup[] = $state([]);
   let loading = $state(false);
@@ -34,7 +26,8 @@
   async function loadBackups() {
     loading = true;
     try {
-      const res = await api.get('/api/admin/backups');
+      const client = await getGhostClient();
+      const res = await client.backups.list();
       backups = res.backups ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load backups';
@@ -48,7 +41,8 @@
     error = null;
     success = null;
     try {
-      const res: Backup = await api.post('/api/admin/backup', {});
+      const client = await getGhostClient();
+      const res = await client.backups.create();
       success = `Backup created: ${res.backup_id.slice(0, 8)}… (${formatBytes(res.size_bytes)})`;
       await loadBackups();
     } catch (e: unknown) {

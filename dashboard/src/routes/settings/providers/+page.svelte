@@ -1,14 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
-
-  interface ProviderKeyInfo {
-    provider_name: string;
-    model: string;
-    env_name: string;
-    is_set: boolean;
-    preview: string | null;
-  }
+  import type { ProviderKeyInfo } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
 
   let providers = $state<ProviderKeyInfo[]>([]);
   let loading = $state(true);
@@ -26,7 +19,8 @@
     loading = true;
     error = null;
     try {
-      const data = await api.get('/api/admin/provider-keys');
+      const client = await getGhostClient();
+      const data = await client.providerKeys.list();
       providers = data.providers ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load providers';
@@ -41,7 +35,8 @@
     error = null;
     success = null;
     try {
-      const data = await api.put('/api/admin/provider-keys', {
+      const client = await getGhostClient();
+      const data = await client.providerKeys.set({
         env_name: envName,
         value: keyInput.trim(),
       });
@@ -61,7 +56,8 @@
     error = null;
     success = null;
     try {
-      await api.del(`/api/admin/provider-keys/${encodeURIComponent(envName)}`);
+      const client = await getGhostClient();
+      await client.providerKeys.delete(envName);
       success = 'API key removed';
       await loadProviders();
     } catch (e: unknown) {

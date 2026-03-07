@@ -1,19 +1,10 @@
 <script lang="ts">
+  import type { DiscoveredA2AAgent } from '@ghost/sdk';
   import CapabilityBadge from './CapabilityBadge.svelte';
 
-  interface DiscoveredAgent {
-    name: string;
-    description: string;
-    endpoint_url: string;
-    capabilities: string[];
-    trust_score: number;
-    version: string;
-    reachable: boolean;
-  }
-
   interface Props {
-    agent: DiscoveredAgent;
-    onSendTask?: (agent: DiscoveredAgent) => void;
+    agent: DiscoveredA2AAgent;
+    onSendTask?: (agent: DiscoveredA2AAgent) => void;
   }
 
   let { agent, onSendTask }: Props = $props();

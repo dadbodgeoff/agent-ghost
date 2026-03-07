@@ -6,15 +6,8 @@
    * Ref: T-3.13.1
    */
   import { page } from '$app/stores';
-  import { api } from '$lib/api';
-
-  interface SearchResult {
-    result_type: string;
-    id: string;
-    title: string;
-    snippet: string;
-    score: number;
-  }
+  import { getGhostClient } from '$lib/ghost-client';
+  import type { SearchResult } from '@ghost/sdk';
 
   let query = $state('');
   let results: SearchResult[] = $state([]);
@@ -38,7 +31,8 @@
     error = null;
     searched = true;
     try {
-      const res = await api.get(`/api/search?q=${encodeURIComponent(query.trim())}`);
+      const client = await getGhostClient();
+      const res = await client.search.query({ q: query.trim() });
       results = res.results ?? [];
       total = res.total ?? 0;
     } catch (e: unknown) {

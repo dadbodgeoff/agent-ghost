@@ -13,7 +13,6 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { tabStore } from '$lib/stores/tabs.svelte';
   import { shortcuts } from '$lib/shortcuts';
-  import { api } from '$lib/api';
   import { clearToken } from '$lib/auth';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
@@ -124,20 +123,26 @@
     if (permission !== 'granted') return;
 
     try {
+      const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) return;
 
-      const keyData = await api.get<{ key?: string }>('/api/push/vapid-key');
+      const keyData = await client.push.getVapidKey();
       const key = keyData.key;
       if (!key) return;
 
+      const padding = '='.repeat((4 - (key.length % 4)) % 4);
+      const normalized = (key + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const raw = atob(normalized);
+      const applicationServerKey = Uint8Array.from(raw, (char) => char.charCodeAt(0));
+
       const newSub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: key,
+        applicationServerKey,
       });
 
-      await api.post('/api/push/subscribe', newSub.toJSON());
+      await client.push.subscribe(newSub.toJSON());
     } catch {
       // Push subscription failed — non-fatal.
     }

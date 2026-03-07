@@ -12,7 +12,19 @@ import { AuditAPI } from './audit.js';
 import { CostsAPI } from './costs.js';
 import { MemoryAPI } from './memory.js';
 import { RuntimeSessionsAPI } from './runtime-sessions.js';
+import { SearchAPI } from './search.js';
 import { TracesAPI } from './traces.js';
+import { WorkflowsAPI } from './workflows.js';
+import { ProfilesAPI } from './profiles.js';
+import { WebhooksAPI } from './webhooks.js';
+import { BackupsAPI } from './backups.js';
+import { ProviderKeysAPI } from './provider-keys.js';
+import { PushAPI } from './push.js';
+import { ChannelsAPI } from './channels.js';
+import { StateAPI } from './state.js';
+import { IntegrityAPI } from './integrity.js';
+import { MeshAPI } from './mesh.js';
+import { A2AAPI } from './a2a.js';
 import { GhostWebSocket, type GhostWebSocketOptions } from './websocket.js';
 
 // ── Types ──
@@ -51,7 +63,19 @@ export class GhostClient {
   readonly costs: CostsAPI;
   readonly memory: MemoryAPI;
   readonly runtimeSessions: RuntimeSessionsAPI;
+  readonly search: SearchAPI;
   readonly traces: TracesAPI;
+  readonly workflows: WorkflowsAPI;
+  readonly profiles: ProfilesAPI;
+  readonly webhooks: WebhooksAPI;
+  readonly backups: BackupsAPI;
+  readonly providerKeys: ProviderKeysAPI;
+  readonly push: PushAPI;
+  readonly channels: ChannelsAPI;
+  readonly state: StateAPI;
+  readonly integrity: IntegrityAPI;
+  readonly mesh: MeshAPI;
+  readonly a2a: A2AAPI;
 
   private readonly options: GhostClientOptions;
 
@@ -75,7 +99,19 @@ export class GhostClient {
     this.costs = new CostsAPI(request);
     this.memory = new MemoryAPI(request);
     this.runtimeSessions = new RuntimeSessionsAPI(request);
+    this.search = new SearchAPI(request);
     this.traces = new TracesAPI(request);
+    this.workflows = new WorkflowsAPI(request);
+    this.profiles = new ProfilesAPI(request);
+    this.webhooks = new WebhooksAPI(request);
+    this.backups = new BackupsAPI(request);
+    this.providerKeys = new ProviderKeysAPI(request);
+    this.push = new PushAPI(request);
+    this.channels = new ChannelsAPI(request);
+    this.state = new StateAPI(request);
+    this.integrity = new IntegrityAPI(request);
+    this.mesh = new MeshAPI(request);
+    this.a2a = new A2AAPI(request);
   }
 
   /** Create a WebSocket connection for real-time events. */

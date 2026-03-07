@@ -5,20 +5,9 @@
    * Supports add/remove/reconnect operations.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { api } from '$lib/api';
+  import type { ChannelInfo } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
-
-  interface ChannelInfo {
-    id: string;
-    channel_type: string;
-    status: string;
-    status_message?: string;
-    agent_id: string;
-    agent_name?: string;
-    config: Record<string, unknown>;
-    last_message_at: string | null;
-    message_count: number;
-  }
 
   let channels: ChannelInfo[] = $state([]);
   let loading = $state(true);
@@ -64,7 +53,8 @@
 
   async function loadChannels() {
     try {
-      const data = await api.get<{ channels: ChannelInfo[] }>('/api/channels');
+      const client = await getGhostClient();
+      const data = await client.channels.list();
       channels = data?.channels ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
@@ -74,8 +64,9 @@
 
   async function loadAgents() {
     try {
-      const data = await api.get<{ agents: Array<{ id: string; name: string }> }>('/api/agents');
-      agents = data?.agents ?? [];
+      const client = await getGhostClient();
+      const data = await client.agents.list();
+      agents = data.map((agent) => ({ id: agent.id, name: agent.name }));
       if (agents.length > 0 && !newAgentId) {
         newAgentId = agents[0].id;
       }
@@ -85,7 +76,8 @@
   async function addChannel() {
     if (!newAgentId) return;
     try {
-      await api.post('/api/channels', {
+      const client = await getGhostClient();
+      await client.channels.create({
         channel_type: newChannelType,
         agent_id: newAgentId,
       });
@@ -98,7 +90,8 @@
 
   async function reconnect(channelId: string) {
     try {
-      await api.post(`/api/channels/${channelId}/reconnect`);
+      const client = await getGhostClient();
+      await client.channels.reconnect(channelId);
       await loadChannels();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to reconnect';
@@ -108,7 +101,8 @@
   async function removeChannel(channelId: string) {
     if (!confirm('Remove this channel?')) return;
     try {
-      await api.del(`/api/channels/${channelId}`);
+      const client = await getGhostClient();
+      await client.channels.delete(channelId);
       await loadChannels();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove channel';

@@ -1,14 +1,16 @@
 <script lang="ts">
-  import { api } from '$lib/api';
+  import type { WebhookEventType, WebhookSummary } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
 
   interface Props {
     onSaved: () => void;
     editId?: string | null;
+    initialWebhook?: WebhookSummary | null;
   }
 
-  let { onSaved, editId = null }: Props = $props();
+  let { onSaved, editId = null, initialWebhook = null }: Props = $props();
 
-  const EVENT_TYPES = [
+  const EVENT_TYPES: WebhookEventType[] = [
     'intervention_change',
     'kill_switch',
     'proposal_decision',
@@ -20,11 +22,18 @@
   let name = $state('');
   let url = $state('');
   let secret = $state('');
-  let selectedEvents = $state<string[]>([]);
+  let selectedEvents = $state<WebhookEventType[]>([]);
   let saving = $state(false);
   let error = $state('');
 
-  function toggleEvent(evt: string) {
+  $effect(() => {
+    name = initialWebhook?.name ?? '';
+    url = initialWebhook?.url ?? '';
+    secret = '';
+    selectedEvents = [...(initialWebhook?.events ?? [])];
+  });
+
+  function toggleEvent(evt: WebhookEventType) {
     if (selectedEvents.includes(evt)) {
       selectedEvents = selectedEvents.filter(e => e !== evt);
     } else {
@@ -37,13 +46,18 @@
       error = 'Name and URL are required';
       return;
     }
+    if (!editId && !secret.trim()) {
+      error = 'Secret is required for new webhooks';
+      return;
+    }
     saving = true;
     error = '';
     try {
+      const client = await getGhostClient();
       if (editId) {
-        await api.put(`/api/webhooks/${editId}`, { name, url, events: selectedEvents });
+        await client.webhooks.update(editId, { name, url, events: selectedEvents });
       } else {
-        await api.post('/api/webhooks', { name, url, secret, events: selectedEvents });
+        await client.webhooks.create({ name, url, secret, events: selectedEvents });
       }
       onSaved();
     } catch (e: unknown) {
@@ -72,7 +86,7 @@
   {#if !editId}
     <label class="field">
       <span>Secret (HMAC signing)</span>
-      <input type="password" bind:value={secret} placeholder="Optional shared secret" />
+      <input type="password" bind:value={secret} placeholder="Required shared secret" />
     </label>
   {/if}
 

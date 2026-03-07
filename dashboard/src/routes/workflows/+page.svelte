@@ -4,20 +4,11 @@
    * Visual DAG editor + save/load/execute.
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
   import WorkflowCanvas from '../../components/WorkflowCanvas.svelte';
   import type { WorkflowNode, WorkflowEdge } from '../../components/WorkflowCanvas.svelte';
   import WorkflowNodeConfig from '../../components/WorkflowNodeConfig.svelte';
-
-  interface Workflow {
-    id: string;
-    name: string;
-    description: string;
-    nodes: WorkflowNode[];
-    edges: WorkflowEdge[];
-    created_at: string;
-    updated_at: string;
-  }
+  import type { ExecuteWorkflowResult, Workflow } from '@ghost/sdk';
 
   // Workflow list
   let workflows: Workflow[] = $state([]);
@@ -35,16 +26,7 @@
   let saving = $state(false);
   let executing = $state(false);
   // T-5.9.5: Typed execution result.
-  interface ExecutionResult {
-    execution_id: string;
-    workflow_id: string;
-    workflow_name: string;
-    status: string;
-    mode: string;
-    steps: Array<{ step: number; node_id: string; node_type: string; result: { status: string } }>;
-    input?: unknown;
-  }
-  let executeResult: ExecutionResult | null = $state(null);
+  let executeResult: ExecuteWorkflowResult | null = $state(null);
   let error = $state('');
 
   let canvas: WorkflowCanvas;
@@ -58,7 +40,8 @@
   async function loadWorkflows() {
     try {
       listLoading = true;
-      const data = await api.get('/api/workflows?limit=50');
+      const client = await getGhostClient();
+      const data = await client.workflows.list({ limit: 50 });
       workflows = data?.workflows ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load workflows';
@@ -79,10 +62,11 @@
 
   async function loadWorkflow(id: string) {
     try {
-      const data = await api.get(`/api/workflows/${id}`);
+      const client = await getGhostClient();
+      const data = await client.workflows.get(id);
       activeWorkflow = data;
-      nodes = data.nodes ?? [];
-      edges = data.edges ?? [];
+      nodes = (data.nodes as WorkflowNode[]) ?? [];
+      edges = (data.edges as WorkflowEdge[]) ?? [];
       workflowName = data.name;
       workflowDesc = data.description ?? '';
       selectedNodeId = null;
@@ -100,16 +84,23 @@
       const payload = {
         name: workflowName,
         description: workflowDesc,
-        nodes: JSON.stringify(nodes),
-        edges: JSON.stringify(edges),
+        nodes,
+        edges,
       };
 
+      const client = await getGhostClient();
       if (activeWorkflow) {
-        await api.put(`/api/workflows/${activeWorkflow.id}`, payload);
+        await client.workflows.update(activeWorkflow.id, payload);
         activeWorkflow = { ...activeWorkflow, name: workflowName, description: workflowDesc, nodes, edges };
       } else {
-        const data = await api.post('/api/workflows', payload);
-        activeWorkflow = data;
+        const data = await client.workflows.create(payload);
+        activeWorkflow = {
+          id: data.id,
+          name: data.name,
+          description: data.description,
+          nodes,
+          edges,
+        };
       }
       await loadWorkflows();
     } catch (e: unknown) {
@@ -124,7 +115,8 @@
     executeResult = null;
     error = '';
     try {
-      const data = await api.post(`/api/workflows/${activeWorkflow.id}/execute`);
+      const client = await getGhostClient();
+      const data = await client.workflows.execute(activeWorkflow.id);
       executeResult = data;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Execution failed';

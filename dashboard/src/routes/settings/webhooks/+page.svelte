@@ -1,24 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import type { WebhookSummary } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import WebhookForm from '../../../components/WebhookForm.svelte';
-
-  interface WebhookSummary {
-    id: string;
-    name: string;
-    url: string;
-    events: string[];
-    active: boolean;
-    created_at: string;
-    updated_at: string;
-  }
 
   let webhooks = $state<WebhookSummary[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let showForm = $state(false);
   let editId = $state<string | null>(null);
+  let editWebhookData = $state<WebhookSummary | null>(null);
   let testingId = $state<string | null>(null);
   let testResult = $state<{ id: string; success: boolean; code: number } | null>(null);
 
@@ -34,7 +26,8 @@
     loading = true;
     error = null;
     try {
-      const data = await api.get('/api/webhooks');
+      const client = await getGhostClient();
+      const data = await client.webhooks.list();
       webhooks = data.webhooks ?? [];
     } catch (e: unknown) {
       // T-5.9.2: Show error instead of swallowing.
@@ -47,7 +40,8 @@
   async function deleteWebhook(id: string) {
     if (!confirm('Delete this webhook?')) return;
     try {
-      await api.del(`/api/webhooks/${id}`);
+      const client = await getGhostClient();
+      await client.webhooks.delete(id);
       await loadWebhooks();
     } catch (e: unknown) {
       // T-5.9.2: Show error instead of swallowing.
@@ -59,7 +53,8 @@
     testingId = id;
     testResult = null;
     try {
-      const data = await api.post(`/api/webhooks/${id}/test`, {});
+      const client = await getGhostClient();
+      const data = await client.webhooks.test(id);
       testResult = { id, success: data.success, code: data.status_code };
     } catch {
       testResult = { id, success: false, code: 0 };
@@ -71,11 +66,13 @@
   function onFormSaved() {
     showForm = false;
     editId = null;
+    editWebhookData = null;
     loadWebhooks();
   }
 
   function editWebhook(wh: WebhookSummary) {
     editId = wh.id;
+    editWebhookData = wh;
     showForm = true;
   }
 </script>
@@ -86,14 +83,23 @@
       <h1>Webhooks</h1>
       <p class="subtitle">Configure webhook endpoints for event notifications</p>
     </div>
-    <button class="add-btn" onclick={() => { showForm = !showForm; if (!showForm) editId = null; }}>
+    <button
+      class="add-btn"
+      onclick={() => {
+        showForm = !showForm;
+        if (!showForm) {
+          editId = null;
+          editWebhookData = null;
+        }
+      }}
+    >
       {showForm ? 'Cancel' : '+ New Webhook'}
     </button>
   </header>
 
   {#if showForm}
     <div class="form-container">
-      <WebhookForm onSaved={onFormSaved} {editId} />
+      <WebhookForm onSaved={onFormSaved} {editId} initialWebhook={editWebhookData} />
     </div>
   {/if}
 

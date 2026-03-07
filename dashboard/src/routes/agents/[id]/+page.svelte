@@ -7,7 +7,6 @@
   */
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
-  import { api } from '$lib/api';
   import { getGhostClient } from '$lib/ghost-client';
   import type {
     AgentCostInfo,
@@ -61,8 +60,8 @@
         client.costs.list().catch(() => []),
         client.runtimeSessions.list({ page_size: 10 }).catch(() => ({ sessions: [] })),
         client.audit.query({ agent_id: agentId, page_size: 20 }).catch(() => ({ entries: [] })),
-        api.get(`/api/state/crdt/${agentId}?limit=50`).catch(() => null),
-        api.get(`/api/integrity/chain/${agentId}`).catch(() => null),
+        client.state.getCrdtState(agentId, { limit: 50 }).catch(() => null),
+        client.integrity.verifyChain(agentId).catch(() => null),
       ]);
 
       const agents: AgentDetail[] = agentsData ?? [];

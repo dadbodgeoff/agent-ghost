@@ -44,17 +44,9 @@
   let saveSuccess: string | null = $state(null);
 
   async function saveLimits() {
-    saving = true;
     error = null;
     saveSuccess = null;
-    try {
-      await api.put('/api/settings/limits', { spending_cap: spendingCap, recursion_depth: recursionDepth });
-      saveSuccess = 'Settings saved.';
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to save settings';
-    } finally {
-      saving = false;
-    }
+    error = 'Gateway settings limits are not exposed by the runtime API yet.';
   }
 
   const SAFETY_POLICIES = [

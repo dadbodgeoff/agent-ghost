@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import { getGhostClient } from '$lib/ghost-client';
 
   const CATEGORIES = [
     { id: 'intervention', label: 'Intervention Changes', desc: 'Agent paused, resumed, quarantined' },
@@ -15,6 +15,13 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+
+  function decodeApplicationServerKey(key: string): Uint8Array {
+    const padding = '='.repeat((4 - (key.length % 4)) % 4);
+    const normalized = (key + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(normalized);
+    return Uint8Array.from(raw, (char) => char.charCodeAt(0));
+  }
 
   onMount(async () => {
     pushSupported = 'PushManager' in window && 'Notification' in window;
@@ -50,15 +57,16 @@
 
   async function subscribePush() {
     try {
+      const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
-      const keyData = await api.get('/api/push/vapid-key');
+      const keyData = await client.push.getVapidKey();
       if (!keyData.key) return;
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: keyData.key,
+        applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
-      await api.post('/api/push/subscribe', sub.toJSON());
+      await client.push.subscribe(sub.toJSON());
     } catch {
       // Push subscription failed.
     }
@@ -66,9 +74,11 @@
 
   async function unsubscribePush() {
     try {
+      const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
+        await client.push.unsubscribe(sub.toJSON());
         await sub.unsubscribe();
       }
     } catch {

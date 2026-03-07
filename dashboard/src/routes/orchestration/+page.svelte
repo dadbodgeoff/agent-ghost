@@ -6,7 +6,16 @@
    * Ref: T-3.9.1, T-3.9.2, T-3.9.3, T-4.4.1
    */
   import { onMount } from 'svelte';
-  import { api } from '$lib/api';
+  import type {
+    A2ATask,
+    ConsensusRound,
+    Delegation,
+    DiscoveredA2AAgent,
+    SybilMetrics,
+    TrustEdge,
+    TrustNode,
+  } from '@ghost/sdk';
+  import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import A2AAgentCard from '../../components/A2AAgentCard.svelte';
   import A2ATaskTracker from '../../components/A2ATaskTracker.svelte';
@@ -22,41 +31,6 @@
 
   // ── Types ────────────────────────────────────────────────────────
 
-  interface TrustNode {
-    id: string;
-    name: string;
-    activity: number;
-    convergence_level: number;
-  }
-
-  interface TrustEdge {
-    source: string;
-    target: string;
-    trust_score: number;
-  }
-
-  interface ConsensusRound {
-    proposal_id: string;
-    status: string;
-    approvals: number;
-    rejections: number;
-    threshold: number;
-  }
-
-  interface Delegation {
-    delegator_id: string;
-    delegate_id: string;
-    scope: string;
-    trust_level: number;
-    created_at: string;
-  }
-
-  interface SybilMetrics {
-    total_delegations: number;
-    max_chain_depth: number;
-    unique_delegators: number;
-  }
-
   // ── State ────────────────────────────────────────────────────────
 
   let trustNodes: TrustNode[] = $state([]);
@@ -68,26 +42,7 @@
   let activeTab: 'trust' | 'consensus' | 'sybil' | 'a2a' = $state('trust');
 
   // A2A discovery state (T-4.4.1)
-  interface DiscoveredAgent {
-    name: string;
-    description: string;
-    endpoint_url: string;
-    capabilities: string[];
-    trust_score: number;
-    version: string;
-    reachable: boolean;
-  }
-
-  interface A2ATask {
-    id: string;
-    target_agent: string;
-    target_url: string;
-    method: string;
-    status: string;
-    created_at: string;
-  }
-
-  let discoveredAgents = $state<DiscoveredAgent[]>([]);
+  let discoveredAgents = $state<DiscoveredA2AAgent[]>([]);
   let a2aTasks = $state<A2ATask[]>([]);
   let discovering = $state(false);
   let sendingTask = $state(false);
@@ -122,10 +77,11 @@
 
   async function loadAll() {
     try {
+      const client = await getGhostClient();
       const [trustRes, consensusRes, delegationsRes] = await Promise.all([
-        api.get('/api/mesh/trust-graph'),
-        api.get('/api/mesh/consensus'),
-        api.get('/api/mesh/delegations'),
+        client.mesh.trustGraph(),
+        client.mesh.consensus(),
+        client.mesh.delegations(),
       ]);
       trustNodes = trustRes.nodes ?? [];
       trustEdges = trustRes.edges ?? [];
@@ -140,9 +96,10 @@
 
   async function loadA2A() {
     try {
+      const client = await getGhostClient();
       const [agentsRes, tasksRes] = await Promise.all([
-        api.get('/api/a2a/discover'),
-        api.get('/api/a2a/tasks'),
+        client.a2a.discoverAgents(),
+        client.a2a.listTasks(),
       ]);
       discoveredAgents = agentsRes.agents ?? [];
       a2aTasks = tasksRes.tasks ?? [];
@@ -155,8 +112,11 @@
   async function discoverAgents() {
     discovering = true;
     try {
-      await api.post('/api/a2a/discover', {});
-      await loadA2A();
+      const client = await getGhostClient();
+      const result = await client.a2a.discoverAgents();
+      discoveredAgents = result.agents ?? [];
+      const tasks = await client.a2a.listTasks();
+      a2aTasks = tasks.tasks ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Agent discovery failed';
     } finally {
@@ -168,7 +128,8 @@
     if (!sendTarget.trim() || !sendInput.trim()) return;
     sendingTask = true;
     try {
-      await api.post('/api/a2a/tasks', {
+      const client = await getGhostClient();
+      await client.a2a.sendTask({
         target_url: sendTarget.trim(),
         input: JSON.parse(sendInput.trim()),
       });
@@ -446,7 +407,7 @@
                   <td class="mono">{d.delegator_id.slice(0, 8)}…</td>
                   <td class="mono">{d.delegate_id.slice(0, 8)}…</td>
                   <td>{d.scope || '—'}</td>
-                  <td class="mono">{d.trust_level.toFixed(2)}</td>
+                  <td>{d.state || '—'}</td>
                   <td class="mono">{d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'}</td>
                 </tr>
               {/each}
