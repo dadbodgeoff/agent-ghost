@@ -38,19 +38,29 @@ impl MouseMoveSkill {
         circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
         backend: Arc<Mutex<dyn InputBackend>>,
     ) -> Self {
-        Self { validator, circuit_breaker, backend }
+        Self {
+            validator,
+            circuit_breaker,
+            backend,
+        }
     }
 }
 
 impl Skill for MouseMoveSkill {
-    fn name(&self) -> &str { "mouse_move" }
+    fn name(&self) -> &str {
+        "mouse_move"
+    }
 
     fn description(&self) -> &str {
         "Move mouse cursor to screen coordinates"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let x = input.get("x").and_then(|v| v.as_i64()).ok_or_else(|| {
@@ -63,7 +73,14 @@ impl Skill for MouseMoveSkill {
 
         // Safety: validate coordinates and app.
         if let ValidationResult::Denied(reason) = self.validator.validate_click(x, y, target_app) {
-            audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "mouse_move", input, &reason);
+            audit::log_blocked_action(
+                ctx.db,
+                ctx.agent_id,
+                ctx.session_id,
+                "mouse_move",
+                input,
+                &reason,
+            );
             return Err(SkillError::PcControlBlocked(reason));
         }
 
@@ -90,7 +107,14 @@ impl Skill for MouseMoveSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "mouse_move", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "mouse_move",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -129,10 +153,19 @@ mod tests {
         let mock = MockInputBackend::new();
         let validator = Arc::new(InputValidator::new(
             vec!["Firefox".into()],
-            Some(ScreenRegion { x: 0, y: 0, width: 1920, height: 1080 }),
+            Some(ScreenRegion {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }),
             vec![],
         ));
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, std::time::Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            std::time::Duration::from_secs(30),
+        )));
         let backend: Arc<Mutex<dyn InputBackend>> = Arc::new(Mutex::new(mock.clone()));
         (MouseMoveSkill::new(validator, cb, backend), mock)
     }
@@ -184,7 +217,10 @@ mod tests {
 
         let result = skill.execute(&ctx, &serde_json::json!({"x": 2000, "y": 500}));
         assert!(matches!(result, Err(SkillError::PcControlBlocked(_))));
-        assert!(mock.actions().is_empty(), "no input action should have been dispatched");
+        assert!(
+            mock.actions().is_empty(),
+            "no input action should have been dispatched"
+        );
     }
 
     #[test]

@@ -118,10 +118,7 @@ impl ConvergenceMetrics {
 
         out.push_str("# HELP ghost_violation_total Total boundary violations\n");
         out.push_str("# TYPE ghost_violation_total counter\n");
-        out.push_str(&format!(
-            "ghost_violation_total {}\n",
-            snap.violation_count
-        ));
+        out.push_str(&format!("ghost_violation_total {}\n", snap.violation_count));
 
         out
     }

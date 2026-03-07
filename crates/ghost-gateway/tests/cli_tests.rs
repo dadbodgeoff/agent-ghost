@@ -28,10 +28,7 @@ fn version_flag_succeeds() {
 
 #[test]
 fn help_shows_all_subcommands() {
-    let output = ghost_cmd()
-        .arg("--help")
-        .assert()
-        .success();
+    let output = ghost_cmd().arg("--help").assert().success();
 
     let stdout = String::from_utf8_lossy(&output.get_output().stdout);
     // Verify key subcommand groups are listed
@@ -44,12 +41,18 @@ fn help_shows_all_subcommands() {
     assert!(stdout.contains("safety"), "missing 'safety' subcommand");
     assert!(stdout.contains("config"), "missing 'config' subcommand");
     assert!(stdout.contains("db"), "missing 'db' subcommand");
-    assert!(stdout.contains("completions"), "missing 'completions' subcommand");
+    assert!(
+        stdout.contains("completions"),
+        "missing 'completions' subcommand"
+    );
     assert!(stdout.contains("channel"), "missing 'channel' subcommand");
     // Phase 4 subcommands
     assert!(stdout.contains("mesh"), "missing 'mesh' subcommand");
     assert!(stdout.contains("skill"), "missing 'skill' subcommand");
-    assert!(stdout.contains("heartbeat"), "missing 'heartbeat' subcommand");
+    assert!(
+        stdout.contains("heartbeat"),
+        "missing 'heartbeat' subcommand"
+    );
     assert!(stdout.contains("cron"), "missing 'cron' subcommand");
 }
 

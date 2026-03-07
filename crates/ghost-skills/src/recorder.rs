@@ -107,7 +107,11 @@ impl WorkflowRecorder {
         recording.status = RecordingStatus::Completed;
 
         let similarity_hash = compute_similarity_hash(&recording);
-        let total_tokens = recording.steps.iter().map(|s| s.output_summary.len() / 4).sum();
+        let total_tokens = recording
+            .steps
+            .iter()
+            .map(|s| s.output_summary.len() / 4)
+            .sum();
 
         let completed = CompletedWorkflow {
             recording,
@@ -167,7 +171,12 @@ pub fn templatize_arguments(args: &serde_json::Value) -> serde_json::Value {
     match args {
         serde_json::Value::String(s) => {
             // Replace file paths
-            if s.contains('/') && (s.contains(".rs") || s.contains(".ts") || s.contains(".py") || s.contains(".js")) {
+            if s.contains('/')
+                && (s.contains(".rs")
+                    || s.contains(".ts")
+                    || s.contains(".py")
+                    || s.contains(".js"))
+            {
                 return serde_json::Value::String("{file_path}".into());
             }
             // Replace URLs
@@ -196,13 +205,16 @@ mod tests {
         let mut recorder = WorkflowRecorder::new();
         let sid = Uuid::now_v7();
         recorder.start_recording(sid, "fix the bug");
-        recorder.record_step(sid, WorkflowStep {
-            tool_name: "file_read".into(),
-            arguments_template: serde_json::json!({"path": "{file_path}"}),
-            output_summary: "file contents".into(),
-            duration_ms: 100,
-            succeeded: true,
-        });
+        recorder.record_step(
+            sid,
+            WorkflowStep {
+                tool_name: "file_read".into(),
+                arguments_template: serde_json::json!({"path": "{file_path}"}),
+                output_summary: "file contents".into(),
+                duration_ms: 100,
+                succeeded: true,
+            },
+        );
         let completed = recorder.complete(sid);
         assert!(completed.is_some());
         let c = completed.unwrap();
@@ -227,13 +239,16 @@ mod tests {
 
         for sid in [sid1, sid2] {
             recorder.start_recording(sid, "test");
-            recorder.record_step(sid, WorkflowStep {
-                tool_name: "file_read".into(),
-                arguments_template: serde_json::json!({"path": "different_path"}),
-                output_summary: "output".into(),
-                duration_ms: 50,
-                succeeded: true,
-            });
+            recorder.record_step(
+                sid,
+                WorkflowStep {
+                    tool_name: "file_read".into(),
+                    arguments_template: serde_json::json!({"path": "different_path"}),
+                    output_summary: "output".into(),
+                    duration_ms: 50,
+                    succeeded: true,
+                },
+            );
         }
 
         let c1 = recorder.complete(sid1).unwrap();
@@ -248,22 +263,28 @@ mod tests {
         let sid2 = Uuid::now_v7();
 
         recorder.start_recording(sid1, "test");
-        recorder.record_step(sid1, WorkflowStep {
-            tool_name: "file_read".into(),
-            arguments_template: serde_json::json!({}),
-            output_summary: "".into(),
-            duration_ms: 0,
-            succeeded: true,
-        });
+        recorder.record_step(
+            sid1,
+            WorkflowStep {
+                tool_name: "file_read".into(),
+                arguments_template: serde_json::json!({}),
+                output_summary: "".into(),
+                duration_ms: 0,
+                succeeded: true,
+            },
+        );
 
         recorder.start_recording(sid2, "test");
-        recorder.record_step(sid2, WorkflowStep {
-            tool_name: "web_search".into(),
-            arguments_template: serde_json::json!({}),
-            output_summary: "".into(),
-            duration_ms: 0,
-            succeeded: true,
-        });
+        recorder.record_step(
+            sid2,
+            WorkflowStep {
+                tool_name: "web_search".into(),
+                arguments_template: serde_json::json!({}),
+                output_summary: "".into(),
+                duration_ms: 0,
+                succeeded: true,
+            },
+        );
 
         let c1 = recorder.complete(sid1).unwrap();
         let c2 = recorder.complete(sid2).unwrap();

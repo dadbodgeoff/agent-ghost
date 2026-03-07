@@ -105,10 +105,7 @@ impl<'a> AuditAggregation<'a> {
 
     fn total_entries(&self, agent_id: Option<&str>) -> AuditResult<u64> {
         let (where_clause, param) = agent_filter(agent_id, 1);
-        let sql = format!(
-            "SELECT COUNT(*) FROM audit_log WHERE 1=1 {}",
-            where_clause
-        );
+        let sql = format!("SELECT COUNT(*) FROM audit_log WHERE 1=1 {}", where_clause);
         let count: u64 = if let Some(ref p) = param {
             self.conn
                 .query_row(&sql, params![p], |row| row.get(0))

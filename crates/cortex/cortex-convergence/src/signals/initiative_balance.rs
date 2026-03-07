@@ -5,9 +5,15 @@ use super::{PrivacyLevel, Signal, SignalInput};
 pub struct InitiativeBalanceSignal;
 
 impl Signal for InitiativeBalanceSignal {
-    fn id(&self) -> u8 { 6 }
-    fn name(&self) -> &'static str { "initiative_balance" }
-    fn requires_privacy_level(&self) -> PrivacyLevel { PrivacyLevel::Minimal }
+    fn id(&self) -> u8 {
+        6
+    }
+    fn name(&self) -> &'static str {
+        "initiative_balance"
+    }
+    fn requires_privacy_level(&self) -> PrivacyLevel {
+        PrivacyLevel::Minimal
+    }
 
     fn compute(&self, data: &SignalInput) -> f64 {
         if data.total_message_count == 0 {

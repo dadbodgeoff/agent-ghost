@@ -1,13 +1,13 @@
 //! 8 convergence signals (Req 5 AC1).
 
-pub mod session_duration;
-pub mod inter_session_gap;
-pub mod response_latency;
-pub mod vocabulary_convergence;
+pub mod behavioral_anomaly;
+pub mod disengagement_resistance;
 pub mod goal_boundary_erosion;
 pub mod initiative_balance;
-pub mod disengagement_resistance;
-pub mod behavioral_anomaly;
+pub mod inter_session_gap;
+pub mod response_latency;
+pub mod session_duration;
+pub mod vocabulary_convergence;
 
 /// Privacy level for signal computation (mirrors itp-protocol).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

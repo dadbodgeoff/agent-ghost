@@ -97,7 +97,10 @@ impl ObservationMasker {
                     assistant_turn_index += 1;
                     result.push_str(&block.content);
                 }
-                BlockType::ToolResult { ref tool_name, ref tool_call_id } => {
+                BlockType::ToolResult {
+                    ref tool_name,
+                    ref tool_call_id,
+                } => {
                     let token_count = self.counter.count(&block.content);
                     let should_mask = assistant_turn_index <= mask_threshold
                         && token_count >= self.min_token_threshold;
@@ -139,7 +142,9 @@ impl ObservationMasker {
             .split("ref:")
             .nth(1)
             .and_then(|s| s.strip_suffix(']'))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid reference format"))?;
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "Invalid reference format")
+            })?;
 
         // We need the full hash to load — the reference only has 8 chars.
         // Search cache directory for a file starting with this prefix.
@@ -271,7 +276,8 @@ impl ObservationMasker {
         line.find(field).map(|start| {
             let value_start = start + field.len();
             let rest = &line[value_start..];
-            let end = rest.find(|c: char| c.is_whitespace() || c == ']' || c == ',')
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == ']' || c == ',')
                 .unwrap_or(rest.len());
             rest[..end].trim().to_string()
         })

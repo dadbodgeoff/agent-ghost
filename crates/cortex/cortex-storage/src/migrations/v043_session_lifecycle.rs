@@ -4,9 +4,9 @@
 //! updated on every message insert. Sessions beyond TTL are soft-deleted
 //! (deleted_at set), then hard-deleted after 2x TTL.
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -34,6 +34,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
          CREATE INDEX IF NOT EXISTS idx_studio_sessions_deleted_at
              ON studio_chat_sessions(deleted_at)
              WHERE deleted_at IS NOT NULL;
-        "
-    ).map_err(|e| to_storage_err(e.to_string()))
+        ",
+    )
+    .map_err(|e| to_storage_err(e.to_string()))
 }

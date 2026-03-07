@@ -37,19 +37,29 @@ impl KeyboardTypeSkill {
         circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
         backend: Arc<Mutex<dyn InputBackend>>,
     ) -> Self {
-        Self { validator, circuit_breaker, backend }
+        Self {
+            validator,
+            circuit_breaker,
+            backend,
+        }
     }
 }
 
 impl Skill for KeyboardTypeSkill {
-    fn name(&self) -> &str { "keyboard_type" }
+    fn name(&self) -> &str {
+        "keyboard_type"
+    }
 
     fn description(&self) -> &str {
         "Type a text string via keyboard simulation"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let text = input.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -64,13 +74,25 @@ impl Skill for KeyboardTypeSkill {
         // Safety: validate app if specified.
         if let Some(app) = target_app {
             if let ValidationResult::Denied(reason) = self.validator.validate_app(app) {
-                audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "keyboard_type", input, &reason);
+                audit::log_blocked_action(
+                    ctx.db,
+                    ctx.agent_id,
+                    ctx.session_id,
+                    "keyboard_type",
+                    input,
+                    &reason,
+                );
                 return Err(SkillError::PcControlBlocked(reason));
             }
         }
 
         // Safety: circuit breaker.
-        { self.circuit_breaker.lock().unwrap().check("keyboard_type")?; }
+        {
+            self.circuit_breaker
+                .lock()
+                .unwrap()
+                .check("keyboard_type")?;
+        }
 
         // Execute: type the text.
         {
@@ -79,14 +101,23 @@ impl Skill for KeyboardTypeSkill {
         }
 
         // Record success.
-        { self.circuit_breaker.lock().unwrap().record_success(); }
+        {
+            self.circuit_breaker.lock().unwrap().record_success();
+        }
 
         let result = serde_json::json!({
             "typed_length": text.len(),
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "keyboard_type", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "keyboard_type",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -116,13 +147,22 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> (KeyboardTypeSkill, MockInputBackend) {
         let mock = MockInputBackend::new();
         let validator = Arc::new(InputValidator::new(vec!["Firefox".into()], None, vec![]));
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, std::time::Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            std::time::Duration::from_secs(30),
+        )));
         let backend: Arc<Mutex<dyn InputBackend>> = Arc::new(Mutex::new(mock.clone()));
         (KeyboardTypeSkill::new(validator, cb, backend), mock)
     }
@@ -133,13 +173,18 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"text": "hello world"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"text": "hello world"}))
+            .unwrap();
         assert_eq!(result["status"], "ok");
         assert_eq!(result["typed_length"], 11);
 
         let actions = mock.actions();
         assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0], RecordedAction::KeySequence("hello world".into()));
+        assert_eq!(
+            actions[0],
+            RecordedAction::KeySequence("hello world".into())
+        );
     }
 
     #[test]
@@ -168,7 +213,10 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"text": "hi", "target_app": "Terminal"}));
+        let result = skill.execute(
+            &ctx,
+            &serde_json::json!({"text": "hi", "target_app": "Terminal"}),
+        );
         assert!(matches!(result, Err(SkillError::PcControlBlocked(_))));
         assert!(mock.actions().is_empty());
     }

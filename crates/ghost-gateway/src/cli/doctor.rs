@@ -12,7 +12,7 @@ use crate::bootstrap::{ghost_home, shellexpand_tilde};
 use crate::config::GhostConfig;
 
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 #[derive(Debug, Clone, Serialize)]
 struct CheckResult {
@@ -130,7 +130,11 @@ pub async fn run_with_output(output: OutputFormat) -> Result<(), CliError> {
         name: "Database file".into(),
         passed: db_exists,
         detail: if db_exists {
-            format!("{} ({})", db_path.display(), if sqlite_ok { "OK" } else { "error" })
+            format!(
+                "{} ({})",
+                db_path.display(),
+                if sqlite_ok { "OK" } else { "error" }
+            )
         } else {
             format!("{} not found — run `ghost db migrate`", db_path.display())
         },
@@ -206,10 +210,7 @@ pub async fn run_with_output(output: OutputFormat) -> Result<(), CliError> {
     }
 
     let all_passed = checks.iter().all(|c| c.passed);
-    let report = DoctorReport {
-        checks,
-        all_passed,
-    };
+    let report = DoctorReport { checks, all_passed };
 
     print_output(&report, output);
 

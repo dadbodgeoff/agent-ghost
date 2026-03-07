@@ -56,9 +56,7 @@ impl Skill for FormatCodeSkill {
             .get("source_code")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                SkillError::InvalidInput(
-                    "missing required field 'source_code' (string)".into(),
-                )
+                SkillError::InvalidInput("missing required field 'source_code' (string)".into())
             })?;
 
         let indent_size = input
@@ -304,10 +302,7 @@ mod tests {
         let ctx = test_ctx(&db);
 
         let clean = "fn main() {\n    hello();\n}\n";
-        let result = FormatCodeSkill.execute(
-            &ctx,
-            &serde_json::json!({ "source_code": clean }),
-        );
+        let result = FormatCodeSkill.execute(&ctx, &serde_json::json!({ "source_code": clean }));
         assert!(result.is_ok());
 
         let val = result.unwrap();

@@ -99,6 +99,8 @@ fn unrestricted_allows_everything() {
     };
 
     policy.apply(&agent_id, &config).unwrap();
-    assert!(policy.check_domain(&agent_id, "anything.example.com").unwrap());
+    assert!(policy
+        .check_domain(&agent_id, "anything.example.com")
+        .unwrap());
     policy.remove(&agent_id).unwrap();
 }

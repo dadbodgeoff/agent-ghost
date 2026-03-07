@@ -39,9 +39,7 @@ impl Skill for ReflectionReadSkill {
             .unwrap_or("current_session");
 
         match mode {
-            "current_session" => {
-                self.read_session_reflections(ctx, &agent_id_str)
-            }
+            "current_session" => self.read_session_reflections(ctx, &agent_id_str),
             "by_session" => {
                 let session_id = input
                     .get("session_id")
@@ -54,10 +52,7 @@ impl Skill for ReflectionReadSkill {
                 self.read_reflections_by_session(ctx, &agent_id_str, session_id)
             }
             "recent" => {
-                let limit = input
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(10) as u32;
+                let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as u32;
                 self.read_recent_reflections(ctx, &agent_id_str, limit)
             }
             other => Err(SkillError::InvalidInput(format!(
@@ -70,18 +65,12 @@ impl Skill for ReflectionReadSkill {
 
 impl ReflectionReadSkill {
     /// Read reflections from the current session.
-    fn read_session_reflections(
-        &self,
-        ctx: &SkillContext<'_>,
-        _agent_id: &str,
-    ) -> SkillResult {
+    fn read_session_reflections(&self, ctx: &SkillContext<'_>, _agent_id: &str) -> SkillResult {
         let session_id_str = ctx.session_id.to_string();
 
-        let rows = cortex_storage::queries::reflection_queries::query_by_session(
-            ctx.db,
-            &session_id_str,
-        )
-        .map_err(|e| SkillError::Storage(format!("query session reflections: {e}")))?;
+        let rows =
+            cortex_storage::queries::reflection_queries::query_by_session(ctx.db, &session_id_str)
+                .map_err(|e| SkillError::Storage(format!("query session reflections: {e}")))?;
 
         let reflections = format_reflection_rows(&rows);
 
@@ -100,11 +89,9 @@ impl ReflectionReadSkill {
         _agent_id: &str,
         session_id: &str,
     ) -> SkillResult {
-        let rows = cortex_storage::queries::reflection_queries::query_by_session(
-            ctx.db,
-            session_id,
-        )
-        .map_err(|e| SkillError::Storage(format!("query session reflections: {e}")))?;
+        let rows =
+            cortex_storage::queries::reflection_queries::query_by_session(ctx.db, session_id)
+                .map_err(|e| SkillError::Storage(format!("query session reflections: {e}")))?;
 
         let reflections = format_reflection_rows(&rows);
 
@@ -263,10 +250,8 @@ mod tests {
             convergence_profile: "standard",
         };
 
-        let result = ReflectionReadSkill.execute(
-            &ctx,
-            &serde_json::json!({"mode": "current_session"}),
-        );
+        let result =
+            ReflectionReadSkill.execute(&ctx, &serde_json::json!({"mode": "current_session"}));
         assert!(result.is_ok());
 
         let val = result.unwrap();
@@ -339,10 +324,8 @@ mod tests {
             convergence_profile: "standard",
         };
 
-        let result = ReflectionReadSkill.execute(
-            &ctx,
-            &serde_json::json!({"mode": "recent", "limit": 3}),
-        );
+        let result =
+            ReflectionReadSkill.execute(&ctx, &serde_json::json!({"mode": "recent", "limit": 3}));
         assert!(result.is_ok());
 
         let val = result.unwrap();
@@ -359,10 +342,7 @@ mod tests {
             convergence_profile: "standard",
         };
 
-        let result = ReflectionReadSkill.execute(
-            &ctx,
-            &serde_json::json!({"mode": "by_session"}),
-        );
+        let result = ReflectionReadSkill.execute(&ctx, &serde_json::json!({"mode": "by_session"}));
         assert!(result.is_err());
         match result.unwrap_err() {
             SkillError::InvalidInput(msg) => {
@@ -382,10 +362,8 @@ mod tests {
             convergence_profile: "standard",
         };
 
-        let result = ReflectionReadSkill.execute(
-            &ctx,
-            &serde_json::json!({"mode": "invalid_mode"}),
-        );
+        let result =
+            ReflectionReadSkill.execute(&ctx, &serde_json::json!({"mode": "invalid_mode"}));
         assert!(result.is_err());
     }
 

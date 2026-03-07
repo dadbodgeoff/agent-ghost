@@ -85,18 +85,14 @@ impl AutoTriggerEvaluator {
                 if let Some(aid) = agent_id {
                     self.kill_switch.activate_agent(aid, level, &trigger);
                     // T6 cascade: check if ≥3 agents quarantined → KILL_ALL
-                    if level == KillLevel::Quarantine
-                        && self.kill_switch.quarantined_count() >= 3
-                    {
+                    if level == KillLevel::Quarantine && self.kill_switch.quarantined_count() >= 3 {
                         // Collect actual quarantined agent data for the trigger
                         let state = self.kill_switch.current_state();
                         let quarantined: Vec<(uuid::Uuid, String)> = state
                             .per_agent
                             .iter()
                             .filter(|(_, s)| s.level == KillLevel::Quarantine)
-                            .map(|(id, s)| {
-                                (*id, s.trigger.clone().unwrap_or_default())
-                            })
+                            .map(|(id, s)| (*id, s.trigger.clone().unwrap_or_default()))
                             .collect();
                         let agents: Vec<uuid::Uuid> =
                             quarantined.iter().map(|(id, _)| *id).collect();
@@ -146,9 +142,7 @@ fn classify_trigger(trigger: &TriggerEvent) -> (KillLevel, Option<Uuid>) {
             (KillLevel::Quarantine, Some(*agent_id))
         }
         TriggerEvent::ManualPause { agent_id, .. } => (KillLevel::Pause, Some(*agent_id)),
-        TriggerEvent::ManualQuarantine { agent_id, .. } => {
-            (KillLevel::Quarantine, Some(*agent_id))
-        }
+        TriggerEvent::ManualQuarantine { agent_id, .. } => (KillLevel::Quarantine, Some(*agent_id)),
         TriggerEvent::ManualKillAll { .. } => (KillLevel::KillAll, None),
         TriggerEvent::NetworkEgressViolation { agent_id, .. } => {
             (KillLevel::Quarantine, Some(*agent_id))
@@ -176,9 +170,7 @@ fn compute_dedup_key(trigger: &TriggerEvent) -> DedupKey {
             ("MemoryHealthCritical", Some(*agent_id))
         }
         TriggerEvent::ManualPause { agent_id, .. } => ("ManualPause", Some(*agent_id)),
-        TriggerEvent::ManualQuarantine { agent_id, .. } => {
-            ("ManualQuarantine", Some(*agent_id))
-        }
+        TriggerEvent::ManualQuarantine { agent_id, .. } => ("ManualQuarantine", Some(*agent_id)),
         TriggerEvent::ManualKillAll { .. } => ("ManualKillAll", None),
         TriggerEvent::NetworkEgressViolation { agent_id, .. } => {
             ("NetworkEgressViolation", Some(*agent_id))

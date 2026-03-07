@@ -95,10 +95,7 @@ impl KillGateRelay {
     }
 
     /// Build a close notification message for fan-out.
-    pub fn build_close_notification(
-        &self,
-        event: GateChainEvent,
-    ) -> GateRelayMessage {
+    pub fn build_close_notification(&self, event: GateChainEvent) -> GateRelayMessage {
         GateRelayMessage::CloseNotification {
             origin_node: self.gate.node_id(),
             event,
@@ -106,18 +103,16 @@ impl KillGateRelay {
     }
 
     /// Process an incoming relay message. Returns optional response.
-    pub fn process_message(
-        &mut self,
-        msg: GateRelayMessage,
-    ) -> Option<GateRelayMessage> {
+    pub fn process_message(&mut self, msg: GateRelayMessage) -> Option<GateRelayMessage> {
         match msg {
-            GateRelayMessage::CloseNotification { origin_node, event: _ } => {
+            GateRelayMessage::CloseNotification {
+                origin_node,
+                event: _,
+            } => {
                 // Peer is closing their gate — close ours too
                 if !self.gate.is_closed() {
-                    self.gate.close(format!(
-                        "propagated from node {}",
-                        origin_node
-                    ));
+                    self.gate
+                        .close(format!("propagated from node {}", origin_node));
                 }
                 // Send ack
                 let chain = self.gate.chain();

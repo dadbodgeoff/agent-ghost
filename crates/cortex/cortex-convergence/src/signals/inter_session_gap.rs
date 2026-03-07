@@ -5,9 +5,15 @@ use super::{PrivacyLevel, Signal, SignalInput};
 pub struct InterSessionGapSignal;
 
 impl Signal for InterSessionGapSignal {
-    fn id(&self) -> u8 { 2 }
-    fn name(&self) -> &'static str { "inter_session_gap" }
-    fn requires_privacy_level(&self) -> PrivacyLevel { PrivacyLevel::Minimal }
+    fn id(&self) -> u8 {
+        2
+    }
+    fn name(&self) -> &'static str {
+        "inter_session_gap"
+    }
+    fn requires_privacy_level(&self) -> PrivacyLevel {
+        PrivacyLevel::Minimal
+    }
 
     fn compute(&self, data: &SignalInput) -> f64 {
         match data.inter_session_gap_secs {

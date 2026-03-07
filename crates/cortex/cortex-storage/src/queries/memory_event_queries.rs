@@ -1,8 +1,8 @@
 //! Memory event queries (v016 memory_events table).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_event(
     conn: &Connection,
@@ -17,7 +17,14 @@ pub fn insert_event(
         "INSERT INTO memory_events (memory_id, event_type, delta, actor_id,
          event_hash, previous_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![memory_id, event_type, delta, actor_id, event_hash, previous_hash],
+        params![
+            memory_id,
+            event_type,
+            delta,
+            actor_id,
+            event_hash,
+            previous_hash
+        ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())

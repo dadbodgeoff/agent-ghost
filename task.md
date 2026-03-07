@@ -1,491 +1,453 @@
-# SDK-First Desktop Migration Tasks
+# Active Task Entry Point
+
+## Current Program
+
+The active execution program for this repo is the integrity hardening track:
+
+- [INTEGRITY_HARDENING_PROGRAM.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/INTEGRITY_HARDENING_PROGRAM.md)
+- [INTEGRITY_BUILD_TASKS.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/INTEGRITY_BUILD_TASKS.md)
+- [INTEGRITY_TEST_DOCTRINE.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/INTEGRITY_TEST_DOCTRINE.md)
+- [REQUEST_IDENTITY_AND_IDEMPOTENCY_DESIGN.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/REQUEST_IDENTITY_AND_IDEMPOTENCY_DESIGN.md)
+- [PROPOSAL_LINEAGE_AND_DECISION_STATE_MACHINE.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/PROPOSAL_LINEAGE_AND_DECISION_STATE_MACHINE.md)
+
+## How To Execute
+
+Use [INTEGRITY_BUILD_TASKS.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/INTEGRITY_BUILD_TASKS.md) as the implementation source of truth.
+
+Non-negotiable rules:
+
+- do not satisfy critical-path testing with mocks alone
+- do not ship happy-path-only coverage
+- do not leave replay, stale-decision, restart, or skew paths untested
+- do not keep mutable proposal-resolution semantics as the canonical model
+- do not approve by proposal ID alone once the decision contract migration begins
+
+## Release Standard
+
+Release is blocked until the evidence in [INTEGRITY_TEST_DOCTRINE.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/INTEGRITY_TEST_DOCTRINE.md) exists for the touched workstreams.
+
+## Legacy Notes
+
+The older migration hardening plan remains below for reference, but it is not the current execution entrypoint for this integrity program.
+
+# Migration Hardening Tasks
 
 ## Objective
 
-Execute the migration defined in [design.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/design.md) without a flag day rewrite.
+Execute the hardening program defined in [design.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/design.md)
+and bring the post-migration system to a releaseable state with:
 
-Target end state:
+- one truthful contract surface
+- one canonical client transport
+- one desktop runtime authority
+- no silent failure paths
+- no fake compatibility abstractions
+- adversarial coverage on every critical boundary
 
-- `packages/sdk` is the only gateway client used by the dashboard.
-- Tauri is the source of truth for desktop runtime, auth, config, and gateway lifecycle.
-- `dashboard/src/lib/api.ts` is removed.
-- `dashboard/src/lib/auth.ts` no longer exists as a session hydration workaround.
+## Program Rules
 
-## Non-Negotiable Rules
+These are blocking rules, not suggestions.
 
-These rules apply to every PR in this migration:
+- Do not add any new dashboard gateway transport outside the SDK.
+- Do not add any new direct Tauri/plugin imports outside the runtime adapter.
+- Do not add any new route-local gateway DTOs when the SDK owns the contract.
+- Do not leave a compatibility shim undocumented.
+- Do not accept a fallback path that hides drift or data loss.
+- Do not ship if a contract mismatch can silently degrade behavior.
 
-- Do not add new gateway calls through raw `fetch` in dashboard code.
-- Do not add new route-local gateway response interfaces if the type belongs in the SDK.
-- Do not mix old transport and new transport inside the same store or route.
-- Keep `main` releasable after every merged PR.
-- Prefer deleting compatibility code quickly once the replacement path is proven.
+## Global Release Gates
 
-## Critical Path
+Release is blocked until all are true:
 
-There is one correct order:
+- gateway router and exported schema are aligned
+- SDK unit and integration tests pass
+- dashboard hardening tests pass
+- Tauri runtime integration tests pass
+- no forbidden raw transport or direct Tauri imports remain
+- no fake public contract remains exported as stable
+- all critical flows have both happy-path and adversarial coverage
 
-1. freeze the old path
-2. inventory dashboard endpoint usage
-3. establish the platform runtime contract
-4. fill critical SDK coverage gaps
-5. establish the SDK-backed app client
-6. migrate shared stores
-7. migrate shell boot
-8. migrate high-complexity routes
-9. remove old helpers and add guardrails
+## Enforcement Queries
 
-Do not start route-by-route cleanup before the inventory, platform contract, and SDK-backed client exist. That creates rework.
+These must trend to zero outside approved files:
 
-## Merge Gates
+- raw gateway fetch:
+  `rg -n "fetch\\(" dashboard/src`
+- direct Tauri/plugin bypass:
+  `rg -n "@tauri-apps|tauri-pty" dashboard/src`
+- fake auth/runtime globals:
+  `rg -n "__TAURI__|__GHOST_GATEWAY_PORT__|sessionStorage" dashboard/src`
+- unsafe event access:
+  `rg -n "as any|msg\\.(level|status|signal_scores)" dashboard/src`
 
-Every migration PR must satisfy all of:
+## Workstreams
 
-- `cargo test --workspace`
-- dashboard typecheck passes
-- dashboard build passes
-- no new raw dashboard gateway `fetch(` calls were introduced
-- no new direct reads of `window.__GHOST_GATEWAY_PORT__`
-- no new direct auth reads/writes to `sessionStorage` outside the platform layer
+## W1. Contract Inventory and Freeze
 
-## Task List
+### Goal
 
-## T0. Freeze the old path
+Produce a full inventory of:
 
-Purpose:
+- gateway REST routes
+- gateway websocket events
+- SDK domain coverage
+- dashboard consumers
+- runtime-owned capabilities
 
-- stop architectural backsliding while migration is in progress
+### Tasks
 
-Actions:
+- map all mounted routes from `crates/ghost-gateway/src/bootstrap.rs`
+- map all SDK modules to actual gateway routes
+- map all dashboard routes/stores/components to SDK/runtime usage
+- classify every boundary as:
+  - `canonical`
+  - `transitional`
+  - `drifted`
+  - `dead`
 
-- mark `dashboard/src/lib/api.ts` as deprecated in comments
-- mark `dashboard/src/lib/auth.ts` as temporary migration debt
-- add a short note to PR guidance or contributing docs for this migration
+### Done When
 
-Done when:
+- every dashboard boundary call is accounted for
+- every websocket consumer has a declared event owner
+- every transitional shim is named and tracked
 
-- reviewers have a documented basis to reject new raw transport code
+### Adversarial Tests
 
-Verification:
+- inventory diff test fails when a new route is mounted without schema coverage
+- inventory diff test fails when a dashboard consumer subscribes to an unknown
+  event type
 
-- `rg -n "fetch\\(" dashboard/src`
-- `rg -n "sessionStorage|__GHOST_GATEWAY_PORT__|__TAURI__" dashboard/src`
+## W2. WebSocket Contract Unification
 
-## T1. Inventory dashboard endpoint usage
+### Goal
 
-Purpose:
+Establish one canonical realtime transport owned by the SDK.
 
-- eliminate unknown scope before migration fans out
+### Tasks
 
-Actions:
+- define the canonical websocket envelope in the SDK
+- support gateway envelope parsing in the SDK client
+- support canonical reconnect replay in the SDK client
+- standardize websocket auth behavior
+- migrate dashboard realtime consumers to the canonical event shape
+- remove or reduce dashboard-local websocket transport code
 
-- produce a mapping of dashboard callsites to SDK coverage
-- classify each endpoint as `covered`, `missing-sdk`, or `desktop-runtime`
+### Must Fix
 
-Known call clusters from current code:
+- flat vs enveloped message drift
+- deprecated query-param auth drift
+- wrong event-field reads in dashboard stores/components
+- missing event coverage for ITP if realtime ITP remains a claimed feature
 
-- auth/login/refresh
-- agents
-- convergence
-- costs
-- sessions
-- goals
-- safety
-- skills
-- search
-- memory
-- workflows
-- orchestration mesh/A2A
-- observability/traces
-- channels
-- webhooks
-- profiles
-- provider keys
-- admin backups
-- studio sessions/run
-- push notifications
-- PC control
+### Done When
 
-Files with heavy usage:
+- one websocket transport implementation remains
+- all consumers use the same typed event union
+- replay semantics are tested and deterministic
 
-- `dashboard/src/routes/+layout.svelte`
-- `dashboard/src/routes/studio/+page.svelte`
-- `dashboard/src/routes/orchestration/+page.svelte`
-- `dashboard/src/routes/security/+page.svelte`
-- `dashboard/src/routes/agents/[id]/+page.svelte`
-- `dashboard/src/lib/stores/studioChat.svelte.ts`
+### Adversarial Tests
 
-Done when:
+- rejected auth via missing token
+- rejected auth via revoked JWT
+- reconnect with replay gap inside buffer
+- reconnect with replay gap outside buffer triggers `Resync`
+- malformed envelope is dropped without corrupting state
+- duplicate event delivery does not regress state
+- follower-tab leader election does not lose replay cursor
 
-- there is no unknown endpoint used by the dashboard
-- missing SDK coverage is explicit and prioritized
+## W3. HTTP Contract Truthfulness
 
-Verification:
+### Goal
 
-- `rg -n "api\\.(get|post|put|del)\\(|fetch\\(" dashboard/src`
+Ensure exported HTTP contracts reflect the real gateway surface.
 
-## T2. Define the platform runtime contract
+### Tasks
 
-Files:
+- reconcile `api/openapi.rs` with `build_router`
+- add schema coverage for all dashboard-used endpoints
+- regenerate SDK types only from truthful schema
+- stop exporting generated types if the schema remains incomplete
 
-- `dashboard/src/lib/platform/runtime.ts`
-- `dashboard/src/lib/platform/tauri.ts`
-- `dashboard/src/lib/platform/web.ts`
+### Must Fix
 
-Actions:
+- partial OpenAPI that omits mounted routes
+- SDK export of stale generated types
+- route responses with unstable or underspecified payloads
 
-- define one interface for runtime access
-- include `getBaseUrl()`
-- include `getToken()`, `setToken()`, `clearToken()`
-- include `isDesktop()`
-- include gateway lifecycle/status methods needed by the shell
-- include a token change subscription hook if required by boot/session state
+### Done When
 
-Constraints:
+- schema covers the mounted dashboard-used route surface
+- CI fails on router/schema drift
 
-- route files must not import Tauri plugins directly
-- route files must not inspect window globals directly
+### Adversarial Tests
 
-Done when:
+- mounted route missing from schema fails CI
+- schema path missing from router fails CI
+- response DTO shape mismatch fails SDK integration tests
 
-- all runtime-specific reads can be routed through one interface
-- desktop and browser adapters both satisfy the same interface
+## W4. Auth and Session Lifecycle Hardening
 
-Verification:
+### Goal
 
-- `rg -n "__TAURI__|__GHOST_GATEWAY_PORT__|sessionStorage" dashboard/src`
+Make auth explicit, server-authoritative, and failure-safe.
 
-Expected result after T2:
+### Tasks
 
-- only platform files may still match
+- replace shell auth probing through `/api/agents`
+- add explicit session/auth validation path
+- route logout through server revocation before local clear
+- make refresh behavior canonical and testable
+- remove auth behavior that maps unrelated failures to login
 
-## T3. Fill SDK coverage gaps
+### Must Fix
 
-Files:
+- layout redirecting to `/login` on non-auth failures
+- local-only logout
+- split auth semantics across runtime, dashboard, and service worker
 
-- `packages/sdk/src/index.ts`
-- `packages/sdk/src/generated-types.ts`
-- new or expanded domain modules under `packages/sdk/src`
+### Done When
 
-Actions:
+- only 401/403 trigger auth reset logic
+- logout clears server and runtime state together
+- availability failures remain availability failures
 
-- add SDK APIs for every dashboard-used endpoint missing coverage
-- add typed WebSocket support for dashboard event usage
-- keep naming consistent with existing SDK domains
+### Adversarial Tests
 
-Priority order:
+- gateway down at app shell boot
+- gateway returns 500 during shell boot
+- expired JWT with valid refresh
+- revoked refresh token
+- logout while gateway unavailable
+- stale cached data after logout
 
-1. shell boot and auth-adjacent coverage
-2. store-backed high-frequency domains
-3. large route-only domains
-4. low-frequency admin/settings screens
+## W5. Compatibility Shim Removal
 
-Done when:
+### Goal
 
-- every dashboard gateway call is representable through the SDK
+Remove or explicitly replace fake abstractions.
 
-Verification:
+### Tasks
 
-- no migration PR needs a new raw dashboard fetch because "the SDK does not support it yet"
+- replace `ApprovalsAPI` heuristic mapping with a real contract or rename the UI
+  to goals
+- remove dead runtime globals and unused injections
+- remove transitional auth facade once runtime adapter fully covers ownership
+- identify and remove dead command paths such as missing Tauri command hooks
 
-## T4. Build the SDK-backed app client
+### Must Fix
 
-Files:
+- approvals semantics inferred from goal payload heuristics
+- silent dead desktop features
+- exported stable APIs that are really shims
 
-- `dashboard/src/lib/ghost-client.ts`
-- `packages/sdk/src/*` as needed
+### Done When
 
-Actions:
+- no public shim invents domain semantics
+- every transitional surface has an owner, deadline, and removal path
 
-- create one dashboard-facing wrapper around `GhostClient`
-- wire it to the platform runtime contract
-- centralize error normalization and auth invalidation handling
-- expose a consistent way for stores/routes to obtain the configured client
+### Adversarial Tests
 
-Constraints:
+- approval/goals list with unexpected content shape
+- empty content shape
+- high-cardinality approval list without N+1 collapse
+- missing desktop command should fail loudly in tests, not no-op in UI
 
-- do not reimplement request transport already in `packages/sdk/src/client.ts`
-- do not keep `dashboard/src/lib/api.ts` as a peer abstraction
+## W6. Desktop Runtime Consolidation
 
-Done when:
+### Goal
 
-- at least one store can migrate without importing `dashboard/src/lib/api.ts`
+Make Tauri the actual source of truth for desktop runtime behavior.
 
-Verification:
+### Tasks
 
-- dashboard typecheck passes
-- `packages/sdk` build passes
+- expand runtime adapter to cover notifications
+- expand runtime adapter to cover keybinding loading
+- expand runtime adapter to cover PTY capability
+- remove direct plugin imports from routes/components
+- remove dead injected globals if fully obsolete
 
-## T5. Migrate shared stores first
+### Must Fix
 
-Files:
+- `read_keybindings` call with no Tauri command
+- hardcoded PTY shell assumptions
+- direct desktop capability calls from dashboard
 
-- `dashboard/src/lib/stores/agents.svelte.ts`
-- `dashboard/src/lib/stores/audit.svelte.ts`
-- `dashboard/src/lib/stores/convergence.svelte.ts`
-- `dashboard/src/lib/stores/costs.svelte.ts`
-- `dashboard/src/lib/stores/memory.svelte.ts`
-- `dashboard/src/lib/stores/safety.svelte.ts`
-- `dashboard/src/lib/stores/sessions.svelte.ts`
-- `dashboard/src/lib/stores/studioChat.svelte.ts`
-- `dashboard/src/lib/stores/websocket.svelte.ts`
+### Done When
 
-Actions:
+- dashboard desktop behavior is runtime mediated only
+- runtime adapter is testable and complete for current desktop features
 
-- replace `api.ts` imports with the SDK-backed client
-- replace route-string endpoint knowledge with SDK domain methods
-- normalize error handling
-- isolate retry/reconnect behavior in one place
+### Adversarial Tests
 
-Order:
+- runtime adapter in pure web mode
+- runtime adapter in desktop mode with missing capability
+- desktop command missing or failing
+- PTY unavailable
+- notification permission denied
 
-1. `safety`
-2. `convergence`
-3. `agents`
-4. `sessions`
-5. `costs`
-6. `audit`
-7. `memory`
-8. `studioChat`
-9. `websocket`
+## W7. ITP Contract Repair
 
-Done when:
+### Goal
 
-- migrated stores no longer import `dashboard/src/lib/api.ts`
-- migrated stores do not hardcode endpoint strings
+Make the ITP route truthful and either truly live or explicitly not live.
 
-Verification:
+### Tasks
 
-- `rg -n "from '\\$lib/api'|from \"\\$lib/api\"" dashboard/src/lib/stores`
+- define the canonical ITP list payload
+- decide whether live ITP websocket events exist
+- if live exists, add gateway event, SDK type, and dashboard consumer
+- if live does not exist, remove live-stream claims and broken subscription
+- ensure privacy-level UI only reflects real data
 
-Expected result after T5:
+### Must Fix
 
-- no store imports `$lib/api`
+- dashboard subscription to non-existent `ItpEvent`
+- UI content handling when the API does not provide content
 
-## T6. Migrate shell boot
+### Done When
 
-Primary file:
+- ITP page behavior matches gateway capability exactly
 
-- `dashboard/src/routes/+layout.svelte`
+### Adversarial Tests
 
-Supporting files:
+- empty ITP buffer
+- malformed ITP row in DB
+- missing optional content fields
+- extension disconnected
+- live event replay after reconnect if live mode is supported
 
-- `dashboard/src/lib/auth.ts`
-- `dashboard/src/lib/ghost-client.ts`
-- `dashboard/src/lib/platform/*`
+## W8. Service Worker Safety
 
-Actions:
+### Goal
 
-- remove base URL inference from the layout
-- remove auth hydration from the layout
-- move token/runtime initialization behind the platform runtime + app client
-- keep shell responsibilities limited to app startup orchestration and rendering
+Prevent offline and cache behavior from undermining auth and contract truth.
 
-Specific current debt to remove:
+### Tasks
 
-- direct health probe fetch in the layout
-- direct reliance on `BASE_URL`
-- token bootstrap via `sessionStorage`
-- mixed desktop/web startup logic scattered through the component
+- classify authenticated vs unauthenticated cacheable endpoints
+- disable or partition authenticated API caching
+- clear caches on logout/token rotation
+- verify replay queue respects auth and session sequencing
 
-Done when:
+### Must Fix
 
-- the layout no longer owns transport setup details
-- the layout no longer needs to know how Tauri persists auth
+- shared cache entries surviving auth transitions
+- offline fallback with no user-visible staleness signal
 
-Verification:
+### Done When
 
-- `rg -n "BASE_URL|sessionStorage|fetch\\(" dashboard/src/routes/+layout.svelte`
+- service worker cannot surface cross-session data
+- offline behavior is explicit and constrained
 
-Expected result after T6:
+### Adversarial Tests
 
-- no gateway transport calls remain in `+layout.svelte`
+- login as user A, cache data, logout, login as user B
+- token rotation with cached API responses
+- offline replay of non-safety action with stale session seq
+- safety write attempt while offline
 
-## T7. Migrate login and auth flows
+## W9. Test and CI Hardening
 
-Primary files:
+### Goal
 
-- `dashboard/src/routes/login/+page.svelte`
-- `dashboard/src/routes/studio/+page.svelte`
-- any auth-related SDK module additions
+Turn drift into failing automation.
 
-Actions:
+### Required Gateway Coverage
 
-- move login/refresh to SDK-backed flows
-- ensure token persistence is mediated by the platform runtime
-- make unauthorized handling consistent across desktop and web
+- router/schema parity tests
+- websocket envelope/auth/replay tests
+- ITP endpoint tests
+- OAuth endpoint tests
+- auth/logout tests
+- approvals-or-goals contract tests
 
-Constraints:
+### Required SDK Coverage
 
-- do not keep a separate login transport path if the SDK can own it
+- request parsing/error handling tests updated to current client logic
+- websocket integration tests against live gateway fixture
+- domain tests for ITP, OAuth, runtime sessions, auth, approvals/goals
+- generated-type parity validation
 
-Done when:
+### Required Dashboard Coverage
 
-- login, refresh, logout, and unauthorized redirect behavior use one client path
+- app-shell auth behavior tests
+- logout tests
+- ITP page tests
+- realtime consumer tests for convergence/safety/notifications
+- service worker auth/offline tests
+- runtime adapter tests
 
-Verification:
+### Required Tauri Coverage
 
-- desktop login works after app restart
-- browser login still works in dev mode
+- command registration tests
+- lifecycle command tests
+- runtime capability tests for keybindings, PTY, notifications
 
-## T8. Migrate highest-risk routes
+### CI Guardrails
 
-Primary targets:
+- fail on stale generated types
+- fail on router/schema drift
+- fail on forbidden direct Tauri imports in dashboard
+- fail on forbidden raw gateway fetch in dashboard
+- fail on unknown websocket event subscription in dashboard
 
-- `dashboard/src/routes/orchestration/+page.svelte`
-- `dashboard/src/routes/studio/+page.svelte`
-- `dashboard/src/routes/security/+page.svelte`
-- `dashboard/src/routes/agents/[id]/+page.svelte`
-- `dashboard/src/routes/workflows/+page.svelte`
+## Implementation Order
 
-Actions:
+This is the enforced execution order.
 
-- strip transport code out of the route
-- move domain data loading into stores/services
-- replace route-local interfaces with SDK types where they belong
+1. update this task file and freeze rules
+2. fix the highest-risk live drift:
+   - websocket contract
+   - auth shell/logout
+   - broken ITP live path
+3. remove fake contracts:
+   - approvals shim
+   - stale generated export or partial schema
+4. consolidate desktop runtime
+5. harden service worker
+6. complete CI parity gates
 
-Done when:
+No lower-priority cleanup should delay steps 2 and 3.
 
-- route files are mostly orchestration of stores/components
-- network details are not embedded in route components
+## Current Critical Implementation Slice
 
-Verification:
+This is the first slice that must land before broader cleanup:
 
-- `rg -n "api\\.(get|post|put|del)\\(|fetch\\(" dashboard/src/routes`
+### Slice A
 
-Expected result after T8:
+- fix SDK websocket envelope handling
+- align dashboard websocket consumers with actual event fields
+- stop login redirect on non-auth shell failures
+- make logout server-authoritative
+- remove broken ITP websocket subscription or add the real event path
+- remove dead `read_keybindings` bypass or implement it through runtime
 
-- only intentionally deferred routes still match
+### Slice A Acceptance
 
-## T9. Migrate settings and admin surfaces
+- realtime consumers match gateway payloads
+- SDK websocket is viable as canonical client
+- shell differentiates auth vs availability failures
+- logout revokes server state
+- ITP page is truthful
+- dead desktop command path no longer exists
 
-Targets:
+## Silent Failure Checklist
 
-- `dashboard/src/routes/settings/providers/+page.svelte`
-- `dashboard/src/routes/settings/profiles/+page.svelte`
-- `dashboard/src/routes/settings/webhooks/+page.svelte`
-- `dashboard/src/routes/settings/backups/+page.svelte`
-- `dashboard/src/routes/settings/oauth/+page.svelte`
-- `dashboard/src/routes/settings/notifications/+page.svelte`
-- `dashboard/src/routes/settings/channels/+page.svelte`
+The implementation is not acceptable if any are still true:
 
-Actions:
-
-- move these onto SDK coverage or platform runtime where appropriate
-- separate browser APIs from gateway APIs
-
-Special note:
-
-- service worker fetches are not automatically in scope if they are browser/runtime fetches rather than gateway client fetches
-
-Done when:
-
-- settings pages no longer depend on `$lib/api`
-
-## T10. Remove old transport/auth helpers
-
-Targets:
-
-- `dashboard/src/lib/api.ts`
-- `dashboard/src/lib/auth.ts` or its migration-only portions
-
-Actions:
-
-- delete old helper once all imports are gone
-- delete session mirroring logic that existed only to support `api.ts`
-- remove dead compatibility comments and shims
-
-Done when:
-
-- the old path cannot accidentally be reused
-
-Verification:
-
-- `rg -n "\\$lib/api|BASE_URL|sessionStorage" dashboard/src`
-
-Expected result after T10:
-
-- only approved platform files or browser-specific code remain
-
-## T11. Add CI and lint guardrails
-
-Actions:
-
-- add a dashboard check that rejects raw gateway fetch usage
-- add a check that rejects direct `sessionStorage` auth usage outside platform code
-- add a check that rejects direct injected-global runtime reads outside platform code
-- switch JS workflow execution to the workspace package manager if not already done
-
-Suggested checks:
-
-- `rg -n "fetch\\(" dashboard/src`
-- `rg -n "__GHOST_GATEWAY_PORT__|sessionStorage|__TAURI__" dashboard/src`
-
-Done when:
-
-- the architecture can defend itself after migration
-
-## T12. Final cutover verification
-
-Actions:
-
-- run full workspace verification
-- verify desktop boot, login, restart, and reconnect flows
-- verify core route set on the migrated architecture
-
-Required manual scenarios:
-
-1. launch Tauri app
-2. confirm sidecar boots and dashboard connects
-3. log in
-4. restart app and confirm auth persists correctly
-5. open Studio and confirm sessions load
-6. open Agents and Security views
-7. confirm WebSocket-backed updates still flow
-
-Done when:
-
-- there is one obvious client path for any new dashboard backend work
-
-## PR Plan
-
-Recommended PR slicing:
-
-1. PR-1: T0 + T1
-2. PR-2: T2 platform runtime contract
-3. PR-3: T3 SDK coverage batch A
-4. PR-4: T4 SDK-backed app client + minimal shell wiring
-5. PR-5: T5 store migration batch A
-6. PR-6: T6 shell boot migration
-7. PR-7: T7 auth/login migration
-8. PR-8: T8 route migration batch A
-9. PR-9: T9 settings/admin migration
-10. PR-10: T10 cleanup
-11. PR-11: T11 guardrails + T12 verification
-
-Do not put T1 through T10 into one PR. That is an avoidable review failure.
+- a dashboard event consumer reads a field the gateway never sends
+- a gateway failure redirects the app to login
+- logout only clears local state
+- a UI feature claims live updates without a backing event contract
+- a typed API surface is heuristic but presented as stable
+- desktop-only UI calls an unregistered Tauri command
+- cached authenticated data can survive identity changes
 
 ## Definition of Done
 
-This migration is done only when all of the following are true:
+This program is done when:
 
-- `dashboard/src/lib/api.ts` has been removed
-- dashboard gateway calls flow through `packages/sdk`
-- desktop runtime resolution flows through Tauri + platform runtime only
-- no dashboard auth flow depends on `sessionStorage` mirroring
-- large routes no longer embed transport logic
-- CI prevents regression to raw gateway transport code
-
-## Fast Audit Commands
-
-Use these repeatedly during the migration:
-
-```bash
-rg -n "from '\\$lib/api'|from \"\\$lib/api\"" dashboard/src
-rg -n "api\\.(get|post|put|del)\\(" dashboard/src
-rg -n "fetch\\(" dashboard/src/routes dashboard/src/lib dashboard/src/components
-rg -n "__GHOST_GATEWAY_PORT__|__TAURI__|sessionStorage" dashboard/src
-pnpm --dir dashboard check
-pnpm --dir dashboard build
-cargo test --workspace
-```
+- the audited findings are either fixed or explicitly retired by design
+- every critical boundary has adversarial coverage
+- no fake contract remains exported as stable
+- no silent degradation path remains for the hardening scope

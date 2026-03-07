@@ -212,7 +212,8 @@ impl Gateway {
         // Only transition if not already shutting down.
         let current = self.shared_state.current_state();
         if current != GatewayState::ShuttingDown {
-            self.shared_state.transition_to(GatewayState::ShuttingDown)?;
+            self.shared_state
+                .transition_to(GatewayState::ShuttingDown)?;
         }
 
         Ok(())

@@ -37,7 +37,11 @@ pub fn compute(
     let intersection = proposed.intersection(&existing).count() as f64;
     let union = proposed.union(&existing).count() as f64;
 
-    let jaccard = if union > 0.0 { intersection / union } else { 0.0 };
+    let jaccard = if union > 0.0 {
+        intersection / union
+    } else {
+        0.0
+    };
     let score = 1.0 - jaccard;
 
     ScopeExpansionResult {

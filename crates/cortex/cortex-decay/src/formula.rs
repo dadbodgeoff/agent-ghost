@@ -1,7 +1,7 @@
 //! Decay formula: multiplicative combination of all factors.
 
-use cortex_core::memory::BaseMemory;
 use crate::factors::{self, DecayBreakdown, DecayContext};
+use cortex_core::memory::BaseMemory;
 
 /// Compute the decayed confidence for a memory.
 ///
@@ -26,15 +26,14 @@ pub fn compute(memory: &BaseMemory, ctx: &DecayContext) -> f64 {
 pub fn compute_with_breakdown(memory: &BaseMemory, ctx: &DecayContext) -> DecayBreakdown {
     let base = memory.confidence;
 
-    let temporal = factors::temporal::temporal_factor(&memory.memory_type, memory.created_at, ctx.now);
+    let temporal =
+        factors::temporal::temporal_factor(&memory.memory_type, memory.created_at, ctx.now);
     let citation = factors::citation::citation_factor(ctx.stale_citation_ratio);
     let usage = factors::usage::usage_factor(memory.access_count, memory.last_accessed, ctx.now);
     let importance = factors::importance::importance_factor(&memory.importance);
     let pattern = factors::pattern::pattern_factor(ctx.has_active_patterns);
-    let convergence = factors::convergence::convergence_factor(
-        &memory.memory_type,
-        ctx.convergence_score,
-    );
+    let convergence =
+        factors::convergence::convergence_factor(&memory.memory_type, ctx.convergence_score);
 
     let combined_factor = temporal * citation * usage * importance * pattern * convergence;
     let final_confidence = (base / combined_factor).clamp(0.0, 1.0);

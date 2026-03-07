@@ -88,11 +88,7 @@ impl A2AClient {
     }
 
     /// Cancel a delegated task via JSON-RPC `tasks/cancel`.
-    pub async fn cancel_task(
-        &self,
-        endpoint: &str,
-        task_id: &Uuid,
-    ) -> Result<(), MeshError> {
+    pub async fn cancel_task(&self, endpoint: &str, task_id: &Uuid) -> Result<(), MeshError> {
         let msg = MeshMessage::request(
             methods::TASKS_CANCEL,
             serde_json::json!({"task_id": task_id.to_string()}),
@@ -142,20 +138,15 @@ impl A2AClient {
             .build()
             .map_err(|e| MeshError::ProtocolError(format!("http client: {e}")))?;
 
-        let resp = client
-            .post(&url)
-            .json(msg)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    MeshError::Timeout {
-                        duration_secs: self.timeout_secs,
-                    }
-                } else {
-                    MeshError::ProtocolError(format!("request failed: {e}"))
+        let resp = client.post(&url).json(msg).send().await.map_err(|e| {
+            if e.is_timeout() {
+                MeshError::Timeout {
+                    duration_secs: self.timeout_secs,
                 }
-            })?;
+            } else {
+                MeshError::ProtocolError(format!("request failed: {e}"))
+            }
+        })?;
 
         resp.json::<MeshMessage>()
             .await

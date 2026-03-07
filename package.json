@@ -3,6 +3,10 @@
   "private": true,
   "packageManager": "pnpm@10.28.0",
   "scripts": {
+    "audit:openapi-parity": "python3 scripts/check_openapi_parity.py",
+    "audit:openapi-parity:strict": "python3 scripts/check_openapi_parity.py --fail-on-drift",
+    "audit:dashboard-architecture": "python3 scripts/check_dashboard_architecture.py",
+    "audit:architecture:strict": "pnpm audit:openapi-parity:strict && pnpm audit:dashboard-architecture",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",

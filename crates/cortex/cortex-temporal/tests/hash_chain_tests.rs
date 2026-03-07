@@ -1,7 +1,7 @@
 //! Tests for cortex-temporal: hash chains + Merkle trees.
 
-use cortex_temporal::hash_chain::*;
 use cortex_temporal::anchoring::merkle::MerkleTree;
+use cortex_temporal::hash_chain::*;
 
 // ── Helper ──────────────────────────────────────────────────────────────
 
@@ -123,7 +123,8 @@ fn merkle_two_leaves_inclusion_proof() {
         let proof = tree.inclusion_proof(i);
         assert!(
             MerkleTree::verify_proof(&tree.root, &leaves[i], &proof, i),
-            "proof failed for leaf {}", i
+            "proof failed for leaf {}",
+            i
         );
     }
 }
@@ -138,7 +139,8 @@ fn merkle_1000_leaves_random_proof() {
         let proof = tree.inclusion_proof(idx);
         assert!(
             MerkleTree::verify_proof(&tree.root, &leaves[idx], &proof, idx),
-            "proof failed for leaf {}", idx
+            "proof failed for leaf {}",
+            idx
         );
     }
 }
@@ -149,7 +151,12 @@ fn merkle_wrong_root_returns_false() {
     let tree = MerkleTree::from_chain(&leaves);
     let proof = tree.inclusion_proof(0);
     let wrong_root = [0xFF; 32];
-    assert!(!MerkleTree::verify_proof(&wrong_root, &leaves[0], &proof, 0));
+    assert!(!MerkleTree::verify_proof(
+        &wrong_root,
+        &leaves[0],
+        &proof,
+        0
+    ));
 }
 
 #[test]
@@ -158,7 +165,12 @@ fn merkle_wrong_leaf_returns_false() {
     let tree = MerkleTree::from_chain(&leaves);
     let proof = tree.inclusion_proof(0);
     let wrong_leaf = [0xFF; 32];
-    assert!(!MerkleTree::verify_proof(&tree.root, &wrong_leaf, &proof, 0));
+    assert!(!MerkleTree::verify_proof(
+        &tree.root,
+        &wrong_leaf,
+        &proof,
+        0
+    ));
 }
 
 #[test]
@@ -167,7 +179,6 @@ fn merkle_empty_chain() {
     assert_eq!(tree.root, [0u8; 32]);
     assert!(tree.leaves.is_empty());
 }
-
 
 // ── Proptest ────────────────────────────────────────────────────────────
 

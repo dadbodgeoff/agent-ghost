@@ -76,7 +76,10 @@ pub async fn search(
     let like_pattern = format!("%{escaped}%");
     let per_type_limit = (params.limit as usize / types.len().max(1)).max(5);
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("search", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("search", e))?;
     let mut results = Vec::new();
 
     if types.contains(&"agents") {
@@ -96,7 +99,11 @@ pub async fn search(
     }
 
     // Sort by score descending.
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     results.truncate(params.limit as usize);
 
     let total = results.len();

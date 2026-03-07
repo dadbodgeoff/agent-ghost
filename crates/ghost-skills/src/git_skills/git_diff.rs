@@ -76,10 +76,7 @@ impl Skill for GitDiffSkill {
         // Compute the diff.
         let diff = if staged {
             // Staged changes: diff HEAD tree to index.
-            let head_tree = repo
-                .head()
-                .and_then(|r| r.peel_to_tree())
-                .ok();
+            let head_tree = repo.head().and_then(|r| r.peel_to_tree()).ok();
             repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts))
         } else {
             // Unstaged changes: diff index to working directory.
@@ -175,8 +172,7 @@ mod tests {
 
     impl TestRepo {
         fn new() -> (Self, git2::Repository) {
-            let path =
-                std::env::temp_dir().join(format!("ghost-git-diff-{}", Uuid::now_v7()));
+            let path = std::env::temp_dir().join(format!("ghost-git-diff-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&path).unwrap();
             let repo = git2::Repository::init(&path).unwrap();
 

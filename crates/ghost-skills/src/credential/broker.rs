@@ -122,18 +122,30 @@ impl CredentialBroker {
 #[derive(Debug, Clone)]
 pub enum CredentialError {
     NotFound(Uuid),
-    Exhausted { handle_id: Uuid, max_uses: u32 },
-    Expired { handle_id: Uuid, expired_at: DateTime<Utc> },
+    Exhausted {
+        handle_id: Uuid,
+        max_uses: u32,
+    },
+    Expired {
+        handle_id: Uuid,
+        expired_at: DateTime<Utc>,
+    },
 }
 
 impl std::fmt::Display for CredentialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound(id) => write!(f, "Credential {id} not found"),
-            Self::Exhausted { handle_id, max_uses } => {
+            Self::Exhausted {
+                handle_id,
+                max_uses,
+            } => {
                 write!(f, "Credential {handle_id} exhausted (max_uses={max_uses})")
             }
-            Self::Expired { handle_id, expired_at } => {
+            Self::Expired {
+                handle_id,
+                expired_at,
+            } => {
                 write!(f, "Credential {handle_id} expired at {expired_at}")
             }
         }

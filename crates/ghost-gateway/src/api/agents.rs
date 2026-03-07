@@ -91,9 +91,8 @@ pub async fn create_agent(
     // Generate keypair if requested.
     let mut has_keypair = false;
     if body.generate_keypair.unwrap_or(true) {
-        let keys_dir_str = crate::bootstrap::shellexpand_tilde(
-            &format!("~/.ghost/agents/{}/keys", body.name),
-        );
+        let keys_dir_str =
+            crate::bootstrap::shellexpand_tilde(&format!("~/.ghost/agents/{}/keys", body.name));
         let keys_dir = std::path::PathBuf::from(&keys_dir_str);
         let mut kpm = ghost_identity::keypair_manager::AgentKeypairManager::new(keys_dir);
         match kpm.generate() {
@@ -132,10 +131,13 @@ pub async fn create_agent(
     }
 
     // Broadcast agent creation event.
-    crate::api::websocket::broadcast_event(&state, WsEvent::AgentStateChange {
-        agent_id: agent_id.to_string(),
-        new_state: "Starting".into(),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::AgentStateChange {
+            agent_id: agent_id.to_string(),
+            new_state: "Starting".into(),
+        },
+    );
 
     tracing::info!(
         agent_id = %agent_id,
@@ -175,7 +177,8 @@ pub async fn delete_agent(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": "internal server error"})),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             };
             match agents.lookup_by_name(&agent_id_str) {
@@ -184,7 +187,8 @@ pub async fn delete_agent(
                     return (
                         StatusCode::NOT_FOUND,
                         Json(serde_json::json!({"error": "agent not found", "id": agent_id_str})),
-                    ).into_response();
+                    )
+                        .into_response();
                 }
             }
         }
@@ -200,7 +204,8 @@ pub async fn delete_agent(
                     "error": "cannot delete quarantined agent — resume first",
                     "id": agent_id.to_string(),
                 })),
-            ).into_response();
+            )
+                .into_response();
         }
     }
 
@@ -211,15 +216,19 @@ pub async fn delete_agent(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal server error"})),
-            ).into_response();
+            )
+                .into_response();
         }
     };
     match agents.unregister(agent_id) {
         Some(agent) => {
-            crate::api::websocket::broadcast_event(&state, WsEvent::AgentStateChange {
-                agent_id: agent_id.to_string(),
-                new_state: "Stopped".into(),
-            });
+            crate::api::websocket::broadcast_event(
+                &state,
+                WsEvent::AgentStateChange {
+                    agent_id: agent_id.to_string(),
+                    new_state: "Stopped".into(),
+                },
+            );
 
             tracing::info!(
                 agent_id = %agent_id,
@@ -234,11 +243,13 @@ pub async fn delete_agent(
                     "id": agent_id.to_string(),
                     "name": agent.name,
                 })),
-            ).into_response()
+            )
+                .into_response()
         }
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "agent not found", "id": agent_id.to_string()})),
-        ).into_response(),
+        )
+            .into_response(),
     }
 }

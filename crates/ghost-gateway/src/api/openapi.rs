@@ -36,15 +36,44 @@ use utoipa::OpenApi;
         list_agents,
         create_agent,
         delete_agent,
+        get_auth_session,
         list_sessions,
+        get_session_events,
+        list_session_bookmarks,
+        create_session_bookmark,
+        delete_session_bookmark,
+        branch_runtime_session,
+        heartbeat_runtime_session,
         get_convergence_scores,
         list_goals,
+        get_goal,
         approve_goal,
         reject_goal,
         list_memories,
+        get_memory_graph,
+        search_memories,
+        list_archived_memories,
         get_memory,
         write_memory,
+        archive_memory,
+        unarchive_memory,
         get_costs,
+        list_workflows,
+        get_workflow,
+        list_workflow_executions,
+        create_workflow,
+        update_workflow,
+        execute_workflow,
+        resume_workflow_execution,
+        list_studio_sessions,
+        get_studio_session,
+        create_studio_session,
+        delete_studio_session,
+        send_studio_message,
+        stream_studio_message,
+        recover_studio_stream,
+        studio_run,
+        get_traces,
         safety_status,
         kill_all,
         pause_agent,
@@ -53,9 +82,16 @@ use utoipa::OpenApi;
         query_audit,
         audit_aggregation,
         audit_export,
+        create_backup,
+        list_backups,
+        export_backup_data,
+        restore_backup,
         login,
         refresh,
         logout,
+        list_provider_keys,
+        set_provider_key,
+        delete_provider_key,
         list_webhooks,
         create_webhook,
         update_webhook,
@@ -64,6 +100,65 @@ use utoipa::OpenApi;
         list_skills,
         install_skill,
         uninstall_skill,
+        execute_skill_by_name,
+        get_crdt_state,
+        verify_integrity_chain,
+        agent_chat,
+        agent_chat_stream,
+        list_channels,
+        create_channel,
+        reconnect_channel,
+        delete_channel,
+        inject_channel_message,
+        list_itp_events,
+        list_oauth_providers,
+        list_oauth_connections,
+        connect_oauth_provider,
+        disconnect_oauth_connection,
+        oauth_callback,
+        execute_oauth_api_call,
+        get_mesh_trust_graph,
+        get_mesh_consensus,
+        list_mesh_delegations,
+        list_profiles,
+        create_profile,
+        update_profile,
+        delete_profile,
+        assign_agent_profile,
+        search,
+        get_pc_control_status,
+        update_pc_control_status,
+        list_pc_control_actions,
+        update_pc_control_allowed_apps,
+        update_pc_control_blocked_hotkeys,
+        update_pc_control_safe_zones,
+        get_push_vapid_key,
+        subscribe_push,
+        unsubscribe_push,
+        list_marketplace_agents,
+        register_marketplace_agent,
+        get_marketplace_agent,
+        update_marketplace_agent_status,
+        delist_marketplace_agent,
+        list_marketplace_skills,
+        publish_marketplace_skill,
+        get_marketplace_skill,
+        list_marketplace_contracts,
+        propose_marketplace_contract,
+        get_marketplace_contract,
+        accept_marketplace_contract,
+        reject_marketplace_contract,
+        start_marketplace_contract,
+        complete_marketplace_contract,
+        dispute_marketplace_contract,
+        cancel_marketplace_contract,
+        resolve_marketplace_contract,
+        get_marketplace_wallet,
+        seed_marketplace_wallet,
+        list_marketplace_transactions,
+        submit_marketplace_review,
+        list_marketplace_reviews,
+        discover_marketplace_agents,
         list_safety_checks,
         register_safety_check,
         unregister_safety_check,
@@ -78,9 +173,30 @@ use utoipa::OpenApi;
             ErrorResponseSchema,
             AgentInfoSchema,
             CreateAgentRequestSchema,
+            SessionResponseSchema,
             ConvergenceScoreSchema,
             SessionSchema,
+            SessionEventSchema,
+            SessionBookmarkSchema,
             AgentCostSchema,
+            WorkflowSchema,
+            WorkflowExecutionSchema,
+            ChannelSchema,
+            ItpEventSchema,
+            OAuthProviderSchema,
+            OAuthConnectionSchema,
+            ProfileSchema,
+            SearchResultSchema,
+            SearchResponseSchema,
+            ProviderKeyInfoSchema,
+            MemoryGraphNodeSchema,
+            MemoryGraphEdgeSchema,
+            MemoryGraphResponseSchema,
+            PcControlSafeZoneSchema,
+            PcControlActionBudgetSchema,
+            PcControlStatusSchema,
+            PcControlActionLogSchema,
+            PushSubscriptionSchema,
             WebhookSchema,
             SkillSchema,
             A2ATaskSchema,
@@ -94,11 +210,28 @@ use utoipa::OpenApi;
         (name = "sessions", description = "Session listing and replay"),
         (name = "goals", description = "Proposal/goal lifecycle"),
         (name = "memory", description = "Memory store operations"),
+        (name = "state", description = "CRDT and state inspection"),
+        (name = "integrity", description = "Hash-chain integrity verification"),
         (name = "costs", description = "Per-agent cost tracking"),
+        (name = "workflows", description = "Workflow definitions and execution"),
+        (name = "studio", description = "Studio session and prompt routes"),
+        (name = "traces", description = "Session trace inspection"),
+        (name = "mesh", description = "Multi-agent trust graph and delegation views"),
+        (name = "chat", description = "Direct agent chat execution endpoints"),
         (name = "safety", description = "Kill switch and quarantine controls"),
         (name = "audit", description = "Audit log queries and export"),
+        (name = "admin", description = "Backup, restore, and administrative data operations"),
+        (name = "provider-keys", description = "Provider key management"),
         (name = "webhooks", description = "Webhook configuration and testing"),
         (name = "skills", description = "Skill marketplace management"),
+        (name = "channels", description = "Channel lifecycle and reconnect operations"),
+        (name = "itp", description = "ITP event inspection"),
+        (name = "oauth", description = "OAuth provider and connection flows"),
+        (name = "profiles", description = "Convergence profile management"),
+        (name = "search", description = "Cross-domain search"),
+        (name = "pc-control", description = "PC control safety settings and activity"),
+        (name = "push", description = "Push notification subscription routes"),
+        (name = "marketplace", description = "Agent marketplace listings, contracts, wallet, and reviews"),
         (name = "safety-checks", description = "Custom safety check registration"),
         (name = "a2a", description = "Agent-to-Agent protocol endpoints"),
     )
@@ -166,6 +299,202 @@ pub struct AgentCostSchema {
     pub spending_cap: f64,
     pub cap_remaining: f64,
     pub cap_utilization_pct: f64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SessionResponseSchema {
+    pub authenticated: bool,
+    pub subject: String,
+    pub role: String,
+    pub mode: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SessionEventSchema {
+    pub id: String,
+    pub event_type: String,
+    pub sender: Option<String>,
+    pub timestamp: String,
+    pub sequence_number: i64,
+    pub content_hash: Option<String>,
+    pub content_length: Option<i64>,
+    pub privacy_level: String,
+    pub latency_ms: Option<i64>,
+    pub token_count: Option<i64>,
+    pub event_hash: String,
+    pub previous_hash: String,
+    pub attributes: serde_json::Value,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SessionBookmarkSchema {
+    pub id: String,
+    pub eventIndex: i64,
+    pub label: String,
+    pub createdAt: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct WorkflowSchema {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub nodes: serde_json::Value,
+    pub edges: serde_json::Value,
+    pub created_by: Option<String>,
+    pub updated_at: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct WorkflowExecutionSchema {
+    pub execution_id: String,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub status: String,
+    pub mode: String,
+    pub steps: serde_json::Value,
+    pub input: Option<serde_json::Value>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct ChannelSchema {
+    pub id: String,
+    pub channel_type: String,
+    pub status: String,
+    pub status_message: Option<String>,
+    pub agent_id: String,
+    pub agent_name: Option<String>,
+    pub config: serde_json::Value,
+    pub last_message_at: Option<String>,
+    pub message_count: i64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct ItpEventSchema {
+    pub id: String,
+    pub event_type: String,
+    pub platform: String,
+    pub session_id: String,
+    pub timestamp: String,
+    pub source: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct OAuthProviderSchema {
+    pub name: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct OAuthConnectionSchema {
+    pub ref_id: String,
+    pub provider: String,
+    pub scopes: Vec<String>,
+    pub connected_at: String,
+    pub status: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct ProfileSchema {
+    pub name: String,
+    pub description: String,
+    pub is_preset: bool,
+    pub weights: Vec<f64>,
+    pub thresholds: Vec<f64>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SearchResultSchema {
+    pub result_type: String,
+    pub id: String,
+    pub title: String,
+    pub snippet: String,
+    pub score: f64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SearchResponseSchema {
+    pub query: String,
+    pub results: Vec<SearchResultSchema>,
+    pub total: i64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct ProviderKeyInfoSchema {
+    pub provider_name: String,
+    pub model: String,
+    pub env_name: String,
+    pub is_set: bool,
+    pub preview: Option<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct MemoryGraphNodeSchema {
+    pub id: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub importance: f64,
+    #[serde(rename = "decayFactor")]
+    pub decay_factor: f64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct MemoryGraphEdgeSchema {
+    pub source: String,
+    pub target: String,
+    pub relationship: String,
+    pub strength: f64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct MemoryGraphResponseSchema {
+    pub nodes: Vec<MemoryGraphNodeSchema>,
+    pub edges: Vec<MemoryGraphEdgeSchema>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct PcControlSafeZoneSchema {
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
+    pub label: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct PcControlActionBudgetSchema {
+    pub max_per_minute: i64,
+    pub max_per_hour: i64,
+    pub used_this_minute: i64,
+    pub used_this_hour: i64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct PcControlStatusSchema {
+    pub enabled: bool,
+    pub action_budget: PcControlActionBudgetSchema,
+    pub allowed_apps: Vec<String>,
+    pub safe_zones: Vec<PcControlSafeZoneSchema>,
+    pub blocked_hotkeys: Vec<String>,
+    pub circuit_breaker_state: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct PcControlActionLogSchema {
+    pub id: String,
+    pub action_type: String,
+    pub target: String,
+    pub timestamp: String,
+    pub result: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize, serde::Deserialize)]
+pub struct PushSubscriptionSchema {
+    pub endpoint: String,
+    pub keys: Option<serde_json::Value>,
 }
 
 // ── Path definitions ──
@@ -316,6 +645,17 @@ async fn list_memories() {}
 async fn get_memory() {}
 
 #[utoipa::path(
+    get, path = "/api/memory/graph",
+    tag = "memory",
+    responses(
+        (status = 200, description = "Derived memory graph", body = MemoryGraphResponseSchema),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_memory_graph() {}
+
+#[utoipa::path(
     post, path = "/api/memory",
     tag = "memory",
     responses(
@@ -438,6 +778,53 @@ async fn audit_aggregation() {}
 async fn audit_export() {}
 
 #[utoipa::path(
+    post, path = "/api/admin/backup",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Backup created", body = inline(serde_json::Value)),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn create_backup() {}
+
+#[utoipa::path(
+    get, path = "/api/admin/backups",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Available backups", body = inline(serde_json::Value)),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_backups() {}
+
+#[utoipa::path(
+    get, path = "/api/admin/export",
+    tag = "admin",
+    params(("format" = Option<String>, Query, description = "Export format: json or jsonl")),
+    responses(
+        (status = 200, description = "Administrative export payload"),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn export_backup_data() {}
+
+#[utoipa::path(
+    post, path = "/api/admin/restore",
+    tag = "admin",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Backup verified for restore", body = inline(serde_json::Value)),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+        (status = 404, description = "Backup file not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn restore_backup() {}
+
+#[utoipa::path(
     post, path = "/api/auth/login",
     tag = "auth",
     responses(
@@ -466,6 +853,814 @@ async fn refresh() {}
     security(("bearer_auth" = []))
 )]
 async fn logout() {}
+
+#[utoipa::path(
+    get, path = "/api/auth/session",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Current authenticated session", body = SessionResponseSchema),
+        (status = 401, description = "Unauthorized", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_auth_session() {}
+
+#[utoipa::path(
+    get, path = "/api/goals/{id}",
+    tag = "goals",
+    params(("id" = String, Path, description = "Goal/proposal ID")),
+    responses(
+        (status = 200, description = "Goal detail", body = inline(serde_json::Value)),
+        (status = 404, description = "Goal not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_goal() {}
+
+#[utoipa::path(
+    get, path = "/api/memory/search",
+    tag = "memory",
+    responses(
+        (status = 200, description = "Memory search results", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn search_memories() {}
+
+#[utoipa::path(
+    get, path = "/api/memory/archived",
+    tag = "memory",
+    responses(
+        (status = 200, description = "Archived memory entries", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_archived_memories() {}
+
+#[utoipa::path(
+    get, path = "/api/sessions/{id}/events",
+    tag = "sessions",
+    params(("id" = String, Path, description = "Runtime session ID")),
+    responses(
+        (status = 200, description = "Runtime session events", body = inline(serde_json::Value)),
+        (status = 404, description = "Session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_session_events() {}
+
+#[utoipa::path(
+    get, path = "/api/sessions/{id}/bookmarks",
+    tag = "sessions",
+    params(("id" = String, Path, description = "Runtime session ID")),
+    responses(
+        (status = 200, description = "Session bookmarks", body = inline(serde_json::Value)),
+        (status = 404, description = "Session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_session_bookmarks() {}
+
+#[utoipa::path(
+    post, path = "/api/sessions/{id}/bookmarks",
+    tag = "sessions",
+    params(("id" = String, Path, description = "Runtime session ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 201, description = "Bookmark created"),
+        (status = 404, description = "Session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn create_session_bookmark() {}
+
+#[utoipa::path(
+    delete, path = "/api/sessions/{id}/bookmarks/{bookmark_id}",
+    tag = "sessions",
+    params(
+        ("id" = String, Path, description = "Runtime session ID"),
+        ("bookmark_id" = String, Path, description = "Bookmark ID"),
+    ),
+    responses(
+        (status = 200, description = "Bookmark deleted"),
+        (status = 404, description = "Bookmark not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn delete_session_bookmark() {}
+
+#[utoipa::path(
+    post, path = "/api/sessions/{id}/branch",
+    tag = "sessions",
+    params(("id" = String, Path, description = "Runtime session ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Session branched"),
+        (status = 404, description = "Session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn branch_runtime_session() {}
+
+#[utoipa::path(
+    post, path = "/api/sessions/{id}/heartbeat",
+    tag = "sessions",
+    params(("id" = String, Path, description = "Runtime session ID")),
+    responses(
+        (status = 204, description = "Heartbeat accepted"),
+        (status = 404, description = "Session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn heartbeat_runtime_session() {}
+
+#[utoipa::path(
+    get, path = "/api/workflows",
+    tag = "workflows",
+    responses(
+        (status = 200, description = "Workflow list", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_workflows() {}
+
+#[utoipa::path(
+    get, path = "/api/workflows/{id}",
+    tag = "workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    responses(
+        (status = 200, description = "Workflow detail", body = WorkflowSchema),
+        (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_workflow() {}
+
+#[utoipa::path(
+    get, path = "/api/workflows/{id}/executions",
+    tag = "workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    responses(
+        (status = 200, description = "Workflow execution history", body = inline(serde_json::Value)),
+        (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_workflow_executions() {}
+
+#[utoipa::path(
+    post, path = "/api/workflows",
+    tag = "workflows",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 201, description = "Workflow created"),
+        (status = 400, description = "Invalid workflow", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn create_workflow() {}
+
+#[utoipa::path(
+    put, path = "/api/workflows/{id}",
+    tag = "workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Workflow updated"),
+        (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_workflow() {}
+
+#[utoipa::path(
+    post, path = "/api/workflows/{id}/execute",
+    tag = "workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Workflow execution started", body = WorkflowExecutionSchema),
+        (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn execute_workflow() {}
+
+#[utoipa::path(
+    post, path = "/api/workflows/{id}/resume/{execution_id}",
+    tag = "workflows",
+    params(
+        ("id" = String, Path, description = "Workflow ID"),
+        ("execution_id" = String, Path, description = "Execution ID to resume"),
+    ),
+    responses(
+        (status = 200, description = "Workflow execution resumed", body = WorkflowExecutionSchema),
+        (status = 404, description = "Workflow or execution not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn resume_workflow_execution() {}
+
+#[utoipa::path(
+    post, path = "/api/memory/{id}/archive",
+    tag = "memory",
+    params(("id" = String, Path, description = "Memory ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Memory archived", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid archive request", body = ErrorResponseSchema),
+        (status = 404, description = "Memory not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn archive_memory() {}
+
+#[utoipa::path(
+    post, path = "/api/memory/{id}/unarchive",
+    tag = "memory",
+    params(("id" = String, Path, description = "Memory ID")),
+    responses(
+        (status = 200, description = "Memory restored from archive", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid unarchive request", body = ErrorResponseSchema),
+        (status = 404, description = "Memory not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn unarchive_memory() {}
+
+#[utoipa::path(
+    get, path = "/api/studio/sessions",
+    tag = "studio",
+    responses(
+        (status = 200, description = "Studio session list", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_studio_sessions() {}
+
+#[utoipa::path(
+    get, path = "/api/studio/sessions/{id}",
+    tag = "studio",
+    params(("id" = String, Path, description = "Studio session ID")),
+    responses(
+        (status = 200, description = "Studio session detail", body = inline(serde_json::Value)),
+        (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_studio_session() {}
+
+#[utoipa::path(
+    post, path = "/api/studio/sessions",
+    tag = "studio",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 201, description = "Studio session created"),
+        (status = 400, description = "Invalid request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn create_studio_session() {}
+
+#[utoipa::path(
+    delete, path = "/api/studio/sessions/{id}",
+    tag = "studio",
+    params(("id" = String, Path, description = "Studio session ID")),
+    responses(
+        (status = 200, description = "Studio session deleted"),
+        (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn delete_studio_session() {}
+
+#[utoipa::path(
+    post, path = "/api/studio/sessions/{id}/messages",
+    tag = "studio",
+    params(("id" = String, Path, description = "Studio session ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Studio message accepted", body = inline(serde_json::Value)),
+        (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn send_studio_message() {}
+
+#[utoipa::path(
+    post, path = "/api/studio/sessions/{id}/messages/stream",
+    tag = "studio",
+    params(("id" = String, Path, description = "Studio session ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Streaming studio message response"),
+        (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn stream_studio_message() {}
+
+#[utoipa::path(
+    get, path = "/api/studio/sessions/{id}/stream/recover",
+    tag = "studio",
+    params(("id" = String, Path, description = "Studio session ID")),
+    responses(
+        (status = 200, description = "Recovered stream state", body = inline(serde_json::Value)),
+        (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn recover_studio_stream() {}
+
+#[utoipa::path(
+    post, path = "/api/studio/run",
+    tag = "studio",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Studio run result", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid prompt request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn studio_run() {}
+
+#[utoipa::path(
+    get, path = "/api/traces/{session_id}",
+    tag = "traces",
+    params(("session_id" = String, Path, description = "Runtime session ID")),
+    responses(
+        (status = 200, description = "Session traces", body = inline(serde_json::Value)),
+        (status = 404, description = "Trace data not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_traces() {}
+
+#[utoipa::path(
+    get, path = "/api/state/crdt/{agent_id}",
+    tag = "state",
+    params(
+        ("agent_id" = String, Path, description = "Agent ID"),
+        ("memory_id" = Option<String>, Query, description = "Optional memory ID filter"),
+        ("limit" = Option<u32>, Query, description = "Maximum deltas to return"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "CRDT delta log snapshot", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_crdt_state() {}
+
+#[utoipa::path(
+    get, path = "/api/integrity/chain/{agent_id}",
+    tag = "integrity",
+    params(
+        ("agent_id" = String, Path, description = "Agent ID"),
+        ("chain" = Option<String>, Query, description = "Chain selector: itp, memory, or both"),
+    ),
+    responses(
+        (status = 200, description = "Hash-chain verification report", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn verify_integrity_chain() {}
+
+#[utoipa::path(
+    post, path = "/api/agent/chat",
+    tag = "chat",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Single-turn agent chat result", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid chat request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn agent_chat() {}
+
+#[utoipa::path(
+    post, path = "/api/agent/chat/stream",
+    tag = "chat",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Streaming agent chat response"),
+        (status = 400, description = "Invalid chat request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn agent_chat_stream() {}
+
+#[utoipa::path(
+    get, path = "/api/admin/provider-keys",
+    tag = "provider-keys",
+    responses(
+        (status = 200, description = "Configured provider key status", body = inline(serde_json::Value)),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_provider_keys() {}
+
+#[utoipa::path(
+    put, path = "/api/admin/provider-keys",
+    tag = "provider-keys",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Provider key saved", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid provider key request", body = ErrorResponseSchema),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn set_provider_key() {}
+
+#[utoipa::path(
+    delete, path = "/api/admin/provider-keys/{env_name}",
+    tag = "provider-keys",
+    params(("env_name" = String, Path, description = "Provider key environment variable name")),
+    responses(
+        (status = 200, description = "Provider key removed", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid provider key name", body = ErrorResponseSchema),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn delete_provider_key() {}
+
+#[utoipa::path(
+    get, path = "/api/channels",
+    tag = "channels",
+    responses(
+        (status = 200, description = "Configured channels and status", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_channels() {}
+
+#[utoipa::path(
+    post, path = "/api/channels",
+    tag = "channels",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Channel created", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid channel request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn create_channel() {}
+
+#[utoipa::path(
+    post, path = "/api/channels/{id}/reconnect",
+    tag = "channels",
+    params(("id" = String, Path, description = "Channel ID")),
+    responses(
+        (status = 200, description = "Channel reconnected", body = inline(serde_json::Value)),
+        (status = 404, description = "Channel not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn reconnect_channel() {}
+
+#[utoipa::path(
+    delete, path = "/api/channels/{id}",
+    tag = "channels",
+    params(("id" = String, Path, description = "Channel ID")),
+    responses(
+        (status = 200, description = "Channel removed", body = inline(serde_json::Value)),
+        (status = 404, description = "Channel not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn delete_channel() {}
+
+#[utoipa::path(
+    post, path = "/api/channels/{type}/inject",
+    tag = "channels",
+    params(("type" = String, Path, description = "Channel type to inject into")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 202, description = "Synthetic message accepted", body = inline(serde_json::Value)),
+        (status = 404, description = "Target channel or agent not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn inject_channel_message() {}
+
+#[utoipa::path(
+    get, path = "/api/itp/events",
+    tag = "itp",
+    params(("limit" = Option<u32>, Query, description = "Maximum number of recent events to return (default 200, max 500)")),
+    responses(
+        (status = 200, description = "Recent ITP event snapshot", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_itp_events() {}
+
+#[utoipa::path(
+    get, path = "/api/oauth/providers",
+    tag = "oauth",
+    responses(
+        (status = 200, description = "Configured OAuth providers", body = Vec<OAuthProviderSchema>),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_oauth_providers() {}
+
+#[utoipa::path(
+    get, path = "/api/oauth/connections",
+    tag = "oauth",
+    responses(
+        (status = 200, description = "Active OAuth connections", body = Vec<OAuthConnectionSchema>),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_oauth_connections() {}
+
+#[utoipa::path(
+    post, path = "/api/oauth/connect",
+    tag = "oauth",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "OAuth flow started", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid OAuth connect request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn connect_oauth_provider() {}
+
+#[utoipa::path(
+    delete, path = "/api/oauth/connections/{ref_id}",
+    tag = "oauth",
+    params(("ref_id" = String, Path, description = "OAuth connection reference ID")),
+    responses(
+        (status = 200, description = "OAuth connection removed", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid OAuth reference", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn disconnect_oauth_connection() {}
+
+#[utoipa::path(
+    get, path = "/api/oauth/callback",
+    tag = "oauth",
+    params(
+        ("code" = String, Query, description = "OAuth authorization code"),
+        ("state" = String, Query, description = "OAuth anti-CSRF state token"),
+    ),
+    responses(
+        (status = 200, description = "OAuth connection completed", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid callback parameters", body = ErrorResponseSchema),
+    )
+)]
+async fn oauth_callback() {}
+
+#[utoipa::path(
+    post, path = "/api/oauth/execute",
+    tag = "oauth",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "OAuth-backed API call result", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid OAuth execute request", body = ErrorResponseSchema),
+        (status = 401, description = "Connection token expired or revoked", body = ErrorResponseSchema),
+        (status = 404, description = "OAuth connection not found", body = ErrorResponseSchema),
+        (status = 502, description = "Provider error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn execute_oauth_api_call() {}
+
+#[utoipa::path(
+    get, path = "/api/mesh/trust-graph",
+    tag = "mesh",
+    responses(
+        (status = 200, description = "Current multi-agent trust graph", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_mesh_trust_graph() {}
+
+#[utoipa::path(
+    get, path = "/api/mesh/consensus",
+    tag = "mesh",
+    responses(
+        (status = 200, description = "Consensus rounds and vote counts", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_mesh_consensus() {}
+
+#[utoipa::path(
+    get, path = "/api/mesh/delegations",
+    tag = "mesh",
+    responses(
+        (status = 200, description = "Delegation chains and sybil metrics", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_mesh_delegations() {}
+
+#[utoipa::path(
+    get, path = "/api/profiles",
+    tag = "profiles",
+    responses(
+        (status = 200, description = "Preset and custom convergence profiles", body = inline(serde_json::Value)),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_profiles() {}
+
+#[utoipa::path(
+    post, path = "/api/profiles",
+    tag = "profiles",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Profile created", body = ProfileSchema),
+        (status = 400, description = "Invalid profile request", body = ErrorResponseSchema),
+        (status = 409, description = "Profile name conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn create_profile() {}
+
+#[utoipa::path(
+    put, path = "/api/profiles/{name}",
+    tag = "profiles",
+    params(("name" = String, Path, description = "Profile name")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Profile updated", body = ProfileSchema),
+        (status = 400, description = "Invalid profile update", body = ErrorResponseSchema),
+        (status = 404, description = "Profile not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_profile() {}
+
+#[utoipa::path(
+    delete, path = "/api/profiles/{name}",
+    tag = "profiles",
+    params(("name" = String, Path, description = "Profile name")),
+    responses(
+        (status = 200, description = "Profile deleted", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid profile delete request", body = ErrorResponseSchema),
+        (status = 404, description = "Profile not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn delete_profile() {}
+
+#[utoipa::path(
+    post, path = "/api/agents/{id}/profile",
+    tag = "profiles",
+    params(("id" = String, Path, description = "Agent ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Profile assigned to agent", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid assign-profile request", body = ErrorResponseSchema),
+        (status = 404, description = "Agent or profile not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn assign_agent_profile() {}
+
+#[utoipa::path(
+    get, path = "/api/search",
+    tag = "search",
+    params(
+        ("q" = String, Query, description = "Search query"),
+        ("types" = Option<String>, Query, description = "Comma-separated entity types to search"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of results"),
+    ),
+    responses(
+        (status = 200, description = "Search results", body = SearchResponseSchema),
+        (status = 400, description = "Invalid search request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn search() {}
+
+#[utoipa::path(
+    get, path = "/api/pc-control/status",
+    tag = "pc-control",
+    responses(
+        (status = 200, description = "Current PC control safety status", body = PcControlStatusSchema),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_pc_control_status() {}
+
+#[utoipa::path(
+    put, path = "/api/pc-control/status",
+    tag = "pc-control",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "PC control status updated", body = PcControlStatusSchema),
+        (status = 400, description = "Invalid PC control update", body = ErrorResponseSchema),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_pc_control_status() {}
+
+#[utoipa::path(
+    get, path = "/api/pc-control/actions",
+    tag = "pc-control",
+    params(("limit" = Option<u32>, Query, description = "Maximum number of action log entries")),
+    responses(
+        (status = 200, description = "Recent PC control actions", body = inline(serde_json::Value)),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_pc_control_actions() {}
+
+#[utoipa::path(
+    put, path = "/api/pc-control/allowed-apps",
+    tag = "pc-control",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Allowed apps updated", body = PcControlStatusSchema),
+        (status = 400, description = "Invalid allowed-app update", body = ErrorResponseSchema),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_pc_control_allowed_apps() {}
+
+#[utoipa::path(
+    put, path = "/api/pc-control/blocked-hotkeys",
+    tag = "pc-control",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Blocked hotkeys updated", body = PcControlStatusSchema),
+        (status = 400, description = "Invalid blocked-hotkey update", body = ErrorResponseSchema),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_pc_control_blocked_hotkeys() {}
+
+#[utoipa::path(
+    put, path = "/api/pc-control/safe-zones",
+    tag = "pc-control",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Safe zones updated", body = PcControlStatusSchema),
+        (status = 400, description = "Invalid safe-zone update", body = ErrorResponseSchema),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_pc_control_safe_zones() {}
+
+#[utoipa::path(
+    get, path = "/api/push/vapid-key",
+    tag = "push",
+    responses(
+        (status = 200, description = "Web Push VAPID public key", body = inline(serde_json::Value)),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_push_vapid_key() {}
+
+#[utoipa::path(
+    post, path = "/api/push/subscribe",
+    tag = "push",
+    request_body = PushSubscriptionSchema,
+    responses(
+        (status = 204, description = "Push subscription registered"),
+        (status = 500, description = "Push subscription store failure", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn subscribe_push() {}
+
+#[utoipa::path(
+    post, path = "/api/push/unsubscribe",
+    tag = "push",
+    request_body = PushSubscriptionSchema,
+    responses(
+        (status = 204, description = "Push subscription removed"),
+        (status = 500, description = "Push subscription store failure", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn unsubscribe_push() {}
 
 // ── Webhook schema ──
 
@@ -593,6 +1788,340 @@ async fn install_skill() {}
     security(("bearer_auth" = []))
 )]
 async fn uninstall_skill() {}
+
+#[utoipa::path(
+    post, path = "/api/skills/{name}/execute",
+    tag = "skills",
+    params(("name" = String, Path, description = "Safety skill name")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Skill execution result", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid skill request", body = ErrorResponseSchema),
+        (status = 404, description = "Skill not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn execute_skill_by_name() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/agents",
+    tag = "marketplace",
+    params(
+        ("status" = Option<String>, Query, description = "Status filter"),
+        ("min_trust" = Option<f64>, Query, description = "Minimum trust score"),
+        ("min_rating" = Option<f64>, Query, description = "Minimum rating"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of results"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "Marketplace agent listings", body = inline(serde_json::Value)),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_marketplace_agents() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/agents",
+    tag = "marketplace",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace agent registered", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid listing request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn register_marketplace_agent() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/agents/{id}",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Agent listing ID")),
+    responses(
+        (status = 200, description = "Marketplace agent detail", body = inline(serde_json::Value)),
+        (status = 404, description = "Agent listing not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_marketplace_agent() {}
+
+#[utoipa::path(
+    put, path = "/api/marketplace/agents/{id}/status",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Agent listing ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace agent status updated", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid status update", body = ErrorResponseSchema),
+        (status = 404, description = "Agent listing not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_marketplace_agent_status() {}
+
+#[utoipa::path(
+    delete, path = "/api/marketplace/agents/{id}",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Agent listing ID")),
+    responses(
+        (status = 200, description = "Marketplace agent delisted", body = inline(serde_json::Value)),
+        (status = 404, description = "Agent listing not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn delist_marketplace_agent() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/skills",
+    tag = "marketplace",
+    params(
+        ("limit" = Option<u32>, Query, description = "Maximum number of results"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "Marketplace skill listings", body = inline(serde_json::Value)),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_marketplace_skills() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/skills",
+    tag = "marketplace",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace skill published", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid skill publish request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn publish_marketplace_skill() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/skills/{name}",
+    tag = "marketplace",
+    params(("name" = String, Path, description = "Marketplace skill name")),
+    responses(
+        (status = 200, description = "Marketplace skill detail", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace skill not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_marketplace_skill() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/contracts",
+    tag = "marketplace",
+    params(
+        ("agent_id" = Option<String>, Query, description = "Filter by hirer or worker agent"),
+        ("state" = Option<String>, Query, description = "Filter by contract state"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of results"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "Marketplace contract list", body = inline(serde_json::Value)),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_marketplace_contracts() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts",
+    tag = "marketplace",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace contract proposed", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid contract request", body = ErrorResponseSchema),
+        (status = 404, description = "Marketplace entity not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn propose_marketplace_contract() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/contracts/{id}",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    responses(
+        (status = 200, description = "Marketplace contract detail", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_marketplace_contract() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts/{id}/accept",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    responses(
+        (status = 200, description = "Marketplace contract accepted", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn accept_marketplace_contract() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts/{id}/reject",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    responses(
+        (status = 200, description = "Marketplace contract rejected", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn reject_marketplace_contract() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts/{id}/start",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    responses(
+        (status = 200, description = "Marketplace contract started", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn start_marketplace_contract() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts/{id}/complete",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace contract completed", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn complete_marketplace_contract() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts/{id}/dispute",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    responses(
+        (status = 200, description = "Marketplace contract disputed", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn dispute_marketplace_contract() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts/{id}/cancel",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    responses(
+        (status = 200, description = "Marketplace contract canceled", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn cancel_marketplace_contract() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/contracts/{id}/resolve",
+    tag = "marketplace",
+    params(("id" = String, Path, description = "Marketplace contract ID")),
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace contract resolved", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn resolve_marketplace_contract() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/wallet",
+    tag = "marketplace",
+    params(("agent_id" = String, Query, description = "Agent ID whose wallet to inspect")),
+    responses(
+        (status = 200, description = "Marketplace wallet balance", body = inline(serde_json::Value)),
+        (status = 404, description = "Marketplace wallet not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_marketplace_wallet() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/wallet/seed",
+    tag = "marketplace",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace wallet funded", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid wallet seed request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn seed_marketplace_wallet() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/wallet/transactions",
+    tag = "marketplace",
+    params(
+        ("agent_id" = String, Query, description = "Agent ID whose transactions to list"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of results"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "Marketplace transaction history", body = inline(serde_json::Value)),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_marketplace_transactions() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/reviews",
+    tag = "marketplace",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Marketplace review submitted", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid review request", body = ErrorResponseSchema),
+        (status = 404, description = "Marketplace entity not found", body = ErrorResponseSchema),
+        (status = 409, description = "Marketplace review conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn submit_marketplace_review() {}
+
+#[utoipa::path(
+    get, path = "/api/marketplace/reviews/{agent_id}",
+    tag = "marketplace",
+    params(
+        ("agent_id" = String, Path, description = "Reviewee agent ID"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of results"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "Marketplace reviews for agent", body = inline(serde_json::Value)),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_marketplace_reviews() {}
+
+#[utoipa::path(
+    post, path = "/api/marketplace/discover",
+    tag = "marketplace",
+    request_body = inline(serde_json::Value),
+    responses(
+        (status = 200, description = "Capability-based marketplace matches", body = inline(serde_json::Value)),
+        (status = 400, description = "Invalid discovery request", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn discover_marketplace_agents() {}
 
 // ── Safety check paths ──
 

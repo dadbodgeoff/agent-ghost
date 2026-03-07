@@ -89,7 +89,10 @@ impl WindowManager {
 
         // Positive slope with sufficient magnitude indicates concerning trend
         // Approximate p < 0.05 check: slope > 2 * standard_error
-        let residuals: f64 = windows.meso_data.iter().enumerate()
+        let residuals: f64 = windows
+            .meso_data
+            .iter()
+            .enumerate()
             .map(|(i, y)| {
                 let predicted = y_mean + slope * (i as f64 - x_mean);
                 (y - predicted).powi(2)
@@ -113,9 +116,12 @@ impl WindowManager {
 
         let n = windows.macro_data.len() as f64;
         let mean = windows.macro_data.iter().sum::<f64>() / n;
-        let variance = windows.macro_data.iter()
+        let variance = windows
+            .macro_data
+            .iter()
             .map(|x| (x - mean).powi(2))
-            .sum::<f64>() / n;
+            .sum::<f64>()
+            / n;
         let std_dev = variance.sqrt();
 
         if std_dev.abs() < f64::EPSILON {

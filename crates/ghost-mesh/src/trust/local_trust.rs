@@ -72,7 +72,10 @@ impl LocalTrustStore {
             outcome,
             timestamp: Utc::now(),
         };
-        self.interactions.entry((from, to)).or_default().push(record);
+        self.interactions
+            .entry((from, to))
+            .or_default()
+            .push(record);
         self.dirty = true;
         // Invalidate cache for this pair.
         self.cache.remove(&(from, to));
@@ -157,9 +160,7 @@ impl LocalTrustStore {
 
     /// Get the number of interactions recorded for a pair.
     pub fn interaction_count(&self, from: Uuid, to: Uuid) -> usize {
-        self.interactions
-            .get(&(from, to))
-            .map_or(0, |v| v.len())
+        self.interactions.get(&(from, to)).map_or(0, |v| v.len())
     }
 }
 

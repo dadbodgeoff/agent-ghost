@@ -68,10 +68,7 @@ impl RFC3161Anchor {
     /// Returns an error if the feature is not enabled, the TSA is unreachable,
     /// or the response is malformed.
     #[cfg(feature = "rfc3161")]
-    pub fn anchor(
-        &self,
-        merkle_root: &[u8; 32],
-    ) -> Result<TimestampAnchorRecord, Rfc3161Error> {
+    pub fn anchor(&self, merkle_root: &[u8; 32]) -> Result<TimestampAnchorRecord, Rfc3161Error> {
         if !self._config.enabled {
             return Err(Rfc3161Error::Disabled);
         }
@@ -117,10 +114,7 @@ impl RFC3161Anchor {
 
     /// Stub when the `rfc3161` feature is not enabled.
     #[cfg(not(feature = "rfc3161"))]
-    pub fn anchor(
-        &self,
-        merkle_root: &[u8; 32],
-    ) -> Result<TimestampAnchorRecord, Rfc3161Error> {
+    pub fn anchor(&self, merkle_root: &[u8; 32]) -> Result<TimestampAnchorRecord, Rfc3161Error> {
         let _ = merkle_root;
         Err(Rfc3161Error::NotAvailable(
             "rfc3161 feature not enabled — compile with --features rfc3161".into(),

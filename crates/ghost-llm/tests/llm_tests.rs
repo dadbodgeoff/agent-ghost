@@ -4,7 +4,7 @@ use ghost_llm::cost::CostCalculator;
 use ghost_llm::fallback::{CBState, FallbackChain, ProviderCircuitBreaker};
 use ghost_llm::provider::*;
 use ghost_llm::router::{ComplexityClassifier, ComplexityTier, ModelRouter};
-use ghost_llm::streaming::{StreamChunk, collect_text_from_chunks};
+use ghost_llm::streaming::{collect_text_from_chunks, StreamChunk};
 use ghost_llm::tokens::{TokenCounter, TokenStrategy};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,11 +31,8 @@ fn classifier_heartbeat_is_free() {
 
 #[test]
 fn classifier_quick_override_is_free() {
-    let tier = ComplexityClassifier::classify(
-        "/quick write a complex distributed system",
-        false,
-        0,
-    );
+    let tier =
+        ComplexityClassifier::classify("/quick write a complex distributed system", false, 0);
     assert_eq!(tier, ComplexityTier::Free);
 }
 

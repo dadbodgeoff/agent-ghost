@@ -41,7 +41,10 @@ pub async fn get_traces(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> ApiResult<TraceResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_traces", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_traces", e))?;
 
     let mut stmt = db
         .prepare(
@@ -61,9 +64,10 @@ pub async fn get_traces(
                 operation_name: row.get(3)?,
                 start_time: row.get(4)?,
                 end_time: row.get(5)?,
-                attributes: row
-                    .get::<_, String>(6)
-                    .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Object(Default::default())))?,
+                attributes: row.get::<_, String>(6).map(|s| {
+                    serde_json::from_str(&s)
+                        .unwrap_or(serde_json::Value::Object(Default::default()))
+                })?,
                 status: row.get(7)?,
             })
         })
@@ -77,10 +81,7 @@ pub async fn get_traces(
     let mut groups: std::collections::BTreeMap<String, Vec<SpanRecord>> =
         std::collections::BTreeMap::new();
     for span in spans {
-        groups
-            .entry(span.trace_id.clone())
-            .or_default()
-            .push(span);
+        groups.entry(span.trace_id.clone()).or_default().push(span);
     }
 
     let traces: Vec<TraceGroup> = groups

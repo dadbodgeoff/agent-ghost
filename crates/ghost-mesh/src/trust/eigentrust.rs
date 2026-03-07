@@ -90,11 +90,8 @@ impl EigenTrustComputer {
         }
 
         // Build agent index for matrix operations.
-        let agent_index: BTreeMap<Uuid, usize> = agents
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| (id, i))
-            .collect();
+        let agent_index: BTreeMap<Uuid, usize> =
+            agents.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
         // Build pre-trusted vector p: uniform over pre-trusted set.
         let mut p = vec![0.0_f64; n];

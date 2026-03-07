@@ -52,8 +52,7 @@ impl EscalationManager {
         let webhook_fut = self.dispatch_webhook(config, agent_id, reason);
 
         // All parallel, best-effort — failures logged but don't block
-        let (sms_res, email_res, webhook_res) =
-            tokio::join!(sms_fut, email_fut, webhook_fut);
+        let (sms_res, email_res, webhook_res) = tokio::join!(sms_fut, email_fut, webhook_fut);
 
         if let Err(e) = sms_res {
             tracing::warn!("SMS notification failed: {e}");

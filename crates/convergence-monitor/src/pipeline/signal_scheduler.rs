@@ -40,16 +40,15 @@ pub enum ComputeTrigger {
 
 /// Default tier assignments for the 8 signals.
 const DEFAULT_TIER_ASSIGNMENTS: [SignalFrequencyTier; 8] = [
-    SignalFrequencyTier::SessionBoundary,   // S1: session_duration
-    SignalFrequencyTier::SessionBoundary,   // S2: inter_session_gap
-    SignalFrequencyTier::EveryMessage,      // S3: response_latency
-    SignalFrequencyTier::SessionBoundary,   // S4: vocabulary_convergence
-    SignalFrequencyTier::Every5thMessage,   // S5: goal_boundary_erosion
-    SignalFrequencyTier::EveryMessage,      // S6: initiative_balance
-    SignalFrequencyTier::SessionBoundary,   // S7: disengagement_resistance
-    SignalFrequencyTier::Every5thMessage,   // S8: behavioral_anomaly
+    SignalFrequencyTier::SessionBoundary, // S1: session_duration
+    SignalFrequencyTier::SessionBoundary, // S2: inter_session_gap
+    SignalFrequencyTier::EveryMessage,    // S3: response_latency
+    SignalFrequencyTier::SessionBoundary, // S4: vocabulary_convergence
+    SignalFrequencyTier::Every5thMessage, // S5: goal_boundary_erosion
+    SignalFrequencyTier::EveryMessage,    // S6: initiative_balance
+    SignalFrequencyTier::SessionBoundary, // S7: disengagement_resistance
+    SignalFrequencyTier::Every5thMessage, // S8: behavioral_anomaly
 ];
-
 
 /// Signal scheduler — gates which signals are computed per event.
 pub struct SignalScheduler {

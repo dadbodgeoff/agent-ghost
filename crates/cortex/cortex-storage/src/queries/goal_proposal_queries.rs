@@ -1,8 +1,8 @@
 //! Goal proposal queries.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_proposal(
     conn: &Connection,
@@ -24,8 +24,17 @@ pub fn insert_proposal(
          event_hash, previous_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
-            id, agent_id, session_id, proposer_type, operation, target_type,
-            content, cited_memory_ids, decision, event_hash, previous_hash,
+            id,
+            agent_id,
+            session_id,
+            proposer_type,
+            operation,
+            target_type,
+            content,
+            cited_memory_ids,
+            decision,
+            event_hash,
+            previous_hash,
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;

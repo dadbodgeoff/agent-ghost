@@ -47,7 +47,10 @@ mod tests {
             assert!(
                 f2 >= f1,
                 "{:?} ({}) should decay <= {:?} ({})",
-                pair[0], f1, pair[1], f2
+                pair[0],
+                f1,
+                pair[1],
+                f2
             );
         }
     }

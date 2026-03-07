@@ -6,5 +6,5 @@
 //! D6: self-reference density
 //! D7: emulation language detection
 
-pub mod proposal_validator;
 pub mod dimensions;
+pub mod proposal_validator;

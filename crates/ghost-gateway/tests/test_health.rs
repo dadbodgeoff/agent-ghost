@@ -9,12 +9,7 @@ mod common;
 async fn health_endpoint_returns_200() {
     let gw = common::TestGateway::start().await;
 
-    let resp = gw
-        .client
-        .get(gw.url("/api/health"))
-        .send()
-        .await
-        .unwrap();
+    let resp = gw.client.get(gw.url("/api/health")).send().await.unwrap();
 
     assert_eq!(resp.status(), 200);
 
@@ -29,12 +24,7 @@ async fn health_endpoint_returns_200() {
 async fn ready_endpoint_returns_200_when_healthy() {
     let gw = common::TestGateway::start().await;
 
-    let resp = gw
-        .client
-        .get(gw.url("/api/ready"))
-        .send()
-        .await
-        .unwrap();
+    let resp = gw.client.get(gw.url("/api/ready")).send().await.unwrap();
 
     assert_eq!(resp.status(), 200);
 

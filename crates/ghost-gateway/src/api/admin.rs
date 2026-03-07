@@ -111,9 +111,8 @@ pub async fn create_backup(
     };
 
     // Ensure backup directory exists.
-    std::fs::create_dir_all(&backup_dir).map_err(|e| {
-        ApiError::internal(format!("Failed to create backup directory: {e}"))
-    })?;
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|e| ApiError::internal(format!("Failed to create backup directory: {e}")))?;
 
     let backup_id = uuid::Uuid::now_v7().to_string();
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
@@ -153,11 +152,14 @@ pub async fn create_backup(
     .map_err(|e| ApiError::db_error("record backup manifest", e))?;
 
     // Broadcast WS event.
-    crate::api::websocket::broadcast_event(&state, crate::api::websocket::WsEvent::BackupComplete {
-        backup_id: backup_id.clone(),
-        status: "complete".into(),
-        size_bytes,
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        crate::api::websocket::WsEvent::BackupComplete {
+            backup_id: backup_id.clone(),
+            status: "complete".into(),
+            size_bytes,
+        },
+    );
 
     Ok(Json(BackupResponse {
         backup_id,
@@ -228,25 +230,36 @@ pub async fn export_data(
         .uri()
         .query()
         .and_then(|q| {
-            q.split('&')
-                .find_map(|pair| {
-                    let mut parts = pair.splitn(2, '=');
-                    if parts.next() == Some("format") {
-                        parts.next().map(|v| v.to_string())
-                    } else {
-                        None
-                    }
-                })
+            q.split('&').find_map(|pair| {
+                let mut parts = pair.splitn(2, '=');
+                if parts.next() == Some("format") {
+                    parts.next().map(|v| v.to_string())
+                } else {
+                    None
+                }
+            })
         })
         .unwrap_or_else(|| "jsonl".into());
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("export_data", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("export_data", e))?;
 
     let table_queries: &[(&str, &str)] = &[
         ("agents", "SELECT id, name FROM agents LIMIT 10000"),
-        ("memories", "SELECT id, memory_type, summary FROM memory_snapshots LIMIT 10000"),
-        ("proposals", "SELECT id, operation, decision FROM goal_proposals LIMIT 10000"),
-        ("audit", "SELECT id, event_type, severity FROM audit_log LIMIT 10000"),
+        (
+            "memories",
+            "SELECT id, memory_type, summary FROM memory_snapshots LIMIT 10000",
+        ),
+        (
+            "proposals",
+            "SELECT id, operation, decision FROM goal_proposals LIMIT 10000",
+        ),
+        (
+            "audit",
+            "SELECT id, event_type, severity FROM audit_log LIMIT 10000",
+        ),
     ];
 
     let mut entities = Vec::new();
@@ -265,8 +278,13 @@ pub async fn export_data(
         for entity in &entities {
             for row in &entity.data {
                 let mut obj = row.as_object().cloned().unwrap_or_default();
-                obj.insert("_type".into(), serde_json::Value::String(entity.entity_type.clone()));
-                lines.push_str(&serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default());
+                obj.insert(
+                    "_type".into(),
+                    serde_json::Value::String(entity.entity_type.clone()),
+                );
+                lines.push_str(
+                    &serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default(),
+                );
                 lines.push('\n');
             }
         }
@@ -275,7 +293,8 @@ pub async fn export_data(
         Ok((
             [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
             lines,
-        ).into_response())
+        )
+            .into_response())
     } else {
         let total: usize = entities.iter().map(|e| e.count).sum();
         use axum::response::IntoResponse;
@@ -283,7 +302,8 @@ pub async fn export_data(
             format,
             entities,
             total,
-        }).into_response())
+        })
+        .into_response())
     }
 }
 
@@ -294,7 +314,10 @@ pub async fn list_backups(
 ) -> ApiResult<BackupListResponse> {
     require_admin(request.extensions())?;
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_backups", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_backups", e))?;
     let mut stmt = db
         .prepare(
             "SELECT id, created_at, size_bytes, entry_count, blake3_checksum, status \

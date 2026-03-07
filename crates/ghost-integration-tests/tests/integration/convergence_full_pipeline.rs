@@ -61,7 +61,10 @@ fn privacy_level_content_hashing() {
 
     // hash_content always returns a SHA-256 hash
     let hash = privacy::hash_content(content);
-    assert_ne!(hash, content, "hash_content should return a hash, not plaintext");
+    assert_ne!(
+        hash, content,
+        "hash_content should return a hash, not plaintext"
+    );
 
     // apply_privacy with Minimal returns hash only (no plaintext)
     let (min_hash, min_plain) = privacy::apply_privacy(content, PrivacyLevel::Minimal);
@@ -70,7 +73,11 @@ fn privacy_level_content_hashing() {
 
     // apply_privacy with Full returns hash + plaintext
     let (_full_hash, full_plain) = privacy::apply_privacy(content, PrivacyLevel::Full);
-    assert_eq!(full_plain.as_deref(), Some(content), "Full should return plaintext");
+    assert_eq!(
+        full_plain.as_deref(),
+        Some(content),
+        "Full should return plaintext"
+    );
 }
 
 /// Low signals → low score → Level 0 → no policy tightening.
@@ -82,7 +89,11 @@ fn low_signals_no_tightening() {
     let score = scorer.compute(&signals);
     let level = scorer.score_to_level(score);
 
-    assert!(score < 0.3, "Low signals should produce low score: {}", score);
+    assert!(
+        score < 0.3,
+        "Low signals should produce low score: {}",
+        score
+    );
     assert_eq!(level, 0);
 
     let tightener = ConvergencePolicyTightener;
@@ -117,7 +128,11 @@ fn high_signals_elevated_level() {
     let score = scorer.compute(&signals);
     let level = scorer.score_to_level(score);
 
-    assert!(score > 0.7, "High signals should produce high score: {}", score);
+    assert!(
+        score > 0.7,
+        "High signals should produce high score: {}",
+        score
+    );
     assert!(level >= 3, "Should be Level 3+: {}", level);
 }
 
@@ -214,7 +229,10 @@ fn profiles_produce_different_scorers() {
         .zip(research.thresholds.iter())
         .any(|(s, r)| (s - r).abs() > f64::EPSILON);
 
-    assert!(any_different, "Standard and Research should have different thresholds");
+    assert!(
+        any_different,
+        "Standard and Research should have different thresholds"
+    );
 }
 
 /// Standard profile has differentiated weights.
@@ -222,7 +240,10 @@ fn profiles_produce_different_scorers() {
 fn standard_profile_differentiated_weights() {
     let scorer = ConvergenceProfile::Standard.scorer();
     let first = scorer.weights[0];
-    let all_equal = scorer.weights.iter().all(|&w| (w - first).abs() < f64::EPSILON);
+    let all_equal = scorer
+        .weights
+        .iter()
+        .all(|&w| (w - first).abs() < f64::EPSILON);
     assert!(!all_equal || scorer.weights.len() == 1);
 }
 

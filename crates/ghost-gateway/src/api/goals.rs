@@ -183,7 +183,11 @@ pub async fn approve_goal(
 
     let resolved_at = chrono::Utc::now().to_rfc3339();
     match cortex_storage::queries::goal_proposal_queries::resolve_proposal(
-        &db, &id, "approved", "human_operator", &resolved_at,
+        &db,
+        &id,
+        "approved",
+        "human_operator",
+        &resolved_at,
     ) {
         Ok(true) => {
             // agent_id is NOT NULL per DDL — no COALESCE needed (F9 fix).
@@ -199,11 +203,14 @@ pub async fn approve_goal(
                 }
             };
 
-            crate::api::websocket::broadcast_event(&state, WsEvent::ProposalDecision {
-                proposal_id: id.clone(),
-                decision: "approved".into(),
-                agent_id,
-            });
+            crate::api::websocket::broadcast_event(
+                &state,
+                WsEvent::ProposalDecision {
+                    proposal_id: id.clone(),
+                    decision: "approved".into(),
+                    agent_id,
+                },
+            );
 
             (
                 StatusCode::OK,
@@ -261,7 +268,11 @@ pub async fn reject_goal(
 
     let resolved_at = chrono::Utc::now().to_rfc3339();
     match cortex_storage::queries::goal_proposal_queries::resolve_proposal(
-        &db, &id, "rejected", "human_operator", &resolved_at,
+        &db,
+        &id,
+        "rejected",
+        "human_operator",
+        &resolved_at,
     ) {
         Ok(true) => {
             let agent_id = match db.query_row(
@@ -276,11 +287,14 @@ pub async fn reject_goal(
                 }
             };
 
-            crate::api::websocket::broadcast_event(&state, WsEvent::ProposalDecision {
-                proposal_id: id.clone(),
-                decision: "rejected".into(),
-                agent_id,
-            });
+            crate::api::websocket::broadcast_event(
+                &state,
+                WsEvent::ProposalDecision {
+                    proposal_id: id.clone(),
+                    decision: "rejected".into(),
+                    agent_id,
+                },
+            );
 
             (
                 StatusCode::OK,
@@ -333,7 +347,10 @@ pub async fn get_goal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("goal_get", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("goal_get", e))?;
 
     let proposal = db
         .query_row(

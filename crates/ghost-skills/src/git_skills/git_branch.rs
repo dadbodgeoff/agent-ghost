@@ -63,7 +63,10 @@ impl Skill for GitBranchSkill {
     }
 
     fn preview(&self, input: &serde_json::Value) -> Option<String> {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let action = input
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         match action {
             "create" => Some(format!("Create branch '{name}'")),
@@ -75,17 +78,16 @@ impl Skill for GitBranchSkill {
 }
 
 fn list_branches(repo: &git2::Repository) -> SkillResult {
-    let branches = repo.branches(None).map_err(|e| {
-        SkillError::Internal(format!("failed to list branches: {e}"))
-    })?;
+    let branches = repo
+        .branches(None)
+        .map_err(|e| SkillError::Internal(format!("failed to list branches: {e}")))?;
 
     let mut branch_list = Vec::new();
     let mut current_branch: Option<String> = None;
 
     for branch_result in branches {
-        let (branch, branch_type) = branch_result.map_err(|e| {
-            SkillError::Internal(format!("failed to read branch: {e}"))
-        })?;
+        let (branch, branch_type) = branch_result
+            .map_err(|e| SkillError::Internal(format!("failed to read branch: {e}")))?;
 
         let name = branch
             .name()
@@ -98,10 +100,7 @@ fn list_branches(repo: &git2::Repository) -> SkillResult {
             current_branch = Some(name.clone());
         }
 
-        let commit_id = branch
-            .get()
-            .target()
-            .map(|oid| oid.to_string());
+        let commit_id = branch.get().target().map(|oid| oid.to_string());
 
         let upstream = branch
             .upstream()
@@ -127,12 +126,9 @@ fn list_branches(repo: &git2::Repository) -> SkillResult {
 }
 
 fn create_branch(repo: &git2::Repository, input: &serde_json::Value) -> SkillResult {
-    let name = input
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            SkillError::InvalidInput("missing required field 'name' for create action".into())
-        })?;
+    let name = input.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+        SkillError::InvalidInput("missing required field 'name' for create action".into())
+    })?;
 
     let force = input
         .get("force")
@@ -141,28 +137,25 @@ fn create_branch(repo: &git2::Repository, input: &serde_json::Value) -> SkillRes
 
     // Resolve the base reference.
     let target_commit = if let Some(from_ref) = input.get("from_ref").and_then(|v| v.as_str()) {
-        let reference = repo.resolve_reference_from_short_name(from_ref).map_err(|e| {
-            SkillError::InvalidInput(format!("cannot resolve reference '{from_ref}': {e}"))
-        })?;
-        reference.peel_to_commit().map_err(|e| {
-            SkillError::Internal(format!("cannot peel '{from_ref}' to commit: {e}"))
-        })?
+        let reference = repo
+            .resolve_reference_from_short_name(from_ref)
+            .map_err(|e| {
+                SkillError::InvalidInput(format!("cannot resolve reference '{from_ref}': {e}"))
+            })?;
+        reference
+            .peel_to_commit()
+            .map_err(|e| SkillError::Internal(format!("cannot peel '{from_ref}' to commit: {e}")))?
     } else {
         repo.head()
             .and_then(|r| r.peel_to_commit())
-            .map_err(|e| {
-                SkillError::Internal(format!("cannot resolve HEAD: {e}"))
-            })?
+            .map_err(|e| SkillError::Internal(format!("cannot resolve HEAD: {e}")))?
     };
 
     let branch = repo
         .branch(name, &target_commit, force)
         .map_err(|e| SkillError::Internal(format!("failed to create branch: {e}")))?;
 
-    let commit_id = branch
-        .get()
-        .target()
-        .map(|oid| oid.to_string());
+    let commit_id = branch.get().target().map(|oid| oid.to_string());
 
     tracing::info!(branch = name, "Branch created");
 
@@ -174,18 +167,13 @@ fn create_branch(repo: &git2::Repository, input: &serde_json::Value) -> SkillRes
 }
 
 fn delete_branch(repo: &git2::Repository, input: &serde_json::Value) -> SkillResult {
-    let name = input
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            SkillError::InvalidInput("missing required field 'name' for delete action".into())
-        })?;
+    let name = input.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+        SkillError::InvalidInput("missing required field 'name' for delete action".into())
+    })?;
 
     let mut branch = repo
         .find_branch(name, git2::BranchType::Local)
-        .map_err(|e| {
-            SkillError::InvalidInput(format!("branch '{name}' not found: {e}"))
-        })?;
+        .map_err(|e| SkillError::InvalidInput(format!("branch '{name}' not found: {e}")))?;
 
     // Prevent deleting the currently checked-out branch.
     if branch.is_head() {
@@ -194,9 +182,9 @@ fn delete_branch(repo: &git2::Repository, input: &serde_json::Value) -> SkillRes
         )));
     }
 
-    branch.delete().map_err(|e| {
-        SkillError::Internal(format!("failed to delete branch '{name}': {e}"))
-    })?;
+    branch
+        .delete()
+        .map_err(|e| SkillError::Internal(format!("failed to delete branch '{name}': {e}")))?;
 
     tracing::info!(branch = name, "Branch deleted");
 
@@ -233,8 +221,7 @@ mod tests {
 
     impl TestRepo {
         fn new_with_commit() -> (Self, git2::Repository) {
-            let path =
-                std::env::temp_dir().join(format!("ghost-git-branch-{}", Uuid::now_v7()));
+            let path = std::env::temp_dir().join(format!("ghost-git-branch-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&path).unwrap();
             let repo = git2::Repository::init(&path).unwrap();
 

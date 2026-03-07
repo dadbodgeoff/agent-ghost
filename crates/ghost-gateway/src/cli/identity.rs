@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -19,7 +19,9 @@ fn keys_dir() -> PathBuf {
 
 /// Resolve the SOUL.md path: `~/.ghost/config/SOUL.md`.
 fn soul_path() -> PathBuf {
-    crate::bootstrap::ghost_home().join("config").join("SOUL.md")
+    crate::bootstrap::ghost_home()
+        .join("config")
+        .join("SOUL.md")
 }
 
 /// Resolve the baseline hash file: `~/.ghost/config/.soul_baseline`.
@@ -127,7 +129,10 @@ pub fn run_show(args: IdentityShowArgs) -> Result<(), CliError> {
 
     // Load public key.
     let keymgr = ghost_identity::keypair_manager::AgentKeypairManager::new(kdir.clone());
-    let fp = keymgr.load_verifying_key().ok().map(|vk| key_fingerprint(&vk));
+    let fp = keymgr
+        .load_verifying_key()
+        .ok()
+        .map(|vk| key_fingerprint(&vk));
 
     let result = IdentityShowResult {
         soul_summary: summary,
@@ -169,14 +174,8 @@ pub fn run_drift(_args: IdentityDriftArgs) -> Result<(), CliError> {
         println!("✓ No drift detected — SOUL.md matches baseline.");
     } else {
         eprintln!("✗ SOUL.md has changed (hash mismatch).");
-        eprintln!(
-            "  Baseline: {}",
-            hex_encode(&stored_hash)
-        );
-        eprintln!(
-            "  Current:  {}",
-            hex_encode(&doc.hash)
-        );
+        eprintln!("  Baseline: {}", hex_encode(&stored_hash));
+        eprintln!("  Current:  {}", hex_encode(&doc.hash));
         eprintln!("  Run `ghost identity init` to update the baseline.");
     }
 

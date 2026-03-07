@@ -14,11 +14,15 @@ use crate::platform::window_backend::{LaunchResult, WindowBackend, WindowInfo};
 pub struct MacOsWindowBackend;
 
 impl MacOsWindowBackend {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for MacOsWindowBackend {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WindowBackend for MacOsWindowBackend {
@@ -47,10 +51,14 @@ impl WindowBackend for MacOsWindowBackend {
 
         for line in output.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() < 7 { continue; }
+            if parts.len() < 7 {
+                continue;
+            }
 
             let app = parts[0].to_string();
 
@@ -107,9 +115,7 @@ impl WindowBackend for MacOsWindowBackend {
             );
             run_osascript(&script)?;
         } else {
-            let script = format!(
-                r#"tell application "{app_name}" to activate"#
-            );
+            let script = format!(r#"tell application "{app_name}" to activate"#);
             run_osascript(&script)?;
         }
 
@@ -141,7 +147,8 @@ impl WindowBackend for MacOsWindowBackend {
         width: Option<u32>,
         height: Option<u32>,
     ) -> Result<WindowInfo, String> {
-        let app_name = app.or(title)
+        let app_name = app
+            .or(title)
             .ok_or("at least one of 'title' or 'app' must be provided")?;
 
         let mut commands = Vec::new();
@@ -195,7 +202,9 @@ impl WindowBackend for MacOsWindowBackend {
             }
         }
 
-        let output = cmd.output().map_err(|e| format!("failed to launch app: {e}"))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to launch app: {e}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -223,7 +232,9 @@ fn run_osascript(script: &str) -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Check for common permission error.
-        if stderr.contains("not allowed assistive access") || stderr.contains("osascript is not allowed") {
+        if stderr.contains("not allowed assistive access")
+            || stderr.contains("osascript is not allowed")
+        {
             return Err(
                 "Accessibility permission required. Enable it in System Settings > Privacy & Security > Accessibility.".into()
             );
@@ -237,7 +248,9 @@ fn run_osascript(script: &str) -> Result<String, String> {
 /// Parse a pipe-delimited window info line.
 fn parse_window_line(line: &str) -> Option<WindowInfo> {
     let parts: Vec<&str> = line.trim().split('|').collect();
-    if parts.len() < 7 { return None; }
+    if parts.len() < 7 {
+        return None;
+    }
     Some(WindowInfo {
         app: parts[0].to_string(),
         title: parts[1].to_string(),
@@ -285,11 +298,7 @@ fn resolve_app_name_by_title(title: &str) -> Result<String, String> {
 
 /// Get PID for a named app using pgrep.
 fn get_pid_for_app(app: &str) -> Option<u32> {
-    let output = Command::new("pgrep")
-        .arg("-x")
-        .arg(app)
-        .output()
-        .ok()?;
+    let output = Command::new("pgrep").arg("-x").arg(app).output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.lines().next()?.trim().parse().ok()
 }

@@ -4,9 +4,9 @@
 //! are never modified or deleted. Instead, we track which event ranges
 //! have been "summarized" into a snapshot via `compaction_event_ranges`.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 /// Find memory_ids with more than `threshold` uncompacted events.
 pub fn memories_above_threshold(
@@ -95,7 +95,13 @@ pub fn insert_compaction_range(
         "INSERT INTO compaction_event_ranges
          (compaction_run_id, memory_id, min_event_id, max_event_id, summary_snapshot_id)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![run_id, memory_id, min_event_id, max_event_id, summary_snapshot_id],
+        params![
+            run_id,
+            memory_id,
+            min_event_id,
+            max_event_id,
+            summary_snapshot_id
+        ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())

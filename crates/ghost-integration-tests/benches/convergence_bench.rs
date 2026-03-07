@@ -111,7 +111,13 @@ fn bench_signing(c: &mut Criterion) {
 
     let signature = sign(payload, &signing_key);
     c.bench_function("ed25519_verify", |b| {
-        b.iter(|| verify(black_box(payload), black_box(&signature), black_box(&verifying_key)));
+        b.iter(|| {
+            verify(
+                black_box(payload),
+                black_box(&signature),
+                black_box(&verifying_key),
+            )
+        });
     });
 
     c.bench_function("ed25519_sign_and_verify", |b| {
@@ -168,12 +174,10 @@ fn bench_convergence_factor(c: &mut Criterion) {
 
 fn bench_signal_computation(c: &mut Criterion) {
     use cortex_convergence::signals::{
-        session_duration::SessionDurationSignal,
-        inter_session_gap::InterSessionGapSignal,
-        response_latency::ResponseLatencySignal,
-        initiative_balance::InitiativeBalanceSignal,
         disengagement_resistance::DisengagementResistanceSignal,
-        Signal, SignalInput,
+        initiative_balance::InitiativeBalanceSignal, inter_session_gap::InterSessionGapSignal,
+        response_latency::ResponseLatencySignal, session_duration::SessionDurationSignal, Signal,
+        SignalInput,
     };
 
     let input = SignalInput {

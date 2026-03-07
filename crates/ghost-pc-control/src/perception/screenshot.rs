@@ -117,17 +117,26 @@ impl ScreenshotSkill {
 }
 
 impl Skill for ScreenshotSkill {
-    fn name(&self) -> &str { "screenshot" }
+    fn name(&self) -> &str {
+        "screenshot"
+    }
 
     fn description(&self) -> &str {
         "Capture a screenshot of the entire screen or a region"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, _ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
-        let format = input.get("format").and_then(|v| v.as_str()).unwrap_or("png");
+        let format = input
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("png");
         if !matches!(format, "png" | "jpeg") {
             return Err(SkillError::InvalidInput(format!(
                 "invalid format '{format}', must be: png, jpeg"
@@ -135,9 +144,10 @@ impl Skill for ScreenshotSkill {
         }
 
         // Capture the full screen.
-        let captured = self.backend.capture_full_screen().map_err(|e| {
-            SkillError::Internal(format!("screen capture failed: {e}"))
-        })?;
+        let captured = self
+            .backend
+            .capture_full_screen()
+            .map_err(|e| SkillError::Internal(format!("screen capture failed: {e}")))?;
 
         let mut width = captured.width;
         let mut height = captured.height;
@@ -146,8 +156,14 @@ impl Skill for ScreenshotSkill {
         if let Some(region) = input.get("region") {
             let rx = region.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
             let ry = region.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-            let rw = region.get("width").and_then(|v| v.as_u64()).unwrap_or(width as u64) as u32;
-            let rh = region.get("height").and_then(|v| v.as_u64()).unwrap_or(height as u64) as u32;
+            let rw = region
+                .get("width")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(width as u64) as u32;
+            let rh = region
+                .get("height")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(height as u64) as u32;
 
             if rx + rw > captured.width || ry + rh > captured.height {
                 return Err(SkillError::InvalidInput(format!(
@@ -195,7 +211,12 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> ScreenshotSkill {
@@ -221,9 +242,14 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({
-            "region": { "x": 100, "y": 200, "width": 800, "height": 600 }
-        })).unwrap();
+        let result = skill
+            .execute(
+                &ctx,
+                &serde_json::json!({
+                    "region": { "x": 100, "y": 200, "width": 800, "height": 600 }
+                }),
+            )
+            .unwrap();
         assert_eq!(result["width"], 800);
         assert_eq!(result["height"], 600);
     }
@@ -234,9 +260,12 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({
-            "region": { "x": 1900, "y": 0, "width": 100, "height": 100 }
-        }));
+        let result = skill.execute(
+            &ctx,
+            &serde_json::json!({
+                "region": { "x": 1900, "y": 0, "width": 100, "height": 100 }
+            }),
+        );
         assert!(matches!(result, Err(SkillError::InvalidInput(_))));
     }
 
@@ -256,7 +285,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"format": "jpeg"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"format": "jpeg"}))
+            .unwrap();
         assert_eq!(result["format"], "jpeg");
     }
 
@@ -270,7 +301,8 @@ mod tests {
     #[test]
     fn preview_cropped() {
         let skill = test_skill();
-        let preview = skill.preview(&serde_json::json!({"region": {"x": 0, "y": 0, "width": 100, "height": 100}}));
+        let preview = skill
+            .preview(&serde_json::json!({"region": {"x": 0, "y": 0, "width": 100, "height": 100}}));
         assert_eq!(preview, Some("Capture screenshot (cropped region)".into()));
     }
 

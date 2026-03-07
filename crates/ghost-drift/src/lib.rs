@@ -143,7 +143,9 @@ impl DriftService {
 
 #[tool_router]
 impl DriftService {
-    #[tool(description = "Index a directory: scan files, extract symbols (functions, structs, traits, types), and compute embeddings for semantic search. Run this first on a codebase.")]
+    #[tool(
+        description = "Index a directory: scan files, extract symbols (functions, structs, traits, types), and compute embeddings for semantic search. Run this first on a codebase."
+    )]
     async fn drift_index(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<IndexParams>,
@@ -196,9 +198,7 @@ impl DriftService {
             let size = metadata.as_ref().map(|m| m.len() as i64).unwrap_or(0);
             let modified = metadata
                 .and_then(|m| m.modified().ok())
-                .map(|t| {
-                    chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()
-                })
+                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
                 .unwrap_or_default();
 
             let rel_path = entry
@@ -254,7 +254,9 @@ impl DriftService {
         ))]))
     }
 
-    #[tool(description = "Record a belief about how code behaves. The agent calls this when it learns or assumes something about the codebase. Automatically detects contradictions with existing beliefs.")]
+    #[tool(
+        description = "Record a belief about how code behaves. The agent calls this when it learns or assumes something about the codebase. Automatically detects contradictions with existing beliefs."
+    )]
     async fn drift_observe(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ObserveParams>,
@@ -310,7 +312,9 @@ impl DriftService {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
-    #[tool(description = "Semantic search over indexed codebase. Find relevant symbols and code by meaning, not just text matching.")]
+    #[tool(
+        description = "Semantic search over indexed codebase. Find relevant symbols and code by meaning, not just text matching."
+    )]
     async fn drift_query(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<QueryParams>,
@@ -335,7 +339,14 @@ impl DriftService {
             .map(|(file, name, kind, line, sig, embed_bytes)| {
                 let embed = similarity::from_bytes(embed_bytes);
                 let score = similarity::cosine_similarity(&query_embed, &embed);
-                (score, file.as_str(), name.as_str(), kind.as_str(), *line, sig)
+                (
+                    score,
+                    file.as_str(),
+                    name.as_str(),
+                    kind.as_str(),
+                    *line,
+                    sig,
+                )
             })
             .collect();
 
@@ -350,10 +361,14 @@ impl DriftService {
             ));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n"),
+        )]))
     }
 
-    #[tool(description = "Get knowledge health metrics: Knowledge Stability Index (KSI), evidence freshness, and contradiction density. Higher KSI = more stable knowledge.")]
+    #[tool(
+        description = "Get knowledge health metrics: Knowledge Stability Index (KSI), evidence freshness, and contradiction density. Higher KSI = more stable knowledge."
+    )]
     async fn drift_health(
         &self,
         rmcp::handler::server::wrapper::Parameters(_params): rmcp::handler::server::wrapper::Parameters<HealthParams>,
@@ -391,7 +406,9 @@ impl DriftService {
         ))]))
     }
 
-    #[tool(description = "Surface contradicting beliefs about the same code. Finds beliefs about the same file/symbol that may conflict with each other.")]
+    #[tool(
+        description = "Surface contradicting beliefs about the same code. Finds beliefs about the same file/symbol that may conflict with each other."
+    )]
     async fn drift_contradictions(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ContradictionsParams>,
@@ -460,7 +477,9 @@ impl DriftService {
         }
     }
 
-    #[tool(description = "Find stale beliefs that haven't been verified recently. These represent areas where the agent's understanding may have drifted from reality.")]
+    #[tool(
+        description = "Find stale beliefs that haven't been verified recently. These represent areas where the agent's understanding may have drifted from reality."
+    )]
     async fn drift_stale(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<StaleParams>,
@@ -490,10 +509,14 @@ impl DriftService {
             ));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            lines.join("\n"),
+        )]))
     }
 
-    #[tool(description = "Detect drift patterns: erosion (declining confidence), explosion (rapid belief creation), crystallization (beliefs stabilizing), and conflict waves (contradiction spikes).")]
+    #[tool(
+        description = "Detect drift patterns: erosion (declining confidence), explosion (rapid belief creation), crystallization (beliefs stabilizing), and conflict waves (contradiction spikes)."
+    )]
     async fn drift_patterns(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<PatternsParams>,
@@ -522,7 +545,11 @@ impl DriftService {
                  Severity: {}\n\
                  Action: Consider consolidating overlapping beliefs.",
                 creation_rate * 100.0,
-                if creation_rate > 0.8 { "HIGH" } else { "MEDIUM" }
+                if creation_rate > 0.8 {
+                    "HIGH"
+                } else {
+                    "MEDIUM"
+                }
             ));
         }
 
@@ -542,8 +569,7 @@ impl DriftService {
         }
 
         // Conflict wave: contradiction density spike
-        let contradiction_density =
-            metrics::compute_contradiction_density(&self.db).unwrap_or(0.0);
+        let contradiction_density = metrics::compute_contradiction_density(&self.db).unwrap_or(0.0);
         if contradiction_density > 0.1 {
             patterns.push(format!(
                 "CONFLICT WAVE: High contradiction density ({contradiction_density:.3}).\n\
@@ -566,7 +592,9 @@ impl DriftService {
         }
     }
 
-    #[tool(description = "Create a point-in-time snapshot of knowledge state, or compare current state against a previous snapshot to measure drift over time.")]
+    #[tool(
+        description = "Create a point-in-time snapshot of knowledge state, or compare current state against a previous snapshot to measure drift over time."
+    )]
     async fn drift_snapshot(
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SnapshotParams>,
@@ -579,8 +607,7 @@ impl DriftService {
                 let belief_count = self.db.belief_count().unwrap_or(0);
                 let ksi = metrics::compute_ksi(&self.db, 7.0).ok();
                 let freshness = metrics::compute_freshness(&self.db, 7.0).ok();
-                let contradiction_density =
-                    metrics::compute_contradiction_density(&self.db).ok();
+                let contradiction_density = metrics::compute_contradiction_density(&self.db).ok();
 
                 self.db
                     .insert_snapshot(
@@ -619,8 +646,17 @@ impl DriftService {
                         McpError::invalid_params(format!("Snapshot not found: {snap_id}"), None)
                     })?;
 
-                let (_, created, old_files, old_symbols, old_beliefs, old_ksi, old_fresh, old_contra, _) =
-                    snapshot;
+                let (
+                    _,
+                    created,
+                    old_files,
+                    old_symbols,
+                    old_beliefs,
+                    old_ksi,
+                    old_fresh,
+                    old_contra,
+                    _,
+                ) = snapshot;
 
                 let cur_files = self.db.file_count().unwrap_or(0);
                 let cur_symbols = self.db.symbol_count().unwrap_or(0);
@@ -631,7 +667,11 @@ impl DriftService {
 
                 let delta = |old: i64, new: i64| -> String {
                     let d = new - old;
-                    if d > 0 { format!("+{d}") } else { format!("{d}") }
+                    if d > 0 {
+                        format!("+{d}")
+                    } else {
+                        format!("{d}")
+                    }
                 };
                 let delta_f = |old: Option<f64>, new: Option<f64>| -> String {
                     match (old, new) {
@@ -662,7 +702,9 @@ impl DriftService {
                     delta_f(old_ksi, cur_ksi),
                     cur_fresh.map(|v| format!("{v:.3}")).unwrap_or("N/A".into()),
                     delta_f(old_fresh, cur_fresh),
-                    cur_contra.map(|v| format!("{v:.3}")).unwrap_or("N/A".into()),
+                    cur_contra
+                        .map(|v| format!("{v:.3}"))
+                        .unwrap_or("N/A".into()),
                     delta_f(old_contra, cur_contra),
                 ))]))
             }

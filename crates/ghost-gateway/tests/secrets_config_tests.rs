@@ -122,22 +122,15 @@ fn secrets_config_default_is_env() {
 fn json_schema_contains_secrets_section() {
     let schema_str = include_str!("../../../schemas/ghost-config.schema.json");
     let schema: serde_json::Value = serde_json::from_str(schema_str).unwrap();
-    let secrets = schema
-        .get("properties")
-        .and_then(|p| p.get("secrets"));
+    let secrets = schema.get("properties").and_then(|p| p.get("secrets"));
     assert!(secrets.is_some(), "schema must contain 'secrets' property");
 
     let secrets = secrets.unwrap();
-    let provider = secrets
-        .get("properties")
-        .and_then(|p| p.get("provider"));
+    let provider = secrets.get("properties").and_then(|p| p.get("provider"));
     assert!(provider.is_some(), "secrets must have 'provider' property");
 
     // Verify enum values
-    let provider_enum = provider
-        .unwrap()
-        .get("enum")
-        .and_then(|e| e.as_array());
+    let provider_enum = provider.unwrap().get("enum").and_then(|e| e.as_array());
     assert!(provider_enum.is_some());
     let values: Vec<&str> = provider_enum
         .unwrap()
@@ -160,10 +153,7 @@ fn json_schema_secrets_vault_requires_endpoint() {
         .and_then(|p| p.get("vault"));
     assert!(vault.is_some());
 
-    let required = vault
-        .unwrap()
-        .get("required")
-        .and_then(|r| r.as_array());
+    let required = vault.unwrap().get("required").and_then(|r| r.as_array());
     assert!(required.is_some());
     let required_fields: Vec<&str> = required
         .unwrap()

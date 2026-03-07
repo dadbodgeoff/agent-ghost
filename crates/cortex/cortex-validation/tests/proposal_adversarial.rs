@@ -61,9 +61,7 @@ fn d7_zero_width_evasion_detected() {
 
 #[test]
 fn d7_multiple_zero_width_evasion() {
-    let result = emulation_language::detect(
-        "I\u{200B} a\u{200C}m\u{200D} s\u{FEFF}entient",
-    );
+    let result = emulation_language::detect("I\u{200B} a\u{200C}m\u{200D} s\u{FEFF}entient");
     assert!(
         result.max_severity >= 0.8,
         "Multiple zero-width chars should not bypass D7, severity={}",
@@ -189,15 +187,24 @@ fn d7_rejection_prevents_d5_d6_evaluation() {
 
     assert_eq!(result.decision, ProposalDecision::AutoRejected);
     // D7 rejection should short-circuit — D5/D6 not evaluated
-    assert!(result.d5_scope.is_none(), "D5 should not be evaluated after D7 rejection");
-    assert!(result.d6_self_ref.is_none(), "D6 should not be evaluated after D7 rejection");
+    assert!(
+        result.d5_scope.is_none(),
+        "D5 should not be evaluated after D7 rejection"
+    );
+    assert!(
+        result.d6_self_ref.is_none(),
+        "D6 should not be evaluated after D7 rejection"
+    );
     assert!(result.d7_emulation.is_some(), "D7 result should be present");
 }
 
 #[test]
 fn clean_proposal_auto_approved() {
     let validator = ProposalValidator::new();
-    let proposal = make_proposal("Update project configuration", ProposalOperation::MemoryWrite);
+    let proposal = make_proposal(
+        "Update project configuration",
+        ProposalOperation::MemoryWrite,
+    );
     let ctx = make_context(0);
     let result = validator.validate(&proposal, &ctx);
 

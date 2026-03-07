@@ -278,6 +278,14 @@ pub struct MonitorConfig {
     /// When false, the gateway skips monitor checks and starts as Healthy.
     #[serde(default)]
     pub enabled: bool,
+    /// Whether live execution should fail closed when convergence protection
+    /// is missing, stale, or corrupted.
+    #[serde(default)]
+    pub block_on_degraded: bool,
+    /// Maximum acceptable age for a convergence state file before it is
+    /// surfaced as stale rather than healthy.
+    #[serde(default = "default_convergence_state_stale_after_secs")]
+    pub stale_after_secs: u64,
     #[serde(default = "default_monitor_address")]
     pub address: String,
 }
@@ -286,9 +294,15 @@ impl Default for MonitorConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            block_on_degraded: false,
+            stale_after_secs: default_convergence_state_stale_after_secs(),
             address: default_monitor_address(),
         }
     }
+}
+
+fn default_convergence_state_stale_after_secs() -> u64 {
+    300
 }
 
 fn default_monitor_address() -> String {
@@ -523,6 +537,9 @@ pub struct MeshConfig {
     /// Whether mesh networking is enabled.
     #[serde(default)]
     pub enabled: bool,
+    /// Distributed kill remains feature-gated for this remediation milestone.
+    #[serde(default)]
+    pub distributed_kill_enabled: bool,
     /// Known agents for discovery and delegation.
     #[serde(default)]
     pub known_agents: Vec<KnownAgent>,
@@ -538,6 +555,7 @@ impl Default for MeshConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            distributed_kill_enabled: false,
             known_agents: Vec::new(),
             min_trust_for_delegation: default_min_trust(),
             max_delegation_depth: default_max_delegation_depth(),

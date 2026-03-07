@@ -1,12 +1,11 @@
 //! Tests for ghost-agent-loop (Tasks 4.3–4.6).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ghost_agent_loop::circuit_breaker::{CircuitBreaker, CircuitBreakerState};
-use ghost_agent_loop::context::prompt_compiler::{PromptCompiler, PromptInput, PromptLayer};
-use ghost_agent_loop::context::run_context::RunContext;
+use ghost_agent_loop::context::prompt_compiler::{PromptCompiler, PromptInput};
 use ghost_agent_loop::context::token_budget::{Budget, TokenBudgetAllocator};
 use ghost_agent_loop::damage_counter::DamageCounter;
 use ghost_agent_loop::itp_emitter::ITPEmitter;
@@ -14,10 +13,9 @@ use ghost_agent_loop::output_inspector::{InspectionResult, OutputInspector};
 use ghost_agent_loop::proposal::extractor::ProposalExtractor;
 use ghost_agent_loop::proposal::router::ProposalRouter;
 use ghost_agent_loop::response::is_no_reply;
-use ghost_agent_loop::runner::{AgentRunner, GateCheckLog, RunError};
+use ghost_agent_loop::runner::{AgentRunner, AuthoritativeKillState, GateCheckLog, RunError};
 use ghost_agent_loop::tools::registry::{RegisteredTool, ToolRegistry};
 use ghost_llm::provider::{LLMResponse, ToolSchema};
-use read_only_pipeline::snapshot::{AgentSnapshot, ConvergenceState};
 use uuid::Uuid;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -232,6 +230,30 @@ fn gate_kill_switch_blocks_run() {
     assert!(matches!(result, Err(RunError::KillSwitchActive)));
 }
 
+#[test]
+fn authoritative_pause_blocks_run() {
+    let mut runner = AgentRunner::new(128_000);
+    runner.authoritative_kill_state = Some(Arc::new(|_| AuthoritativeKillState::Pause));
+
+    let snapshot = AgentRunner::default_snapshot();
+    let ctx = runner.build_run_context(Uuid::now_v7(), Uuid::now_v7(), snapshot);
+    let mut log = GateCheckLog::default();
+
+    let result = runner.check_gates(&ctx, &mut log);
+    assert!(matches!(result, Err(RunError::AgentPaused)));
+}
+
+#[tokio::test]
+async fn authoritative_quarantine_blocks_pre_loop() {
+    let mut runner = AgentRunner::new(128_000);
+    runner.authoritative_kill_state = Some(Arc::new(|_| AuthoritativeKillState::Quarantine));
+
+    let result = runner
+        .pre_loop(Uuid::now_v7(), Uuid::now_v7(), "test", "hello")
+        .await;
+    assert!(matches!(result, Err(RunError::AgentQuarantined)));
+}
+
 // ── Pre-loop snapshot tests ─────────────────────────────────────────────
 
 #[test]
@@ -434,7 +456,8 @@ fn prompt_compiler_tool_schemas_level_0_all_tools() {
 
 #[test]
 fn prompt_compiler_tool_schemas_level_4_minimal() {
-    let schemas = "shell\nfilesystem\nweb_search\nmemory\nproactive\nheartbeat\npersonal\nread_file\nsearch";
+    let schemas =
+        "shell\nfilesystem\nweb_search\nmemory\nproactive\nheartbeat\npersonal\nread_file\nsearch";
     let filtered = PromptCompiler::filter_tool_schemas(schemas, 4);
     assert!(filtered.contains("shell"));
     assert!(filtered.contains("read_file"));
@@ -807,7 +830,10 @@ fn adversarial_infinite_tool_calls_recursion_halts() {
     ctx.recursion_depth = 5;
     let mut log = GateCheckLog::default();
     let result = runner.check_gates(&ctx, &mut log);
-    assert!(matches!(result, Err(RunError::RecursionDepthExceeded { depth: 5, max: 5 })));
+    assert!(matches!(
+        result,
+        Err(RunError::RecursionDepthExceeded { depth: 5, max: 5 })
+    ));
 }
 
 // ── Task 4.3: Adversarial — every tool fails → CB opens, DC halts ──────
@@ -935,7 +961,9 @@ fn proposal_router_reflection_precheck_cooldown() {
     // Record one reflection
     let p1 = Proposal {
         id: Uuid::now_v7(),
-        proposer: CallerType::Agent { agent_id: Uuid::now_v7() },
+        proposer: CallerType::Agent {
+            agent_id: Uuid::now_v7(),
+        },
         operation: ProposalOperation::ReflectionWrite,
         target_type: MemoryType::AgentReflection,
         content: serde_json::json!({}),
@@ -948,7 +976,9 @@ fn proposal_router_reflection_precheck_cooldown() {
     // Immediate second reflection should be rejected (cooldown)
     let p2 = Proposal {
         id: Uuid::now_v7(),
-        proposer: CallerType::Agent { agent_id: Uuid::now_v7() },
+        proposer: CallerType::Agent {
+            agent_id: Uuid::now_v7(),
+        },
         operation: ProposalOperation::ReflectionWrite,
         target_type: MemoryType::AgentReflection,
         content: serde_json::json!({}),
@@ -978,7 +1008,9 @@ fn proposal_router_reflection_precheck_max_depth() {
 
     let p = Proposal {
         id: Uuid::now_v7(),
-        proposer: CallerType::Agent { agent_id: Uuid::now_v7() },
+        proposer: CallerType::Agent {
+            agent_id: Uuid::now_v7(),
+        },
         operation: ProposalOperation::ReflectionWrite,
         target_type: MemoryType::AgentReflection,
         content: serde_json::json!({"depth": 5}),
@@ -995,9 +1027,10 @@ fn proposal_router_reflection_precheck_max_depth() {
 
 #[tokio::test]
 async fn tool_executor_enforces_timeout() {
-    use ghost_agent_loop::tools::executor::{ToolExecutor, ToolError};
+    use ghost_agent_loop::tools::executor::ToolExecutor;
+    use ghost_policy::engine::{CorpPolicy, PolicyEngine};
 
-    let executor = ToolExecutor::default();
+    let mut executor = ToolExecutor::default();
     let mut registry = ToolRegistry::new();
     registry.register(RegisteredTool {
         name: "slow_tool".into(),
@@ -1024,7 +1057,14 @@ async fn tool_executor_enforces_timeout() {
     let exec_ctx = ghost_agent_loop::tools::skill_bridge::ExecutionContext {
         agent_id: uuid::Uuid::nil(),
         session_id: uuid::Uuid::nil(),
+        intervention_level: 0,
+        session_duration: std::time::Duration::from_secs(0),
+        session_reflection_count: 0,
+        is_compaction_flush: false,
     };
+    let mut policy = PolicyEngine::new(CorpPolicy::new());
+    policy.grant_capability(exec_ctx.agent_id, "test".into());
+    executor.set_policy_engine(policy);
     let result = executor.execute(&call, &registry, &exec_ctx).await;
     assert!(result.is_ok());
     assert!(result.unwrap().success);
@@ -1034,7 +1074,7 @@ async fn tool_executor_enforces_timeout() {
 
 #[tokio::test]
 async fn tool_executor_not_found_returns_error() {
-    use ghost_agent_loop::tools::executor::{ToolExecutor, ToolError};
+    use ghost_agent_loop::tools::executor::{ToolError, ToolExecutor};
 
     let executor = ToolExecutor::default();
     let registry = ToolRegistry::new(); // empty
@@ -1048,6 +1088,10 @@ async fn tool_executor_not_found_returns_error() {
     let exec_ctx = ghost_agent_loop::tools::skill_bridge::ExecutionContext {
         agent_id: uuid::Uuid::nil(),
         session_id: uuid::Uuid::nil(),
+        intervention_level: 0,
+        session_duration: std::time::Duration::from_secs(0),
+        session_reflection_count: 0,
+        is_compaction_flush: false,
     };
     let result = executor.execute(&call, &registry, &exec_ctx).await;
     assert!(matches!(result, Err(ToolError::NotFound(_))));
@@ -1064,7 +1108,9 @@ fn proposal_context_assembled_with_all_fields() {
     let router = ProposalRouter::new();
     let proposal = Proposal {
         id: Uuid::now_v7(),
-        proposer: CallerType::Agent { agent_id: Uuid::now_v7() },
+        proposer: CallerType::Agent {
+            agent_id: Uuid::now_v7(),
+        },
         operation: ProposalOperation::GoalChange,
         target_type: MemoryType::AgentGoal,
         content: serde_json::json!({"goal_text": "test"}),
@@ -1094,7 +1140,9 @@ fn proposal_router_timeout_resolves() {
 
     let p = Proposal {
         id: Uuid::now_v7(),
-        proposer: CallerType::Agent { agent_id: Uuid::now_v7() },
+        proposer: CallerType::Agent {
+            agent_id: Uuid::now_v7(),
+        },
         operation: ProposalOperation::GoalChange,
         target_type: MemoryType::AgentGoal,
         content: serde_json::json!({}),
@@ -1196,8 +1244,14 @@ fn tool_constraint_level_4_contains_minimal() {
 #[test]
 fn tool_constraint_level_above_4_clamped() {
     use ghost_agent_loop::context::prompt_compiler::tool_constraint_instruction;
-    assert_eq!(tool_constraint_instruction(5), tool_constraint_instruction(4));
-    assert_eq!(tool_constraint_instruction(255), tool_constraint_instruction(4));
+    assert_eq!(
+        tool_constraint_instruction(5),
+        tool_constraint_instruction(4)
+    );
+    assert_eq!(
+        tool_constraint_instruction(255),
+        tool_constraint_instruction(4)
+    );
 }
 
 #[test]
@@ -1282,7 +1336,6 @@ fn sanitize_version_string_not_mangled() {
 
 #[test]
 fn sanitize_l4_in_compile_strips_seconds() {
-    use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
     let compiler = PromptCompiler::new(128_000);
     let input = PromptInput {
         environment: "Time: 2026-02-28T14:30:45Z".into(),
@@ -1332,9 +1385,9 @@ fn compile_no_longer_modifies_l1() {
 
 #[test]
 fn stable_prefix_cache_hit_across_turns_l1_stable() {
-    use ghost_agent_loop::context::stable_prefix::StablePrefixCache;
-    use ghost_agent_loop::context::stable_prefix::PrefixValidation;
     use ghost_agent_loop::context::spotlighting::{Spotlighter, SpotlightingConfig};
+    use ghost_agent_loop::context::stable_prefix::PrefixValidation;
+    use ghost_agent_loop::context::stable_prefix::StablePrefixCache;
 
     // Simulate session init: bake spotlighting into L1 once
     let spotlighter = Spotlighter::new(SpotlightingConfig::default());
@@ -1362,7 +1415,7 @@ fn stable_prefix_cache_hit_across_turns_l1_stable() {
 
 #[test]
 fn spotlighting_still_applied_to_l7_l8() {
-    use ghost_agent_loop::context::spotlighting::{SpotlightingConfig, SpotlightMode};
+    use ghost_agent_loop::context::spotlighting::SpotlightingConfig;
 
     let config = SpotlightingConfig::default();
     let compiler = PromptCompiler::with_spotlighting(128_000, config);

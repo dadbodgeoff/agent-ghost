@@ -18,10 +18,7 @@ pub struct ExtractedSymbol {
 
 /// Extract symbols from a source file based on its extension.
 pub fn extract_symbols(path: &Path, content: &str) -> Vec<ExtractedSymbol> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     match ext {
         "rs" => extract_rust(content),
@@ -55,13 +52,25 @@ fn compile_patterns(specs: &[(&str, &'static str)]) -> CompiledPatterns {
 fn extract_rust(content: &str) -> Vec<ExtractedSymbol> {
     let compiled = RUST_PATTERNS.get_or_init(|| {
         compile_patterns(&[
-            (r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)", "function"),
-            (r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)", "struct"),
-            (r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?trait\s+(\w+)", "trait"),
+            (
+                r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)",
+                "function",
+            ),
+            (
+                r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)",
+                "struct",
+            ),
+            (
+                r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?trait\s+(\w+)",
+                "trait",
+            ),
             (r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?enum\s+(\w+)", "enum"),
             (r"(?m)^[ \t]*impl(?:<[^>]*>)?\s+(\w+)", "impl"),
             (r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?type\s+(\w+)", "type"),
-            (r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?const\s+(\w+)", "const"),
+            (
+                r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?const\s+(\w+)",
+                "const",
+            ),
             (r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)", "module"),
         ])
     });
@@ -71,11 +80,20 @@ fn extract_rust(content: &str) -> Vec<ExtractedSymbol> {
 fn extract_typescript(content: &str) -> Vec<ExtractedSymbol> {
     let compiled = TS_PATTERNS.get_or_init(|| {
         compile_patterns(&[
-            (r"(?m)^[ \t]*(?:export\s+)?(?:async\s+)?function\s+(\w+)", "function"),
-            (r"(?m)^[ \t]*(?:export\s+)?(?:default\s+)?class\s+(\w+)", "class"),
+            (
+                r"(?m)^[ \t]*(?:export\s+)?(?:async\s+)?function\s+(\w+)",
+                "function",
+            ),
+            (
+                r"(?m)^[ \t]*(?:export\s+)?(?:default\s+)?class\s+(\w+)",
+                "class",
+            ),
             (r"(?m)^[ \t]*(?:export\s+)?interface\s+(\w+)", "interface"),
             (r"(?m)^[ \t]*(?:export\s+)?type\s+(\w+)", "type"),
-            (r"(?m)^[ \t]*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(", "function"),
+            (
+                r"(?m)^[ \t]*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(",
+                "function",
+            ),
             (r"(?m)^[ \t]*(?:export\s+)?enum\s+(\w+)", "enum"),
         ])
     });

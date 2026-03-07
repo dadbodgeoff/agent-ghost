@@ -96,8 +96,7 @@ impl ProxyEgressPolicy {
             proxy.violations.push(Instant::now());
 
             // Prune old violations outside the window.
-            let window =
-                std::time::Duration::from_secs(proxy.violation_window_minutes as u64 * 60);
+            let window = std::time::Duration::from_secs(proxy.violation_window_minutes as u64 * 60);
             let cutoff = Instant::now() - window;
             proxy.violations.retain(|t| *t > cutoff);
 

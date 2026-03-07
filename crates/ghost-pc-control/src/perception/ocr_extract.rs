@@ -43,41 +43,49 @@ impl OcrExtractSkill {
         screen_backend: Box<dyn ScreenCaptureBackend>,
         ocr_backend: Arc<dyn OcrBackend>,
     ) -> Self {
-        Self { screen_backend, ocr_backend }
+        Self {
+            screen_backend,
+            ocr_backend,
+        }
     }
 }
 
 impl Skill for OcrExtractSkill {
-    fn name(&self) -> &str { "ocr_extract" }
+    fn name(&self) -> &str {
+        "ocr_extract"
+    }
 
     fn description(&self) -> &str {
         "Extract text from the screen using OCR"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let query = input.get("query").and_then(|v| v.as_str());
 
         // Capture a screenshot.
-        let captured = self.screen_backend.capture_full_screen().map_err(|e| {
-            SkillError::Internal(format!("screen capture failed: {e}"))
-        })?;
+        let captured = self
+            .screen_backend
+            .capture_full_screen()
+            .map_err(|e| SkillError::Internal(format!("screen capture failed: {e}")))?;
 
         // Run OCR on the captured image.
-        let regions = self.ocr_backend.extract_text(
-            &captured.rgba_data,
-            captured.width,
-            captured.height,
-        ).map_err(|e| {
-            SkillError::Internal(format!("OCR extraction failed: {e}"))
-        })?;
+        let regions = self
+            .ocr_backend
+            .extract_text(&captured.rgba_data, captured.width, captured.height)
+            .map_err(|e| SkillError::Internal(format!("OCR extraction failed: {e}")))?;
 
         // Filter by query text if provided.
         let filtered: Vec<_> = if let Some(q) = query {
             let q_lower = q.to_lowercase();
-            regions.into_iter()
+            regions
+                .into_iter()
                 .filter(|r| r.text.to_lowercase().contains(&q_lower))
                 .collect()
         } else {
@@ -85,20 +93,24 @@ impl Skill for OcrExtractSkill {
         };
 
         // Convert to ResolvedElements.
-        let elements: Vec<serde_json::Value> = filtered.iter().map(|r| {
-            let elem = ResolvedElement::from_ocr(r.bounds.clone(), r.text.clone(), r.confidence);
-            serde_json::json!({
-                "bounds": {
-                    "x": elem.bounds.x,
-                    "y": elem.bounds.y,
-                    "width": elem.bounds.width,
-                    "height": elem.bounds.height,
-                },
-                "text": elem.text,
-                "confidence": elem.confidence,
-                "layer": "Ocr",
+        let elements: Vec<serde_json::Value> = filtered
+            .iter()
+            .map(|r| {
+                let elem =
+                    ResolvedElement::from_ocr(r.bounds.clone(), r.text.clone(), r.confidence);
+                serde_json::json!({
+                    "bounds": {
+                        "x": elem.bounds.x,
+                        "y": elem.bounds.y,
+                        "width": elem.bounds.width,
+                        "height": elem.bounds.height,
+                    },
+                    "text": elem.text,
+                    "confidence": elem.confidence,
+                    "layer": "Ocr",
+                })
             })
-        }).collect();
+            .collect();
 
         let count = elements.len();
         let result = serde_json::json!({
@@ -108,7 +120,14 @@ impl Skill for OcrExtractSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "ocr_extract", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "ocr_extract",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -137,24 +156,44 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn mock_regions() -> Vec<OcrTextRegion> {
         vec![
             OcrTextRegion {
                 text: "Submit".into(),
-                bounds: BoundingRect { x: 100, y: 200, width: 80, height: 30 },
+                bounds: BoundingRect {
+                    x: 100,
+                    y: 200,
+                    width: 80,
+                    height: 30,
+                },
                 confidence: 0.97,
             },
             OcrTextRegion {
                 text: "Cancel".into(),
-                bounds: BoundingRect { x: 200, y: 200, width: 80, height: 30 },
+                bounds: BoundingRect {
+                    x: 200,
+                    y: 200,
+                    width: 80,
+                    height: 30,
+                },
                 confidence: 0.95,
             },
             OcrTextRegion {
                 text: "Hello World".into(),
-                bounds: BoundingRect { x: 50, y: 50, width: 200, height: 20 },
+                bounds: BoundingRect {
+                    x: 50,
+                    y: 50,
+                    width: 200,
+                    height: 20,
+                },
                 confidence: 0.99,
             },
         ]
@@ -185,7 +224,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"query": "Submit"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"query": "Submit"}))
+            .unwrap();
         assert_eq!(result["count"], 1);
         assert_eq!(result["elements"][0]["text"], "Submit");
     }
@@ -196,7 +237,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"query": "hello"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"query": "hello"}))
+            .unwrap();
         assert_eq!(result["count"], 1);
         assert_eq!(result["elements"][0]["text"], "Hello World");
     }

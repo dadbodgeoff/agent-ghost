@@ -66,11 +66,7 @@ impl Skill for CalendarCheckSkill {
 }
 
 impl CalendarCheckSkill {
-    fn google_calendar(
-        &self,
-        access_token: &str,
-        input: &serde_json::Value,
-    ) -> SkillResult {
+    fn google_calendar(&self, access_token: &str, input: &serde_json::Value) -> SkillResult {
         let calendar_id = input
             .get("calendar_id")
             .and_then(|v| v.as_str())

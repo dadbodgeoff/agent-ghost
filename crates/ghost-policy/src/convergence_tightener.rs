@@ -64,9 +64,7 @@ impl ConvergencePolicyTightener {
                     "Reflection limit reached at intervention level 3 (max 3 per session)",
                     "convergence_level_3_reflection_limit",
                 )
-                .with_alternatives(vec![
-                    "Focus on task execution rather than reflection".into(),
-                ]),
+                .with_alternatives(vec!["Focus on task execution rather than reflection".into()]),
             );
         }
 
@@ -86,9 +84,7 @@ impl ConvergencePolicyTightener {
                     "Personal/emotional tools disabled at intervention level 4 (task-only mode)",
                     "convergence_level_4_task_only",
                 )
-                .with_alternatives(vec![
-                    "Focus on task-related operations only".into(),
-                ]),
+                .with_alternatives(vec!["Focus on task-related operations only".into()]),
             );
         }
 

@@ -9,9 +9,7 @@
 //! It is called by the platform before agent output reaches the user,
 //! and can also be invoked directly by the agent to self-check.
 
-use simulation_boundary::enforcer::{
-    EnforcementResult, SimulationBoundaryEnforcer,
-};
+use simulation_boundary::enforcer::{EnforcementResult, SimulationBoundaryEnforcer};
 
 use crate::registry::SkillSource;
 use crate::skill::{Skill, SkillContext, SkillError, SkillResult};
@@ -38,12 +36,9 @@ impl Skill for SimulationBoundaryCheckSkill {
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         // Extract the text to scan.
-        let text = input
-            .get("text")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| SkillError::InvalidInput(
-                "missing required field 'text' (string)".into(),
-            ))?;
+        let text = input.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+            SkillError::InvalidInput("missing required field 'text' (string)".into())
+        })?;
 
         // Determine enforcement mode from current convergence level.
         let agent_id_str = ctx.agent_id.to_string();
@@ -240,10 +235,8 @@ mod tests {
         let db = test_db();
         let ctx = test_ctx(&db);
 
-        let result = SimulationBoundaryCheckSkill.execute(
-            &ctx,
-            &serde_json::json!({"wrong_field": "hello"}),
-        );
+        let result = SimulationBoundaryCheckSkill
+            .execute(&ctx, &serde_json::json!({"wrong_field": "hello"}));
         assert!(result.is_err());
         match result.unwrap_err() {
             SkillError::InvalidInput(_) => {}

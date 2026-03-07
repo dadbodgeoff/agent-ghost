@@ -34,7 +34,10 @@ fn single_node_cannot_resume_cluster() {
     );
 
     assert!(!result, "SECURITY: Single node resumed a 3-node cluster");
-    assert!(gate.is_closed(), "Gate should remain closed after single vote");
+    assert!(
+        gate.is_closed(),
+        "Gate should remain closed after single vote"
+    );
 }
 
 /// Duplicate votes from the same node must not count toward quorum.
@@ -108,7 +111,10 @@ fn propagation_timeout_stays_closed() {
     std::thread::sleep(std::time::Duration::from_millis(10));
 
     assert!(gate.is_propagation_timed_out());
-    assert!(gate.is_closed(), "SECURITY: Gate opened after propagation timeout");
+    assert!(
+        gate.is_closed(),
+        "SECURITY: Gate opened after propagation timeout"
+    );
 }
 
 // ── Gate monotonicity ───────────────────────────────────────────────────

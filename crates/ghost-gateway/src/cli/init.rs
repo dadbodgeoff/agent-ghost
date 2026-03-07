@@ -39,17 +39,15 @@ pub async fn run() -> Result<(), CliError> {
     // Create directory tree
     for subdir in SUBDIRS {
         let dir = home.join(subdir);
-        fs::create_dir_all(&dir).map_err(|e| {
-            CliError::Internal(format!("failed to create {}: {e}", dir.display()))
-        })?;
+        fs::create_dir_all(&dir)
+            .map_err(|e| CliError::Internal(format!("failed to create {}: {e}", dir.display())))?;
     }
 
     // Generate default ghost.yml if absent
     if !config_path.exists() {
         let default_config = GhostConfig::default();
-        let yaml = serde_yaml::to_string(&default_config).map_err(|e| {
-            CliError::Internal(format!("failed to serialize default config: {e}"))
-        })?;
+        let yaml = serde_yaml::to_string(&default_config)
+            .map_err(|e| CliError::Internal(format!("failed to serialize default config: {e}")))?;
         fs::write(&config_path, yaml).map_err(|e| {
             CliError::Internal(format!("failed to write {}: {e}", config_path.display()))
         })?;
@@ -58,9 +56,8 @@ pub async fn run() -> Result<(), CliError> {
     // Generate default SOUL.md if absent
     let soul_path = home.join("config").join("SOUL.md");
     if !soul_path.exists() {
-        SoulManager::create_template(&soul_path).map_err(|e| {
-            CliError::Internal(format!("failed to create SOUL.md: {e}"))
-        })?;
+        SoulManager::create_template(&soul_path)
+            .map_err(|e| CliError::Internal(format!("failed to create SOUL.md: {e}")))?;
     }
 
     // Ensure DB path parent directory exists
@@ -68,7 +65,10 @@ pub async fn run() -> Result<(), CliError> {
     let db_parent = PathBuf::from(&db_path);
     if let Some(parent) = db_parent.parent() {
         fs::create_dir_all(parent).map_err(|e| {
-            CliError::Internal(format!("failed to create db directory {}: {e}", parent.display()))
+            CliError::Internal(format!(
+                "failed to create db directory {}: {e}",
+                parent.display()
+            ))
         })?;
     }
 

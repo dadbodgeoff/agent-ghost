@@ -214,10 +214,7 @@ fn build_summary(event_type: &str, rest: &serde_json::Value) -> String {
             format!("{et} seq={seq}")
         }
         "ProposalDecision" => {
-            let decision = rest
-                .get("decision")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let decision = rest.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
             format!("decision={decision}")
         }
         _ => String::new(),

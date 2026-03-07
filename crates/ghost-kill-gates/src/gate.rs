@@ -14,9 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::chain::{
-    compute_gate_event_hash, GateChainEvent, GateEventType, GENESIS_HASH,
-};
+use crate::chain::{compute_gate_event_hash, GateChainEvent, GateEventType, GENESIS_HASH};
 use crate::config::KillGateConfig;
 use crate::quorum::{QuorumTracker, ResumeVote};
 
@@ -216,8 +214,7 @@ impl KillGate {
             .last()
             .map(|e| e.event_hash)
             .unwrap_or(GENESIS_HASH);
-        let payload =
-            serde_json::json!({ "peer": peer_node_id.to_string() }).to_string();
+        let payload = serde_json::json!({ "peer": peer_node_id.to_string() }).to_string();
         let event_hash = compute_gate_event_hash(
             GateEventType::Ack,
             &self.node_id,
@@ -269,11 +266,7 @@ impl KillGate {
     }
 
     /// Cast a resume vote. Returns true if quorum reached and gate reopened.
-    pub fn cast_resume_vote(
-        &self,
-        vote: ResumeVote,
-        cluster_size: usize,
-    ) -> bool {
+    pub fn cast_resume_vote(&self, vote: ResumeVote, cluster_size: usize) -> bool {
         let current = self.state.load(Ordering::SeqCst);
         if current == STATE_NORMAL {
             return true; // already open

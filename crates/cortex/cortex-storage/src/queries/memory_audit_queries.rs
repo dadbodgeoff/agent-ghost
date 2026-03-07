@@ -1,8 +1,8 @@
 //! Memory audit log queries (v016 memory_audit_log table).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_audit(
     conn: &Connection,

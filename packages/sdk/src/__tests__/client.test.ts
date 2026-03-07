@@ -4,29 +4,50 @@ import { GhostAPIError, GhostNetworkError, GhostTimeoutError } from '../errors.j
 
 // ── Helpers ──
 
-function mockFetch(response: Partial<Response> & { ok: boolean; status: number }) {
+function mockFetch(
+  response: Partial<Response> & {
+    ok: boolean;
+    status: number;
+    bodyText?: string;
+    headers?: Headers;
+  },
+) {
   const body = response.json ? response.json : () => Promise.resolve(undefined);
+  const bodyText = response.bodyText ?? '';
   return vi.fn().mockResolvedValue({
     ok: response.ok,
     status: response.status,
     json: typeof body === 'function' ? body : () => Promise.resolve(body),
-    headers: new Headers(),
+    text: () => Promise.resolve(bodyText),
+    headers: response.headers ?? new Headers(),
   } as Response);
 }
 
 function jsonResponse(data: unknown, status = 200): Parameters<typeof mockFetch>[0] {
+  const bodyText = JSON.stringify(data);
   return {
     ok: true,
     status,
+    bodyText,
     json: () => Promise.resolve(data),
+    headers: new Headers({
+      'content-type': 'application/json',
+      'content-length': String(bodyText.length),
+    }),
   };
 }
 
 function errorResponse(status: number, body?: unknown): Parameters<typeof mockFetch>[0] {
+  const bodyText = body === undefined ? '' : JSON.stringify(body);
   return {
     ok: false,
     status,
+    bodyText,
     json: () => (body !== undefined ? Promise.resolve(body) : Promise.reject(new Error('no body'))),
+    headers: new Headers({
+      'content-type': 'application/json',
+      'content-length': String(bodyText.length),
+    }),
   };
 }
 
@@ -53,6 +74,7 @@ describe('GhostClient', () => {
     expect(client.skills).toBeDefined();
     expect(client.safety).toBeDefined();
     expect(client.health).toBeDefined();
+    expect('approvals' in client).toBe(false);
   });
 
   it('creates WebSocket connections', () => {
@@ -224,12 +246,66 @@ describe('ConvergenceAPI', () => {
 
 describe('GoalsAPI', () => {
   it('lists goals/proposals', async () => {
-    const goals = { proposals: [], total: 0 };
+    const goals = { proposals: [], page: 1, page_size: 50, total: 0 };
     const fetch = mockFetch(jsonResponse(goals));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
     const result = await client.goals.list();
     expect(result).toEqual(goals);
+  });
+
+  it('gets a proposal detail', async () => {
+    const proposal = {
+      id: 'goal-1',
+      agent_id: 'agent-1',
+      session_id: 'session-1',
+      proposer_type: 'agent',
+      operation: 'delete_memory',
+      target_type: 'memory',
+      decision: null,
+      dimension_scores: {},
+      flags: [],
+      created_at: '2026-03-07T00:00:00Z',
+      resolved_at: null,
+      content: { memory_id: 'm1' },
+      cited_memory_ids: [],
+      resolver: null,
+    };
+    const fetch = mockFetch(jsonResponse(proposal));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.goals.get('goal-1');
+    expect(result).toEqual(proposal);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/goals/goal-1',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('approves a proposal', async () => {
+    const approved = { status: 'approved', id: 'goal-1' };
+    const fetch = mockFetch(jsonResponse(approved));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.goals.approve('goal-1');
+    expect(result).toEqual(approved);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/goals/goal-1/approve',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('rejects a proposal', async () => {
+    const rejected = { status: 'rejected', id: 'goal-1' };
+    const fetch = mockFetch(jsonResponse(rejected));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.goals.reject('goal-1');
+    expect(result).toEqual(rejected);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/goals/goal-1/reject',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });
 
@@ -310,6 +386,19 @@ describe('Error handling', () => {
 });
 
 describe('Authentication', () => {
+  it('gets the current session', async () => {
+    const session = { authenticated: true, subject: 'admin', role: 'admin', mode: 'jwt' as const };
+    const fetch = mockFetch(jsonResponse(session));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234', token: 'my-token' });
+
+    const result = await client.auth.session();
+    expect(result).toEqual(session);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/auth/session',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   it('sends Authorization header when token is set', async () => {
     const fetch = mockFetch(jsonResponse([]));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234', token: 'my-token' });
@@ -332,5 +421,20 @@ describe('Authentication', () => {
     await client.agents.list();
     const callArgs = fetch.mock.calls[0][1];
     expect(callArgs.headers).not.toHaveProperty('Authorization');
+  });
+
+  it('handles 204 responses without reading JSON', async () => {
+    const fetch = mockFetch({
+      ok: true,
+      status: 204,
+      bodyText: '',
+      headers: new Headers({
+        'content-length': '0',
+      }),
+    });
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.auth.logout();
+    expect(result).toBeUndefined();
   });
 });

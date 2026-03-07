@@ -15,7 +15,10 @@ use ghost_drift::storage::DriftDb;
 use ghost_drift::DriftService;
 
 #[derive(Parser)]
-#[command(name = "ghost-drift", about = "Ghost Drift MCP server — codebase intelligence")]
+#[command(
+    name = "ghost-drift",
+    about = "Ghost Drift MCP server — codebase intelligence"
+)]
 struct Cli {
     /// Workspace directory (default: current directory).
     #[arg(long, default_value = ".")]
@@ -30,8 +33,7 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)

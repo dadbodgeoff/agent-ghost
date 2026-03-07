@@ -45,8 +45,7 @@ impl Skill for ConvergenceCheckSkill {
             Some(score_row) => {
                 let level = score_row.level as u8;
                 let signal_scores: serde_json::Value =
-                    serde_json::from_str(&score_row.signal_scores)
-                        .unwrap_or(serde_json::json!({}));
+                    serde_json::from_str(&score_row.signal_scores).unwrap_or(serde_json::json!({}));
 
                 // Determine which tools are restricted at this level.
                 let restricted_tools = restricted_tools_for_level(level);

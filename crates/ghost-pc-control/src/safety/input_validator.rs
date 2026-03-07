@@ -70,12 +70,7 @@ impl InputValidator {
     /// Checks:
     /// 1. Coordinates fall within the safe zone (if configured).
     /// 2. Target app is in the allowlist (if specified).
-    pub fn validate_click(
-        &self,
-        x: i32,
-        y: i32,
-        target_app: Option<&str>,
-    ) -> ValidationResult {
+    pub fn validate_click(&self, x: i32, y: i32, target_app: Option<&str>) -> ValidationResult {
         // Check safe zone.
         if let Some(ref zone) = self.safe_zone {
             if !zone.contains(x, y) {
@@ -136,9 +131,7 @@ impl InputValidator {
     pub fn validate_hotkey(&self, keys: &str) -> ValidationResult {
         let normalized = keys.to_lowercase();
         if self.blocked_hotkeys.iter().any(|h| *h == normalized) {
-            return ValidationResult::Denied(format!(
-                "hotkey '{keys}' blocked by safety policy"
-            ));
+            return ValidationResult::Denied(format!("hotkey '{keys}' blocked by safety policy"));
         }
         ValidationResult::Allowed
     }
@@ -220,11 +213,7 @@ mod tests {
 
     #[test]
     fn click_with_no_safe_zone_allowed() {
-        let v = InputValidator::new(
-            vec!["Firefox".into()],
-            None,
-            vec![],
-        );
+        let v = InputValidator::new(vec!["Firefox".into()], None, vec![]);
         assert_eq!(
             v.validate_click(99999, 99999, Some("Firefox")),
             ValidationResult::Allowed,
@@ -261,10 +250,7 @@ mod tests {
     #[test]
     fn click_without_target_app_skips_allowlist() {
         let v = default_validator();
-        assert_eq!(
-            v.validate_click(100, 100, None),
-            ValidationResult::Allowed,
-        );
+        assert_eq!(v.validate_click(100, 100, None), ValidationResult::Allowed,);
     }
 
     // ── Hotkey tests ─────────────────────────────────────────────

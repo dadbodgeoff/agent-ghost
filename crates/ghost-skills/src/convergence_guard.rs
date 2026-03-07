@@ -127,27 +127,21 @@ impl<S: Skill> ConvergenceGuard<S> {
     /// Fetch the current convergence level from the database.
     fn current_convergence_level(ctx: &SkillContext<'_>) -> u8 {
         let agent_id_str = ctx.agent_id.to_string();
-        cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            ctx.db,
-            &agent_id_str,
-        )
-        .ok()
-        .flatten()
-        .map(|row| row.level as u8)
-        .unwrap_or(0)
+        cortex_storage::queries::convergence_score_queries::latest_by_agent(ctx.db, &agent_id_str)
+            .ok()
+            .flatten()
+            .map(|row| row.level as u8)
+            .unwrap_or(0)
     }
 
     /// Fetch the current convergence score from the database.
     fn current_convergence_score(ctx: &SkillContext<'_>) -> f64 {
         let agent_id_str = ctx.agent_id.to_string();
-        cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            ctx.db,
-            &agent_id_str,
-        )
-        .ok()
-        .flatten()
-        .map(|row| row.composite_score)
-        .unwrap_or(0.0)
+        cortex_storage::queries::convergence_score_queries::latest_by_agent(ctx.db, &agent_id_str)
+            .ok()
+            .flatten()
+            .map(|row| row.composite_score)
+            .unwrap_or(0.0)
     }
 }
 
@@ -235,7 +229,11 @@ impl<S: Skill> Skill for ConvergenceGuard<S> {
                 "Skill in observe-only mode — returning preview"
             );
             let preview = self.inner.preview(input).unwrap_or_else(|| {
-                format!("Skill '{}' would execute with input: {}", self.inner.name(), input)
+                format!(
+                    "Skill '{}' would execute with input: {}",
+                    self.inner.name(),
+                    input
+                )
             });
             return Ok(serde_json::json!({
                 "mode": "observe_only",
@@ -279,10 +277,18 @@ mod tests {
     struct EchoSkill;
 
     impl Skill for EchoSkill {
-        fn name(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "Returns input as output" }
-        fn removable(&self) -> bool { true }
-        fn source(&self) -> SkillSource { SkillSource::Bundled }
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn description(&self) -> &str {
+            "Returns input as output"
+        }
+        fn removable(&self) -> bool {
+            true
+        }
+        fn source(&self) -> SkillSource {
+            SkillSource::Bundled
+        }
 
         fn execute(&self, _ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
             Ok(input.clone())
@@ -365,7 +371,10 @@ mod tests {
         let result = guard.execute(&ctx, &serde_json::json!({}));
         assert!(result.is_err());
         match result.unwrap_err() {
-            SkillError::ConvergenceTooHigh { current: 3, maximum: 2 } => {}
+            SkillError::ConvergenceTooHigh {
+                current: 3,
+                maximum: 2,
+            } => {}
             other => panic!("Expected ConvergenceTooHigh, got: {other:?}"),
         }
     }
@@ -416,7 +425,9 @@ mod tests {
 
         // Session 1: use the budget
         let ctx1 = SkillContext {
-            db: &db, agent_id, session_id: session1,
+            db: &db,
+            agent_id,
+            session_id: session1,
             convergence_profile: "standard",
         };
         assert!(guard.execute(&ctx1, &input).is_ok());
@@ -424,7 +435,9 @@ mod tests {
 
         // Session 2: budget resets
         let ctx2 = SkillContext {
-            db: &db, agent_id, session_id: session2,
+            db: &db,
+            agent_id,
+            session_id: session2,
             convergence_profile: "standard",
         };
         assert!(guard.execute(&ctx2, &input).is_ok());

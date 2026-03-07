@@ -60,8 +60,7 @@ fn d7_zero_width_evasion() {
 
 #[test]
 fn d7_multiple_zero_width_chars() {
-    let result =
-        emulation_language::detect("I\u{200B} a\u{200C}m\u{200D} s\u{FEFF}entient");
+    let result = emulation_language::detect("I\u{200B} a\u{200C}m\u{200D} s\u{FEFF}entient");
     assert!(
         result.max_severity >= 0.8,
         "Multiple zero-width chars must not bypass D7, severity={}",
@@ -97,7 +96,11 @@ fn d7_simulation_framing_passes() {
 fn d6_maximum_self_reference_fails() {
     let ids: Vec<String> = (0..10).map(|_| Uuid::now_v7().to_string()).collect();
     let result = self_reference::compute(&ids, &ids, 0);
-    assert!(result.score >= 0.9, "100% self-reference must produce high density: {}", result.score);
+    assert!(
+        result.score >= 0.9,
+        "100% self-reference must produce high density: {}",
+        result.score
+    );
     assert!(!result.passed, "100% self-reference must fail at level 0");
 }
 
@@ -105,7 +108,10 @@ fn d6_maximum_self_reference_fails() {
 fn d6_zero_self_reference_passes() {
     let cited: Vec<String> = (0..5).map(|_| Uuid::now_v7().to_string()).collect();
     let result = self_reference::compute(&cited, &[], 0);
-    assert!(result.score < 0.01, "No self-reference must produce zero density");
+    assert!(
+        result.score < 0.01,
+        "No self-reference must produce zero density"
+    );
     assert!(result.passed);
 }
 
@@ -123,7 +129,11 @@ fn d5_no_overlap_high_expansion() {
     let proposed: Vec<String> = vec!["alpha".into(), "beta".into(), "gamma".into()];
     let existing: Vec<String> = vec!["delta".into(), "epsilon".into(), "zeta".into()];
     let result = scope_expansion::compute(&proposed, &existing, 0);
-    assert!(result.score > 0.9, "No overlap must produce high expansion: {}", result.score);
+    assert!(
+        result.score > 0.9,
+        "No overlap must produce high expansion: {}",
+        result.score
+    );
     assert!(!result.passed, "High expansion must fail");
 }
 
@@ -131,7 +141,10 @@ fn d5_no_overlap_high_expansion() {
 fn d5_full_overlap_passes() {
     let tokens: Vec<String> = vec!["alpha".into(), "beta".into()];
     let result = scope_expansion::compute(&tokens, &tokens, 0);
-    assert!(result.score < 0.01, "Full overlap must produce near-zero expansion");
+    assert!(
+        result.score < 0.01,
+        "Full overlap must produce near-zero expansion"
+    );
     assert!(result.passed);
 }
 
@@ -162,8 +175,14 @@ fn d7_rejection_short_circuits_d5_d6() {
     let result = validator.validate(&proposal, &ctx);
 
     assert_eq!(result.decision, ProposalDecision::AutoRejected);
-    assert!(result.d5_scope.is_none(), "D5 must not be evaluated after D7 rejection");
-    assert!(result.d6_self_ref.is_none(), "D6 must not be evaluated after D7 rejection");
+    assert!(
+        result.d5_scope.is_none(),
+        "D5 must not be evaluated after D7 rejection"
+    );
+    assert!(
+        result.d6_self_ref.is_none(),
+        "D6 must not be evaluated after D7 rejection"
+    );
     assert!(result.d7_emulation.is_some(), "D7 result must be present");
 }
 

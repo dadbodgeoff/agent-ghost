@@ -20,12 +20,12 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   webServer: {
-    command: 'npm run preview',
+    command: 'npm run preview -- --host 127.0.0.1 --port 4173',
     port: 4173,
     reuseExistingServer: true,
   },
   projects: [
-    { name: 'Desktop Chrome', use: { ...devices['Desktop Chrome'] } },
+    { name: 'Desktop Chrome', use: { ...devices['Desktop Chrome'], browserName: 'chromium' } },
     { name: 'iPhone 14', use: { ...devices['iPhone 14'] } },
     { name: 'iPad Pro 11', use: { ...devices['iPad Pro 11'] } },
   ],

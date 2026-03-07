@@ -5,8 +5,9 @@
   import { onMount, onDestroy } from 'svelte';
   import { studioChatStore } from '$lib/stores/studioChat.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
-  import { getToken, setToken } from '$lib/auth';
+  import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime } from '$lib/platform/runtime';
   import ChatMessage from '../../components/ChatMessage.svelte';
   import ToolCallIndicator from '../../components/ToolCallIndicator.svelte';
   import AgentTemplateSelector from '../../components/AgentTemplateSelector.svelte';
@@ -33,7 +34,8 @@
     // WP9-G: Check JWT expiry every 60s.
     authCheckInterval = setInterval(() => {
       void (async () => {
-        const token = await getToken();
+        const runtime = await getRuntime();
+        const token = await runtime.getToken();
         if (!token) return;
         try {
           const payload = JSON.parse(atob(token.split('.')[1]));
@@ -243,7 +245,10 @@
               const client = await getGhostClient();
               const data = await client.auth.refresh();
               if (data.access_token) {
-                await setToken(data.access_token);
+                const runtime = await getRuntime();
+                await runtime.setToken(data.access_token);
+                invalidateAuthClientState();
+                await notifyAuthBoundary('ghost-auth-changed');
                 authExpiryWarning = false;
               }
             } catch { /* refresh failed */ }

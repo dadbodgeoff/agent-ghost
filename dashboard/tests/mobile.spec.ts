@@ -13,7 +13,8 @@ import { test, expect, type Page } from '@playwright/test';
 
 // ── Mock API helpers ─────────────────────────────────────────────────────────
 
-const GATEWAY = 'http://127.0.0.1:18789';
+// Match the dashboard web runtime default so mocked routes intercept the actual client.
+const GATEWAY = 'http://127.0.0.1:39780';
 
 /** Seed sessionStorage with a fake auth token so the layout renders
  *  instead of redirecting to /login. */
@@ -725,6 +726,18 @@ test.describe('Auth redirect', () => {
   test('unauthenticated user is redirected to /login', async ({ page }) => {
     // Do NOT call authenticate() — no token in sessionStorage
     await mockAllApis(page);
+    await page.route('**/api/auth/session', (route) =>
+      route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          error: {
+            code: 'MISSING_TOKEN',
+            message: 'Authorization header with Bearer token required',
+          },
+        }),
+      }),
+    );
     await page.goto('/', { waitUntil: 'networkidle' });
     // The layout should redirect to /login
     await page.waitForURL('**/login', { timeout: 5_000 });

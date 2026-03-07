@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface A2ATask {
   task_id: string;
@@ -47,8 +47,8 @@ export class A2AAPI {
     return this.request<A2ATask>('GET', `/api/a2a/tasks/${encodeURIComponent(taskId)}`);
   }
 
-  async sendTask(params: SendA2ATaskParams): Promise<A2ATask> {
-    return this.request<A2ATask>('POST', '/api/a2a/tasks', params);
+  async sendTask(params: SendA2ATaskParams, options?: GhostRequestOptions): Promise<A2ATask> {
+    return this.request<A2ATask>('POST', '/api/a2a/tasks', params, options);
   }
 
   async discoverAgents(): Promise<DiscoverA2AAgentsResult> {

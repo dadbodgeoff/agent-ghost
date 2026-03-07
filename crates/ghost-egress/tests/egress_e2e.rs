@@ -8,10 +8,7 @@ use ghost_egress::DomainMatcher;
 /// Allowlist: DomainMatcher permits listed domains.
 #[test]
 fn allowlist_permits_listed_domain() {
-    let matcher = DomainMatcher::new(&[
-        "api.openai.com".into(),
-        "api.anthropic.com".into(),
-    ]);
+    let matcher = DomainMatcher::new(&["api.openai.com".into(), "api.anthropic.com".into()]);
     assert!(matcher.matches("api.openai.com"));
     assert!(matcher.matches("api.anthropic.com"));
 }

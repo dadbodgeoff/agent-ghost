@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost cron list ─────────────────────────────────────────────────────────
 
@@ -135,7 +135,10 @@ pub async fn run_history(args: CronHistoryArgs, backend: &CliBackend) -> Result<
     backend.require(super::backend::BackendRequirement::HttpOnly)?;
     let client = backend.http();
 
-    let path = format!("/api/audit?event_type=workflow_execution&limit={}", args.limit);
+    let path = format!(
+        "/api/audit?event_type=workflow_execution&limit={}",
+        args.limit
+    );
     let resp = client.get(&path).await?;
     let body: serde_json::Value = resp
         .json()

@@ -2,8 +2,8 @@
 //!
 //! Validates GAP-16 (ITP flow) and GAP-18 (proposal lifecycle) wiring.
 
-use cortex_temporal::hash_chain::{compute_event_hash, verify_chain, ChainEvent, GENESIS_HASH};
 use cortex_temporal::anchoring::merkle::MerkleTree;
+use cortex_temporal::hash_chain::{compute_event_hash, verify_chain, ChainEvent, GENESIS_HASH};
 use uuid::Uuid;
 
 /// Full hash chain lifecycle: create events → compute hashes → verify chain → build Merkle tree.
@@ -53,7 +53,8 @@ fn full_hash_chain_to_merkle_lifecycle() {
         let proof = tree.inclusion_proof(idx);
         assert!(
             !proof.is_empty(),
-            "Should generate inclusion proof for event {}", idx
+            "Should generate inclusion proof for event {}",
+            idx
         );
         let valid = MerkleTree::verify_proof(&tree.root, &leaves[idx], &proof, idx);
         assert!(valid, "Inclusion proof should verify for event {}", idx);

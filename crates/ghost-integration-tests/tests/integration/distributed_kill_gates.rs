@@ -76,16 +76,22 @@ fn quorum_requires_majority() {
     let node3 = Uuid::now_v7();
 
     assert!(!tracker.cast_vote(ResumeVote {
-        node_id: node1, reason: "test".into(),
-        initiated_by: "admin".into(), voted_at: Utc::now(),
+        node_id: node1,
+        reason: "test".into(),
+        initiated_by: "admin".into(),
+        voted_at: Utc::now(),
     }));
     assert!(!tracker.cast_vote(ResumeVote {
-        node_id: node2, reason: "test".into(),
-        initiated_by: "admin".into(), voted_at: Utc::now(),
+        node_id: node2,
+        reason: "test".into(),
+        initiated_by: "admin".into(),
+        voted_at: Utc::now(),
     }));
     assert!(tracker.cast_vote(ResumeVote {
-        node_id: node3, reason: "test".into(),
-        initiated_by: "admin".into(), voted_at: Utc::now(),
+        node_id: node3,
+        reason: "test".into(),
+        initiated_by: "admin".into(),
+        voted_at: Utc::now(),
     }));
     assert!(tracker.has_quorum());
 }
@@ -96,12 +102,16 @@ fn duplicate_votes_not_double_counted() {
     let node1 = Uuid::now_v7();
 
     tracker.cast_vote(ResumeVote {
-        node_id: node1, reason: "test".into(),
-        initiated_by: "admin".into(), voted_at: Utc::now(),
+        node_id: node1,
+        reason: "test".into(),
+        initiated_by: "admin".into(),
+        voted_at: Utc::now(),
     });
     tracker.cast_vote(ResumeVote {
-        node_id: node1, reason: "test again".into(),
-        initiated_by: "admin".into(), voted_at: Utc::now(),
+        node_id: node1,
+        reason: "test again".into(),
+        initiated_by: "admin".into(),
+        voted_at: Utc::now(),
     });
 
     assert_eq!(tracker.vote_count(), 1);
@@ -119,15 +129,19 @@ fn gate_resume_via_quorum() {
 
     assert!(!gate.cast_resume_vote(
         ResumeVote {
-            node_id: node1, reason: "safe".into(),
-            initiated_by: "admin".into(), voted_at: Utc::now(),
+            node_id: node1,
+            reason: "safe".into(),
+            initiated_by: "admin".into(),
+            voted_at: Utc::now(),
         },
         cluster_size,
     ));
     assert!(gate.cast_resume_vote(
         ResumeVote {
-            node_id: node2, reason: "safe".into(),
-            initiated_by: "admin".into(), voted_at: Utc::now(),
+            node_id: node2,
+            reason: "safe".into(),
+            initiated_by: "admin".into(),
+            voted_at: Utc::now(),
         },
         cluster_size,
     ));
@@ -155,12 +169,8 @@ fn chain_hash_is_deterministic() {
     let now = Utc::now();
     let payload = r#"{"reason":"test"}"#;
 
-    let h1 = compute_gate_event_hash(
-        GateEventType::Close, &node_id, &now, payload, &GENESIS_HASH,
-    );
-    let h2 = compute_gate_event_hash(
-        GateEventType::Close, &node_id, &now, payload, &GENESIS_HASH,
-    );
+    let h1 = compute_gate_event_hash(GateEventType::Close, &node_id, &now, payload, &GENESIS_HASH);
+    let h2 = compute_gate_event_hash(GateEventType::Close, &node_id, &now, payload, &GENESIS_HASH);
     assert_eq!(h1, h2);
 }
 
@@ -178,12 +188,16 @@ fn relay_propagates_close_to_peer() {
     let mut relay_b = KillGateRelay::new(Arc::clone(&gate_b));
 
     relay_a.add_peer(PeerNode {
-        node_id: node_b, endpoint: "http://b".into(),
-        last_heartbeat: None, is_alive: true,
+        node_id: node_b,
+        endpoint: "http://b".into(),
+        last_heartbeat: None,
+        is_alive: true,
     });
     relay_b.add_peer(PeerNode {
-        node_id: node_a, endpoint: "http://a".into(),
-        last_heartbeat: None, is_alive: true,
+        node_id: node_a,
+        endpoint: "http://a".into(),
+        last_heartbeat: None,
+        is_alive: true,
     });
 
     // Node A closes gate
@@ -192,7 +206,10 @@ fn relay_propagates_close_to_peer() {
 
     // Node B receives and processes
     let ack = relay_b.process_message(msg);
-    assert!(gate_b.is_closed(), "Peer gate should be closed after propagation");
+    assert!(
+        gate_b.is_closed(),
+        "Peer gate should be closed after propagation"
+    );
     assert!(ack.is_some(), "Peer should send ack");
 
     // Node A receives ack

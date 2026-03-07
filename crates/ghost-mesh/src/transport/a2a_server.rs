@@ -64,9 +64,7 @@ impl A2ADispatcher {
         let id = msg.id.clone().unwrap_or(serde_json::json!(null));
 
         match msg.method.as_str() {
-            methods::TASKS_SEND | methods::TASKS_SEND_SUBSCRIBE => {
-                self.handle_tasks_send(msg, id)
-            }
+            methods::TASKS_SEND | methods::TASKS_SEND_SUBSCRIBE => self.handle_tasks_send(msg, id),
             methods::TASKS_GET => self.handle_tasks_get(msg, id),
             methods::TASKS_CANCEL => self.handle_tasks_cancel(msg, id),
             _ => MeshMessage::error_response(
@@ -127,7 +125,9 @@ impl A2ADispatcher {
             }
         };
         match self.state.lock() {
-            Ok(mut state) => { state.tasks.insert(task.id, task); }
+            Ok(mut state) => {
+                state.tasks.insert(task.id, task);
+            }
             Err(e) => {
                 tracing::error!(error = %e, "A2A server state mutex poisoned inserting task");
                 return MeshMessage::error_response(
@@ -169,19 +169,17 @@ impl A2ADispatcher {
             }
         };
         match state.tasks.get(&task_id) {
-            Some(task) => {
-                match serde_json::to_value(task) {
-                    Ok(task_json) => MeshMessage::success(id, task_json),
-                    Err(e) => {
-                        tracing::error!(task_id = %task_id, error = %e, "failed to serialize task");
-                        MeshMessage::error_response(
-                            id,
-                            error_codes::INTERNAL_ERROR,
-                            &format!("task serialization failed: {e}"),
-                        )
-                    }
+            Some(task) => match serde_json::to_value(task) {
+                Ok(task_json) => MeshMessage::success(id, task_json),
+                Err(e) => {
+                    tracing::error!(task_id = %task_id, error = %e, "failed to serialize task");
+                    MeshMessage::error_response(
+                        id,
+                        error_codes::INTERNAL_ERROR,
+                        &format!("task serialization failed: {e}"),
+                    )
                 }
-            }
+            },
             None => MeshMessage::error_response(
                 id,
                 error_codes::TASK_NOT_FOUND,
@@ -227,24 +225,20 @@ impl A2ADispatcher {
                     );
                 }
                 match task.transition(TaskStatus::Canceled) {
-                    Ok(()) => {
-                        match serde_json::to_value(&*task) {
-                            Ok(task_json) => MeshMessage::success(id, task_json),
-                            Err(e) => {
-                                tracing::error!(task_id = %task_id, error = %e, "failed to serialize canceled task");
-                                MeshMessage::error_response(
-                                    id,
-                                    error_codes::INTERNAL_ERROR,
-                                    &format!("task serialization failed: {e}"),
-                                )
-                            }
+                    Ok(()) => match serde_json::to_value(&*task) {
+                        Ok(task_json) => MeshMessage::success(id, task_json),
+                        Err(e) => {
+                            tracing::error!(task_id = %task_id, error = %e, "failed to serialize canceled task");
+                            MeshMessage::error_response(
+                                id,
+                                error_codes::INTERNAL_ERROR,
+                                &format!("task serialization failed: {e}"),
+                            )
                         }
+                    },
+                    Err(e) => {
+                        MeshMessage::error_response(id, error_codes::INTERNAL_ERROR, &e.to_string())
                     }
-                    Err(e) => MeshMessage::error_response(
-                        id,
-                        error_codes::INTERNAL_ERROR,
-                        &e.to_string(),
-                    ),
                 }
             }
             None => MeshMessage::error_response(

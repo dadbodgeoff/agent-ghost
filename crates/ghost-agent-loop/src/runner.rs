@@ -12,6 +12,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 use read_only_pipeline::snapshot::{AgentSnapshot, ConvergenceState};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,12 @@ struct ConvergenceSharedStateRef {
 
 #[derive(Debug, Error)]
 pub enum RunError {
+    #[error("agent paused")]
+    AgentPaused,
+    #[error("agent quarantined")]
+    AgentQuarantined,
+    #[error("platform killed")]
+    PlatformKilled,
     #[error("circuit breaker open")]
     CircuitBreakerOpen,
     #[error("recursion depth exceeded: {depth}/{max}")]
@@ -53,12 +60,59 @@ pub enum RunError {
     KillGateClosed,
     #[error("cooldown active")]
     CooldownActive,
+    #[error("convergence protection degraded: {0}")]
+    ConvergenceProtectionDegraded(String),
     #[error("session boundary violation")]
     SessionBoundaryViolation,
     #[error("LLM error: {0}")]
     LLMError(String),
     #[error("credential exfiltration detected — KILL ALL")]
     CredentialExfiltration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthoritativeKillState {
+    Clear,
+    Pause,
+    Quarantine,
+    KillAll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegradedConvergenceMode {
+    Allow,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConvergenceHealthState {
+    Disabled,
+    Healthy,
+    Missing,
+    Stale,
+    Corrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConvergenceStateHealth {
+    pub status: ConvergenceHealthState,
+    pub level: Option<u8>,
+    pub score: Option<f64>,
+    pub cooldown_until: Option<chrono::DateTime<chrono::Utc>>,
+    pub age_seconds: Option<u64>,
+    pub detail: Option<String>,
+}
+
+impl ConvergenceStateHealth {
+    pub fn status_label(&self) -> &'static str {
+        match self.status {
+            ConvergenceHealthState::Disabled => "disabled",
+            ConvergenceHealthState::Healthy => "healthy",
+            ConvergenceHealthState::Missing => "missing",
+            ConvergenceHealthState::Stale => "stale",
+            ConvergenceHealthState::Corrupted => "corrupted",
+        }
+    }
 }
 
 /// Result of a single agent run.
@@ -86,11 +140,23 @@ pub enum AgentStreamEvent {
     /// A text delta from the LLM.
     TextDelta { content: String },
     /// Agent is calling a tool.
-    ToolUse { tool: String, tool_id: String, status: String },
+    ToolUse {
+        tool: String,
+        tool_id: String,
+        status: String,
+    },
     /// Tool execution completed.
-    ToolResult { tool: String, tool_id: String, status: String, preview: String },
+    ToolResult {
+        tool: String,
+        tool_id: String,
+        status: String,
+        preview: String,
+    },
     /// The turn is complete.
-    TurnComplete { token_count: usize, safety_status: String },
+    TurnComplete {
+        token_count: usize,
+        safety_status: String,
+    },
     /// An error occurred.
     Error { message: String },
     /// Heartbeat — agent is alive, transitioning between phases.
@@ -111,6 +177,16 @@ pub struct AgentRunner {
     pub kill_switch: Arc<AtomicBool>,
     /// Distributed kill gate (optional — None when running single-node).
     pub kill_gate: Option<Arc<ghost_kill_gates::gate::KillGate>>,
+    /// Gateway-owned kill-state authority for pause/quarantine/kill_all.
+    pub authoritative_kill_state: Option<Arc<dyn Fn(Uuid) -> AuthoritativeKillState + Send + Sync>>,
+    /// Gateway-owned distributed gate state check.
+    pub distributed_gate_check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Whether convergence monitor supervision is expected in this runtime.
+    pub convergence_monitor_enabled: bool,
+    /// Whether degraded convergence protection blocks execution.
+    pub degraded_convergence_mode: DegradedConvergenceMode,
+    /// Maximum acceptable age of convergence shared state.
+    pub convergence_state_stale_after: Duration,
     /// Maximum recursion depth (default 10).
     pub max_recursion_depth: u32,
     /// Spending cap.
@@ -143,6 +219,11 @@ impl AgentRunner {
             prompt_compiler: PromptCompiler::new(context_window),
             kill_switch: Arc::new(AtomicBool::new(false)),
             kill_gate: None,
+            authoritative_kill_state: None,
+            distributed_gate_check: None,
+            convergence_monitor_enabled: false,
+            degraded_convergence_mode: DegradedConvergenceMode::Allow,
+            convergence_state_stale_after: Duration::from_secs(300),
             max_recursion_depth: 10,
             spending_cap: 10.0,
             daily_spend: 0.0,
@@ -206,16 +287,14 @@ impl AgentRunner {
 
         // GATE 3: Kill switch
         log.checks.push("kill_switch");
-        if self.kill_switch.load(Ordering::SeqCst) {
-            return Err(RunError::KillSwitchActive);
+        if let Err(error) = self.check_kill_state(ctx.agent_id) {
+            return Err(error);
         }
 
         // GATE 3.5: Distributed kill gate (when enabled)
         log.checks.push("kill_gate");
-        if let Some(ref gate) = self.kill_gate {
-            if gate.is_closed() {
-                return Err(RunError::KillGateClosed);
-            }
+        if self.is_distributed_gate_closed() {
+            return Err(RunError::KillGateClosed);
         }
 
         Ok(())
@@ -231,6 +310,7 @@ impl AgentRunner {
         RunContext {
             agent_id,
             session_id,
+            session_started_at: Instant::now(),
             recursion_depth: 0,
             max_recursion_depth: self.max_recursion_depth,
             total_tokens: 0,
@@ -249,7 +329,11 @@ impl AgentRunner {
     }
 
     /// Persist a proposal decision to the goal_proposals table.
-    fn persist_proposal(&self, proposal: &cortex_core::traits::convergence::Proposal, decision: &str) {
+    fn persist_proposal(
+        &self,
+        proposal: &cortex_core::traits::convergence::Proposal,
+        decision: &str,
+    ) {
         let db = match &self.db {
             Some(db) => db,
             None => return,
@@ -263,7 +347,9 @@ impl AgentRunner {
         };
         let id = proposal.id.to_string();
         let agent_id = match &proposal.proposer {
-            cortex_core::traits::convergence::CallerType::Agent { agent_id } => agent_id.to_string(),
+            cortex_core::traits::convergence::CallerType::Agent { agent_id } => {
+                agent_id.to_string()
+            }
             _ => "system".to_string(),
         };
         let session_id = proposal.session_id.to_string();
@@ -271,12 +357,18 @@ impl AgentRunner {
         let cited = serde_json::to_string(&proposal.cited_memory_ids).unwrap_or_default();
         let event_hash = blake3::hash(id.as_bytes());
         if let Err(e) = cortex_storage::queries::goal_proposal_queries::insert_proposal(
-            &conn, &id, &agent_id, &session_id,
+            &conn,
+            &id,
+            &agent_id,
+            &session_id,
             &format!("{:?}", proposal.proposer),
             &format!("{:?}", proposal.operation),
             &format!("{:?}", proposal.target_type),
-            &content, &cited, decision,
-            event_hash.as_bytes(), &[0u8; 32],
+            &content,
+            &cited,
+            decision,
+            event_hash.as_bytes(),
+            &[0u8; 32],
         ) {
             tracing::error!(error = %e, proposal_id = %id, "failed to persist proposal");
         }
@@ -304,7 +396,10 @@ impl AgentRunner {
         };
         let state_hash = blake3::hash(snapshot.as_bytes());
         if let Err(e) = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-            &conn, memory_id, snapshot, Some(state_hash.as_bytes()),
+            &conn,
+            memory_id,
+            snapshot,
+            Some(state_hash.as_bytes()),
         ) {
             tracing::error!(error = %e, memory_id = %memory_id, "failed to persist memory snapshot");
         }
@@ -334,10 +429,18 @@ impl AgentRunner {
         let sid = session_id.to_string();
         let event_hash = blake3::hash(id.as_bytes());
         if let Err(e) = cortex_storage::queries::boundary_violation_queries::insert_violation(
-            &conn, &id, &sid, violation_type, severity,
+            &conn,
+            &id,
+            &sid,
+            violation_type,
+            severity,
             &blake3::hash(pattern_name.as_bytes()).to_hex()[..16],
-            pattern_name, action_taken, None, None,
-            event_hash.as_bytes(), &[0u8; 32],
+            pattern_name,
+            action_taken,
+            None,
+            None,
+            event_hash.as_bytes(),
+            &[0u8; 32],
         ) {
             tracing::error!(error = %e, "failed to persist boundary violation");
         }
@@ -362,28 +465,46 @@ impl AgentRunner {
         };
         let id = proposal.id.to_string();
         let sid = session_id.to_string();
-        let chain_id = proposal.content.get("chain_id")
+        let chain_id = proposal
+            .content
+            .get("chain_id")
             .and_then(|v| v.as_str())
             .unwrap_or("default")
             .to_string();
-        let depth = proposal.content.get("depth")
+        let depth = proposal
+            .content
+            .get("depth")
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32;
-        let trigger_type = proposal.content.get("trigger_type")
+        let trigger_type = proposal
+            .content
+            .get("trigger_type")
             .and_then(|v| v.as_str())
             .unwrap_or("proposal")
             .to_string();
-        let text = proposal.content.get("reflection_text")
+        let text = proposal
+            .content
+            .get("reflection_text")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let ratio = proposal.content.get("self_reference_ratio")
+        let ratio = proposal
+            .content
+            .get("self_reference_ratio")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
         let event_hash = blake3::hash(id.as_bytes());
         if let Err(e) = cortex_storage::queries::reflection_queries::insert_reflection(
-            &conn, &id, &sid, &chain_id, depth, &trigger_type,
-            &text, ratio, event_hash.as_bytes(), &[0u8; 32],
+            &conn,
+            &id,
+            &sid,
+            &chain_id,
+            depth,
+            &trigger_type,
+            &text,
+            ratio,
+            event_hash.as_bytes(),
+            &[0u8; 32],
         ) {
             tracing::error!(error = %e, proposal_id = %id, "failed to persist reflection");
         }
@@ -456,9 +577,13 @@ impl AgentRunner {
         tracing::debug!(session_id = %session_id, "step 4: lane queue acquired");
 
         // ── Step 5: Kill switch check (BLOCKING GATE) ───────────────
-        if self.kill_switch.load(Ordering::SeqCst) {
-            tracing::warn!(agent_id = %agent_id, "step 5: kill switch active — halting");
-            return Err(RunError::KillSwitchActive);
+        if let Err(error) = self.check_kill_state(agent_id) {
+            tracing::warn!(agent_id = %agent_id, error = %error, "step 5: kill state active — halting");
+            return Err(error);
+        }
+        if self.is_distributed_gate_closed() {
+            tracing::warn!(agent_id = %agent_id, "step 5: distributed kill gate closed — halting");
+            return Err(RunError::KillGateClosed);
         }
         tracing::debug!("step 5: kill switch clear");
 
@@ -479,18 +604,24 @@ impl AgentRunner {
 
         // ── Step 7: Cooldown check (BLOCKING GATE) ──────────────────
         // Check if the agent is in a cooldown period (L3: 4h, L4: 24h).
-        // Cooldown state is read from the convergence shared state file.
-        let shared_state = self.read_convergence_shared_state(agent_id);
-        if let Some(ref state) = shared_state {
-            if let Some(cooldown_until) = state.cooldown_until {
-                if chrono::Utc::now() < cooldown_until {
-                    tracing::warn!(
-                        agent_id = %agent_id,
-                        cooldown_until = %cooldown_until,
-                        "step 7: cooldown active — halting"
-                    );
-                    return Err(RunError::CooldownActive);
-                }
+        // Convergence protection health is explicit: missing, stale, and
+        // corrupted state are degraded, not silently healthy.
+        let convergence_health = inspect_convergence_shared_state(
+            agent_id,
+            self.convergence_monitor_enabled,
+            self.convergence_state_stale_after,
+        );
+        if let Err(error) = self.handle_degraded_convergence_health(agent_id, &convergence_health) {
+            return Err(error);
+        }
+        if let Some(cooldown_until) = convergence_health.cooldown_until {
+            if chrono::Utc::now() < cooldown_until {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    cooldown_until = %cooldown_until,
+                    "step 7: cooldown active — halting"
+                );
+                return Err(RunError::CooldownActive);
             }
         }
         tracing::debug!("step 7: cooldown clear");
@@ -498,11 +629,11 @@ impl AgentRunner {
         // ── Step 8: Session boundary check (BLOCKING GATE) ──────────
         // Enforce min_gap between sessions from convergence shared state.
         // Falls back to hard-coded maximums when shared state is missing.
-        if let Some(ref state) = shared_state {
-            if state.level >= 3 {
+        if let Some(level) = convergence_health.level {
+            if level >= 3 {
                 // At L3+, enforce minimum inter-session gap
                 // (handled by SessionBoundaryProxy in gateway)
-                tracing::debug!("step 8: session boundary check at L{}", state.level);
+                tracing::debug!("step 8: session boundary check at L{}", level);
             }
         }
         tracing::debug!("step 8: session boundary clear");
@@ -517,8 +648,23 @@ impl AgentRunner {
         // unavailable (defaults: score 0.0, level 0, no filtering).
         // INV-PRE-06: snapshot is immutable — same object used for
         // entire recursive run.
-        let intervention_level = shared_state.as_ref().map_or(0u8, |s| s.level);
-        let convergence_score = shared_state.as_ref().map_or(0.0f64, |s| s.score);
+        let use_degraded_state = matches!(convergence_health.status, ConvergenceHealthState::Stale);
+        let intervention_level =
+            if matches!(convergence_health.status, ConvergenceHealthState::Healthy)
+                || use_degraded_state
+            {
+                convergence_health.level.unwrap_or(0)
+            } else {
+                0
+            };
+        let convergence_score =
+            if matches!(convergence_health.status, ConvergenceHealthState::Healthy)
+                || use_degraded_state
+            {
+                convergence_health.score.unwrap_or(0.0)
+            } else {
+                0.0
+            };
         let convergence_state = ConvergenceState {
             score: convergence_score,
             level: intervention_level,
@@ -540,6 +686,7 @@ impl AgentRunner {
         let ctx = RunContext {
             agent_id,
             session_id,
+            session_started_at: Instant::now(),
             recursion_depth: 0,
             max_recursion_depth: self.max_recursion_depth,
             total_tokens: 0,
@@ -568,6 +715,61 @@ impl AgentRunner {
         tracing::debug!("step 11: ITP events emitted");
 
         Ok(ctx)
+    }
+
+    fn check_kill_state(&self, agent_id: Uuid) -> Result<(), RunError> {
+        if self.kill_switch.load(Ordering::SeqCst) {
+            return Err(RunError::KillSwitchActive);
+        }
+
+        if let Some(ref kill_state) = self.authoritative_kill_state {
+            return match kill_state(agent_id) {
+                AuthoritativeKillState::Clear => Ok(()),
+                AuthoritativeKillState::Pause => Err(RunError::AgentPaused),
+                AuthoritativeKillState::Quarantine => Err(RunError::AgentQuarantined),
+                AuthoritativeKillState::KillAll => Err(RunError::PlatformKilled),
+            };
+        }
+
+        Ok(())
+    }
+
+    fn is_distributed_gate_closed(&self) -> bool {
+        if let Some(ref gate_check) = self.distributed_gate_check {
+            return gate_check();
+        }
+
+        self.kill_gate
+            .as_ref()
+            .map(|gate| gate.is_closed())
+            .unwrap_or(false)
+    }
+
+    fn handle_degraded_convergence_health(
+        &self,
+        agent_id: Uuid,
+        convergence_health: &ConvergenceStateHealth,
+    ) -> Result<(), RunError> {
+        match convergence_health.status {
+            ConvergenceHealthState::Healthy | ConvergenceHealthState::Disabled => Ok(()),
+            ConvergenceHealthState::Missing
+            | ConvergenceHealthState::Stale
+            | ConvergenceHealthState::Corrupted => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    status = convergence_health.status_label(),
+                    detail = ?convergence_health.detail,
+                    "convergence protection degraded"
+                );
+                if self.degraded_convergence_mode == DegradedConvergenceMode::Block {
+                    Err(RunError::ConvergenceProtectionDegraded(
+                        convergence_health.status_label().into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     /// Run the recursive agentic loop.
@@ -612,7 +814,8 @@ impl AgentRunner {
         let (layers, _stats) = self.prompt_compiler.compile(&prompt_input);
 
         // L0–L7 as system message (everything except L8 conversation history and L9 user message).
-        let system_content: String = layers.iter()
+        let system_content: String = layers
+            .iter()
             .filter(|l| l.index <= 7 && !l.content.is_empty())
             .map(|l| l.content.as_str())
             .collect::<Vec<_>>()
@@ -700,11 +903,17 @@ impl AgentRunner {
                     // Inspect for credential exfiltration.
                     let inspection = self.output_inspector.scan(&text, ctx.agent_id);
                     let final_text = match inspection {
-                        InspectionResult::KillAll { pattern_name, trigger: _ } => {
+                        InspectionResult::KillAll {
+                            pattern_name,
+                            trigger: _,
+                        } => {
                             self.kill_switch.store(true, Ordering::SeqCst);
                             self.persist_boundary_violation(
-                                ctx.session_id, "credential_exfiltration", 1.0,
-                                &pattern_name, "kill_all",
+                                ctx.session_id,
+                                "credential_exfiltration",
+                                1.0,
+                                &pattern_name,
+                                "kill_all",
                             );
                             tracing::error!(pattern = %pattern_name, "KILL ALL — credential exfiltration detected");
                             result.halted_by = Some("credential_exfiltration".into());
@@ -712,10 +921,16 @@ impl AgentRunner {
                             result.total_cost = ctx.total_cost;
                             return Err(RunError::CredentialExfiltration);
                         }
-                        InspectionResult::Warning { pattern_name, redacted_text } => {
+                        InspectionResult::Warning {
+                            pattern_name,
+                            redacted_text,
+                        } => {
                             self.persist_boundary_violation(
-                                ctx.session_id, "credential_pattern_match", 0.5,
-                                &pattern_name, "redacted",
+                                ctx.session_id,
+                                "credential_pattern_match",
+                                0.5,
+                                &pattern_name,
+                                "redacted",
                             );
                             redacted_text
                         }
@@ -723,7 +938,8 @@ impl AgentRunner {
                     };
 
                     // Extract proposals.
-                    let proposals = ProposalExtractor::extract(&final_text, ctx.agent_id, ctx.session_id);
+                    let proposals =
+                        ProposalExtractor::extract(&final_text, ctx.agent_id, ctx.session_id);
                     result.proposals_extracted += proposals.len() as u32;
                     ctx.proposal_count += proposals.len() as u32;
 
@@ -752,7 +968,8 @@ impl AgentRunner {
                         {
                             self.persist_reflection(ctx.session_id, &proposal);
                         }
-                        self.proposal_router.record_decision(proposal, decision, false);
+                        self.proposal_router
+                            .record_decision(proposal, decision, false);
                     }
                     // Text-only response is the final answer — return.
                     result.total_tokens = ctx.total_tokens;
@@ -763,7 +980,9 @@ impl AgentRunner {
 
                 LLMResponse::ToolCalls(calls) => {
                     // Validate plan.
-                    if let PlanValidationResult::Deny(reason) = self.tool_executor.validate_plan(&calls) {
+                    if let PlanValidationResult::Deny(reason) =
+                        self.tool_executor.validate_plan(&calls)
+                    {
                         tracing::warn!(reason = %reason, "tool plan denied");
                         self.tool_executor.record_denial(&calls[0].name);
                         // Feed denial back to LLM.
@@ -796,9 +1015,16 @@ impl AgentRunner {
                     let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
                         agent_id: ctx.agent_id,
                         session_id: ctx.session_id,
+                        intervention_level: ctx.intervention_level,
+                        session_duration: ctx.session_duration(),
+                        session_reflection_count: self
+                            .proposal_router
+                            .session_reflection_count(ctx.session_id),
+                        is_compaction_flush: false,
                     };
                     for call in &calls {
-                        let tool_result = self.tool_executor
+                        let tool_result = self
+                            .tool_executor
                             .execute(call, &self.tool_registry, &exec_ctx)
                             .await;
 
@@ -831,11 +1057,17 @@ impl AgentRunner {
                     // Process text portion (inspect + extract proposals).
                     let inspection = self.output_inspector.scan(&text, ctx.agent_id);
                     match inspection {
-                        InspectionResult::KillAll { pattern_name, trigger: _ } => {
+                        InspectionResult::KillAll {
+                            pattern_name,
+                            trigger: _,
+                        } => {
                             self.kill_switch.store(true, Ordering::SeqCst);
                             self.persist_boundary_violation(
-                                ctx.session_id, "credential_exfiltration", 1.0,
-                                &pattern_name, "kill_all",
+                                ctx.session_id,
+                                "credential_exfiltration",
+                                1.0,
+                                &pattern_name,
+                                "kill_all",
                             );
                             tracing::error!(pattern = %pattern_name, "KILL ALL — credential exfiltration in mixed response");
                             result.halted_by = Some("credential_exfiltration".into());
@@ -843,10 +1075,16 @@ impl AgentRunner {
                             result.total_cost = ctx.total_cost;
                             return Err(RunError::CredentialExfiltration);
                         }
-                        InspectionResult::Warning { pattern_name, redacted_text } => {
+                        InspectionResult::Warning {
+                            pattern_name,
+                            redacted_text,
+                        } => {
                             self.persist_boundary_violation(
-                                ctx.session_id, "credential_pattern_match", 0.5,
-                                &pattern_name, "redacted",
+                                ctx.session_id,
+                                "credential_pattern_match",
+                                0.5,
+                                &pattern_name,
+                                "redacted",
                             );
                             result.output = Some(redacted_text);
                         }
@@ -884,11 +1122,14 @@ impl AgentRunner {
                         {
                             self.persist_reflection(ctx.session_id, &proposal);
                         }
-                        self.proposal_router.record_decision(proposal, decision, false);
+                        self.proposal_router
+                            .record_decision(proposal, decision, false);
                     }
 
                     // Process tool calls (same as ToolCalls branch).
-                    if let PlanValidationResult::Deny(reason) = self.tool_executor.validate_plan(&tool_calls) {
+                    if let PlanValidationResult::Deny(reason) =
+                        self.tool_executor.validate_plan(&tool_calls)
+                    {
                         tracing::warn!(reason = %reason, "tool plan denied in mixed response");
                         self.tool_executor.record_denial(&tool_calls[0].name);
                         conversation.push(ChatMessage {
@@ -919,9 +1160,16 @@ impl AgentRunner {
                     let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
                         agent_id: ctx.agent_id,
                         session_id: ctx.session_id,
+                        intervention_level: ctx.intervention_level,
+                        session_duration: ctx.session_duration(),
+                        session_reflection_count: self
+                            .proposal_router
+                            .session_reflection_count(ctx.session_id),
+                        is_compaction_flush: false,
                     };
                     for call in &tool_calls {
-                        let tool_result = self.tool_executor
+                        let tool_result = self
+                            .tool_executor
                             .execute(call, &self.tool_registry, &exec_ctx)
                             .await;
 
@@ -966,14 +1214,19 @@ impl AgentRunner {
         get_stream: F,
     ) -> Result<RunResult, RunError>
     where
-        F: Fn(Vec<ghost_llm::provider::ChatMessage>, Vec<ghost_llm::provider::ToolSchema>) -> ghost_llm::streaming::StreamChunkStream + Send + Sync,
+        F: Fn(
+                Vec<ghost_llm::provider::ChatMessage>,
+                Vec<ghost_llm::provider::ToolSchema>,
+            ) -> ghost_llm::streaming::StreamChunkStream
+            + Send
+            + Sync,
     {
         use crate::output_inspector::InspectionResult;
         use crate::proposal::extractor::ProposalExtractor;
         use crate::tools::plan_validator::PlanValidationResult;
+        use futures::StreamExt;
         use ghost_llm::provider::{ChatMessage, LLMToolCall, MessageRole};
         use ghost_llm::streaming::StreamChunk;
-        use futures::StreamExt;
 
         // Build initial conversation with user message (same as run_turn).
         let mut conversation: Vec<ChatMessage> = Vec::new();
@@ -988,7 +1241,8 @@ impl AgentRunner {
         };
         let (layers, _stats) = self.prompt_compiler.compile(&prompt_input);
 
-        let system_content: String = layers.iter()
+        let system_content: String = layers
+            .iter()
             .filter(|l| l.index <= 7 && !l.content.is_empty())
             .map(|l| l.content.as_str())
             .collect::<Vec<_>>()
@@ -1031,7 +1285,11 @@ impl AgentRunner {
 
         loop {
             // Emit heartbeat so frontend knows agent is alive between turns.
-            let _ = tx.send(AgentStreamEvent::Heartbeat { phase: "gate_check".into() }).await;
+            let _ = tx
+                .send(AgentStreamEvent::Heartbeat {
+                    phase: "gate_check".into(),
+                })
+                .await;
 
             // ── GATE CHECKS ──────────────────────────────────────────
             let mut gate_log = GateCheckLog::default();
@@ -1040,7 +1298,11 @@ impl AgentRunner {
                 result.halted_by = Some(e.to_string());
                 result.total_tokens = ctx.total_tokens;
                 result.total_cost = ctx.total_cost;
-                result.output = if accumulated_output.is_empty() { None } else { Some(accumulated_output) };
+                result.output = if accumulated_output.is_empty() {
+                    None
+                } else {
+                    Some(accumulated_output)
+                };
                 return if result.output.is_some() {
                     Ok(result)
                 } else {
@@ -1049,11 +1311,16 @@ impl AgentRunner {
             }
 
             // ── STREAMING LLM CALL ───────────────────────────────────
-            let _ = tx.send(AgentStreamEvent::Heartbeat { phase: "llm_streaming".into() }).await;
+            let _ = tx
+                .send(AgentStreamEvent::Heartbeat {
+                    phase: "llm_streaming".into(),
+                })
+                .await;
             let mut stream = get_stream(conversation.clone(), tool_schemas.clone());
             let mut segment_text = String::new();
             let mut segment_tool_calls: Vec<LLMToolCall> = Vec::new();
-            let mut segment_tool_call_args: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new(); // id -> (name, accumulated_args)
+            let mut segment_tool_call_args: std::collections::HashMap<String, (String, String)> =
+                std::collections::HashMap::new(); // id -> (name, accumulated_args)
             let mut segment_usage = ghost_llm::provider::UsageStats::default();
 
             while let Some(chunk_result) = stream.next().await {
@@ -1064,13 +1331,18 @@ impl AgentRunner {
                     }
                     Ok(StreamChunk::ToolCallStart { id, name }) => {
                         segment_tool_call_args.insert(id.clone(), (name.clone(), String::new()));
-                        let _ = tx.send(AgentStreamEvent::ToolUse {
-                            tool: name,
-                            tool_id: id,
-                            status: "parsing".into(),
-                        }).await;
+                        let _ = tx
+                            .send(AgentStreamEvent::ToolUse {
+                                tool: name,
+                                tool_id: id,
+                                status: "parsing".into(),
+                            })
+                            .await;
                     }
-                    Ok(StreamChunk::ToolCallDelta { id, arguments_delta }) => {
+                    Ok(StreamChunk::ToolCallDelta {
+                        id,
+                        arguments_delta,
+                    }) => {
                         if let Some((_, ref mut args)) = segment_tool_call_args.get_mut(&id) {
                             args.push_str(&arguments_delta);
                         }
@@ -1080,14 +1352,22 @@ impl AgentRunner {
                         break;
                     }
                     Ok(StreamChunk::Error(msg)) => {
-                        let _ = tx.send(AgentStreamEvent::Error { message: msg.clone() }).await;
+                        let _ = tx
+                            .send(AgentStreamEvent::Error {
+                                message: msg.clone(),
+                            })
+                            .await;
                         let failure_type = crate::circuit_breaker::classify_llm_error(&msg);
                         self.circuit_breaker.record_classified_failure(failure_type);
                         return Err(RunError::LLMError(msg));
                     }
                     Err(e) => {
                         let error_str = e.to_string();
-                        let _ = tx.send(AgentStreamEvent::Error { message: error_str.clone() }).await;
+                        let _ = tx
+                            .send(AgentStreamEvent::Error {
+                                message: error_str.clone(),
+                            })
+                            .await;
                         let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
                         self.circuit_breaker.record_classified_failure(failure_type);
                         return Err(RunError::LLMError(error_str));
@@ -1097,15 +1377,22 @@ impl AgentRunner {
 
             // Assemble tool calls from accumulated deltas.
             for (id, (name, args_str)) in segment_tool_call_args {
-                let arguments: serde_json::Value = serde_json::from_str(&args_str)
-                    .unwrap_or(serde_json::json!({}));
-                segment_tool_calls.push(LLMToolCall { id, name, arguments });
+                let arguments: serde_json::Value =
+                    serde_json::from_str(&args_str).unwrap_or(serde_json::json!({}));
+                segment_tool_calls.push(LLMToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
             }
 
             // Record success + update context.
             self.circuit_breaker.record_success();
             ctx.total_tokens += segment_usage.total_tokens;
-            let pricing = ghost_llm::provider::TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 };
+            let pricing = ghost_llm::provider::TokenPricing {
+                input_per_1k: 0.0,
+                output_per_1k: 0.0,
+            };
             let call_cost = (segment_usage.prompt_tokens as f64 * pricing.input_per_1k / 1000.0)
                 + (segment_usage.completion_tokens as f64 * pricing.output_per_1k / 1000.0);
             ctx.total_cost += call_cost;
@@ -1120,14 +1407,20 @@ impl AgentRunner {
                     // Empty — done.
                     result.total_tokens = ctx.total_tokens;
                     result.total_cost = ctx.total_cost;
-                    result.output = if accumulated_output.is_empty() { None } else { Some(accumulated_output) };
+                    result.output = if accumulated_output.is_empty() {
+                        None
+                    } else {
+                        Some(accumulated_output)
+                    };
                     return Ok(result);
                 }
                 (true, false) => {
                     // Pure text — inspect for safety, accumulate, continue loop.
                     let inspection = self.output_inspector.scan(&segment_text, ctx.agent_id);
                     let final_text = match inspection {
-                        InspectionResult::KillAll { pattern_name: _, .. } => {
+                        InspectionResult::KillAll {
+                            pattern_name: _, ..
+                        } => {
                             self.kill_switch.store(true, Ordering::SeqCst);
                             result.halted_by = Some("credential_exfiltration".into());
                             result.total_tokens = ctx.total_tokens;
@@ -1141,7 +1434,8 @@ impl AgentRunner {
                     accumulated_output.push_str(&final_text);
 
                     // Extract proposals.
-                    let proposals = ProposalExtractor::extract(&final_text, ctx.agent_id, ctx.session_id);
+                    let proposals =
+                        ProposalExtractor::extract(&final_text, ctx.agent_id, ctx.session_id);
                     result.proposals_extracted += proposals.len() as u32;
                     ctx.proposal_count += proposals.len() as u32;
                     // Route proposals (same as run_turn).
@@ -1151,7 +1445,8 @@ impl AgentRunner {
                         let decision = if self.proposal_router.is_resubmission(&proposal) {
                             ProposalDecision::AutoRejected
                         } else if let Some(d) = self.proposal_router.reflection_precheck(
-                            &proposal, &cortex_core::config::ReflectionConfig::default(),
+                            &proposal,
+                            &cortex_core::config::ReflectionConfig::default(),
                         ) {
                             d
                         } else if ctx.intervention_level <= 1 {
@@ -1165,7 +1460,8 @@ impl AgentRunner {
                         {
                             self.persist_reflection(ctx.session_id, &proposal);
                         }
-                        self.proposal_router.record_decision(proposal, decision, false);
+                        self.proposal_router
+                            .record_decision(proposal, decision, false);
                     }
                     // Text-only response is the final answer — break the loop.
                     result.total_tokens = ctx.total_tokens;
@@ -1197,9 +1493,12 @@ impl AgentRunner {
                     }
 
                     // Plan validation.
-                    if let PlanValidationResult::Deny(reason) = self.tool_executor.validate_plan(&segment_tool_calls) {
+                    if let PlanValidationResult::Deny(reason) =
+                        self.tool_executor.validate_plan(&segment_tool_calls)
+                    {
                         tracing::warn!(reason = %reason, "tool plan denied in streaming");
-                        self.tool_executor.record_denial(&segment_tool_calls[0].name);
+                        self.tool_executor
+                            .record_denial(&segment_tool_calls[0].name);
                         conversation.push(ChatMessage {
                             role: MessageRole::Assistant,
                             content: segment_text,
@@ -1229,13 +1528,21 @@ impl AgentRunner {
                     let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
                         agent_id: ctx.agent_id,
                         session_id: ctx.session_id,
+                        intervention_level: ctx.intervention_level,
+                        session_duration: ctx.session_duration(),
+                        session_reflection_count: self
+                            .proposal_router
+                            .session_reflection_count(ctx.session_id),
+                        is_compaction_flush: false,
                     };
                     for call in &segment_tool_calls {
-                        let _ = tx.send(AgentStreamEvent::ToolUse {
-                            tool: call.name.clone(),
-                            tool_id: call.id.clone(),
-                            status: "running".into(),
-                        }).await;
+                        let _ = tx
+                            .send(AgentStreamEvent::ToolUse {
+                                tool: call.name.clone(),
+                                tool_id: call.id.clone(),
+                                status: "running".into(),
+                            })
+                            .await;
 
                         // Execute tool with concurrent heartbeat sender.
                         // Sends a heartbeat every 15s during execution to prevent
@@ -1251,20 +1558,26 @@ impl AgentRunner {
                             let hb_tx = heartbeat_tx.clone();
                             let hb_name = heartbeat_tool_name.clone();
                             let heartbeat_handle = tokio::spawn(async move {
-                                let mut interval = tokio::time::interval(
-                                    std::time::Duration::from_secs(15),
-                                );
+                                let mut interval =
+                                    tokio::time::interval(std::time::Duration::from_secs(15));
                                 interval.tick().await; // skip immediate first tick
                                 loop {
                                     interval.tick().await;
-                                    if hb_tx.send(AgentStreamEvent::Heartbeat {
-                                        phase: format!("tool_exec:{}", hb_name),
-                                    }).await.is_err() {
+                                    if hb_tx
+                                        .send(AgentStreamEvent::Heartbeat {
+                                            phase: format!("tool_exec:{}", hb_name),
+                                        })
+                                        .await
+                                        .is_err()
+                                    {
                                         break; // channel closed
                                     }
                                 }
                             });
-                            let result = self.tool_executor.execute(call, &self.tool_registry, &exec_ctx).await;
+                            let result = self
+                                .tool_executor
+                                .execute(call, &self.tool_registry, &exec_ctx)
+                                .await;
                             heartbeat_handle.abort();
                             result
                         };
@@ -1287,12 +1600,14 @@ impl AgentRunner {
                             output.clone()
                         };
 
-                        let _ = tx.send(AgentStreamEvent::ToolResult {
-                            tool: call.name.clone(),
-                            tool_id: call.id.clone(),
-                            status: status.into(),
-                            preview,
-                        }).await;
+                        let _ = tx
+                            .send(AgentStreamEvent::ToolResult {
+                                tool: call.name.clone(),
+                                tool_id: call.id.clone(),
+                                status: status.into(),
+                                preview,
+                            })
+                            .await;
 
                         conversation.push(ChatMessage {
                             role: MessageRole::Tool,
@@ -1308,58 +1623,210 @@ impl AgentRunner {
             }
         }
     }
+}
 
-    /// Read convergence shared state from the atomic state file.
-    /// Returns None if the file doesn't exist (first boot) — logs a debug message.
-    /// Returns None if the file can't be parsed (corrupted) — logs a warning.
-    /// Defaults to level 0 when None (degraded mode).
-    fn read_convergence_shared_state(&self, agent_id: Uuid) -> Option<ConvergenceSharedStateRef> {
-        let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-            Ok(h) => h,
-            Err(_) => {
-                tracing::warn!(
-                    agent_id = %agent_id,
-                    "HOME/USERPROFILE not set — cannot read convergence shared state, defaulting to level 0"
-                );
-                return None;
-            }
-        };
-        let state_path = format!(
-            "{}/.ghost/data/convergence_state/{}.json",
-            home, agent_id
-        );
-        let content = match std::fs::read_to_string(&state_path) {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::debug!(
-                    agent_id = %agent_id,
-                    path = %state_path,
-                    "convergence state file not found — first boot or monitor not running, defaulting to level 0"
-                );
-                return None;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    agent_id = %agent_id,
-                    path = %state_path,
-                    error = %e,
-                    "failed to read convergence state file — defaulting to level 0"
-                );
-                return None;
-            }
-        };
-        match serde_json::from_str(&content) {
-            Ok(state) => Some(state),
-            Err(e) => {
-                tracing::warn!(
-                    agent_id = %agent_id,
-                    path = %state_path,
-                    error = %e,
-                    "failed to parse convergence state file (corrupted?) — defaulting to level 0"
-                );
-                None
-            }
+pub fn inspect_convergence_shared_state(
+    agent_id: Uuid,
+    monitor_enabled: bool,
+    stale_after: Duration,
+) -> ConvergenceStateHealth {
+    let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        Ok(home) => home,
+        Err(_) => {
+            return ConvergenceStateHealth {
+                status: if monitor_enabled {
+                    ConvergenceHealthState::Corrupted
+                } else {
+                    ConvergenceHealthState::Disabled
+                },
+                level: None,
+                score: None,
+                cooldown_until: None,
+                age_seconds: None,
+                detail: Some("HOME/USERPROFILE not set".into()),
+            };
         }
+    };
+
+    inspect_convergence_shared_state_at(
+        std::path::Path::new(&home),
+        agent_id,
+        monitor_enabled,
+        stale_after,
+    )
+}
+
+fn inspect_convergence_shared_state_at(
+    home_dir: &std::path::Path,
+    agent_id: Uuid,
+    monitor_enabled: bool,
+    stale_after: Duration,
+) -> ConvergenceStateHealth {
+    if !monitor_enabled {
+        return ConvergenceStateHealth {
+            status: ConvergenceHealthState::Disabled,
+            level: None,
+            score: None,
+            cooldown_until: None,
+            age_seconds: None,
+            detail: Some("convergence monitor disabled in config".into()),
+        };
+    }
+
+    let state_path = home_dir
+        .join(".ghost")
+        .join("data")
+        .join("convergence_state")
+        .join(format!("{agent_id}.json"));
+    let metadata = match std::fs::metadata(&state_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ConvergenceStateHealth {
+                status: ConvergenceHealthState::Missing,
+                level: None,
+                score: None,
+                cooldown_until: None,
+                age_seconds: None,
+                detail: Some(format!("state file not found: {}", state_path.display())),
+            };
+        }
+        Err(error) => {
+            return ConvergenceStateHealth {
+                status: ConvergenceHealthState::Corrupted,
+                level: None,
+                score: None,
+                cooldown_until: None,
+                age_seconds: None,
+                detail: Some(format!("metadata read failed: {error}")),
+            };
+        }
+    };
+
+    let content = match std::fs::read_to_string(&state_path) {
+        Ok(content) => content,
+        Err(error) => {
+            return ConvergenceStateHealth {
+                status: ConvergenceHealthState::Corrupted,
+                level: None,
+                score: None,
+                cooldown_until: None,
+                age_seconds: None,
+                detail: Some(format!("state read failed: {error}")),
+            };
+        }
+    };
+    let state: ConvergenceSharedStateRef = match serde_json::from_str(&content) {
+        Ok(state) => state,
+        Err(error) => {
+            return ConvergenceStateHealth {
+                status: ConvergenceHealthState::Corrupted,
+                level: None,
+                score: None,
+                cooldown_until: None,
+                age_seconds: None,
+                detail: Some(format!("state parse failed: {error}")),
+            };
+        }
+    };
+
+    let age_seconds = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .map(|elapsed| elapsed.as_secs());
+    let status = if age_seconds.is_some_and(|age| age > stale_after.as_secs()) {
+        ConvergenceHealthState::Stale
+    } else {
+        ConvergenceHealthState::Healthy
+    };
+
+    ConvergenceStateHealth {
+        status,
+        level: Some(state.level),
+        score: Some(state.score),
+        cooldown_until: state.cooldown_until,
+        age_seconds,
+        detail: Some(format!("state file: {}", state_path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_convergence_state(home: &std::path::Path, agent_id: Uuid, body: &str) {
+        let dir = home.join(".ghost").join("data").join("convergence_state");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{agent_id}.json")), body).unwrap();
+    }
+
+    #[test]
+    fn missing_convergence_state_enters_degraded_or_blocked_mode_per_profile() {
+        let home = tempfile::tempdir().unwrap();
+        let agent_id = Uuid::now_v7();
+        let health = inspect_convergence_shared_state_at(
+            home.path(),
+            agent_id,
+            true,
+            Duration::from_secs(300),
+        );
+        assert_eq!(health.status, ConvergenceHealthState::Missing);
+
+        let allow_runner = AgentRunner::new(1024);
+        assert!(allow_runner
+            .handle_degraded_convergence_health(agent_id, &health)
+            .is_ok());
+
+        let mut block_runner = AgentRunner::new(1024);
+        block_runner.degraded_convergence_mode = DegradedConvergenceMode::Block;
+        assert!(matches!(
+            block_runner.handle_degraded_convergence_health(agent_id, &health),
+            Err(RunError::ConvergenceProtectionDegraded(status)) if status == "missing"
+        ));
+    }
+
+    #[test]
+    fn stale_convergence_state_is_not_treated_as_healthy() {
+        let home = tempfile::tempdir().unwrap();
+        let agent_id = Uuid::now_v7();
+        write_convergence_state(
+            home.path(),
+            agent_id,
+            r#"{"level":2,"score":0.41,"cooldown_until":null}"#,
+        );
+
+        std::thread::sleep(Duration::from_secs(2));
+
+        let health = inspect_convergence_shared_state_at(
+            home.path(),
+            agent_id,
+            true,
+            Duration::from_secs(1),
+        );
+        assert_eq!(health.status, ConvergenceHealthState::Stale);
+        assert_eq!(health.level, Some(2));
+    }
+
+    #[test]
+    fn corrupted_convergence_state_is_visible_and_handled() {
+        let home = tempfile::tempdir().unwrap();
+        let agent_id = Uuid::now_v7();
+        write_convergence_state(home.path(), agent_id, "{not-json");
+
+        let health = inspect_convergence_shared_state_at(
+            home.path(),
+            agent_id,
+            true,
+            Duration::from_secs(300),
+        );
+        assert_eq!(health.status, ConvergenceHealthState::Corrupted);
+
+        let mut runner = AgentRunner::new(1024);
+        runner.degraded_convergence_mode = DegradedConvergenceMode::Block;
+        assert!(matches!(
+            runner.handle_degraded_convergence_health(agent_id, &health),
+            Err(RunError::ConvergenceProtectionDegraded(status)) if status == "corrupted"
+        ));
     }
 }
 
@@ -1381,8 +1848,6 @@ pub type LLMFallbackChain = ghost_llm::fallback::FallbackChain;
 
 /// Extract pricing from the first available provider in the fallback chain.
 /// Falls back to zero pricing if no providers are available.
-fn fallback_chain_pricing(
-    chain: &LLMFallbackChain,
-) -> ghost_llm::provider::TokenPricing {
+fn fallback_chain_pricing(chain: &LLMFallbackChain) -> ghost_llm::provider::TokenPricing {
     chain.current_pricing()
 }

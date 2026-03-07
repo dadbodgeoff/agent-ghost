@@ -19,7 +19,11 @@ pub fn import_memories(source: &Path, target: &Path) -> MigrateResult<Vec<String
     for entry in std::fs::read_dir(&memory_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map(|e| e == "md" || e == "json").unwrap_or(false) {
+        if path
+            .extension()
+            .map(|e| e == "md" || e == "json")
+            .unwrap_or(false)
+        {
             let content = std::fs::read_to_string(&path)?;
             let filename = entry.file_name().to_string_lossy().to_string();
 

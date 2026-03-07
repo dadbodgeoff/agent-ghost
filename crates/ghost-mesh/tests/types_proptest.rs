@@ -59,11 +59,14 @@ fn arbitrary_agent_card() -> impl Strategy<Value = AgentCard> {
 }
 
 fn arbitrary_mesh_task() -> impl Strategy<Value = MeshTask> {
-    (arbitrary_uuid(), arbitrary_uuid(), 0..3600u64).prop_map(
-        |(initiator, target, timeout)| {
-            MeshTask::new(initiator, target, serde_json::json!({"test": true}), timeout)
-        },
-    )
+    (arbitrary_uuid(), arbitrary_uuid(), 0..3600u64).prop_map(|(initiator, target, timeout)| {
+        MeshTask::new(
+            initiator,
+            target,
+            serde_json::json!({"test": true}),
+            timeout,
+        )
+    })
 }
 
 // ── Proptest: AgentCard sign-then-verify ────────────────────────────────

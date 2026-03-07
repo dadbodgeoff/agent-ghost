@@ -41,17 +41,14 @@ impl Skill for CheckTaskStatusSkill {
             })?;
 
         // Query local delegation state
-        let delegation =
-            cortex_storage::queries::delegation_state_queries::query_by_delegation_id(
-                ctx.db,
-                delegation_id,
-            )
-            .map_err(|e| SkillError::Storage(format!("query delegation: {e}")))?
-            .ok_or_else(|| {
-                SkillError::InvalidInput(format!(
-                    "delegation '{delegation_id}' not found"
-                ))
-            })?;
+        let delegation = cortex_storage::queries::delegation_state_queries::query_by_delegation_id(
+            ctx.db,
+            delegation_id,
+        )
+        .map_err(|e| SkillError::Storage(format!("query delegation: {e}")))?
+        .ok_or_else(|| {
+            SkillError::InvalidInput(format!("delegation '{delegation_id}' not found"))
+        })?;
 
         // Check if caller is the sender (authorization)
         let agent_id_str = ctx.agent_id.to_string();
@@ -140,10 +137,7 @@ mod tests {
         seed_delegation(&db, &delegation_id, &agent_id.to_string(), &recipient_id);
 
         let result = CheckTaskStatusSkill
-            .execute(
-                &ctx,
-                &serde_json::json!({ "delegation_id": delegation_id }),
-            )
+            .execute(&ctx, &serde_json::json!({ "delegation_id": delegation_id }))
             .unwrap();
 
         assert_eq!(result["state"], "Offered");
@@ -180,10 +174,8 @@ mod tests {
         let db = test_db();
         let ctx = test_ctx(&db, Uuid::now_v7());
 
-        let result = CheckTaskStatusSkill.execute(
-            &ctx,
-            &serde_json::json!({ "delegation_id": "nonexistent" }),
-        );
+        let result = CheckTaskStatusSkill
+            .execute(&ctx, &serde_json::json!({ "delegation_id": "nonexistent" }));
         assert!(result.is_err());
     }
 
@@ -202,10 +194,8 @@ mod tests {
             &Uuid::now_v7().to_string(),
         );
 
-        let result = CheckTaskStatusSkill.execute(
-            &ctx,
-            &serde_json::json!({ "delegation_id": delegation_id }),
-        );
+        let result = CheckTaskStatusSkill
+            .execute(&ctx, &serde_json::json!({ "delegation_id": delegation_id }));
         assert!(result.is_err());
     }
 

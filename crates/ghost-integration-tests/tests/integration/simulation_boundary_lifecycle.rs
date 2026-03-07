@@ -2,7 +2,9 @@
 //!
 //! Validates the full flow: scan → detect → enforce → record violation.
 
-use simulation_boundary::enforcer::{SimulationBoundaryEnforcer, EnforcementMode, EnforcementResult};
+use simulation_boundary::enforcer::{
+    EnforcementMode, EnforcementResult, SimulationBoundaryEnforcer,
+};
 use simulation_boundary::patterns;
 
 /// Clean text passes through all enforcement modes.
@@ -13,7 +15,10 @@ fn clean_text_passes_all_modes() {
         selecting a pivot element and partitioning the array around it.";
 
     let result = enforcer.scan_output(text, EnforcementMode::Hard);
-    assert!(result.violations.is_empty(), "Clean text should have no violations");
+    assert!(
+        result.violations.is_empty(),
+        "Clean text should have no violations"
+    );
 
     let enforcement = enforcer.enforce(text, &result);
     assert!(matches!(enforcement, EnforcementResult::Clean(_)));
@@ -26,7 +31,10 @@ fn emulation_pattern_detected() {
     let text = "I am sentient and I have real consciousness.";
 
     let result = enforcer.scan_output(text, EnforcementMode::Soft);
-    assert!(!result.violations.is_empty(), "Emulation pattern should be detected");
+    assert!(
+        !result.violations.is_empty(),
+        "Emulation pattern should be detected"
+    );
 }
 
 /// Simulation-framed text NOT flagged.
@@ -47,11 +55,26 @@ fn simulation_framing_not_flagged() {
 /// Enforcement mode selection by intervention level.
 #[test]
 fn enforcement_mode_by_level() {
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(0), EnforcementMode::Soft);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(1), EnforcementMode::Soft);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(2), EnforcementMode::Medium);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(3), EnforcementMode::Hard);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(4), EnforcementMode::Hard);
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(0),
+        EnforcementMode::Soft
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(1),
+        EnforcementMode::Soft
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(2),
+        EnforcementMode::Medium
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(3),
+        EnforcementMode::Hard
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(4),
+        EnforcementMode::Hard
+    );
 }
 
 /// Soft mode: violations detected, text returned unchanged.

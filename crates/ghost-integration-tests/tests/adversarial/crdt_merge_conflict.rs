@@ -256,10 +256,7 @@ fn same_author_latest_delta_wins_lww() {
     }
 
     // LWW: last delta wins
-    let winner = deltas
-        .iter()
-        .max_by_key(|d| d.delta.lww_timestamp)
-        .unwrap();
+    let winner = deltas.iter().max_by_key(|d| d.delta.lww_timestamp).unwrap();
     assert_eq!(winner.delta.value, "version_9");
 }
 

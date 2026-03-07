@@ -24,14 +24,36 @@ pub struct AgentMessage {
 /// Message payload variants (AC2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MessagePayload {
-    TaskRequest { task: String, parameters: serde_json::Value },
-    TaskResponse { task_id: Uuid, result: serde_json::Value },
-    Notification { message: String },
-    DelegationOffer { task: String, requirements: serde_json::Value },
-    DelegationAccept { offer_id: Uuid },
-    DelegationReject { offer_id: Uuid, reason: String },
-    DelegationComplete { delegation_id: Uuid, result: serde_json::Value },
-    DelegationDispute { delegation_id: Uuid, reason: String },
+    TaskRequest {
+        task: String,
+        parameters: serde_json::Value,
+    },
+    TaskResponse {
+        task_id: Uuid,
+        result: serde_json::Value,
+    },
+    Notification {
+        message: String,
+    },
+    DelegationOffer {
+        task: String,
+        requirements: serde_json::Value,
+    },
+    DelegationAccept {
+        offer_id: Uuid,
+    },
+    DelegationReject {
+        offer_id: Uuid,
+        reason: String,
+    },
+    DelegationComplete {
+        delegation_id: Uuid,
+        result: serde_json::Value,
+    },
+    DelegationDispute {
+        delegation_id: Uuid,
+        reason: String,
+    },
 }
 
 /// Delegation state machine (AC14).

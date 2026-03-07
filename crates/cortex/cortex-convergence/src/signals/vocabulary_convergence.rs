@@ -6,9 +6,15 @@ use super::{PrivacyLevel, Signal, SignalInput};
 pub struct VocabularyConvergenceSignal;
 
 impl Signal for VocabularyConvergenceSignal {
-    fn id(&self) -> u8 { 4 }
-    fn name(&self) -> &'static str { "vocabulary_convergence" }
-    fn requires_privacy_level(&self) -> PrivacyLevel { PrivacyLevel::Standard }
+    fn id(&self) -> u8 {
+        4
+    }
+    fn name(&self) -> &'static str {
+        "vocabulary_convergence"
+    }
+    fn requires_privacy_level(&self) -> PrivacyLevel {
+        PrivacyLevel::Standard
+    }
 
     fn compute(&self, data: &SignalInput) -> f64 {
         if data.human_vocab.is_empty() || data.agent_vocab.is_empty() {

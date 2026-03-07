@@ -83,7 +83,9 @@ pub async fn register_safety_check(
     }
     // T-5.5.1: Validate webhook URL against SSRF blocklist.
     if let Err(e) = crate::api::ssrf::validate_url(&req.webhook_url) {
-        return Err(ApiError::bad_request(format!("Safety check URL blocked: {e}")));
+        return Err(ApiError::bad_request(format!(
+            "Safety check URL blocked: {e}"
+        )));
     }
     if req.dimension_id.trim().is_empty() {
         return Err(ApiError::bad_request("Dimension ID is required"));
@@ -143,7 +145,9 @@ pub async fn unregister_safety_check(
     checks.retain(|c| c.id != id);
 
     if checks.len() == original_len {
-        return Err(ApiError::not_found(format!("Safety check '{id}' not found")));
+        return Err(ApiError::not_found(format!(
+            "Safety check '{id}' not found"
+        )));
     }
 
     tracing::info!(check_id = %id, "Custom safety check unregistered");

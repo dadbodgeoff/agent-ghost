@@ -268,12 +268,7 @@ fn task_status_terminal_states() {
 
 #[test]
 fn mesh_task_lifecycle() {
-    let mut task = MeshTask::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        serde_json::json!({}),
-        60,
-    );
+    let mut task = MeshTask::new(Uuid::new_v4(), Uuid::new_v4(), serde_json::json!({}), 60);
     assert_eq!(task.status, TaskStatus::Submitted);
 
     task.transition(TaskStatus::Working).unwrap();
@@ -285,12 +280,7 @@ fn mesh_task_lifecycle() {
 
 #[test]
 fn mesh_task_invalid_transition_error() {
-    let mut task = MeshTask::new(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        serde_json::json!({}),
-        60,
-    );
+    let mut task = MeshTask::new(Uuid::new_v4(), Uuid::new_v4(), serde_json::json!({}), 60);
     task.transition(TaskStatus::Working).unwrap();
     task.transition(TaskStatus::Completed).unwrap();
 
@@ -317,10 +307,7 @@ fn mesh_message_request_conforms_to_jsonrpc() {
 
 #[test]
 fn mesh_message_success_response_conforms() {
-    let msg = MeshMessage::success(
-        serde_json::json!(1),
-        serde_json::json!({"status": "ok"}),
-    );
+    let msg = MeshMessage::success(serde_json::json!(1), serde_json::json!({"status": "ok"}));
     assert_eq!(msg.jsonrpc, "2.0");
     assert!(msg.is_valid_jsonrpc());
     assert!(msg.result.is_some());
@@ -329,11 +316,7 @@ fn mesh_message_success_response_conforms() {
 
 #[test]
 fn mesh_message_error_response_conforms() {
-    let msg = MeshMessage::error_response(
-        serde_json::json!(1),
-        -32601,
-        "Method not found",
-    );
+    let msg = MeshMessage::error_response(serde_json::json!(1), -32601, "Method not found");
     assert_eq!(msg.jsonrpc, "2.0");
     assert!(msg.is_valid_jsonrpc());
     assert!(msg.error.is_some());

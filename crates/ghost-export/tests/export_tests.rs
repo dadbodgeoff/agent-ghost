@@ -1,11 +1,11 @@
 //! Tests for ghost-export (Task 6.3).
 
+use ghost_export::analyzer::ExportAnalyzer;
 use ghost_export::parsers::{self, ExportParser};
 use ghost_export::timeline::TimelineReconstructor;
-use ghost_export::analyzer::ExportAnalyzer;
 use ghost_export::{ExportAnalysisResult, MessageRole, NormalizedMessage};
-use tempfile::TempDir;
 use std::fs;
+use tempfile::TempDir;
 
 fn make_chatgpt_export() -> String {
     serde_json::json!([{

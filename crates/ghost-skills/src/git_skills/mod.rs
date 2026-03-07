@@ -92,15 +92,15 @@ pub fn all_git_skills() -> Vec<Box<dyn Skill>> {
 ///
 /// If `repo_path` is provided, opens directly. Otherwise, discovers the
 /// repository by walking up from the current working directory.
-pub(crate) fn open_repo(repo_path: Option<&str>) -> Result<git2::Repository, crate::skill::SkillError> {
+pub(crate) fn open_repo(
+    repo_path: Option<&str>,
+) -> Result<git2::Repository, crate::skill::SkillError> {
     let repo = match repo_path {
         Some(path) => git2::Repository::open(path),
         None => git2::Repository::discover("."),
     };
     repo.map_err(|e| {
-        crate::skill::SkillError::InvalidInput(format!(
-            "cannot open git repository: {e}"
-        ))
+        crate::skill::SkillError::InvalidInput(format!("cannot open git repository: {e}"))
     })
 }
 
@@ -128,17 +128,41 @@ pub(crate) fn format_status(status: git2::Status) -> &'static str {
 /// Collect the set of human-readable status flag names.
 pub(crate) fn status_flags(status: git2::Status) -> Vec<&'static str> {
     let mut flags = Vec::new();
-    if status.is_index_new() { flags.push("index_new"); }
-    if status.is_index_modified() { flags.push("index_modified"); }
-    if status.is_index_deleted() { flags.push("index_deleted"); }
-    if status.is_index_renamed() { flags.push("index_renamed"); }
-    if status.is_index_typechange() { flags.push("index_typechange"); }
-    if status.is_wt_new() { flags.push("wt_new"); }
-    if status.is_wt_modified() { flags.push("wt_modified"); }
-    if status.is_wt_deleted() { flags.push("wt_deleted"); }
-    if status.is_wt_renamed() { flags.push("wt_renamed"); }
-    if status.is_wt_typechange() { flags.push("wt_typechange"); }
-    if status.is_conflicted() { flags.push("conflicted"); }
-    if status.is_ignored() { flags.push("ignored"); }
+    if status.is_index_new() {
+        flags.push("index_new");
+    }
+    if status.is_index_modified() {
+        flags.push("index_modified");
+    }
+    if status.is_index_deleted() {
+        flags.push("index_deleted");
+    }
+    if status.is_index_renamed() {
+        flags.push("index_renamed");
+    }
+    if status.is_index_typechange() {
+        flags.push("index_typechange");
+    }
+    if status.is_wt_new() {
+        flags.push("wt_new");
+    }
+    if status.is_wt_modified() {
+        flags.push("wt_modified");
+    }
+    if status.is_wt_deleted() {
+        flags.push("wt_deleted");
+    }
+    if status.is_wt_renamed() {
+        flags.push("wt_renamed");
+    }
+    if status.is_wt_typechange() {
+        flags.push("wt_typechange");
+    }
+    if status.is_conflicted() {
+        flags.push("conflicted");
+    }
+    if status.is_ignored() {
+        flags.push("ignored");
+    }
     flags
 }

@@ -46,17 +46,14 @@ impl Skill for CancelTaskSkill {
             .unwrap_or("cancelled by sender");
 
         // 1. Query current delegation state
-        let delegation =
-            cortex_storage::queries::delegation_state_queries::query_by_delegation_id(
-                ctx.db,
-                delegation_id,
-            )
-            .map_err(|e| SkillError::Storage(format!("query delegation: {e}")))?
-            .ok_or_else(|| {
-                SkillError::InvalidInput(format!(
-                    "delegation '{delegation_id}' not found"
-                ))
-            })?;
+        let delegation = cortex_storage::queries::delegation_state_queries::query_by_delegation_id(
+            ctx.db,
+            delegation_id,
+        )
+        .map_err(|e| SkillError::Storage(format!("query delegation: {e}")))?
+        .ok_or_else(|| {
+            SkillError::InvalidInput(format!("delegation '{delegation_id}' not found"))
+        })?;
 
         // 2. Validate sender_id matches caller (authorization)
         let agent_id_str = ctx.agent_id.to_string();
@@ -89,9 +86,9 @@ impl Skill for CancelTaskSkill {
                 ctx.db,
                 delegation_id,
                 new_state,
-                None,  // accept_message_id
-                None,  // complete_message_id
-                None,  // result
+                None, // accept_message_id
+                None, // complete_message_id
+                None, // result
                 dispute_reason,
             )
             .map_err(|e| SkillError::Storage(format!("transition delegation: {e}")))?;
@@ -185,10 +182,7 @@ mod tests {
         );
 
         let result = CancelTaskSkill
-            .execute(
-                &ctx,
-                &serde_json::json!({ "delegation_id": delegation_id }),
-            )
+            .execute(&ctx, &serde_json::json!({ "delegation_id": delegation_id }))
             .unwrap();
 
         assert_eq!(result["previous_state"], "Offered");
@@ -288,10 +282,8 @@ mod tests {
         )
         .unwrap();
 
-        let result = CancelTaskSkill.execute(
-            &ctx,
-            &serde_json::json!({ "delegation_id": delegation_id }),
-        );
+        let result =
+            CancelTaskSkill.execute(&ctx, &serde_json::json!({ "delegation_id": delegation_id }));
         assert!(result.is_err());
     }
 
@@ -310,10 +302,8 @@ mod tests {
             &Uuid::now_v7().to_string(),
         );
 
-        let result = CancelTaskSkill.execute(
-            &ctx,
-            &serde_json::json!({ "delegation_id": delegation_id }),
-        );
+        let result =
+            CancelTaskSkill.execute(&ctx, &serde_json::json!({ "delegation_id": delegation_id }));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code(), "AUTHORIZATION_DENIED");

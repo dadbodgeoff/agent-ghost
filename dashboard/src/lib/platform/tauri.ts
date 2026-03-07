@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { RuntimePlatform } from './runtime';
+import type { RuntimePlatform, RuntimeTerminalPty } from './runtime';
 
 const TOKEN_KEY = 'ghost-token';
 const listeners = new Set<(token: string | null) => void>();
@@ -67,5 +67,26 @@ export const tauriRuntime: RuntimePlatform = {
   },
   async stopGateway() {
     return invoke<string>('stop_gateway');
+  },
+  async requestNotificationPermission() {
+    const { isPermissionGranted, requestPermission } = await import('@tauri-apps/plugin-notification');
+    if (await isPermissionGranted()) {
+      return true;
+    }
+    return (await requestPermission()) === 'granted';
+  },
+  async sendNotification(notification) {
+    const { sendNotification } = await import('@tauri-apps/plugin-notification');
+    await sendNotification(notification);
+  },
+  async readKeybindings() {
+    return invoke<Array<{ key: string; command: string; when?: string }>>('read_keybindings');
+  },
+  async getDefaultShell() {
+    return invoke<string>('default_shell');
+  },
+  async spawnTerminalPty(shell, options) {
+    const { spawn } = await import('tauri-pty');
+    return spawn(shell, [], options) as RuntimeTerminalPty;
   },
 };

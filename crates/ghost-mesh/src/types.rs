@@ -545,16 +545,20 @@ impl AgentCardCache {
             }
         }
         let signed_at = card.signed_at;
-        self.cards.insert(agent_id, CachedCard {
-            card,
-            cached_at: std::time::Instant::now(),
-            last_signed_at: signed_at,
-        });
+        self.cards.insert(
+            agent_id,
+            CachedCard {
+                card,
+                cached_at: std::time::Instant::now(),
+                last_signed_at: signed_at,
+            },
+        );
     }
 
     /// Remove expired entries.
     pub fn evict_expired(&mut self) {
-        self.cards.retain(|_, cached| cached.cached_at.elapsed() < self.ttl);
+        self.cards
+            .retain(|_, cached| cached.cached_at.elapsed() < self.ttl);
     }
 }
 

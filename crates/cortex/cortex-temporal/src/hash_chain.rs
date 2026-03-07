@@ -77,7 +77,10 @@ pub fn verify_chain(events: &[ChainEvent]) -> ChainVerification {
     for (i, event) in events.iter().enumerate() {
         if !seen.insert(event.event_hash) {
             // Find the first occurrence
-            let first = events.iter().position(|e| e.event_hash == event.event_hash).unwrap();
+            let first = events
+                .iter()
+                .position(|e| e.event_hash == event.event_hash)
+                .unwrap();
             return ChainVerification {
                 total_events: events.len(),
                 verified_events: i,

@@ -26,7 +26,6 @@ import { IntegrityAPI } from './integrity.js';
 import { MeshAPI } from './mesh.js';
 import { A2AAPI } from './a2a.js';
 import { StudioAPI } from './studio.js';
-import { ApprovalsAPI } from './approvals.js';
 import { PcControlAPI } from './pc-control.js';
 import { OAuthAPI } from './oauth.js';
 import { ItpAPI } from './itp.js';
@@ -45,12 +44,106 @@ export interface GhostClientOptions {
   timeout?: number;
 }
 
+export interface GhostRequestOptions {
+  requestId?: string;
+  operationId?: string;
+  idempotencyKey?: string;
+  idempotency?: 'required' | 'optional' | 'disabled';
+}
+
 /** Internal request function signature shared with API modules. */
 export type GhostRequestFn = <T>(
   method: string,
   path: string,
   body?: unknown,
+  options?: GhostRequestOptions,
 ) => Promise<T>;
+
+export interface GhostOperationEnvelope {
+  requestId?: string;
+  operationId?: string;
+  idempotencyKey?: string;
+}
+
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function isMutatingMethod(method: string): boolean {
+  return MUTATING_METHODS.has(method.toUpperCase());
+}
+
+function randomBytes(length: number): Uint8Array {
+  const bytes = new Uint8Array(length);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+    return bytes;
+  }
+
+  for (let i = 0; i < length; i += 1) {
+    bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return bytes;
+}
+
+function formatUuid(bytes: Uint8Array): string {
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+export function generateGhostRequestId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? generateGhostOperationId();
+}
+
+export function generateGhostOperationId(): string {
+  const bytes = randomBytes(16);
+  const timestamp = BigInt(Date.now());
+
+  bytes[0] = Number((timestamp >> 40n) & 0xffn);
+  bytes[1] = Number((timestamp >> 32n) & 0xffn);
+  bytes[2] = Number((timestamp >> 24n) & 0xffn);
+  bytes[3] = Number((timestamp >> 16n) & 0xffn);
+  bytes[4] = Number((timestamp >> 8n) & 0xffn);
+  bytes[5] = Number(timestamp & 0xffn);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  return formatUuid(bytes);
+}
+
+export function resolveGhostOperationEnvelope(
+  method: string,
+  options?: GhostRequestOptions,
+): GhostOperationEnvelope {
+  const mutating = isMutatingMethod(method);
+  const idempotencyEnabled =
+    options?.idempotency === 'required' ||
+    (options?.idempotency !== 'disabled' && mutating);
+
+  const operationId =
+    options?.operationId ??
+    ((mutating || options?.idempotency === 'required') ? generateGhostOperationId() : undefined);
+
+  const idempotencyKey =
+    options?.idempotencyKey ??
+    (idempotencyEnabled ? operationId : undefined);
+
+  const requestId =
+    options?.requestId ??
+    ((mutating || operationId !== undefined || idempotencyKey !== undefined)
+      ? generateGhostRequestId()
+      : undefined);
+
+  return {
+    requestId,
+    operationId,
+    idempotencyKey,
+  };
+}
 
 // ── Client ──
 
@@ -82,7 +175,6 @@ export class GhostClient {
   readonly mesh: MeshAPI;
   readonly a2a: A2AAPI;
   readonly studio: StudioAPI;
-  readonly approvals: ApprovalsAPI;
   readonly pcControl: PcControlAPI;
   readonly oauth: OAuthAPI;
   readonly itp: ItpAPI;
@@ -123,7 +215,6 @@ export class GhostClient {
     this.mesh = new MeshAPI(request);
     this.a2a = new A2AAPI(request);
     this.studio = new StudioAPI(request);
-    this.approvals = new ApprovalsAPI(request);
     this.pcControl = new PcControlAPI(request);
     this.oauth = new OAuthAPI(request);
     this.itp = new ItpAPI(request);
@@ -135,9 +226,15 @@ export class GhostClient {
   }
 
   /** Internal request method used by all API modules. */
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options?: GhostRequestOptions,
+  ): Promise<T> {
     const url = `${this.options.baseUrl}${path}`;
     const fetchFn = this.options.fetch ?? globalThis.fetch;
+    const envelope = resolveGhostOperationEnvelope(method, options);
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -149,6 +246,15 @@ export class GhostClient {
 
     if (this.options.token) {
       headers['Authorization'] = `Bearer ${this.options.token}`;
+    }
+    if (envelope.requestId) {
+      headers['X-Request-ID'] = envelope.requestId;
+    }
+    if (envelope.operationId) {
+      headers['X-Ghost-Operation-ID'] = envelope.operationId;
+    }
+    if (envelope.idempotencyKey) {
+      headers['Idempotency-Key'] = envelope.idempotencyKey;
     }
 
     let response: Response;

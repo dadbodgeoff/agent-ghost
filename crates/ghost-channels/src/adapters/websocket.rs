@@ -50,8 +50,8 @@ impl ChannelAdapter for WebSocketAdapter {
 
     async fn send(&self, message: OutboundMessage) -> Result<(), String> {
         // Serialize to JSON for WebSocket delivery.
-        let json = serde_json::to_string(&message)
-            .map_err(|e| format!("serialization error: {e}"))?;
+        let json =
+            serde_json::to_string(&message).map_err(|e| format!("serialization error: {e}"))?;
         tracing::debug!(len = json.len(), "WebSocket outbound message serialized");
         // In production, this sends to the connected WebSocket client(s)
         // via a broadcast channel or direct socket reference.
@@ -65,7 +65,13 @@ impl ChannelAdapter for WebSocketAdapter {
             .ok_or_else(|| "no message available".into())
     }
 
-    fn supports_streaming(&self) -> bool { true }
-    fn supports_editing(&self) -> bool { true }
-    fn channel_type(&self) -> &str { "websocket" }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn supports_editing(&self) -> bool {
+        true
+    }
+    fn channel_type(&self) -> &str {
+        "websocket"
+    }
 }

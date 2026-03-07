@@ -45,11 +45,7 @@ pub fn read_memories(
     // Simple substring match against snapshot memories
     let matched: Vec<serde_json::Value> = snapshot_memories
         .iter()
-        .filter(|m| {
-            m.to_string()
-                .to_lowercase()
-                .contains(&query.to_lowercase())
-        })
+        .filter(|m| m.to_string().to_lowercase().contains(&query.to_lowercase()))
         .take(limit)
         .cloned()
         .collect();

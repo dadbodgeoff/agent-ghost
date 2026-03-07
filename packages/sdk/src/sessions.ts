@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 // ── Types ──
 
@@ -57,8 +57,11 @@ export class SessionsAPI {
   constructor(private request: GhostRequestFn) {}
 
   /** Create a new studio chat session. */
-  async create(params?: CreateSessionParams): Promise<StudioSession> {
-    return this.request<StudioSession>('POST', '/api/studio/sessions', params ?? {});
+  async create(
+    params?: CreateSessionParams,
+    options?: GhostRequestOptions,
+  ): Promise<StudioSession> {
+    return this.request<StudioSession>('POST', '/api/studio/sessions', params ?? {}, options);
   }
 
   /** List studio chat sessions. */
@@ -83,10 +86,12 @@ export class SessionsAPI {
   }
 
   /** Delete a studio session. */
-  async delete(id: string): Promise<{ deleted: boolean }> {
+  async delete(id: string, options?: GhostRequestOptions): Promise<{ deleted: boolean }> {
     return this.request<{ deleted: boolean }>(
       'DELETE',
       `/api/studio/sessions/${encodeURIComponent(id)}`,
+      undefined,
+      options,
     );
   }
 

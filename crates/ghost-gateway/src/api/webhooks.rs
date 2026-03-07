@@ -63,10 +63,11 @@ const VALID_EVENTS: &[&str] = &[
 // ── Handlers ───────────────────────────────────────────────────────
 
 /// GET /api/webhooks — list all webhooks.
-pub async fn list_webhooks(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<WebhookListResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_webhooks", e))?;
+pub async fn list_webhooks(State(state): State<Arc<AppState>>) -> ApiResult<WebhookListResponse> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_webhooks", e))?;
 
     // T-5.8.2: Do NOT query secret in list endpoint — secrets should never leave DB
     // except during webhook fire.
@@ -110,7 +111,9 @@ pub async fn create_webhook(
     }
     // T-5.6.2: Validate URL format — must be parseable with http/https scheme.
     if req.url.len() > 2048 {
-        return Err(ApiError::bad_request("Webhook URL exceeds 2048 character limit"));
+        return Err(ApiError::bad_request(
+            "Webhook URL exceeds 2048 character limit",
+        ));
     }
     // T-5.5.1: Validate URL against SSRF blocklist.
     if let Err(e) = crate::api::ssrf::validate_url(&req.url) {
@@ -127,8 +130,13 @@ pub async fn create_webhook(
     if let Some(ref headers) = req.headers {
         if let Some(obj) = headers.as_object() {
             const BLOCKED_HEADERS: &[&str] = &[
-                "authorization", "host", "content-length", "transfer-encoding",
-                "x-ghost-webhook-signature", "connection", "upgrade",
+                "authorization",
+                "host",
+                "content-length",
+                "transfer-encoding",
+                "x-ghost-webhook-signature",
+                "connection",
+                "upgrade",
             ];
             if obj.len() > 10 {
                 return Err(ApiError::bad_request(
@@ -153,7 +161,10 @@ pub async fn create_webhook(
     }
     // T-5.3.10: Cap total webhook count at 50.
     {
-        let db = state.db.read().map_err(|e| ApiError::db_error("webhook_count_check", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("webhook_count_check", e))?;
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM webhooks", [], |row| row.get(0))
             .unwrap_or(0);
@@ -236,10 +247,7 @@ pub async fn update_webhook(
     }
 
     params.push(Box::new(id.clone()));
-    let sql = format!(
-        "UPDATE webhooks SET {} WHERE id = ?{idx}",
-        sets.join(", ")
-    );
+    let sql = format!("UPDATE webhooks SET {} WHERE id = ?{idx}", sets.join(", "));
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let affected = db
@@ -277,7 +285,10 @@ pub async fn test_webhook(
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
     let (url, secret, headers_json) = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("test_webhook", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("test_webhook", e))?;
         let result: (String, String, String) = db
             .query_row(
                 "SELECT url, secret, headers FROM webhooks WHERE id = ?1",
@@ -297,11 +308,14 @@ pub async fn test_webhook(
     let status = fire_single_webhook(&url, &secret, &headers_json, &payload).await;
 
     // Broadcast result.
-    crate::api::websocket::broadcast_event(&state, WsEvent::WebhookFired {
-        webhook_id: id.clone(),
-        event_type: "test".into(),
-        status_code: status,
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::WebhookFired {
+            webhook_id: id.clone(),
+            event_type: "test".into(),
+            status_code: status,
+        },
+    );
 
     Ok(Json(serde_json::json!({
         "webhook_id": id,
@@ -328,9 +342,9 @@ pub async fn fire_webhooks(
 ) {
     let matching = {
         let Ok(conn) = db.read() else { return };
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT id, url, secret, headers, events FROM webhooks WHERE active = 1",
-        ) else {
+        let Ok(mut stmt) =
+            conn.prepare("SELECT id, url, secret, headers, events FROM webhooks WHERE active = 1")
+        else {
             return;
         };
         let Ok(rows) = stmt.query_map([], |row| {
@@ -376,11 +390,14 @@ pub async fn fire_webhooks(
         join_set.spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
             let status = fire_single_webhook(&url, &secret, &headers_json, &payload).await;
-            crate::api::websocket::broadcast_event(&state_ref, WsEvent::WebhookFired {
-                webhook_id: wh_id_clone,
-                event_type: event_type_owned,
-                status_code: status,
-            });
+            crate::api::websocket::broadcast_event(
+                &state_ref,
+                WsEvent::WebhookFired {
+                    webhook_id: wh_id_clone,
+                    event_type: event_type_owned,
+                    status_code: status,
+                },
+            );
         });
     }
 
@@ -400,8 +417,8 @@ fn compute_hmac_sha256(secret: &str, body: &str) -> String {
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
 
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC-SHA256 accepts any key size");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC-SHA256 accepts any key size");
     mac.update(body.as_bytes());
     let result = mac.finalize();
     let hex: String = result
@@ -425,7 +442,10 @@ async fn fire_single_webhook(
     let signature = if !secret.is_empty() {
         compute_hmac_sha256(secret, &body)
     } else {
-        tracing::warn!(url, "Webhook has empty secret — delivery unsigned (legacy webhook)");
+        tracing::warn!(
+            url,
+            "Webhook has empty secret — delivery unsigned (legacy webhook)"
+        );
         String::new()
     };
 
@@ -441,7 +461,9 @@ async fn fire_single_webhook(
     }
 
     // Apply custom headers.
-    if let Ok(headers) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(headers_json) {
+    if let Ok(headers) =
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(headers_json)
+    {
         for (key, val) in headers {
             if let Some(v) = val.as_str() {
                 req = req.header(key.as_str(), v);

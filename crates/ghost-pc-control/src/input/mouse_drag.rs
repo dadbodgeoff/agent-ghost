@@ -41,27 +41,43 @@ impl MouseDragSkill {
         circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
         backend: Arc<Mutex<dyn InputBackend>>,
     ) -> Self {
-        Self { validator, circuit_breaker, backend }
+        Self {
+            validator,
+            circuit_breaker,
+            backend,
+        }
     }
 }
 
 impl Skill for MouseDragSkill {
-    fn name(&self) -> &str { "mouse_drag" }
+    fn name(&self) -> &str {
+        "mouse_drag"
+    }
 
     fn description(&self) -> &str {
         "Drag the mouse from one position to another"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
-        let from_x = input.get("from_x").and_then(|v| v.as_i64()).ok_or_else(|| {
-            SkillError::InvalidInput("missing required field 'from_x' (integer)".into())
-        })? as i32;
-        let from_y = input.get("from_y").and_then(|v| v.as_i64()).ok_or_else(|| {
-            SkillError::InvalidInput("missing required field 'from_y' (integer)".into())
-        })? as i32;
+        let from_x = input
+            .get("from_x")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| {
+                SkillError::InvalidInput("missing required field 'from_x' (integer)".into())
+            })? as i32;
+        let from_y = input
+            .get("from_y")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| {
+                SkillError::InvalidInput("missing required field 'from_y' (integer)".into())
+            })? as i32;
         let to_x = input.get("to_x").and_then(|v| v.as_i64()).ok_or_else(|| {
             SkillError::InvalidInput("missing required field 'to_x' (integer)".into())
         })? as i32;
@@ -70,7 +86,11 @@ impl Skill for MouseDragSkill {
         })? as i32;
         let target_app = input.get("target_app").and_then(|v| v.as_str());
 
-        let button = match input.get("button").and_then(|v| v.as_str()).unwrap_or("left") {
+        let button = match input
+            .get("button")
+            .and_then(|v| v.as_str())
+            .unwrap_or("left")
+        {
             "left" => MouseButton::Left,
             "right" => MouseButton::Right,
             "middle" => MouseButton::Middle,
@@ -82,15 +102,25 @@ impl Skill for MouseDragSkill {
         };
 
         // Safety: validate both start and end coordinates.
-        if let ValidationResult::Denied(reason) =
-            self.validator.validate_drag(from_x, from_y, to_x, to_y, target_app)
+        if let ValidationResult::Denied(reason) = self
+            .validator
+            .validate_drag(from_x, from_y, to_x, to_y, target_app)
         {
-            audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "mouse_drag", input, &reason);
+            audit::log_blocked_action(
+                ctx.db,
+                ctx.agent_id,
+                ctx.session_id,
+                "mouse_drag",
+                input,
+                &reason,
+            );
             return Err(SkillError::PcControlBlocked(reason));
         }
 
         // Safety: circuit breaker.
-        { self.circuit_breaker.lock().unwrap().check("mouse_drag")?; }
+        {
+            self.circuit_breaker.lock().unwrap().check("mouse_drag")?;
+        }
 
         // Execute: move to start, press, move to end, release.
         {
@@ -102,7 +132,9 @@ impl Skill for MouseDragSkill {
         }
 
         // Record success.
-        { self.circuit_breaker.lock().unwrap().record_success(); }
+        {
+            self.circuit_breaker.lock().unwrap().record_success();
+        }
 
         let result = serde_json::json!({
             "from": { "x": from_x, "y": from_y },
@@ -110,7 +142,14 @@ impl Skill for MouseDragSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "mouse_drag", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "mouse_drag",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -120,7 +159,9 @@ impl Skill for MouseDragSkill {
         let from_y = input.get("from_y").and_then(|v| v.as_i64())?;
         let to_x = input.get("to_x").and_then(|v| v.as_i64())?;
         let to_y = input.get("to_y").and_then(|v| v.as_i64())?;
-        Some(format!("Drag from ({from_x}, {from_y}) to ({to_x}, {to_y})"))
+        Some(format!(
+            "Drag from ({from_x}, {from_y}) to ({to_x}, {to_y})"
+        ))
     }
 }
 
@@ -139,17 +180,31 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> (MouseDragSkill, MockInputBackend) {
         let mock = MockInputBackend::new();
         let validator = Arc::new(InputValidator::new(
             vec!["Firefox".into()],
-            Some(ScreenRegion { x: 0, y: 0, width: 1920, height: 1080 }),
+            Some(ScreenRegion {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }),
             vec![],
         ));
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, std::time::Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            std::time::Duration::from_secs(30),
+        )));
         let backend: Arc<Mutex<dyn InputBackend>> = Arc::new(Mutex::new(mock.clone()));
         (MouseDragSkill::new(validator, cb, backend), mock)
     }
@@ -160,9 +215,14 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({
-            "from_x": 100, "from_y": 200, "to_x": 300, "to_y": 400
-        })).unwrap();
+        let result = skill
+            .execute(
+                &ctx,
+                &serde_json::json!({
+                    "from_x": 100, "from_y": 200, "to_x": 300, "to_y": 400
+                }),
+            )
+            .unwrap();
         assert_eq!(result["status"], "ok");
         assert_eq!(result["from"]["x"], 100);
         assert_eq!(result["to"]["y"], 400);
@@ -191,9 +251,12 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({
-            "from_x": 100, "from_y": 200, "to_x": 9999, "to_y": 9999
-        }));
+        let result = skill.execute(
+            &ctx,
+            &serde_json::json!({
+                "from_x": 100, "from_y": 200, "to_x": 9999, "to_y": 9999
+            }),
+        );
         assert!(matches!(result, Err(SkillError::PcControlBlocked(_))));
         assert!(mock.actions().is_empty());
     }
@@ -204,9 +267,12 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({
-            "from_x": 100, "from_y": 200, "to_x": 300, "to_y": 400, "target_app": "Terminal"
-        }));
+        let result = skill.execute(
+            &ctx,
+            &serde_json::json!({
+                "from_x": 100, "from_y": 200, "to_x": 300, "to_y": 400, "target_app": "Terminal"
+            }),
+        );
         assert!(matches!(result, Err(SkillError::PcControlBlocked(_))));
         assert!(mock.actions().is_empty());
     }

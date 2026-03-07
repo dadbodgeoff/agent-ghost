@@ -141,7 +141,9 @@ pub fn is_process_alive(_pid: u32) -> bool {
 /// Sends SIGTERM to a process.
 #[cfg(unix)]
 fn send_sigterm(pid: u32) {
-    unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
 }
 
 #[cfg(not(unix))]
@@ -150,7 +152,9 @@ fn send_sigterm(_pid: u32) {}
 /// Sends SIGKILL to a process.
 #[cfg(unix)]
 fn send_sigkill(pid: u32) {
-    unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
 }
 
 #[cfg(not(unix))]
@@ -168,7 +172,10 @@ pub async fn pre_launch_check(expected_port: u16) -> PreLaunchAction {
 
     // WP4-E: Check flock first — more reliable than kill(pid, 0) after SIGKILL.
     if !is_pid_file_locked() && !is_process_alive(old_pid) {
-        tracing::info!(pid = old_pid, "Stale PID file — process is dead (flock released)");
+        tracing::info!(
+            pid = old_pid,
+            "Stale PID file — process is dead (flock released)"
+        );
         remove_pid_file();
         return PreLaunchAction::CleanedStaleProcess { old_pid };
     }
@@ -196,7 +203,10 @@ pub async fn pre_launch_check(expected_port: u16) -> PreLaunchAction {
     }
 
     // Process alive but not responding — kill it.
-    tracing::warn!(pid = old_pid, "Gateway process alive but unresponsive — sending SIGTERM");
+    tracing::warn!(
+        pid = old_pid,
+        "Gateway process alive but unresponsive — sending SIGTERM"
+    );
     send_sigterm(old_pid);
 
     // Wait up to 3 seconds for graceful exit.
@@ -209,7 +219,10 @@ pub async fn pre_launch_check(expected_port: u16) -> PreLaunchAction {
     }
 
     // Force kill.
-    tracing::warn!(pid = old_pid, "Gateway process did not exit — sending SIGKILL");
+    tracing::warn!(
+        pid = old_pid,
+        "Gateway process did not exit — sending SIGKILL"
+    );
     send_sigkill(old_pid);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     remove_pid_file();

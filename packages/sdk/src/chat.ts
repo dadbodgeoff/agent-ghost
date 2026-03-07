@@ -1,4 +1,9 @@
-import type { GhostRequestFn, GhostClientOptions } from './client.js';
+import type {
+  GhostRequestFn,
+  GhostClientOptions,
+  GhostRequestOptions,
+} from './client.js';
+import { resolveGhostOperationEnvelope } from './client.js';
 import type { StudioMessage } from './sessions.js';
 import { GhostAPIError, GhostNetworkError } from './errors.js';
 
@@ -47,18 +52,28 @@ export class ChatAPI {
   ) {}
 
   /** Send a message and wait for the complete response (blocking). */
-  async send(sessionId: string, params: SendMessageParams): Promise<SendMessageResult> {
+  async send(
+    sessionId: string,
+    params: SendMessageParams,
+    options?: GhostRequestOptions,
+  ): Promise<SendMessageResult> {
     return this.request<SendMessageResult>(
       'POST',
       `/api/studio/sessions/${encodeURIComponent(sessionId)}/messages`,
       params,
+      options,
     );
   }
 
   /** Send a message and receive streaming SSE events. */
-  async *stream(sessionId: string, params: SendMessageParams): AsyncGenerator<StreamEvent> {
+  async *stream(
+    sessionId: string,
+    params: SendMessageParams,
+    options?: GhostRequestOptions,
+  ): AsyncGenerator<StreamEvent> {
     const baseUrl = this.options.baseUrl ?? 'http://127.0.0.1:39780';
     const url = `${baseUrl}/api/studio/sessions/${encodeURIComponent(sessionId)}/messages/stream`;
+    const envelope = resolveGhostOperationEnvelope('POST', options);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -66,6 +81,15 @@ export class ChatAPI {
     };
     if (this.options.token) {
       headers['Authorization'] = `Bearer ${this.options.token}`;
+    }
+    if (envelope.requestId) {
+      headers['X-Request-ID'] = envelope.requestId;
+    }
+    if (envelope.operationId) {
+      headers['X-Ghost-Operation-ID'] = envelope.operationId;
+    }
+    if (envelope.idempotencyKey) {
+      headers['Idempotency-Key'] = envelope.idempotencyKey;
     }
 
     const fetchFn = this.options.fetch ?? globalThis.fetch;
@@ -151,9 +175,11 @@ export class ChatAPI {
     params: SendMessageParams,
     onEvent: ChatStreamEventHandler,
     signal?: AbortSignal,
+    options?: GhostRequestOptions,
   ): Promise<void> {
     const baseUrl = this.options.baseUrl ?? 'http://127.0.0.1:39780';
     const url = `${baseUrl}/api/studio/sessions/${encodeURIComponent(sessionId)}/messages/stream`;
+    const envelope = resolveGhostOperationEnvelope('POST', options);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -161,6 +187,15 @@ export class ChatAPI {
     };
     if (this.options.token) {
       headers['Authorization'] = `Bearer ${this.options.token}`;
+    }
+    if (envelope.requestId) {
+      headers['X-Request-ID'] = envelope.requestId;
+    }
+    if (envelope.operationId) {
+      headers['X-Ghost-Operation-ID'] = envelope.operationId;
+    }
+    if (envelope.idempotencyKey) {
+      headers['Idempotency-Key'] = envelope.idempotencyKey;
     }
 
     const fetchFn = this.options.fetch ?? globalThis.fetch;

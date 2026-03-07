@@ -1,7 +1,8 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { setToken } from '$lib/auth';
+  import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime } from '$lib/platform/runtime';
 
   let token = $state('');
   let error = $state('');
@@ -18,11 +19,14 @@
     try {
       const client = await getGhostClient();
       const data = await client.auth.login({ token: token.trim() });
+      const runtime = await getRuntime();
       if (data.access_token) {
-        await setToken(data.access_token);
+        await runtime.setToken(data.access_token);
       } else {
-        await setToken(token.trim());
+        await runtime.setToken(token.trim());
       }
+      invalidateAuthClientState();
+      await notifyAuthBoundary('ghost-auth-changed');
       goto('/');
     } catch (e: unknown) {
       error = e instanceof Error

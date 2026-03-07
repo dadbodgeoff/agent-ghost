@@ -29,6 +29,7 @@ fn make_ctx(daily_spend: f64, total_cost: f64) -> RunContext {
     RunContext {
         agent_id: Uuid::nil(),
         session_id: Uuid::nil(),
+        session_started_at: std::time::Instant::now(),
         recursion_depth: 0,
         max_recursion_depth: 10,
         total_tokens: 0,
@@ -199,7 +200,11 @@ fn flaw2_heartbeat_stable_after_consistent_scores() {
     // With consecutive_stable >= 3, should_fire infers delta=0.005 (small)
     // and interval_for_state(0.005, >=3, 0) = 120s (Stable).
     let interval = interval_for_state(0.005, engine.tiered_state.consecutive_stable, 0);
-    assert_eq!(interval, Duration::from_secs(120), "Stable state should use 120s interval");
+    assert_eq!(
+        interval,
+        Duration::from_secs(120),
+        "Stable state should use 120s interval"
+    );
 }
 
 #[test]
@@ -417,11 +422,7 @@ fn flaw5_flush_executor_accepts_boxed_error() {
         .enable_all()
         .build()
         .unwrap();
-    let result = rt.block_on(executor.execute_flush(
-        Uuid::nil(),
-        Uuid::nil(),
-        vec![],
-    ));
+    let result = rt.block_on(executor.execute_flush(Uuid::nil(), Uuid::nil(), vec![]));
 
     assert!(result.is_err());
     let err = result.unwrap_err();

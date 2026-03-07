@@ -3,13 +3,14 @@
 //! Stores delegation state machine transitions. Append-only with guard:
 //! resolved delegations (Completed/Disputed/Rejected) are immutable.
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     // TABLE: delegation_state
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS delegation_state (
             id              TEXT PRIMARY KEY,
             delegation_id   TEXT NOT NULL,
@@ -35,12 +36,14 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON delegation_state(recipient_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_delegation_state_pending
             ON delegation_state(state) WHERE state = 'Offered' OR state = 'Accepted';
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // Append-only guard: resolved delegations are immutable.
     // Only Offered→Accepted/Rejected and Accepted→Completed/Disputed transitions allowed.
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TRIGGER IF NOT EXISTS delegation_state_append_guard
         BEFORE UPDATE ON delegation_state
         BEGIN
@@ -55,7 +58,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         BEGIN
             SELECT RAISE(ABORT, 'SAFETY: delegation_state is append-only. Deletes forbidden.');
         END;
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     Ok(())

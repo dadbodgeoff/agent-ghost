@@ -53,12 +53,9 @@ impl Skill for TimerSetSkill {
 
         match action {
             "set" => {
-                let label = input
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        SkillError::InvalidInput("missing required field 'label'".into())
-                    })?;
+                let label = input.get("label").and_then(|v| v.as_str()).ok_or_else(|| {
+                    SkillError::InvalidInput("missing required field 'label'".into())
+                })?;
                 let fire_at = input
                     .get("fire_at")
                     .and_then(|v| v.as_str())
@@ -69,9 +66,7 @@ impl Skill for TimerSetSkill {
                     })?;
 
                 if label.trim().is_empty() {
-                    return Err(SkillError::InvalidInput(
-                        "label must not be empty".into(),
-                    ));
+                    return Err(SkillError::InvalidInput("label must not be empty".into()));
                 }
 
                 // Validate ISO 8601 format (basic check).
@@ -105,10 +100,7 @@ impl Skill for TimerSetSkill {
             }
             "list" => {
                 let status_filter = input.get("status").and_then(|v| v.as_str());
-                let limit = input
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50) as u32;
+                let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as u32;
 
                 let timers = cortex_storage::queries::timer_queries::list_timers(
                     ctx.db,
@@ -212,7 +204,10 @@ impl Skill for TimerSetSkill {
                 Some(format!("Set timer: \"{label}\" at {fire_at}"))
             }
             "cancel" => {
-                let id = input.get("timer_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let id = input
+                    .get("timer_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 Some(format!("Cancel timer: {id}"))
             }
             _ => None,

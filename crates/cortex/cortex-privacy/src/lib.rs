@@ -5,4 +5,4 @@
 
 pub mod emotional_patterns;
 
-pub use emotional_patterns::{EmotionalContentDetector, EmotionalCategory};
+pub use emotional_patterns::{EmotionalCategory, EmotionalContentDetector};

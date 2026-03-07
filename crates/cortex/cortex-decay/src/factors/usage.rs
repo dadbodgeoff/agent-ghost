@@ -47,7 +47,11 @@ mod tests {
     fn frequently_accessed_recently_near_one() {
         let now = Utc::now();
         let f = usage_factor(50, Some(now), now);
-        assert!(f < 1.3, "frequently accessed + just now should be near 1.0, got {}", f);
+        assert!(
+            f < 1.3,
+            "frequently accessed + just now should be near 1.0, got {}",
+            f
+        );
         assert!(f >= 1.0);
     }
 
@@ -86,7 +90,13 @@ mod tests {
                     Some(now - chrono::Duration::days(days_ago))
                 };
                 let f = usage_factor(count, la, now);
-                assert!(f >= 1.0, "factor must be >= 1.0, got {} for count={} days_ago={}", f, count, days_ago);
+                assert!(
+                    f >= 1.0,
+                    "factor must be >= 1.0, got {} for count={} days_ago={}",
+                    f,
+                    count,
+                    days_ago
+                );
             }
             // Also test None
             let f = usage_factor(count, None, now);

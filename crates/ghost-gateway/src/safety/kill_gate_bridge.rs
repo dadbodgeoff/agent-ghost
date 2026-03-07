@@ -22,11 +22,7 @@ pub struct KillGateBridge {
 
 impl KillGateBridge {
     /// Create a new bridge with the given node ID and config.
-    pub fn new(
-        node_id: Uuid,
-        kill_switch: Arc<KillSwitch>,
-        config: KillGateConfig,
-    ) -> Self {
+    pub fn new(node_id: Uuid, kill_switch: Arc<KillSwitch>, config: KillGateConfig) -> Self {
         let gate = Arc::new(KillGate::new(node_id, config));
         let relay = KillGateRelay::new(Arc::clone(&gate));
         Self {

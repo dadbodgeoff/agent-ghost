@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use super::confirm::confirm;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 /// Well-known secret keys checked by `ghost secret list`.
 const KNOWN_KEYS: &[&str] = &[
@@ -41,17 +41,15 @@ pub fn run_set(args: SecretSetArgs, provider: &dyn SecretProvider) -> Result<(),
         return Err(CliError::Usage("empty value — aborting".into()));
     }
 
-    provider.set_secret(&args.key, value).map_err(|e| {
-        match &e {
-            ghost_secrets::SecretsError::StorageUnavailable(_) => {
-                CliError::Config(format!(
-                    "cannot write secrets with the current provider (env is read-only). \
+    provider
+        .set_secret(&args.key, value)
+        .map_err(|e| match &e {
+            ghost_secrets::SecretsError::StorageUnavailable(_) => CliError::Config(format!(
+                "cannot write secrets with the current provider (env is read-only). \
                      Configure `secrets.provider: keychain` in ghost.yml."
-                ))
-            }
+            )),
             _ => CliError::Internal(format!("failed to set secret: {e}")),
-        }
-    })?;
+        })?;
 
     println!("✓ Secret '{}' stored.", args.key);
     Ok(())
@@ -123,22 +121,15 @@ pub fn run_delete(args: SecretDeleteArgs, provider: &dyn SecretProvider) -> Resu
         )));
     }
 
-    if !confirm(
-        &format!("Delete secret '{}'?", args.key),
-        args.yes,
-    ) {
+    if !confirm(&format!("Delete secret '{}'?", args.key), args.yes) {
         return Err(CliError::Cancelled);
     }
 
-    provider.delete_secret(&args.key).map_err(|e| {
-        match &e {
-            ghost_secrets::SecretsError::StorageUnavailable(_) => {
-                CliError::Config(
-                    "cannot delete secrets with the current provider (env is read-only)".into(),
-                )
-            }
-            _ => CliError::Internal(format!("failed to delete secret: {e}")),
-        }
+    provider.delete_secret(&args.key).map_err(|e| match &e {
+        ghost_secrets::SecretsError::StorageUnavailable(_) => CliError::Config(
+            "cannot delete secrets with the current provider (env is read-only)".into(),
+        ),
+        _ => CliError::Internal(format!("failed to delete secret: {e}")),
     })?;
 
     println!("✓ Secret '{}' deleted.", args.key);

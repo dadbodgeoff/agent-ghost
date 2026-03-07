@@ -13,14 +13,14 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { tabStore } from '$lib/stores/tabs.svelte';
   import { shortcuts } from '$lib/shortcuts';
-  import { clearToken } from '$lib/auth';
+  import { invalidateAuthClientState, isAuthResetError, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
-  import { GhostAPIError } from '@ghost/sdk';
 
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
+  let bootError = $state('');
   let showInstallPrompt = $state(false);
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
@@ -47,13 +47,16 @@
     if (currentPath !== '/login') {
       try {
         const client = await getGhostClient();
-        await client.agents.list();
+        await client.auth.session();
       } catch (error) {
-        if (error instanceof GhostAPIError && error.status === 401) {
-          await clearToken();
+        if (isAuthResetError(error)) {
+          await runtime.clearToken();
+          invalidateAuthClientState();
+          await notifyAuthBoundary('ghost-auth-cleared');
+          goto('/login');
+          return;
         }
-        goto('/login');
-        return;
+        bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
       }
     }
 
@@ -113,9 +116,7 @@
   async function subscribeToPush() {
     if (runtime?.isDesktop()) {
       try {
-        const { isPermissionGranted, requestPermission } = await import('@tauri-apps/plugin-notification');
-        const granted = await isPermissionGranted();
-        if (!granted) await requestPermission();
+        await runtime.requestNotificationPermission();
       } catch { /* non-fatal */ }
       return;
     }
@@ -157,6 +158,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 </svelte:head>
 
+{#if bootError}
+  <div class="offline-banner" role="alert">{bootError}</div>
+{/if}
+
 {#if offline}
   <div class="offline-banner" role="alert">Offline — showing cached data (last sync: {lastSync})</div>
 {/if}
@@ -190,7 +195,7 @@
         <a href="/orchestration" class:active={$page.url.pathname.startsWith('/orchestration')} aria-current={$page.url.pathname.startsWith('/orchestration') ? 'page' : undefined}>Orchestration</a>
         <a href="/pc-control" class:active={$page.url.pathname === '/pc-control'} aria-current={$page.url.pathname === '/pc-control' ? 'page' : undefined}>PC Control</a>
         <a href="/itp" class:active={$page.url.pathname === '/itp'} aria-current={$page.url.pathname === '/itp' ? 'page' : undefined}>ITP Events</a>
-        <a href="/approvals" class:active={$page.url.pathname === '/approvals'} aria-current={$page.url.pathname === '/approvals' ? 'page' : undefined}>Approvals</a>
+        <a href="/approvals" class:active={$page.url.pathname === '/approvals'} aria-current={$page.url.pathname === '/approvals' ? 'page' : undefined}>Proposals</a>
         <a href="/security" class:active={$page.url.pathname === '/security'} aria-current={$page.url.pathname === '/security' ? 'page' : undefined}>Security</a>
         <a href="/costs" class:active={$page.url.pathname === '/costs'} aria-current={$page.url.pathname === '/costs' ? 'page' : undefined}>Costs</a>
         <a href="/search" class:active={$page.url.pathname === '/search'} aria-current={$page.url.pathname === '/search' ? 'page' : undefined}>Search</a>

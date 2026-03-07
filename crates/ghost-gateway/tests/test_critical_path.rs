@@ -44,7 +44,9 @@ async fn session_lifecycle_create_and_list() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let sessions = body["sessions"].as_array().unwrap();
     assert!(
-        sessions.iter().any(|s| s["id"].as_str() == Some(&session_id)),
+        sessions
+            .iter()
+            .any(|s| s["id"].as_str() == Some(&session_id)),
         "created session should appear in list"
     );
 
@@ -88,20 +90,10 @@ async fn health_endpoint_unauthenticated_succeeds() {
     // Health endpoints should always be accessible (no auth required).
     let gw = common::TestGateway::start().await;
 
-    let resp = gw
-        .client
-        .get(gw.url("/api/health"))
-        .send()
-        .await
-        .unwrap();
+    let resp = gw.client.get(gw.url("/api/health")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
-    let resp = gw
-        .client
-        .get(gw.url("/api/ready"))
-        .send()
-        .await
-        .unwrap();
+    let resp = gw.client.get(gw.url("/api/ready")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
     gw.stop().await;
@@ -115,16 +107,20 @@ async fn migration_runs_on_fresh_db() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test_migration.db");
 
-    let pool = ghost_gateway::db_pool::create_pool(db_path.clone())
-        .expect("pool creation should succeed");
+    let pool =
+        ghost_gateway::db_pool::create_pool(db_path.clone()).expect("pool creation should succeed");
 
     let writer = pool.writer_for_migrations().await;
     let result = cortex_storage::migrations::run_migrations(&writer);
-    assert!(result.is_ok(), "migrations should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "migrations should succeed: {:?}",
+        result.err()
+    );
 
     // Verify final version matches LATEST_VERSION.
-    let version = cortex_storage::migrations::current_version(&writer)
-        .expect("should read version");
+    let version =
+        cortex_storage::migrations::current_version(&writer).expect("should read version");
     assert_eq!(
         version,
         cortex_storage::migrations::LATEST_VERSION,
@@ -147,19 +143,21 @@ async fn migration_backup_created_when_pending() {
                 version INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
     }
 
     // Now run full migrations with backup enabled.
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-        let result = cortex_storage::migrations::run_migrations_with_backup(
-            &conn,
-            Some(&db_path),
+        let result = cortex_storage::migrations::run_migrations_with_backup(&conn, Some(&db_path));
+        assert!(
+            result.is_ok(),
+            "migrations with backup should succeed: {:?}",
+            result.err()
         );
-        assert!(result.is_ok(), "migrations with backup should succeed: {:?}", result.err());
     }
 
     // Verify backup file was created.
@@ -185,8 +183,7 @@ async fn db_pool_read_connections_bounded() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("test_pool.db");
 
-    let pool = ghost_gateway::db_pool::create_pool(db_path)
-        .expect("pool creation should succeed");
+    let pool = ghost_gateway::db_pool::create_pool(db_path).expect("pool creation should succeed");
 
     // Run migrations so the DB is usable.
     {
@@ -214,7 +211,10 @@ async fn db_pool_read_connections_bounded() {
 
     // Pool should be usable again.
     let conn = pool.read();
-    assert!(conn.is_ok(), "pool should recover after connections are returned");
+    assert!(
+        conn.is_ok(),
+        "pool should recover after connections are returned"
+    );
 }
 
 // ── 5. Gateway state machine transitions ─────────────────────────────
@@ -256,7 +256,10 @@ fn gateway_state_machine_rejects_invalid_transitions() {
     // Initializing → ShuttingDown is NOT valid (must go through Healthy first).
     // The FSM only allows Initializing → {Healthy, Degraded, FatalError}.
     let result = state.transition_to(GatewayState::ShuttingDown);
-    assert!(result.is_err(), "Initializing → ShuttingDown should be rejected");
+    assert!(
+        result.is_err(),
+        "Initializing → ShuttingDown should be rejected"
+    );
 }
 
 #[test]
@@ -286,7 +289,14 @@ async fn session_soft_delete_and_hard_delete() {
     // Create a session.
     let session_id = "test-lifecycle-session";
     cortex_storage::queries::studio_chat_queries::create_session(
-        &conn, session_id, "agent-lifecycle", "Old Session", "test-model", "", 0.5, 4096,
+        &conn,
+        session_id,
+        "agent-lifecycle",
+        "Old Session",
+        "test-model",
+        "",
+        0.5,
+        4096,
     )
     .unwrap();
 
@@ -309,14 +319,14 @@ async fn session_soft_delete_and_hard_delete() {
         .unwrap()
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    let soft_deleted = cortex_storage::queries::studio_chat_queries::soft_delete_inactive_sessions(
-        &conn, &cutoff,
-    )
-    .unwrap();
+    let soft_deleted =
+        cortex_storage::queries::studio_chat_queries::soft_delete_inactive_sessions(&conn, &cutoff)
+            .unwrap();
     assert_eq!(soft_deleted, 1, "should soft-delete 1 inactive session");
 
     // Session should no longer appear in active list.
-    let sessions = cortex_storage::queries::studio_chat_queries::list_sessions(&conn, 100, 0).unwrap();
+    let sessions =
+        cortex_storage::queries::studio_chat_queries::list_sessions(&conn, 100, 0).unwrap();
     assert!(
         sessions.is_empty(),
         "soft-deleted session should not appear in list"
@@ -335,14 +345,14 @@ async fn session_soft_delete_and_hard_delete() {
         .unwrap()
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
-    let hard_deleted = cortex_storage::queries::studio_chat_queries::hard_delete_old_sessions(
-        &conn, &hard_cutoff,
-    )
-    .unwrap();
+    let hard_deleted =
+        cortex_storage::queries::studio_chat_queries::hard_delete_old_sessions(&conn, &hard_cutoff)
+            .unwrap();
     assert_eq!(hard_deleted, 1, "should hard-delete 1 expired session");
 
     // Messages should also be gone.
-    let messages = cortex_storage::queries::studio_chat_queries::list_messages(&conn, session_id).unwrap();
+    let messages =
+        cortex_storage::queries::studio_chat_queries::list_messages(&conn, session_id).unwrap();
     assert!(messages.is_empty(), "messages should be cascade-deleted");
 }
 
@@ -359,11 +369,25 @@ async fn list_sessions_active_since_filter() {
 
     // Create two sessions.
     cortex_storage::queries::studio_chat_queries::create_session(
-        &conn, "recent", "agent-recent", "Recent", "m", "", 0.5, 4096,
+        &conn,
+        "recent",
+        "agent-recent",
+        "Recent",
+        "m",
+        "",
+        0.5,
+        4096,
     )
     .unwrap();
     cortex_storage::queries::studio_chat_queries::create_session(
-        &conn, "old", "agent-old", "Old", "m", "", 0.5, 4096,
+        &conn,
+        "old",
+        "agent-old",
+        "Old",
+        "m",
+        "",
+        0.5,
+        4096,
     )
     .unwrap();
 
@@ -439,8 +463,8 @@ async fn studio_session_api_active_since_query() {
 
 #[test]
 fn kill_switch_escalation_levels() {
-    use ghost_gateway::safety::kill_switch::{KillSwitch, KillLevel};
     use cortex_core::safety::trigger::TriggerEvent;
+    use ghost_gateway::safety::kill_switch::{KillLevel, KillSwitch};
 
     let ks = KillSwitch::new();
     let agent_id = uuid::Uuid::now_v7();
@@ -448,7 +472,10 @@ fn kill_switch_escalation_levels() {
     // Initially Normal — agents can operate.
     let check = ks.check(agent_id);
     assert!(
-        matches!(check, ghost_gateway::safety::kill_switch::KillCheckResult::Ok),
+        matches!(
+            check,
+            ghost_gateway::safety::kill_switch::KillCheckResult::Ok
+        ),
         "agent should be allowed initially"
     );
 
@@ -463,7 +490,10 @@ fn kill_switch_escalation_levels() {
     // Agent should now be paused.
     let check = ks.check(agent_id);
     assert!(
-        !matches!(check, ghost_gateway::safety::kill_switch::KillCheckResult::Ok),
+        !matches!(
+            check,
+            ghost_gateway::safety::kill_switch::KillCheckResult::Ok
+        ),
         "paused agent should not be allowed"
     );
 
@@ -478,7 +508,10 @@ fn kill_switch_escalation_levels() {
     let other_agent = uuid::Uuid::now_v7();
     let check = ks.check(other_agent);
     assert!(
-        !matches!(check, ghost_gateway::safety::kill_switch::KillCheckResult::Ok),
+        !matches!(
+            check,
+            ghost_gateway::safety::kill_switch::KillCheckResult::Ok
+        ),
         "all agents should be blocked after KILL_ALL"
     );
 }

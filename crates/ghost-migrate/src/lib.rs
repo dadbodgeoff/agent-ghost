@@ -3,10 +3,10 @@
 //! Non-destructive migration: detects OpenClaw installations, imports
 //! SOUL.md, memories, skills, and config into GHOST format.
 
-pub mod migrator;
 pub mod importers;
+pub mod migrator;
 
-pub use migrator::{OpenClawMigrator, MigrationResult};
+pub use migrator::{MigrationResult, OpenClawMigrator};
 
 use thiserror::Error;
 

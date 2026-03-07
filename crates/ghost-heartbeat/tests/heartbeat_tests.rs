@@ -15,8 +15,7 @@ use uuid::Uuid;
 mod heartbeat {
     use super::*;
     use ghost_heartbeat::heartbeat::{
-        heartbeat_session_key, HeartbeatConfig,
-        HeartbeatEngine, HEARTBEAT_MESSAGE,
+        heartbeat_session_key, HeartbeatConfig, HeartbeatEngine, HEARTBEAT_MESSAGE,
     };
     use ghost_heartbeat::tiers::interval_for_state;
 
@@ -216,22 +215,14 @@ enabled: false
     #[test]
     fn platform_killed_no_ready_jobs() {
         let killed = Arc::new(AtomicBool::new(true));
-        let engine = CronEngine::new(
-            Uuid::now_v7(),
-            killed,
-            Arc::new(AtomicBool::new(false)),
-        );
+        let engine = CronEngine::new(Uuid::now_v7(), killed, Arc::new(AtomicBool::new(false)));
         assert!(engine.ready_jobs().is_empty());
     }
 
     #[test]
     fn agent_paused_no_ready_jobs() {
         let paused = Arc::new(AtomicBool::new(true));
-        let engine = CronEngine::new(
-            Uuid::now_v7(),
-            Arc::new(AtomicBool::new(false)),
-            paused,
-        );
+        let engine = CronEngine::new(Uuid::now_v7(), Arc::new(AtomicBool::new(false)), paused);
         assert!(engine.ready_jobs().is_empty());
     }
 

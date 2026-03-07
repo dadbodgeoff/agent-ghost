@@ -2,8 +2,8 @@
 //!
 //! Proptest: For 500 random domain strings, DomainMatcher never panics.
 
-use ghost_egress::domain_matcher::DomainMatcher;
 use ghost_egress::config::{AgentEgressConfig, EgressPolicyMode};
+use ghost_egress::domain_matcher::DomainMatcher;
 use ghost_egress::policy::EgressPolicy;
 use ghost_egress::proxy_provider::ProxyEgressPolicy;
 use proptest::prelude::*;

@@ -96,17 +96,13 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
 /// These checks are in addition to the ConvergenceGuard level gate.
 /// The guard checks the convergence *level* (0-4); these check the
 /// raw *score* threshold and session history depth.
-pub(crate) fn check_delegation_prerequisites(
-    ctx: &SkillContext<'_>,
-) -> Result<(), SkillError> {
+pub(crate) fn check_delegation_prerequisites(ctx: &SkillContext<'_>) -> Result<(), SkillError> {
     let agent_id_str = ctx.agent_id.to_string();
 
     // Check convergence score < 0.3
-    let score = cortex_storage::queries::convergence_score_queries::latest_by_agent(
-        ctx.db,
-        &agent_id_str,
-    )
-    .map_err(|e| SkillError::Storage(format!("query convergence: {e}")))?;
+    let score =
+        cortex_storage::queries::convergence_score_queries::latest_by_agent(ctx.db, &agent_id_str)
+            .map_err(|e| SkillError::Storage(format!("query convergence: {e}")))?;
 
     if let Some(ref row) = score {
         if row.composite_score >= 0.3 {
@@ -118,11 +114,9 @@ pub(crate) fn check_delegation_prerequisites(
     }
 
     // Check 30+ historical scores (proxy for session history depth)
-    let all_scores = cortex_storage::queries::convergence_score_queries::query_by_agent(
-        ctx.db,
-        &agent_id_str,
-    )
-    .map_err(|e| SkillError::Storage(format!("query convergence history: {e}")))?;
+    let all_scores =
+        cortex_storage::queries::convergence_score_queries::query_by_agent(ctx.db, &agent_id_str)
+            .map_err(|e| SkillError::Storage(format!("query convergence history: {e}")))?;
 
     if all_scores.len() < 30 {
         return Err(SkillError::AuthorizationDenied(format!(

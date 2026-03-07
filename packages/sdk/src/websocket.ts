@@ -65,9 +65,32 @@ export interface GhostWebSocketOptions {
   maxReconnectAttempts?: number;
   /** Called when reconnection is abandoned after maxReconnectAttempts. */
   onReconnectFailed?: () => void;
+  /** Called whenever the normalized websocket envelope is received. */
+  onEnvelope?: (envelope: WsEnvelope) => void;
+  /** Called when the websocket lifecycle state changes. */
+  onStateChange?: (state: GhostWebSocketState) => void;
+  /** Called when a reconnect is scheduled. */
+  onReconnectScheduled?: (attempt: number, delayMs: number) => void;
+  /** Called on websocket transport error. */
+  onError?: (message: string) => void;
+  /** Optional replay cursor to use before any messages have been received locally. */
+  initialLastSeq?: number;
 }
 
 type EventHandler = (event: WsEvent) => void;
+
+export interface WsEnvelope {
+  seq?: number;
+  timestamp?: string;
+  event?: WsEvent;
+  type?: string;
+}
+
+export type GhostWebSocketState =
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'disconnected';
 
 // ── Implementation ──
 
@@ -79,12 +102,15 @@ export class GhostWebSocket {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  private lastSeq = 0;
+  private state: GhostWebSocketState = 'disconnected';
 
   constructor(
     private clientOptions: GhostClientOptions,
     private wsOptions: GhostWebSocketOptions = {},
   ) {
     this.subscribedTopics = wsOptions.topics ?? [];
+    this.lastSeq = wsOptions.initialLastSeq ?? 0;
   }
 
   /** Open the WebSocket connection. */
@@ -104,6 +130,7 @@ export class GhostWebSocket {
     }
     this.ws?.close();
     this.ws = null;
+    this.setState('disconnected');
   }
 
   /** Subscribe to additional topics. */
@@ -140,6 +167,7 @@ export class GhostWebSocket {
   }
 
   private doConnect(): void {
+    this.setState('connecting');
     const baseUrl = this.clientOptions.baseUrl ?? 'http://127.0.0.1:39780';
     const wsUrl = baseUrl.replace(/^http/, 'ws') + '/api/ws';
 
@@ -151,6 +179,10 @@ export class GhostWebSocket {
 
     this.ws.onopen = () => {
       this.reconnectAttempt = 0;
+      this.setState('connected');
+      if (this.lastSeq > 0) {
+        this.ws!.send(JSON.stringify({ last_seq: this.lastSeq }));
+      }
       if (this.subscribedTopics.length > 0) {
         this.ws!.send(
           JSON.stringify({ type: 'Subscribe', topics: this.subscribedTopics }),
@@ -160,7 +192,12 @@ export class GhostWebSocket {
 
     this.ws.onmessage = (msg) => {
       try {
-        const event: WsEvent = JSON.parse(String(msg.data));
+        const envelope = this.normalizeEnvelope(String(msg.data));
+        if (typeof envelope.seq === 'number' && envelope.seq > this.lastSeq) {
+          this.lastSeq = envelope.seq;
+        }
+        this.wsOptions.onEnvelope?.(envelope);
+        const event: WsEvent = envelope.event!;
         // Dispatch to type-specific handlers
         const typeHandlers = this.handlers.get(event.type);
         if (typeHandlers) {
@@ -176,11 +213,15 @@ export class GhostWebSocket {
     this.ws.onclose = () => {
       this.ws = null;
       if (!this.closed && (this.wsOptions.autoReconnect ?? true)) {
+        this.setState('reconnecting');
         this.scheduleReconnect();
+      } else {
+        this.setState('disconnected');
       }
     };
 
     this.ws.onerror = () => {
+      this.wsOptions.onError?.('WebSocket connection error');
       // onclose will fire after onerror
     };
   }
@@ -195,9 +236,20 @@ export class GhostWebSocket {
     const maxDelay = this.wsOptions.maxReconnectDelay ?? 30_000;
     const delay = Math.min(1000 * 2 ** this.reconnectAttempt, maxDelay);
     this.reconnectAttempt++;
+    this.wsOptions.onReconnectScheduled?.(this.reconnectAttempt, delay);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.doConnect();
     }, delay);
+  }
+
+  private normalizeEnvelope(raw: string): WsEnvelope {
+    const parsed = JSON.parse(raw) as WsEnvelope;
+    return parsed.event ? parsed : { event: parsed as WsEvent };
+  }
+
+  private setState(state: GhostWebSocketState): void {
+    this.state = state;
+    this.wsOptions.onStateChange?.(state);
   }
 }

@@ -32,9 +32,8 @@ pub fn submit_review(
     }
 
     // Verify contract is completed
-    let contract =
-        cortex_storage::queries::marketplace_queries::get_contract(conn, contract_id)?
-            .ok_or_else(|| MarketplaceError::NotFound(format!("contract {contract_id}")))?;
+    let contract = cortex_storage::queries::marketplace_queries::get_contract(conn, contract_id)?
+        .ok_or_else(|| MarketplaceError::NotFound(format!("contract {contract_id}")))?;
 
     if contract.state != "completed" && contract.state != "resolved" {
         return Err(MarketplaceError::Validation(
@@ -43,8 +42,7 @@ pub fn submit_review(
     }
 
     // Verify reviewer is party to the contract
-    if contract.hirer_agent_id != reviewer_agent_id
-        && contract.worker_agent_id != reviewer_agent_id
+    if contract.hirer_agent_id != reviewer_agent_id && contract.worker_agent_id != reviewer_agent_id
     {
         return Err(MarketplaceError::Validation(
             "reviewer must be a party to the contract".into(),
@@ -57,8 +55,7 @@ pub fn submit_review(
             "cannot review yourself".into(),
         ));
     }
-    if contract.hirer_agent_id != reviewee_agent_id
-        && contract.worker_agent_id != reviewee_agent_id
+    if contract.hirer_agent_id != reviewee_agent_id && contract.worker_agent_id != reviewee_agent_id
     {
         return Err(MarketplaceError::Validation(
             "reviewee must be the other party in the contract".into(),

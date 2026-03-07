@@ -119,8 +119,13 @@ pub fn event_chain_strategy(
 
         for (event_type, delta_json, actor_id) in raw_events {
             let recorded_at = Utc::now().to_rfc3339();
-            let event_hash =
-                compute_event_hash(&event_type, &delta_json, &actor_id, &recorded_at, &prev_hash);
+            let event_hash = compute_event_hash(
+                &event_type,
+                &delta_json,
+                &actor_id,
+                &recorded_at,
+                &prev_hash,
+            );
 
             chain.push(ChainEvent {
                 event_type,
@@ -191,16 +196,21 @@ pub fn proposal_operation_strategy() -> impl Strategy<Value = ProposalOperation>
 pub fn trigger_event_strategy() -> impl Strategy<Value = TriggerEvent> {
     prop_oneof![
         // T1: SoulDrift
-        (uuid_strategy(), convergence_score_strategy(), datetime_strategy()).prop_map(
-            |(agent_id, drift_score, detected_at)| TriggerEvent::SoulDrift {
-                agent_id,
-                drift_score,
-                threshold: 0.25,
-                baseline_hash: "baseline".into(),
-                current_hash: "current".into(),
-                detected_at,
-            }
-        ),
+        (
+            uuid_strategy(),
+            convergence_score_strategy(),
+            datetime_strategy()
+        )
+            .prop_map(
+                |(agent_id, drift_score, detected_at)| TriggerEvent::SoulDrift {
+                    agent_id,
+                    drift_score,
+                    threshold: 0.25,
+                    baseline_hash: "baseline".into(),
+                    current_hash: "current".into(),
+                    detected_at,
+                }
+            ),
         // T2: SpendingCapExceeded
         (uuid_strategy(), 0u32..1000, datetime_strategy()).prop_map(
             |(agent_id, total_cents, detected_at)| {
@@ -215,16 +225,22 @@ pub fn trigger_event_strategy() -> impl Strategy<Value = TriggerEvent> {
             }
         ),
         // T3: PolicyDenialThreshold
-        (uuid_strategy(), uuid_strategy(), 5u32..20, datetime_strategy()).prop_map(
-            |(agent_id, session_id, count, detected_at)| TriggerEvent::PolicyDenialThreshold {
-                agent_id,
-                session_id,
-                denial_count: count,
-                denied_tools: vec!["tool_a".into()],
-                denied_reasons: vec!["policy".into()],
-                detected_at,
-            }
-        ),
+        (
+            uuid_strategy(),
+            uuid_strategy(),
+            5u32..20,
+            datetime_strategy()
+        )
+            .prop_map(|(agent_id, session_id, count, detected_at)| {
+                TriggerEvent::PolicyDenialThreshold {
+                    agent_id,
+                    session_id,
+                    denial_count: count,
+                    denied_tools: vec!["tool_a".into()],
+                    denied_reasons: vec!["policy".into()],
+                    detected_at,
+                }
+            }),
         // T4: SandboxEscape
         (uuid_strategy(), datetime_strategy()).prop_map(|(agent_id, detected_at)| {
             TriggerEvent::SandboxEscape {
@@ -260,15 +276,20 @@ pub fn trigger_event_strategy() -> impl Strategy<Value = TriggerEvent> {
                 }
             }),
         // T7: MemoryHealthCritical
-        (uuid_strategy(), convergence_score_strategy(), datetime_strategy()).prop_map(
-            |(agent_id, score, detected_at)| TriggerEvent::MemoryHealthCritical {
-                agent_id,
-                health_score: score,
-                threshold: 0.3,
-                sub_scores: BTreeMap::new(),
-                detected_at,
-            }
-        ),
+        (
+            uuid_strategy(),
+            convergence_score_strategy(),
+            datetime_strategy()
+        )
+            .prop_map(|(agent_id, score, detected_at)| {
+                TriggerEvent::MemoryHealthCritical {
+                    agent_id,
+                    health_score: score,
+                    threshold: 0.3,
+                    sub_scores: BTreeMap::new(),
+                    detected_at,
+                }
+            }),
         // T8: NetworkEgressViolation (Phase 11)
         (uuid_strategy(), 1u32..20, datetime_strategy()).prop_map(
             |(agent_id, count, detected_at)| TriggerEvent::NetworkEgressViolation {
@@ -307,19 +328,21 @@ pub fn base_memory_strategy() -> impl Strategy<Value = BaseMemory> {
         convergence_score_strategy(),
         datetime_strategy(),
     )
-        .prop_map(|(id, memory_type, importance, confidence, created_at)| BaseMemory {
-            id,
-            memory_type,
-            content: serde_json::json!({"data": "test"}),
-            summary: "test memory".into(),
-            importance,
-            confidence,
-            created_at,
-            last_accessed: None,
-            access_count: 0,
-            tags: vec![],
-            archived: false,
-        })
+        .prop_map(
+            |(id, memory_type, importance, confidence, created_at)| BaseMemory {
+                id,
+                memory_type,
+                content: serde_json::json!({"data": "test"}),
+                summary: "test memory".into(),
+                importance,
+                confidence,
+                created_at,
+                last_accessed: None,
+                access_count: 0,
+                tags: vec![],
+                archived: false,
+            },
+        )
 }
 
 /// Random session history (Vec of message-like tuples) for compaction tests.
@@ -413,40 +436,54 @@ pub fn oauth_ref_id_strategy() -> impl Strategy<Value = OAuthRefId> {
 /// We generate deterministic test tokens (never real credentials).
 pub fn token_set_strategy() -> impl Strategy<Value = ghost_oauth::types::TokenSet> {
     (
-        "[a-zA-Z0-9]{32,64}",                                // access_token
-        proptest::option::of("[a-zA-Z0-9]{32,64}"),           // refresh_token
-        datetime_strategy(),                                   // expires_at
-        proptest::collection::vec("[a-z.]{4,20}", 0..5),      // scopes
+        "[a-zA-Z0-9]{32,64}",                            // access_token
+        proptest::option::of("[a-zA-Z0-9]{32,64}"),      // refresh_token
+        datetime_strategy(),                             // expires_at
+        proptest::collection::vec("[a-z.]{4,20}", 0..5), // scopes
     )
-        .prop_map(|(access, refresh, expires_at, scopes)| ghost_oauth::types::TokenSet {
-            access_token: SecretString::from(access),
-            refresh_token: refresh.map(SecretString::from),
-            expires_at,
-            scopes,
-        })
+        .prop_map(
+            |(access, refresh, expires_at, scopes)| ghost_oauth::types::TokenSet {
+                access_token: SecretString::from(access),
+                refresh_token: refresh.map(SecretString::from),
+                expires_at,
+                scopes,
+            },
+        )
 }
 
 /// Random AgentCard with valid Ed25519 signature.
 pub fn agent_card_strategy() -> impl Strategy<Value = AgentCard> {
     (
-        "[a-z]{3,12}",                                         // name
-        "[a-zA-Z0-9 ]{10,50}",                                // description
-        proptest::collection::vec("[a-z_]{3,15}", 1..5),       // capabilities
-        proptest::collection::vec("[a-z/]{5,20}", 0..3),       // input_types
-        proptest::collection::vec("[a-z/]{5,20}", 0..3),       // output_types
+        "[a-z]{3,12}",                                                // name
+        "[a-zA-Z0-9 ]{10,50}",                                        // description
+        proptest::collection::vec("[a-z_]{3,15}", 1..5),              // capabilities
+        proptest::collection::vec("[a-z/]{5,20}", 0..3),              // input_types
+        proptest::collection::vec("[a-z/]{5,20}", 0..3),              // output_types
         "[a-z]{5,15}".prop_map(|s| format!("http://{s}.local:8080")), // endpoint_url
         prop_oneof![
             Just("standard".to_string()),
             Just("research".to_string()),
             Just("companion".to_string()),
         ],
-        convergence_score_strategy(),                          // trust_score
-        "[a-f0-9]{16}",                                        // sybil_lineage_hash
-        "[0-9]\\.[0-9]\\.[0-9]",                              // version
-        datetime_strategy(),                                    // signed_at
+        convergence_score_strategy(), // trust_score
+        "[a-f0-9]{16}",               // sybil_lineage_hash
+        "[0-9]\\.[0-9]\\.[0-9]",      // version
+        datetime_strategy(),          // signed_at
     )
         .prop_map(
-            |(name, description, capabilities, input_types, output_types, endpoint_url, profile, trust_score, lineage, version, signed_at)| {
+            |(
+                name,
+                description,
+                capabilities,
+                input_types,
+                output_types,
+                endpoint_url,
+                profile,
+                trust_score,
+                lineage,
+                version,
+                signed_at,
+            )| {
                 let (signing_key, _) = ghost_signing::generate_keypair();
                 let vk = signing_key.verifying_key();
                 let public_key = vk.to_bytes().to_vec();
@@ -482,26 +519,28 @@ pub fn agent_card_strategy() -> impl Strategy<Value = AgentCard> {
 /// Random MeshTask with valid status.
 pub fn mesh_task_strategy() -> impl Strategy<Value = MeshTask> {
     (
-        uuid_strategy(),  // initiator
-        uuid_strategy(),  // target
+        uuid_strategy(), // initiator
+        uuid_strategy(), // target
         datetime_strategy(),
         datetime_strategy(),
-        0u64..3600,       // timeout
-        0u32..4,          // delegation_depth
+        0u64..3600, // timeout
+        0u32..4,    // delegation_depth
     )
-        .prop_map(|(initiator, target, created, updated, timeout, depth)| MeshTask {
-            id: Uuid::new_v4(),
-            initiator_agent_id: initiator,
-            target_agent_id: target,
-            status: TaskStatus::Submitted,
-            input: serde_json::json!({"task": "test"}),
-            output: None,
-            created_at: created,
-            updated_at: updated,
-            timeout,
-            delegation_depth: depth,
-            metadata: BTreeMap::new(),
-        })
+        .prop_map(
+            |(initiator, target, created, updated, timeout, depth)| MeshTask {
+                id: Uuid::new_v4(),
+                initiator_agent_id: initiator,
+                target_agent_id: target,
+                status: TaskStatus::Submitted,
+                input: serde_json::json!({"task": "test"}),
+                output: None,
+                created_at: created,
+                updated_at: updated,
+                timeout,
+                delegation_depth: depth,
+                metadata: BTreeMap::new(),
+            },
+        )
 }
 
 /// Random InteractionOutcome.
@@ -516,11 +555,12 @@ pub fn interaction_outcome_strategy() -> impl Strategy<Value = InteractionOutcom
 }
 
 /// Random ToolCallPlan (sequence of tool calls).
-pub fn tool_call_plan_strategy() -> impl Strategy<Value = ghost_agent_loop::tools::plan_validator::ToolCallPlan> {
+pub fn tool_call_plan_strategy(
+) -> impl Strategy<Value = ghost_agent_loop::tools::plan_validator::ToolCallPlan> {
     proptest::collection::vec(
         (
-            "[a-z_]{3,15}",                    // id
-            "[a-z_]{3,20}",                    // name
+            "[a-z_]{3,15}", // id
+            "[a-z_]{3,20}", // name
         ),
         0..8,
     )
@@ -538,7 +578,8 @@ pub fn tool_call_plan_strategy() -> impl Strategy<Value = ghost_agent_loop::tool
 }
 
 /// Random SpotlightingConfig.
-pub fn spotlighting_config_strategy() -> impl Strategy<Value = ghost_agent_loop::context::spotlighting::SpotlightingConfig> {
+pub fn spotlighting_config_strategy(
+) -> impl Strategy<Value = ghost_agent_loop::context::spotlighting::SpotlightingConfig> {
     use ghost_agent_loop::context::spotlighting::{SpotlightMode, SpotlightingConfig};
 
     (
@@ -567,7 +608,11 @@ pub fn signal_array_8_strategy() -> impl Strategy<Value = [f64; 8]> {
 /// Random local trust values for N agents (trust matrix).
 pub fn trust_matrix_strategy() -> impl Strategy<Value = BTreeMap<(Uuid, Uuid), f64>> {
     proptest::collection::vec(
-        (uuid_strategy(), uuid_strategy(), convergence_score_strategy()),
+        (
+            uuid_strategy(),
+            uuid_strategy(),
+            convergence_score_strategy(),
+        ),
         0..20,
     )
     .prop_map(|entries| {

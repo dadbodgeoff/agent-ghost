@@ -60,17 +60,12 @@ impl Skill for SearchSymbolsSkill {
     fn execute(&self, _ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let (source, language) = read_source(input)?;
 
-        let query = input
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SkillError::InvalidInput("missing required field 'query' (string)".into())
-            })?;
+        let query = input.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+            SkillError::InvalidInput("missing required field 'query' (string)".into())
+        })?;
 
         if query.is_empty() {
-            return Err(SkillError::InvalidInput(
-                "'query' must not be empty".into(),
-            ));
+            return Err(SkillError::InvalidInput("'query' must not be empty".into()));
         }
 
         let kind_filter = input.get("kind").and_then(|v| v.as_str());
@@ -206,10 +201,9 @@ mod tests {
         assert_eq!(val["total"], 2);
 
         let symbols = val["symbols"].as_array().unwrap();
-        assert!(symbols.iter().all(|s| s["name"]
-            .as_str()
-            .unwrap()
-            .contains("process")));
+        assert!(symbols
+            .iter()
+            .all(|s| s["name"].as_str().unwrap().contains("process")));
     }
 
     #[test]

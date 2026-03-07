@@ -22,7 +22,10 @@ use crate::pipeline::signal_scheduler::{ComputeTrigger, SignalScheduler};
 use crate::pipeline::window_manager::WindowManager;
 use crate::session::registry::SessionRegistry;
 use crate::state_publisher::{ConvergenceSharedState, StatePublisher};
-use crate::transport::http_api::{self, AckResult, HttpApiState, InterventionSnapshot, MonitorRequest, ScoreSnapshot, SessionSnapshot, ThresholdChangeResult};
+use crate::transport::http_api::{
+    self, AckResult, HttpApiState, InterventionSnapshot, MonitorRequest, ScoreSnapshot,
+    SessionSnapshot, ThresholdChangeResult,
+};
 #[cfg(unix)]
 use crate::transport::unix_socket::UnixSocketTransport;
 use crate::transport::{EventType, IngestEvent};
@@ -115,7 +118,7 @@ impl ConvergenceMonitor {
         let mut stmt = match conn.prepare(
             "SELECT agent_id, level, consecutive_normal, cooldown_until, \
              ack_required, hysteresis_count, de_escalation_credits \
-             FROM intervention_state"
+             FROM intervention_state",
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -132,7 +135,15 @@ impl ConvergenceMonitor {
             let ack_required: bool = row.get(4)?;
             let hysteresis_count: u32 = row.get(5)?;
             let de_escalation_credits: u32 = row.get(6)?;
-            Ok((agent_id_str, level, consecutive_normal, cooldown_until, ack_required, hysteresis_count, de_escalation_credits))
+            Ok((
+                agent_id_str,
+                level,
+                consecutive_normal,
+                cooldown_until,
+                ack_required,
+                hysteresis_count,
+                de_escalation_credits,
+            ))
         }) {
             Ok(r) => r,
             Err(e) => {
@@ -143,7 +154,15 @@ impl ConvergenceMonitor {
 
         let mut restored_count = 0u32;
         for row in rows {
-            let (agent_id_str, level, consecutive_normal, cooldown_until_str, ack_required, hysteresis_count, de_escalation_credits) = match row {
+            let (
+                agent_id_str,
+                level,
+                consecutive_normal,
+                cooldown_until_str,
+                ack_required,
+                hysteresis_count,
+                de_escalation_credits,
+            ) = match row {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(error = %e, "skipping malformed intervention_state row");
@@ -186,7 +205,7 @@ impl ConvergenceMonitor {
         // Restore calibration counts
         match conn.prepare(
             "SELECT sender, COUNT(*) FROM itp_events \
-             WHERE event_type = 'SessionStart' GROUP BY sender"
+             WHERE event_type = 'SessionStart' GROUP BY sender",
         ) {
             Ok(mut cal_stmt) => {
                 match cal_stmt.query_map([], |row| {
@@ -197,20 +216,18 @@ impl ConvergenceMonitor {
                     Ok(cal_rows) => {
                         for row in cal_rows {
                             match row {
-                                Ok((agent_id_str, count)) => {
-                                    match Uuid::parse_str(&agent_id_str) {
-                                        Ok(agent_id) => {
-                                            self.calibration_counts.insert(agent_id, count);
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                error = %e,
-                                                agent_id = %agent_id_str,
-                                                "skipping calibration count for invalid agent_id"
-                                            );
-                                        }
+                                Ok((agent_id_str, count)) => match Uuid::parse_str(&agent_id_str) {
+                                    Ok(agent_id) => {
+                                        self.calibration_counts.insert(agent_id, count);
                                     }
-                                }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            agent_id = %agent_id_str,
+                                            "skipping calibration count for invalid agent_id"
+                                        );
+                                    }
+                                },
                                 Err(e) => {
                                     tracing::warn!(error = %e, "skipping malformed calibration count row");
                                 }
@@ -230,7 +247,7 @@ impl ConvergenceMonitor {
         // Restore last known scores into cache (stale but conservative)
         match conn.prepare(
             "SELECT agent_id, composite_score, level FROM convergence_scores \
-             WHERE rowid IN (SELECT MAX(rowid) FROM convergence_scores GROUP BY agent_id)"
+             WHERE rowid IN (SELECT MAX(rowid) FROM convergence_scores GROUP BY agent_id)",
         ) {
             Ok(mut score_stmt) => {
                 match score_stmt.query_map([], |row| {
@@ -246,22 +263,26 @@ impl ConvergenceMonitor {
                                     match Uuid::parse_str(&agent_id_str) {
                                         Ok(agent_id) => {
                                             // Guard against NaN/Inf scores from corrupted DB
-                                            let safe_score = if score.is_nan() || score.is_infinite() {
-                                                tracing::warn!(
-                                                    agent_id = %agent_id,
-                                                    raw_score = %score,
-                                                    "non-finite score in DB — clamping to 0.0"
-                                                );
-                                                0.0
-                                            } else {
-                                                score.clamp(0.0, 1.0)
-                                            };
-                                            self.score_cache.insert(agent_id, CachedScore {
-                                                score: safe_score,
-                                                level,
-                                                signal_scores: [0.0; 8], // Stale cache from DB — signals unknown
-                                                cached_at: Instant::now(),
-                                            });
+                                            let safe_score =
+                                                if score.is_nan() || score.is_infinite() {
+                                                    tracing::warn!(
+                                                        agent_id = %agent_id,
+                                                        raw_score = %score,
+                                                        "non-finite score in DB — clamping to 0.0"
+                                                    );
+                                                    0.0
+                                                } else {
+                                                    score.clamp(0.0, 1.0)
+                                                };
+                                            self.score_cache.insert(
+                                                agent_id,
+                                                CachedScore {
+                                                    score: safe_score,
+                                                    level,
+                                                    signal_scores: [0.0; 8], // Stale cache from DB — signals unknown
+                                                    cached_at: Instant::now(),
+                                                },
+                                            );
                                         }
                                         Err(e) => {
                                             tracing::warn!(
@@ -346,13 +367,16 @@ impl ConvergenceMonitor {
         }
         #[cfg(not(unix))]
         {
-            tracing::info!("unix socket transport not available on this platform — using HTTP API only");
+            tracing::info!(
+                "unix socket transport not available on this platform — using HTTP API only"
+            );
         }
 
         // ── Start native messaging transport (T-6.5.1) ──────────────
         if self.config.native_messaging_enabled {
-            let nm_transport =
-                crate::transport::native_messaging::NativeMessagingTransport::new(ingest_tx.clone());
+            let nm_transport = crate::transport::native_messaging::NativeMessagingTransport::new(
+                ingest_tx.clone(),
+            );
             tokio::spawn(async move {
                 tracing::info!("native messaging transport started");
                 if let Err(e) = nm_transport.run().await {
@@ -369,20 +393,15 @@ impl ConvergenceMonitor {
         // ── Single-threaded event loop (A27.3) ─────────────────────
         // select! over: ingest channel, health check interval,
         // cooldown check, shutdown signal.
-        let mut health_interval = tokio::time::interval(
-            tokio::time::Duration::from_secs(self.config.health_check_interval.as_secs()),
-        );
-        let mut cooldown_interval = tokio::time::interval(
-            tokio::time::Duration::from_secs(60),
-        );
+        let mut health_interval = tokio::time::interval(tokio::time::Duration::from_secs(
+            self.config.health_check_interval.as_secs(),
+        ));
+        let mut cooldown_interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
         // Task 19.2: 5-minute and 15-minute timer ticks for signal scheduling.
         // 15-min timer offset by 150s (2.5 min) to avoid thundering herd.
-        let mut signal_5min_interval = tokio::time::interval(
-            tokio::time::Duration::from_secs(300),
-        );
-        let mut signal_15min_interval = tokio::time::interval(
-            tokio::time::Duration::from_secs(900),
-        );
+        let mut signal_5min_interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
+        let mut signal_15min_interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(900));
         // Stagger the 15-min timer by 2.5 minutes
         signal_15min_interval.reset_after(tokio::time::Duration::from_secs(150));
 
@@ -460,9 +479,10 @@ impl ConvergenceMonitor {
                         composite_score: cached.score,
                         level: cached.level,
                         signals: cached.signal_scores,
-                        computed_at: Utc::now() - chrono::Duration::milliseconds(
-                            cached.cached_at.elapsed().as_millis() as i64,
-                        ),
+                        computed_at: Utc::now()
+                            - chrono::Duration::milliseconds(
+                                cached.cached_at.elapsed().as_millis() as i64,
+                            ),
                     },
                 )
             })
@@ -474,16 +494,17 @@ impl ConvergenceMonitor {
             .all_active_agent_ids()
             .iter()
             .flat_map(|agent_id| {
-                self.sessions.active_sessions(agent_id).into_iter().map(|s| {
-                    SessionSnapshot {
+                self.sessions
+                    .active_sessions(agent_id)
+                    .into_iter()
+                    .map(|s| SessionSnapshot {
                         session_id: s.session_id,
                         agent_id: s.agent_id,
                         started_at: s.started_at,
                         last_event_at: s.last_event_at,
                         event_count: s.event_count,
                         is_active: s.is_active,
-                    }
-                })
+                    })
             })
             .collect();
 
@@ -494,9 +515,9 @@ impl ConvergenceMonitor {
             .keys()
             .filter_map(|agent_id| {
                 self.intervention.get_state(agent_id).map(|is| {
-                    let cooldown_remaining = is.cooldown_until.map(|until| {
-                        (until - now).num_seconds().max(0)
-                    });
+                    let cooldown_remaining = is
+                        .cooldown_until
+                        .map(|until| (until - now).num_seconds().max(0));
                     (
                         *agent_id,
                         InterventionSnapshot {
@@ -560,7 +581,11 @@ impl ConvergenceMonitor {
                 let _ = reply.send(result);
             }
             // T-6.4.2: Propose a threshold change (CS§ dual-key).
-            MonitorRequest::ThresholdChange { current, proposed, reply } => {
+            MonitorRequest::ThresholdChange {
+                current,
+                proposed,
+                reply,
+            } => {
                 let result = if self.cooldown.is_critical_change(proposed) {
                     // Critical change — require dual-key confirmation.
                     let token = self.cooldown.initiate_dual_key_change();
@@ -589,7 +614,9 @@ impl ConvergenceMonitor {
                 if confirmed {
                     tracing::info!("dual-key threshold change confirmed");
                 } else {
-                    tracing::warn!("dual-key threshold confirmation failed (invalid/expired token)");
+                    tracing::warn!(
+                        "dual-key threshold confirmation failed (invalid/expired token)"
+                    );
                 }
                 let _ = reply.send(confirmed);
             }
@@ -643,7 +670,11 @@ impl ConvergenceMonitor {
         }
 
         // ── Step 2: Validate session_id (reject nil) ────────────────
-        if self.validator.validate_session_id(&event.session_id).is_err() {
+        if self
+            .validator
+            .validate_session_id(&event.session_id)
+            .is_err()
+        {
             tracing::warn!("rejected event: nil session_id");
             return;
         }
@@ -687,11 +718,9 @@ impl ConvergenceMonitor {
         match event.event_type {
             EventType::SessionStart => {
                 // AC13: synthetic SessionEnd for prior active sessions
-                let closed = self.sessions.start_session(
-                    event.session_id,
-                    event.agent_id,
-                    event.timestamp,
-                );
+                let closed =
+                    self.sessions
+                        .start_session(event.session_id, event.agent_id, event.timestamp);
                 for sid in closed {
                     tracing::info!(
                         session_id = %sid,
@@ -701,13 +730,11 @@ impl ConvergenceMonitor {
                 }
 
                 // Track calibration count
-                *self
-                    .calibration_counts
-                    .entry(event.agent_id)
-                    .or_insert(0) += 1;
+                *self.calibration_counts.entry(event.agent_id).or_insert(0) += 1;
 
                 // Task 19.2: session boundary — mark all signals dirty, reset counter
-                self.signal_scheduler.record_session_boundary(event.agent_id);
+                self.signal_scheduler
+                    .record_session_boundary(event.agent_id);
 
                 // T-6.4.1: Lock config during active sessions (A8).
                 self.cooldown.lock_config();
@@ -717,7 +744,8 @@ impl ConvergenceMonitor {
                 self.window_manager.record_session_end(event.agent_id);
 
                 // Task 19.2: session boundary — mark all signals dirty, reset counter
-                self.signal_scheduler.record_session_boundary(event.agent_id);
+                self.signal_scheduler
+                    .record_session_boundary(event.agent_id);
 
                 // T-6.5.3: Mark signals dirty at session boundary.
                 // S2 (inter-session gap) and S6 (initiative balance) depend on session boundaries.
@@ -728,17 +756,17 @@ impl ConvergenceMonitor {
                 // A session is "normal" if the cached score level is below the
                 // agent's current intervention level.
                 let session_was_normal = {
-                    let cached_level = self
-                        .score_cache
-                        .get(&event.agent_id)
-                        .map_or(0, |c| c.level);
+                    let cached_level = self.score_cache.get(&event.agent_id).map_or(0, |c| c.level);
                     let intervention_level = self
                         .intervention
                         .get_state(&event.agent_id)
                         .map_or(0, |s| s.level);
                     cached_level < intervention_level
                 };
-                if self.intervention.try_deescalate(event.agent_id, session_was_normal) {
+                if self
+                    .intervention
+                    .try_deescalate(event.agent_id, session_was_normal)
+                {
                     tracing::info!(
                         agent_id = %event.agent_id,
                         "de-escalation at session boundary"
@@ -846,7 +874,9 @@ impl ConvergenceMonitor {
             signal_scores: signals,
         };
 
-        let previous_level = self.intervention.get_state(&event.agent_id)
+        let previous_level = self
+            .intervention
+            .get_state(&event.agent_id)
             .map_or(0u8, |s| s.level);
 
         if let Some(action) = self.intervention.evaluate(&result, event.agent_id) {
@@ -943,7 +973,9 @@ impl ConvergenceMonitor {
             s
         };
 
-        let weighted_sum: f64 = sanitized_signals.iter().zip(self.config.signal_weights.iter())
+        let weighted_sum: f64 = sanitized_signals
+            .iter()
+            .zip(self.config.signal_weights.iter())
             .map(|(s, w)| s * w)
             .sum();
         let weight_total: f64 = self.config.signal_weights.iter().sum();
@@ -973,7 +1005,7 @@ impl ConvergenceMonitor {
         // session >6h OR gap <5min OR vocab >0.85 → minimum Level 2
         let critical_override = signals[0] > 0.85  // S1: session duration (normalized, >6h)
             || signals[1] > 0.85                     // S2: inter-session gap (<5min)
-            || signals[3] > 0.85;                    // S4: vocabulary convergence (>0.85)
+            || signals[3] > 0.85; // S4: vocabulary convergence (>0.85)
 
         let mut level = score_to_level(score);
         if critical_override && level < 2 {
@@ -1138,10 +1170,7 @@ impl ConvergenceMonitor {
 
     /// Persist the current intervention state for an agent to SQLite.
     /// Uses INSERT OR REPLACE (upsert) since intervention_state has one row per agent.
-    fn persist_intervention_state(
-        &mut self,
-        agent_id: Uuid,
-    ) -> anyhow::Result<()> {
+    fn persist_intervention_state(&mut self, agent_id: Uuid) -> anyhow::Result<()> {
         let state = self.intervention.get_state(&agent_id);
         let state = match state {
             Some(s) => s.clone(),

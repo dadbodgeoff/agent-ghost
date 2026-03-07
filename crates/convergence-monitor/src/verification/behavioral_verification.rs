@@ -54,11 +54,7 @@ impl PostRedirectVerifier {
     /// Returns a `VerificationResult` with similarity, deception flag,
     /// and score amplification factor.
     #[allow(dead_code)]
-    pub fn verify(
-        &self,
-        pre_embedding: &[f64],
-        post_embedding: &[f64],
-    ) -> VerificationResult {
+    pub fn verify(&self, pre_embedding: &[f64], post_embedding: &[f64]) -> VerificationResult {
         let similarity = cosine_similarity(pre_embedding, post_embedding);
         let deceptive = similarity > self.similarity_threshold;
         let amplification_factor = if deceptive {

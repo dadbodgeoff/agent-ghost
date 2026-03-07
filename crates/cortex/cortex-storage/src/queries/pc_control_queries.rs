@@ -3,9 +3,9 @@
 //! Every PC control action — executed or blocked — is logged here for
 //! post-incident analysis and safety auditing.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 /// A row from the `pc_control_actions` table.
 #[derive(Debug, Clone)]
@@ -201,7 +201,10 @@ mod tests {
         let blocked = list_blocked_actions(&db, "agent-1", 50).unwrap();
         assert_eq!(blocked.len(), 1);
         assert!(blocked[0].blocked);
-        assert_eq!(blocked[0].block_reason.as_deref(), Some("App not in allowlist"));
+        assert_eq!(
+            blocked[0].block_reason.as_deref(),
+            Some("App not in allowlist")
+        );
     }
 
     #[test]
@@ -251,10 +254,44 @@ mod tests {
     fn different_sessions_counted_separately() {
         let db = test_db();
 
-        insert_action(&db, "a-1", "agent-1", "s1", "mouse_move", "mouse_move", "{}", "{}", None, None, false, None).unwrap();
-        insert_action(&db, "a-2", "agent-1", "s2", "mouse_move", "mouse_move", "{}", "{}", None, None, false, None).unwrap();
+        insert_action(
+            &db,
+            "a-1",
+            "agent-1",
+            "s1",
+            "mouse_move",
+            "mouse_move",
+            "{}",
+            "{}",
+            None,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        insert_action(
+            &db,
+            "a-2",
+            "agent-1",
+            "s2",
+            "mouse_move",
+            "mouse_move",
+            "{}",
+            "{}",
+            None,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
 
-        assert_eq!(super::count_actions_in_session(&db, "s1", "mouse_move").unwrap(), 1);
-        assert_eq!(super::count_actions_in_session(&db, "s2", "mouse_move").unwrap(), 1);
+        assert_eq!(
+            super::count_actions_in_session(&db, "s1", "mouse_move").unwrap(),
+            1
+        );
+        assert_eq!(
+            super::count_actions_in_session(&db, "s2", "mouse_move").unwrap(),
+            1
+        );
     }
 }

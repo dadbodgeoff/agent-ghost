@@ -2,8 +2,8 @@
 //!
 //! Validates cortex-retrieval ↔ cortex-convergence integration.
 
-use cortex_core::memory::{BaseMemory, Importance};
 use cortex_core::memory::types::MemoryType;
+use cortex_core::memory::{BaseMemory, Importance};
 use cortex_retrieval::{RetrievalScorer, ScorerWeights};
 use uuid::Uuid;
 
@@ -94,7 +94,13 @@ fn scores_bounded() {
     ];
 
     for mt in &types {
-        for imp in [Importance::Trivial, Importance::Low, Importance::Normal, Importance::High, Importance::Critical] {
+        for imp in [
+            Importance::Trivial,
+            Importance::Low,
+            Importance::Normal,
+            Importance::High,
+            Importance::Critical,
+        ] {
             let memory = make_memory(mt.clone(), imp);
             for conv in [0.0, 0.25, 0.5, 0.75, 1.0] {
                 let score = scorer.score(&memory, conv);

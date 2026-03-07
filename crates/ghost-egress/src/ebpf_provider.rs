@@ -172,10 +172,7 @@ impl EbpfEgressPolicy {
     /// In production, this spawns a task that reads from the `VIOLATIONS`
     /// perf event array and feeds events into the violation counter.
     /// Each violation event contains the destination IP, protocol, and port.
-    fn _spawn_perf_event_reader(
-        _agents: Arc<Mutex<HashMap<Uuid, AgentEbpf>>>,
-        _agent_id: Uuid,
-    ) {
+    fn _spawn_perf_event_reader(_agents: Arc<Mutex<HashMap<Uuid, AgentEbpf>>>, _agent_id: Uuid) {
         // In production, this would:
         // 1. Open the VIOLATIONS perf event array via Aya
         // 2. Spawn an async task that polls for events
@@ -224,10 +221,7 @@ impl EgressPolicy for EbpfEgressPolicy {
                 "eBPF egress policy applied"
             );
             // Spawn periodic DNS re-resolution (every 5 minutes).
-            let cancel = Self::spawn_dns_reresolution_task(
-                Arc::clone(&self.agents),
-                *agent_id,
-            );
+            let cancel = Self::spawn_dns_reresolution_task(Arc::clone(&self.agents), *agent_id);
             // Spawn perf event reader for violation logging.
             Self::_spawn_perf_event_reader(Arc::clone(&self.agents), *agent_id);
             Some(cancel)
@@ -282,9 +276,7 @@ impl EgressPolicy for EbpfEgressPolicy {
 
     fn log_violation(&self, agent_id: &Uuid, domain: &str, action: &str) {
         let agents = self.agents.lock().unwrap();
-        let using_fallback = agents
-            .get(agent_id)
-            .is_some_and(|s| s.using_proxy_fallback);
+        let using_fallback = agents.get(agent_id).is_some_and(|s| s.using_proxy_fallback);
         drop(agents);
 
         if using_fallback {
@@ -311,12 +303,17 @@ mod tests {
         // Resolve a well-known domain — should produce at least one IP.
         let ips = EbpfEgressPolicy::resolve_domains(&["localhost".to_string()]);
         // localhost should resolve to 127.0.0.1 or ::1
-        assert!(!ips.is_empty(), "localhost should resolve to at least one IP");
+        assert!(
+            !ips.is_empty(),
+            "localhost should resolve to at least one IP"
+        );
     }
 
     #[test]
     fn dns_resolution_handles_invalid_domain() {
-        let ips = EbpfEgressPolicy::resolve_domains(&["this.domain.definitely.does.not.exist.invalid".to_string()]);
+        let ips = EbpfEgressPolicy::resolve_domains(&[
+            "this.domain.definitely.does.not.exist.invalid".to_string(),
+        ]);
         // Should not panic, may return empty.
         let _ = ips;
     }

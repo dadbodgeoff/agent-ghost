@@ -106,15 +106,13 @@ pub async fn audit_aggregation(
 
     let agg = ghost_audit::AuditAggregation::new(&db);
     match agg.summarize(params.agent_id.as_deref()) {
-        Ok(result) => {
-            match serde_json::to_value(&result) {
-                Ok(json) => (StatusCode::OK, Json(json)),
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("serialization failed: {e}")})),
-                ),
-            }
-        }
+        Ok(result) => match serde_json::to_value(&result) {
+            Ok(json) => (StatusCode::OK, Json(json)),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("serialization failed: {e}")})),
+            ),
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("aggregation failed: {e}")})),
@@ -190,7 +188,11 @@ pub async fn audit_export(
     }
 
     let body = String::from_utf8_lossy(&buf).to_string();
-    (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, content_type)], body)
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, content_type)],
+        body,
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

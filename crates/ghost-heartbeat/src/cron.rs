@@ -142,8 +142,7 @@ impl CronEngine {
         ];
 
         checks.iter().all(|(pattern, actual)| {
-            *pattern == "*" || *pattern == actual.trim_start_matches('0')
-                || *pattern == *actual
+            *pattern == "*" || *pattern == actual.trim_start_matches('0') || *pattern == *actual
         })
     }
 

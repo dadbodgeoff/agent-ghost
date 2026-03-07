@@ -46,11 +46,7 @@ impl CooldownManager {
     /// - Always allow raising thresholds (more conservative).
     /// - Reject lowering during active sessions.
     /// - Enforce minimum floor.
-    pub fn can_change_threshold(
-        &self,
-        current: f64,
-        proposed: f64,
-    ) -> bool {
+    pub fn can_change_threshold(&self, current: f64, proposed: f64) -> bool {
         // Always allow raising thresholds
         if proposed >= current {
             return true;

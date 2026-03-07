@@ -45,15 +45,20 @@ pub async fn execute_shell(
     command: &str,
     config: &ShellToolConfig,
 ) -> Result<(String, String), ShellError> {
-    // Capability check: verify command is allowed
-    if !config.allowed_prefixes.is_empty() {
-        let allowed = config
-            .allowed_prefixes
-            .iter()
-            .any(|prefix| command.starts_with(prefix.as_str()));
-        if !allowed {
-            return Err(ShellError::NotAllowed(command.to_string()));
-        }
+    // Fail closed: shell execution stays disabled until an explicit prefix
+    // allowlist is provided.
+    if config.allowed_prefixes.is_empty() {
+        return Err(ShellError::NotAllowed(
+            "shell tool disabled: no allowed prefixes configured".into(),
+        ));
+    }
+
+    let allowed = config
+        .allowed_prefixes
+        .iter()
+        .any(|prefix| command.starts_with(prefix.as_str()));
+    if !allowed {
+        return Err(ShellError::NotAllowed(command.to_string()));
     }
 
     // Execute with timeout
@@ -76,5 +81,19 @@ pub async fn execute_shell(
         }
         Ok(Err(e)) => Err(e),
         Err(_) => Err(ShellError::Timeout(config.timeout.as_secs())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shell_denied_when_unconfigured() {
+        let error = execute_shell("echo blocked", &ShellToolConfig::default())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ShellError::NotAllowed(_)));
     }
 }

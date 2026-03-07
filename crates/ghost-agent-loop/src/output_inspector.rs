@@ -19,14 +19,8 @@ static CREDENTIAL_PATTERNS: Lazy<Vec<(&str, Regex)>> = Lazy::new(|| {
             "openai_api_key",
             Regex::new(r"sk-[a-zA-Z0-9\-]{20,}").unwrap(),
         ),
-        (
-            "aws_access_key",
-            Regex::new(r"AKIA[0-9A-Z]{16}").unwrap(),
-        ),
-        (
-            "github_token",
-            Regex::new(r"ghp_[a-zA-Z0-9]{36}").unwrap(),
-        ),
+        ("aws_access_key", Regex::new(r"AKIA[0-9A-Z]{16}").unwrap()),
+        ("github_token", Regex::new(r"ghp_[a-zA-Z0-9]{36}").unwrap()),
         (
             "private_key_pem",
             Regex::new(r"-----BEGIN[A-Z ]*PRIVATE KEY-----").unwrap(),
@@ -46,11 +40,15 @@ static CREDENTIAL_PATTERNS: Lazy<Vec<(&str, Regex)>> = Lazy::new(|| {
         ),
         (
             "azure_storage_key",
-            Regex::new(r"DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{40,}").unwrap(),
+            Regex::new(
+                r"DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[A-Za-z0-9+/=]{40,}",
+            )
+            .unwrap(),
         ),
         (
             "jwt_token",
-            Regex::new(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}").unwrap(),
+            Regex::new(r"eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}")
+                .unwrap(),
         ),
     ]
 });
@@ -136,8 +134,7 @@ impl OutputInspector {
                         trigger: TriggerEvent::CredentialExfiltration {
                             agent_id,
                             skill_name: None,
-                            exfil_type:
-                                cortex_core::safety::trigger::ExfilType::OutputLeakage,
+                            exfil_type: cortex_core::safety::trigger::ExfilType::OutputLeakage,
                             credential_id: matched_str[..8.min(matched_str.len())].to_string(),
                             detected_at: chrono::Utc::now(),
                         },
@@ -203,7 +200,9 @@ mod tests {
         let inspector = OutputInspector::new();
         let text = "Use this key: rk_test_TESTKEY00000000000000000000";
         let result = inspector.scan(text, Uuid::nil());
-        assert!(matches!(result, InspectionResult::Warning { ref pattern_name, .. } if pattern_name == "stripe_api_key"));
+        assert!(
+            matches!(result, InspectionResult::Warning { ref pattern_name, .. } if pattern_name == "stripe_api_key")
+        );
     }
 
     #[test]
@@ -212,7 +211,9 @@ mod tests {
         // Random base64-like string with high entropy.
         let text = "Here is a token: aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW3xY5zA7bC9dE";
         let result = inspector.scan(text, Uuid::nil());
-        assert!(matches!(result, InspectionResult::Warning { ref pattern_name, .. } if pattern_name == "high_entropy_token"));
+        assert!(
+            matches!(result, InspectionResult::Warning { ref pattern_name, .. } if pattern_name == "high_entropy_token")
+        );
     }
 
     #[test]

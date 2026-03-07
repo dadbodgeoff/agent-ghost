@@ -114,10 +114,13 @@ impl SessionRegistry {
     /// Register a provisional agent. Returns false if max sessions exceeded.
     #[allow(dead_code)]
     pub fn register_provisional(&mut self, agent_id: Uuid, now: DateTime<Utc>) -> bool {
-        let entry = self.provisional.entry(agent_id).or_insert(ProvisionalAgent {
-            session_count: 0,
-            first_seen: now,
-        });
+        let entry = self
+            .provisional
+            .entry(agent_id)
+            .or_insert(ProvisionalAgent {
+                session_count: 0,
+                first_seen: now,
+            });
         entry.session_count += 1;
         entry.session_count <= self.max_provisional
     }
@@ -146,11 +149,8 @@ impl SessionRegistry {
         self.agent_sessions
             .iter()
             .filter(|(_, sids)| {
-                sids.iter().any(|sid| {
-                    self.sessions
-                        .get(sid)
-                        .map_or(false, |s| s.is_active)
-                })
+                sids.iter()
+                    .any(|sid| self.sessions.get(sid).map_or(false, |s| s.is_active))
             })
             .map(|(agent_id, _)| *agent_id)
             .collect()

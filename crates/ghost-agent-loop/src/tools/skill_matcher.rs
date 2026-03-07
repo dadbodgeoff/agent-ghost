@@ -33,8 +33,7 @@ impl SkillMatcher {
 
     /// Register a skill with its trigger messages.
     pub fn register_skill(&mut self, skill_name: &str, triggers: Vec<String>) {
-        self.skill_triggers
-            .insert(skill_name.to_string(), triggers);
+        self.skill_triggers.insert(skill_name.to_string(), triggers);
     }
 
     /// Find the best matching skill for an incoming request.

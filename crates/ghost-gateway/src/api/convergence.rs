@@ -29,9 +29,7 @@ pub struct ConvergenceScoreResponse {
 ///
 /// Returns the latest convergence score for each registered agent.
 /// Queries convergence_scores table via cortex_storage::queries.
-pub async fn get_scores(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn get_scores(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let agents = match state.agents.read() {
         Ok(agents) => agents,
         Err(_) => {

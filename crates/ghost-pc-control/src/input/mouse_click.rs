@@ -34,24 +34,38 @@ impl MouseClickSkill {
         circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
         backend: Arc<Mutex<dyn InputBackend>>,
     ) -> Self {
-        Self { validator, circuit_breaker, backend }
+        Self {
+            validator,
+            circuit_breaker,
+            backend,
+        }
     }
 }
 
 impl Skill for MouseClickSkill {
-    fn name(&self) -> &str { "mouse_click" }
+    fn name(&self) -> &str {
+        "mouse_click"
+    }
 
     fn description(&self) -> &str {
         "Click the mouse at a position with configurable button and click type"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let target_app = input.get("target_app").and_then(|v| v.as_str());
 
-        let button = match input.get("button").and_then(|v| v.as_str()).unwrap_or("left") {
+        let button = match input
+            .get("button")
+            .and_then(|v| v.as_str())
+            .unwrap_or("left")
+        {
             "left" => MouseButton::Left,
             "right" => MouseButton::Right,
             "middle" => MouseButton::Middle,
@@ -62,7 +76,10 @@ impl Skill for MouseClickSkill {
             }
         };
 
-        let click_type = input.get("click_type").and_then(|v| v.as_str()).unwrap_or("single");
+        let click_type = input
+            .get("click_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("single");
         if !matches!(click_type, "single" | "double") {
             return Err(SkillError::InvalidInput(format!(
                 "invalid click_type '{click_type}', must be: single, double"
@@ -72,20 +89,33 @@ impl Skill for MouseClickSkill {
         // If x,y are provided, move first and validate.
         let has_coords = input.get("x").is_some() && input.get("y").is_some();
         if has_coords {
-            let x = input["x"].as_i64().ok_or_else(|| {
-                SkillError::InvalidInput("'x' must be an integer".into())
-            })? as i32;
-            let y = input["y"].as_i64().ok_or_else(|| {
-                SkillError::InvalidInput("'y' must be an integer".into())
-            })? as i32;
+            let x = input["x"]
+                .as_i64()
+                .ok_or_else(|| SkillError::InvalidInput("'x' must be an integer".into()))?
+                as i32;
+            let y = input["y"]
+                .as_i64()
+                .ok_or_else(|| SkillError::InvalidInput("'y' must be an integer".into()))?
+                as i32;
 
-            if let ValidationResult::Denied(reason) = self.validator.validate_click(x, y, target_app) {
-                audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "mouse_click", input, &reason);
+            if let ValidationResult::Denied(reason) =
+                self.validator.validate_click(x, y, target_app)
+            {
+                audit::log_blocked_action(
+                    ctx.db,
+                    ctx.agent_id,
+                    ctx.session_id,
+                    "mouse_click",
+                    input,
+                    &reason,
+                );
                 return Err(SkillError::PcControlBlocked(reason));
             }
 
             // Circuit breaker check.
-            { self.circuit_breaker.lock().unwrap().check("mouse_click")?; }
+            {
+                self.circuit_breaker.lock().unwrap().check("mouse_click")?;
+            }
 
             // Move + click.
             {
@@ -100,12 +130,21 @@ impl Skill for MouseClickSkill {
             // Click at current position. Validate app if provided.
             if let Some(app) = target_app {
                 if let ValidationResult::Denied(reason) = self.validator.validate_app(app) {
-                    audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "mouse_click", input, &reason);
+                    audit::log_blocked_action(
+                        ctx.db,
+                        ctx.agent_id,
+                        ctx.session_id,
+                        "mouse_click",
+                        input,
+                        &reason,
+                    );
                     return Err(SkillError::PcControlBlocked(reason));
                 }
             }
 
-            { self.circuit_breaker.lock().unwrap().check("mouse_click")?; }
+            {
+                self.circuit_breaker.lock().unwrap().check("mouse_click")?;
+            }
 
             {
                 let mut backend = self.backend.lock().unwrap();
@@ -117,7 +156,9 @@ impl Skill for MouseClickSkill {
         }
 
         // Record success.
-        { self.circuit_breaker.lock().unwrap().record_success(); }
+        {
+            self.circuit_breaker.lock().unwrap().record_success();
+        }
 
         let result = serde_json::json!({
             "status": "ok",
@@ -125,15 +166,31 @@ impl Skill for MouseClickSkill {
             "click_type": click_type,
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "mouse_click", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "mouse_click",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
 
     fn preview(&self, input: &serde_json::Value) -> Option<String> {
-        let button = input.get("button").and_then(|v| v.as_str()).unwrap_or("left");
-        let click_type = input.get("click_type").and_then(|v| v.as_str()).unwrap_or("single");
-        let pos = match (input.get("x").and_then(|v| v.as_i64()), input.get("y").and_then(|v| v.as_i64())) {
+        let button = input
+            .get("button")
+            .and_then(|v| v.as_str())
+            .unwrap_or("left");
+        let click_type = input
+            .get("click_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("single");
+        let pos = match (
+            input.get("x").and_then(|v| v.as_i64()),
+            input.get("y").and_then(|v| v.as_i64()),
+        ) {
             (Some(x), Some(y)) => format!(" at ({x}, {y})"),
             _ => " at current position".into(),
         };
@@ -156,17 +213,31 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> (MouseClickSkill, MockInputBackend) {
         let mock = MockInputBackend::new();
         let validator = Arc::new(InputValidator::new(
             vec!["Firefox".into()],
-            Some(ScreenRegion { x: 0, y: 0, width: 1920, height: 1080 }),
+            Some(ScreenRegion {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }),
             vec![],
         ));
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, std::time::Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            std::time::Duration::from_secs(30),
+        )));
         let backend: Arc<Mutex<dyn InputBackend>> = Arc::new(Mutex::new(mock.clone()));
         (MouseClickSkill::new(validator, cb, backend), mock)
     }
@@ -177,7 +248,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"x": 100, "y": 200})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"x": 100, "y": 200}))
+            .unwrap();
         assert_eq!(result["status"], "ok");
         assert_eq!(result["button"], "left");
 
@@ -193,13 +266,21 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({
-            "x": 50, "y": 50, "button": "right", "click_type": "double"
-        })).unwrap();
+        let result = skill
+            .execute(
+                &ctx,
+                &serde_json::json!({
+                    "x": 50, "y": 50, "button": "right", "click_type": "double"
+                }),
+            )
+            .unwrap();
         assert_eq!(result["click_type"], "double");
 
         let actions = mock.actions();
-        assert_eq!(actions[1], RecordedAction::MouseDoubleClick(MouseButton::Right));
+        assert_eq!(
+            actions[1],
+            RecordedAction::MouseDoubleClick(MouseButton::Right)
+        );
     }
 
     #[test]

@@ -131,19 +131,34 @@ mod tests {
 
     #[test]
     fn bounding_rect_center() {
-        let rect = BoundingRect { x: 100, y: 200, width: 50, height: 30 };
+        let rect = BoundingRect {
+            x: 100,
+            y: 200,
+            width: 50,
+            height: 30,
+        };
         assert_eq!(rect.center(), (125, 215));
     }
 
     #[test]
     fn bounding_rect_center_zero_origin() {
-        let rect = BoundingRect { x: 0, y: 0, width: 100, height: 100 };
+        let rect = BoundingRect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
         assert_eq!(rect.center(), (50, 50));
     }
 
     #[test]
     fn bounding_rect_contains() {
-        let rect = BoundingRect { x: 10, y: 20, width: 100, height: 50 };
+        let rect = BoundingRect {
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 50,
+        };
         assert!(rect.contains(10, 20)); // top-left
         assert!(rect.contains(109, 69)); // bottom-right edge
         assert!(!rect.contains(110, 20)); // just outside
@@ -154,7 +169,12 @@ mod tests {
     #[test]
     fn resolved_element_from_accessibility() {
         let elem = ResolvedElement::from_accessibility(
-            BoundingRect { x: 0, y: 0, width: 80, height: 30 },
+            BoundingRect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 30,
+            },
             "button",
             Some("Submit".into()),
             Some("Submit".into()),
@@ -168,7 +188,12 @@ mod tests {
     #[test]
     fn resolved_element_from_ocr() {
         let elem = ResolvedElement::from_ocr(
-            BoundingRect { x: 50, y: 100, width: 200, height: 20 },
+            BoundingRect {
+                x: 50,
+                y: 100,
+                width: 200,
+                height: 20,
+            },
             "Hello World".into(),
             0.95,
         );
@@ -181,7 +206,12 @@ mod tests {
     #[test]
     fn resolved_element_from_vision() {
         let elem = ResolvedElement::from_vision(
-            BoundingRect { x: 300, y: 400, width: 60, height: 25 },
+            BoundingRect {
+                x: 300,
+                y: 400,
+                width: 60,
+                height: 25,
+            },
             "link".into(),
             Some("Click here".into()),
             0.87,

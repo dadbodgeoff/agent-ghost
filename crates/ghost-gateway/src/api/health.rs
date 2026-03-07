@@ -11,6 +11,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use crate::gateway::GatewayState;
+use crate::runtime_status::{convergence_protection_summary_value, distributed_kill_status_value};
 use crate::safety::kill_switch::PLATFORM_KILLED;
 use crate::state::AppState;
 
@@ -19,42 +20,42 @@ use crate::state::AppState;
 /// Returns the actual gateway state from `GatewaySharedState`.
 /// Returns 503 for non-operational states (Initializing, ShuttingDown, FatalError).
 /// Includes convergence monitor connectivity and distributed gate state.
-pub async fn health_handler(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let gw_state = state.gateway.current_state();
     let platform_killed = PLATFORM_KILLED.load(std::sync::atomic::Ordering::SeqCst);
 
     let status_code = match gw_state {
-        GatewayState::Healthy | GatewayState::Degraded | GatewayState::Recovering => {
-            StatusCode::OK
-        }
+        GatewayState::Healthy | GatewayState::Degraded | GatewayState::Recovering => StatusCode::OK,
         _ => StatusCode::SERVICE_UNAVAILABLE,
     };
 
     // Read convergence monitor liveness from in-memory atomic — O(1), no lock, no disk I/O.
-    let monitor_connected = state.monitor_healthy.load(std::sync::atomic::Ordering::Relaxed);
-    let monitor_status = serde_json::json!({ "connected": monitor_connected });
-
-    // Read distributed gate state if available.
-    let gate_state = state.kill_gate.as_ref().and_then(|gate| {
-        let bridge = match gate.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                tracing::error!(error = %e, "Kill gate RwLock poisoned in health check");
-                return None;
-            }
-        };
-        let snapshot = bridge.gate.snapshot();
-        Some(serde_json::json!({
-            "state": format!("{:?}", snapshot.state),
-            "node_id": snapshot.node_id.to_string(),
-            "closed_at": snapshot.closed_at.map(|t| t.to_rfc3339()),
-            "close_reason": snapshot.close_reason,
-            "acked_nodes": snapshot.acked_nodes.len(),
-            "chain_length": snapshot.chain_length,
-        }))
+    let monitor_connected = state
+        .monitor_healthy
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let monitor_status = serde_json::json!({
+        "enabled": state.monitor_enabled,
+        "connected": monitor_connected,
     });
+    let agent_ids = state
+        .agents
+        .read()
+        .map(|agents| {
+            agents
+                .all_agents()
+                .iter()
+                .map(|agent| agent.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let convergence_protection = convergence_protection_summary_value(
+        agent_ids,
+        state.monitor_enabled,
+        state.monitor_block_on_degraded,
+        state.convergence_state_stale_after,
+    );
+    let distributed_kill =
+        distributed_kill_status_value(state.distributed_kill_enabled, state.kill_gate.as_ref());
 
     (
         status_code,
@@ -63,7 +64,8 @@ pub async fn health_handler(
             "state": format!("{:?}", gw_state),
             "platform_killed": platform_killed,
             "convergence_monitor": monitor_status,
-            "distributed_gate": gate_state,
+            "convergence_protection": convergence_protection,
+            "distributed_kill": distributed_kill,
         })),
     )
 }
@@ -72,9 +74,7 @@ pub async fn health_handler(
 ///
 /// Only returns 200 when the gateway is fully Healthy.
 /// Degraded, Recovering, and all other states return 503.
-pub async fn ready_handler(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn ready_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let gw_state = state.gateway.current_state();
 
     let (status_code, ready) = match gw_state {
@@ -90,4 +90,3 @@ pub async fn ready_handler(
         })),
     )
 }
-

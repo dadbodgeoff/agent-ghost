@@ -52,9 +52,7 @@ impl Skill for AgentSpawnSafeSkill {
         let task_description = input
             .get("task")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SkillError::InvalidInput("missing required field 'task'".into())
-            })?;
+            .ok_or_else(|| SkillError::InvalidInput("missing required field 'task'".into()))?;
 
         if task_description.trim().is_empty() {
             return Err(SkillError::InvalidInput(
@@ -108,10 +106,8 @@ impl Skill for AgentSpawnSafeSkill {
         // 5. Get parent convergence score
         let sender_id = ctx.agent_id.to_string();
         let parent_score_row =
-            cortex_storage::queries::convergence_score_queries::latest_by_agent(
-                ctx.db, &sender_id,
-            )
-            .map_err(|e| SkillError::Storage(format!("query convergence: {e}")))?;
+            cortex_storage::queries::convergence_score_queries::latest_by_agent(ctx.db, &sender_id)
+                .map_err(|e| SkillError::Storage(format!("query convergence: {e}")))?;
 
         let (parent_score, parent_level) = match parent_score_row {
             Some(ref row) => (row.composite_score, row.level),
@@ -125,11 +121,9 @@ impl Skill for AgentSpawnSafeSkill {
         let offer_message_id = Uuid::now_v7().to_string();
 
         let previous_hash =
-            cortex_storage::queries::delegation_state_queries::query_last_hash(
-                ctx.db, &sender_id,
-            )
-            .map_err(|e| SkillError::Storage(format!("query last hash: {e}")))?
-            .unwrap_or_else(super::zero_hash);
+            cortex_storage::queries::delegation_state_queries::query_last_hash(ctx.db, &sender_id)
+                .map_err(|e| SkillError::Storage(format!("query last hash: {e}")))?
+                .unwrap_or_else(super::zero_hash);
 
         let hash_input = format!(
             "{sender_id}:spawn:{child_agent_id}:{task_description}:{delegation_id}:{}",
@@ -363,12 +357,11 @@ mod tests {
         let delegation_id = result["delegation_id"].as_str().unwrap();
 
         // Verify delegation exists in DB
-        let delegation =
-            cortex_storage::queries::delegation_state_queries::query_by_delegation_id(
-                &db,
-                delegation_id,
-            )
-            .unwrap();
+        let delegation = cortex_storage::queries::delegation_state_queries::query_by_delegation_id(
+            &db,
+            delegation_id,
+        )
+        .unwrap();
         assert!(delegation.is_some());
         assert_eq!(delegation.unwrap().state, "Offered");
     }

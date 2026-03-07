@@ -37,7 +37,10 @@ impl DriftDb {
     }
 
     fn migrate(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS drift_files (
@@ -110,7 +113,10 @@ impl DriftDb {
     where
         F: FnOnce(&Connection) -> anyhow::Result<T>,
     {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         conn.execute("BEGIN IMMEDIATE", [])?;
         match f(&conn) {
             Ok(val) => {
@@ -135,10 +141,21 @@ impl DriftDb {
         content_hash: &str,
         last_modified: &str,
         size_bytes: i64,
-        symbols: &[(String, String, String, i64, Option<i64>, Option<String>, Option<Vec<u8>>)],
+        symbols: &[(
+            String,
+            String,
+            String,
+            i64,
+            Option<i64>,
+            Option<String>,
+            Option<Vec<u8>>,
+        )],
         // Each tuple: (id, name, kind, line_start, line_end, signature, embedding_bytes)
     ) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
 
         // Check if file changed since last index
         let existing_hash: Option<String> = conn
@@ -193,8 +210,12 @@ impl DriftDb {
         })();
 
         match &result {
-            Ok(()) => { conn.execute("COMMIT", [])?; }
-            Err(_) => { let _ = conn.execute("ROLLBACK", []); }
+            Ok(()) => {
+                conn.execute("COMMIT", [])?;
+            }
+            Err(_) => {
+                let _ = conn.execute("ROLLBACK", []);
+            }
         }
 
         result?;
@@ -210,7 +231,10 @@ impl DriftDb {
         last_modified: &str,
         size_bytes: i64,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         conn.execute(
             "INSERT INTO drift_files (path, content_hash, last_modified, size_bytes, indexed_at)
              VALUES (?1, ?2, ?3, ?4, datetime('now'))
@@ -225,7 +249,10 @@ impl DriftDb {
     }
 
     pub fn update_file_symbol_count(&self, path: &str, count: i64) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         conn.execute(
             "UPDATE drift_files SET symbol_count = ?1 WHERE path = ?2",
             params![count, path],
@@ -234,7 +261,10 @@ impl DriftDb {
     }
 
     pub fn get_file_hash(&self, path: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let hash = conn
             .query_row(
                 "SELECT content_hash FROM drift_files WHERE path = ?1",
@@ -246,7 +276,10 @@ impl DriftDb {
     }
 
     pub fn file_count(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM drift_files", [], |row| row.get(0))?;
         Ok(count)
@@ -265,7 +298,10 @@ impl DriftDb {
         signature: Option<&str>,
         embedding: Option<&[u8]>,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         conn.execute(
             "INSERT INTO drift_symbols (id, file_path, name, kind, line_start, line_end, signature, embedding)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -280,7 +316,10 @@ impl DriftDb {
     }
 
     pub fn delete_symbols_for_file(&self, file_path: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         conn.execute(
             "DELETE FROM drift_symbols WHERE file_path = ?1",
             params![file_path],
@@ -289,7 +328,10 @@ impl DriftDb {
     }
 
     pub fn symbol_count(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM drift_symbols", [], |row| row.get(0))?;
         Ok(count)
@@ -301,7 +343,10 @@ impl DriftDb {
         file_filter: Option<&str>,
         limit: u32,
     ) -> anyhow::Result<Vec<(String, String, String, i64, Option<String>)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let mut results = Vec::new();
 
         if let Some(filter) = file_filter {
@@ -348,7 +393,10 @@ impl DriftDb {
         &self,
         file_filter: Option<&str>,
     ) -> anyhow::Result<Vec<(String, String, String, i64, Option<String>, Vec<u8>)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let mut results = Vec::new();
 
         let row_mapper = |row: &rusqlite::Row| {
@@ -395,7 +443,10 @@ impl DriftDb {
         belief: &str,
         confidence: f64,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO drift_beliefs (id, file_path, symbol_name, belief, confidence, created_at, updated_at)
@@ -414,7 +465,10 @@ impl DriftDb {
         &self,
         file_path: &str,
     ) -> anyhow::Result<Vec<(String, Option<String>, String, f64, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let mut stmt = conn.prepare(
             "SELECT id, symbol_name, belief, confidence, updated_at
              FROM drift_beliefs WHERE file_path = ?1 ORDER BY updated_at DESC",
@@ -438,7 +492,10 @@ impl DriftDb {
     pub fn get_all_beliefs(
         &self,
     ) -> anyhow::Result<Vec<(String, String, Option<String>, String, f64, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let mut stmt = conn.prepare(
             "SELECT id, file_path, symbol_name, belief, confidence, updated_at
              FROM drift_beliefs ORDER BY updated_at DESC",
@@ -461,7 +518,10 @@ impl DriftDb {
     }
 
     pub fn belief_count(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM drift_beliefs", [], |row| row.get(0))?;
         Ok(count)
@@ -472,7 +532,10 @@ impl DriftDb {
         max_freshness_days: f64,
         limit: u32,
     ) -> anyhow::Result<Vec<(String, String, Option<String>, String, f64, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let mut stmt = conn.prepare(
             "SELECT id, file_path, symbol_name, belief, confidence, updated_at
              FROM drift_beliefs
@@ -510,7 +573,10 @@ impl DriftDb {
         contradiction_density: Option<f64>,
         data_json: Option<&str>,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO drift_snapshots (id, created_at, file_count, symbol_count, belief_count, ksi, freshness, contradiction_density, data_json)
@@ -524,9 +590,22 @@ impl DriftDb {
         &self,
         id: &str,
     ) -> anyhow::Result<
-        Option<(String, String, i64, i64, i64, Option<f64>, Option<f64>, Option<f64>, Option<String>)>,
+        Option<(
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+            Option<String>,
+        )>,
     > {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let result = conn
             .query_row(
                 "SELECT id, created_at, file_count, symbol_count, belief_count, ksi, freshness, contradiction_density, data_json
@@ -553,9 +632,22 @@ impl DriftDb {
     pub fn get_latest_snapshot(
         &self,
     ) -> anyhow::Result<
-        Option<(String, String, i64, i64, i64, Option<f64>, Option<f64>, Option<f64>, Option<String>)>,
+        Option<(
+            String,
+            String,
+            i64,
+            i64,
+            i64,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+            Option<String>,
+        )>,
     > {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let result = conn
             .query_row(
                 "SELECT id, created_at, file_count, symbol_count, belief_count, ksi, freshness, contradiction_density, data_json
@@ -583,7 +675,10 @@ impl DriftDb {
 
     /// Count beliefs with contradictory content for the same file/symbol.
     pub fn contradiction_count(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         // Count pairs of beliefs on the same file+symbol with low similarity
         // (simplified: count beliefs sharing same file+symbol as potential contradictions)
         let count: i64 = conn.query_row(
@@ -601,7 +696,10 @@ impl DriftDb {
 
     /// Count stale beliefs (not verified within threshold days) — O(1) via COUNT.
     pub fn stale_belief_count(&self, threshold_days: f64) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM drift_beliefs
              WHERE julianday('now') - julianday(COALESCE(verified_at, updated_at)) > ?1",
@@ -613,7 +711,10 @@ impl DriftDb {
 
     /// Count belief changes in a time window.
     pub fn belief_changes_in_window(&self, days: f64) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM drift_belief_changes
              WHERE julianday('now') - julianday(changed_at) <= ?1",
@@ -625,7 +726,10 @@ impl DriftDb {
 
     /// Get beliefs created in a time window (for pattern detection).
     pub fn beliefs_created_in_window(&self, days: f64) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM drift_belief_changes
              WHERE change_type = 'created'
@@ -638,7 +742,10 @@ impl DriftDb {
 
     /// Get beliefs with declining confidence (2+ revisions with lower confidence).
     pub fn eroding_belief_count(&self) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(DISTINCT belief_id) FROM drift_belief_changes
              WHERE change_type = 'confidence_decreased'",

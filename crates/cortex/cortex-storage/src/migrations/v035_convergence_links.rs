@@ -6,9 +6,9 @@
 //! - Parent adjusted when child score rises: max(parent, child * 0.5)
 //! - Boundary violation in child → quarantine + parent penalty
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -31,7 +31,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         CREATE INDEX IF NOT EXISTS idx_convergence_links_delegation
             ON convergence_links(delegation_id);
         CREATE INDEX IF NOT EXISTS idx_convergence_links_active
-            ON convergence_links(status) WHERE status = 'active';"
+            ON convergence_links(status) WHERE status = 'active';",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())

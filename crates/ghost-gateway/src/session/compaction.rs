@@ -32,9 +32,9 @@ pub enum CompactionError {
 /// Compaction configuration (Req 17 AC9).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
-    pub trigger_threshold: f64,       // 0.70
-    pub max_passes: u32,              // 3
-    pub memory_flush_enabled: bool,   // true
+    pub trigger_threshold: f64,     // 0.70
+    pub max_passes: u32,            // 3
+    pub memory_flush_enabled: bool, // true
     pub per_type_minimums: PerTypeMinimums,
 }
 
@@ -52,13 +52,13 @@ impl Default for CompactionConfig {
 /// Per-type compression minimums (Req 17 AC5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerTypeMinimums {
-    pub convergence_event: u8,    // L3
-    pub boundary_violation: u8,   // L3
-    pub agent_goal: u8,           // L2
-    pub intervention_plan: u8,    // L2
-    pub agent_reflection: u8,     // L1
-    pub proposal_record: u8,      // L1
-    pub other: u8,                // L0
+    pub convergence_event: u8,  // L3
+    pub boundary_violation: u8, // L3
+    pub agent_goal: u8,         // L2
+    pub intervention_plan: u8,  // L2
+    pub agent_reflection: u8,   // L1
+    pub proposal_record: u8,    // L1
+    pub other: u8,              // L0
 }
 
 impl Default for PerTypeMinimums {
@@ -119,12 +119,18 @@ pub struct SessionCompactor {
 
 impl SessionCompactor {
     pub fn new(config: CompactionConfig) -> Self {
-        Self { config, _flush_executor: None }
+        Self {
+            config,
+            _flush_executor: None,
+        }
     }
 
     /// Create with an injected FlushExecutor for memory flush phase.
     pub fn with_flush_executor(config: CompactionConfig, executor: Arc<dyn FlushExecutor>) -> Self {
-        Self { config, _flush_executor: Some(executor) }
+        Self {
+            config,
+            _flush_executor: Some(executor),
+        }
     }
 
     /// Check if compaction should trigger.
@@ -251,7 +257,11 @@ impl SessionCompactor {
         let original_count: usize = compressible.iter().map(|m| m.len()).sum();
 
         // Simplified compression: keep important messages, summarize rest
-        let summary = format!("[Compacted {} messages in pass {}]", compressible.len(), pass);
+        let summary = format!(
+            "[Compacted {} messages in pass {}]",
+            compressible.len(),
+            pass
+        );
         let block = CompactionBlock {
             summary: summary.clone(),
             original_token_count: original_count,
@@ -330,6 +340,9 @@ impl SessionCompactor {
 
 impl Default for SessionCompactor {
     fn default() -> Self {
-        Self { config: CompactionConfig::default(), _flush_executor: None }
+        Self {
+            config: CompactionConfig::default(),
+            _flush_executor: None,
+        }
     }
 }

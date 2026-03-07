@@ -15,11 +15,15 @@ use crate::platform::accessibility_backend::{AccessibilityBackend, Accessibility
 pub struct MacOsAccessibilityBackend;
 
 impl MacOsAccessibilityBackend {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for MacOsAccessibilityBackend {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AccessibilityBackend for MacOsAccessibilityBackend {
@@ -128,7 +132,9 @@ impl AccessibilityBackend for MacOsAccessibilityBackend {
         let mut nodes = Vec::new();
         for line in output.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
 
             if let Some(node) = parse_accessibility_line(line) {
                 // Apply role filter.
@@ -140,9 +146,18 @@ impl AccessibilityBackend for MacOsAccessibilityBackend {
                 // Apply text query filter.
                 if let Some(q) = query {
                     let q_lower = q.to_lowercase();
-                    let matches = node.name.as_ref().map_or(false, |n| n.to_lowercase().contains(&q_lower))
-                        || node.title.as_ref().map_or(false, |t| t.to_lowercase().contains(&q_lower))
-                        || node.value.as_ref().map_or(false, |v| v.to_lowercase().contains(&q_lower));
+                    let matches = node
+                        .name
+                        .as_ref()
+                        .map_or(false, |n| n.to_lowercase().contains(&q_lower))
+                        || node
+                            .title
+                            .as_ref()
+                            .map_or(false, |t| t.to_lowercase().contains(&q_lower))
+                        || node
+                            .value
+                            .as_ref()
+                            .map_or(false, |v| v.to_lowercase().contains(&q_lower));
                     if !matches {
                         continue;
                     }
@@ -165,7 +180,9 @@ fn run_osascript(script: &str) -> Result<String, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("not allowed assistive access") || stderr.contains("osascript is not allowed") {
+        if stderr.contains("not allowed assistive access")
+            || stderr.contains("osascript is not allowed")
+        {
             return Err(
                 "Accessibility permission required. Enable it in System Settings > Privacy & Security > Accessibility.".into()
             );
@@ -180,7 +197,9 @@ fn run_osascript(script: &str) -> Result<String, String> {
 /// Format: role|name|title|value|x|y|width|height|enabled
 fn parse_accessibility_line(line: &str) -> Option<AccessibilityNode> {
     let parts: Vec<&str> = line.split('|').collect();
-    if parts.len() < 9 { return None; }
+    if parts.len() < 9 {
+        return None;
+    }
 
     Some(AccessibilityNode {
         role: parts[0].to_string(),

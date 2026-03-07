@@ -5,12 +5,13 @@
 //!
 //! Ref: tasks.md T-3.1.3, §7.2, §17.2.1
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS otel_spans (
             span_id         TEXT PRIMARY KEY,
             trace_id        TEXT NOT NULL,
@@ -26,7 +27,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON otel_spans(session_id);
         CREATE INDEX IF NOT EXISTS idx_otel_trace
             ON otel_spans(trace_id);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(format!("v023 otel_spans: {e}")))?;
 
     Ok(())

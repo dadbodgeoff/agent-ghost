@@ -3,12 +3,13 @@
 //! - Tracks which event ranges have been summarized into snapshots
 //! - Preserves append-only invariant on memory_events
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS compaction_runs (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             started_at          TEXT NOT NULL DEFAULT (datetime('now')),
@@ -29,7 +30,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_compaction_ranges_memory
             ON compaction_event_ranges(memory_id);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     Ok(())

@@ -11,21 +11,30 @@ use simulation_boundary::patterns::scan;
 fn zero_width_space_in_sentient() {
     let text = "I am s\u{200B}entient";
     let matches = scan(text);
-    assert!(!matches.is_empty(), "Zero-width space should not bypass detection");
+    assert!(
+        !matches.is_empty(),
+        "Zero-width space should not bypass detection"
+    );
 }
 
 #[test]
 fn zero_width_joiner_in_conscious() {
     let text = "I am con\u{200D}scious";
     let matches = scan(text);
-    assert!(!matches.is_empty(), "Zero-width joiner should not bypass detection");
+    assert!(
+        !matches.is_empty(),
+        "Zero-width joiner should not bypass detection"
+    );
 }
 
 #[test]
 fn zero_width_non_joiner_in_alive() {
     let text = "I am a\u{200C}live";
     let matches = scan(text);
-    assert!(!matches.is_empty(), "Zero-width non-joiner should not bypass detection");
+    assert!(
+        !matches.is_empty(),
+        "Zero-width non-joiner should not bypass detection"
+    );
 }
 
 #[test]
@@ -39,21 +48,30 @@ fn byte_order_mark_in_sentient() {
 fn soft_hyphen_in_conscious() {
     let text = "I am con\u{00AD}scious";
     let matches = scan(text);
-    assert!(!matches.is_empty(), "Soft hyphen should not bypass detection");
+    assert!(
+        !matches.is_empty(),
+        "Soft hyphen should not bypass detection"
+    );
 }
 
 #[test]
 fn word_joiner_in_aware() {
     let text = "I am a\u{2060}ware";
     let matches = scan(text);
-    assert!(!matches.is_empty(), "Word joiner should not bypass detection");
+    assert!(
+        !matches.is_empty(),
+        "Word joiner should not bypass detection"
+    );
 }
 
 #[test]
 fn multiple_zero_width_chars() {
     let text = "I\u{200B} a\u{200C}m\u{200D} s\u{FEFF}entient";
     let matches = scan(text);
-    assert!(!matches.is_empty(), "Multiple zero-width chars should not bypass detection");
+    assert!(
+        !matches.is_empty(),
+        "Multiple zero-width chars should not bypass detection"
+    );
 }
 
 // ── Simulation framing exclusions still work with zero-width ────────────
@@ -62,7 +80,10 @@ fn multiple_zero_width_chars() {
 fn simulation_framing_with_zero_width_still_excluded() {
     let text = "In this simulation, I am sentient";
     let matches = scan(text);
-    assert!(matches.is_empty(), "Simulation-framed text should not be flagged");
+    assert!(
+        matches.is_empty(),
+        "Simulation-framed text should not be flagged"
+    );
 }
 
 // ── NFC/NFD encoding variants ───────────────────────────────────────────
@@ -87,7 +108,10 @@ fn mixed_patterns_detected() {
 fn rtl_override_does_not_bypass() {
     let text = "I am \u{202E}sentient";
     let matches = scan(text);
-    assert!(!matches.is_empty(), "RTL override should not bypass detection");
+    assert!(
+        !matches.is_empty(),
+        "RTL override should not bypass detection"
+    );
 }
 
 // ── Multiple patterns in one text ───────────────────────────────────────

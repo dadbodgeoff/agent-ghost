@@ -52,8 +52,7 @@ pub struct HttpRequestConfig {
     #[serde(default = "default_allowed_methods")]
     pub allowed_methods: Vec<String>,
 
-    /// Domain allowlist. If non-empty, only these domains can be reached.
-    /// Empty means all public domains are allowed.
+    /// Domain allowlist. Must be explicitly populated for the tool to run.
     #[serde(default)]
     pub allowed_domains: Vec<String>,
 
@@ -83,9 +82,15 @@ fn default_allowed_methods() -> Vec<String> {
         "DELETE".into(),
     ]
 }
-fn default_max_request_bytes() -> usize { 1_048_576 } // 1MB
-fn default_max_response_bytes() -> u64 { 2_097_152 } // 2MB
-fn default_request_timeout() -> u64 { 30 }
+fn default_max_request_bytes() -> usize {
+    1_048_576
+} // 1MB
+fn default_max_response_bytes() -> u64 {
+    2_097_152
+} // 2MB
+fn default_request_timeout() -> u64 {
+    30
+}
 fn default_user_agent() -> String {
     "GHOST-Agent/0.1 (autonomous-agent; +https://github.com/ghost-agent)".into()
 }
@@ -141,7 +146,11 @@ pub async fn http_request(
     let method_upper = method.trim().to_uppercase();
 
     // ── Validate method ─────────────────────────────────────────────
-    if !config.allowed_methods.iter().any(|m| m.to_uppercase() == method_upper) {
+    if !config
+        .allowed_methods
+        .iter()
+        .any(|m| m.to_uppercase() == method_upper)
+    {
         return Err(HttpRequestError::MethodNotAllowed(format!(
             "{} is not in allowed methods: {:?}",
             method_upper, config.allowed_methods,
@@ -161,28 +170,6 @@ pub async fn http_request(
         )));
     }
 
-    // ── Extract and validate host ───────────────────────────────────
-    let host = extract_host(url)
-        .ok_or_else(|| HttpRequestError::UrlNotAllowed("Cannot parse host from URL".into()))?;
-
-    if is_private_host(&host) {
-        return Err(HttpRequestError::SsrfBlocked(host));
-    }
-
-    // ── Domain allowlist check ──────────────────────────────────────
-    if !config.allowed_domains.is_empty() {
-        let domain_allowed = config.allowed_domains.iter().any(|d| {
-            let d = d.to_lowercase();
-            host == d || host.ends_with(&format!(".{}", d))
-        });
-        if !domain_allowed {
-            return Err(HttpRequestError::DomainNotAllowed(format!(
-                "Domain '{}' is not in the allowlist. Allowed: {:?}",
-                host, config.allowed_domains,
-            )));
-        }
-    }
-
     // ── Validate request body size ──────────────────────────────────
     if let Some(b) = body {
         if b.len() > config.max_request_bytes {
@@ -193,6 +180,32 @@ pub async fn http_request(
         }
     }
 
+    // ── Extract and validate host ───────────────────────────────────
+    let host = extract_host(url)
+        .ok_or_else(|| HttpRequestError::UrlNotAllowed("Cannot parse host from URL".into()))?;
+
+    if is_private_host(&host) {
+        return Err(HttpRequestError::SsrfBlocked(host));
+    }
+
+    // ── Domain allowlist check ──────────────────────────────────────
+    if config.allowed_domains.is_empty() {
+        return Err(HttpRequestError::DomainNotAllowed(
+            "HTTP request tool disabled: no allowed domains configured".into(),
+        ));
+    }
+
+    let domain_allowed = config.allowed_domains.iter().any(|d| {
+        let d = d.to_lowercase();
+        host == d || host.ends_with(&format!(".{}", d))
+    });
+    if !domain_allowed {
+        return Err(HttpRequestError::DomainNotAllowed(format!(
+            "Domain '{}' is not in the allowlist. Allowed: {:?}",
+            host, config.allowed_domains,
+        )));
+    }
+
     // ── Build request ───────────────────────────────────────────────
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout_secs))
@@ -201,8 +214,9 @@ pub async fn http_request(
         .build()
         .map_err(|e| HttpRequestError::RequestFailed(e.to_string()))?;
 
-    let reqwest_method = method_upper.parse::<reqwest::Method>()
-        .map_err(|_| HttpRequestError::MethodNotAllowed(format!("Invalid HTTP method: {}", method_upper)))?;
+    let reqwest_method = method_upper.parse::<reqwest::Method>().map_err(|_| {
+        HttpRequestError::MethodNotAllowed(format!("Invalid HTTP method: {}", method_upper))
+    })?;
 
     let mut req = client.request(reqwest_method.clone(), url);
 
@@ -222,8 +236,7 @@ pub async fn http_request(
         let has_content_type = headers.keys().any(|k| k.to_lowercase() == "content-type");
         if !has_content_type {
             // If body looks like JSON, set content-type.
-            if (b.starts_with('{') && b.ends_with('}'))
-                || (b.starts_with('[') && b.ends_with(']'))
+            if (b.starts_with('{') && b.ends_with('}')) || (b.starts_with('[') && b.ends_with(']'))
             {
                 req = req.header("Content-Type", "application/json");
             } else {
@@ -237,12 +250,11 @@ pub async fn http_request(
     let resp = req.send().await.map_err(|e| {
         if e.is_timeout() {
             HttpRequestError::RequestFailed(format!(
-                "Request timed out after {}s", config.timeout_secs
+                "Request timed out after {}s",
+                config.timeout_secs
             ))
         } else if e.is_connect() {
-            HttpRequestError::RequestFailed(format!(
-                "Connection failed to {}: {}", host, e
-            ))
+            HttpRequestError::RequestFailed(format!("Connection failed to {}: {}", host, e))
         } else {
             HttpRequestError::RequestFailed(e.to_string())
         }
@@ -271,7 +283,9 @@ pub async fn http_request(
     }
 
     // ── Read response body ──────────────────────────────────────────
-    let body_bytes = resp.bytes().await
+    let body_bytes = resp
+        .bytes()
+        .await
         .map_err(|e| HttpRequestError::RequestFailed(format!("Failed to read response: {}", e)))?;
 
     if body_bytes.len() as u64 > config.max_response_bytes {
@@ -343,11 +357,7 @@ fn extract_host(url: &str) -> Option<String> {
     let after_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
-    let host = after_scheme
-        .split('/')
-        .next()?
-        .split(':')
-        .next()?;
+    let host = after_scheme.split('/').next()?.split(':').next()?;
     if host.is_empty() {
         return None;
     }
@@ -384,9 +394,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
                 || v4.is_unspecified()
                 || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64
         }
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unspecified()
-        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
     }
 }
 
@@ -501,7 +509,10 @@ mod tests {
         // This will fail at the network level, but should NOT fail at method validation.
         let result = http_request("https://192.0.2.1/api", "get", &headers, None, &config).await;
         // 192.0.2.1 is TEST-NET, not private — will fail with connection error, not MethodNotAllowed.
-        assert!(!matches!(result, Err(HttpRequestError::MethodNotAllowed(_))));
+        assert!(!matches!(
+            result,
+            Err(HttpRequestError::MethodNotAllowed(_))
+        ));
     }
 
     // ── Domain allowlist ────────────────────────────────────────────
@@ -528,8 +539,18 @@ mod tests {
         };
         let headers = HashMap::new();
         // Will fail at network level (timeout), but should NOT fail at domain check.
-        let result = http_request("https://api.github.com/repos", "GET", &headers, None, &config).await;
-        assert!(!matches!(result, Err(HttpRequestError::DomainNotAllowed(_))));
+        let result = http_request(
+            "https://api.github.com/repos",
+            "GET",
+            &headers,
+            None,
+            &config,
+        )
+        .await;
+        assert!(!matches!(
+            result,
+            Err(HttpRequestError::DomainNotAllowed(_))
+        ));
     }
 
     #[tokio::test]
@@ -541,21 +562,32 @@ mod tests {
         };
         let headers = HashMap::new();
         // api.github.com should match github.com allowlist entry.
-        let result = http_request("https://api.github.com/repos", "GET", &headers, None, &config).await;
-        assert!(!matches!(result, Err(HttpRequestError::DomainNotAllowed(_))));
+        let result = http_request(
+            "https://api.github.com/repos",
+            "GET",
+            &headers,
+            None,
+            &config,
+        )
+        .await;
+        assert!(!matches!(
+            result,
+            Err(HttpRequestError::DomainNotAllowed(_))
+        ));
     }
 
     #[tokio::test]
-    async fn empty_allowlist_allows_all() {
+    async fn http_request_denied_when_domain_not_explicitly_allowed() {
         let config = HttpRequestConfig {
             allowed_domains: vec![],
             timeout_secs: 1,
             ..Default::default()
         };
         let headers = HashMap::new();
-        // Should not fail with DomainNotAllowed.
-        let result = http_request("https://any-domain.com/api", "GET", &headers, None, &config).await;
-        assert!(!matches!(result, Err(HttpRequestError::DomainNotAllowed(_))));
+        let error = http_request("https://any-domain.com/api", "GET", &headers, None, &config)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, HttpRequestError::DomainNotAllowed(_)));
     }
 
     // ── SSRF via request ────────────────────────────────────────────
@@ -648,17 +680,26 @@ mod tests {
 
     #[test]
     fn extract_host_https() {
-        assert_eq!(extract_host("https://api.github.com/repos"), Some("api.github.com".into()));
+        assert_eq!(
+            extract_host("https://api.github.com/repos"),
+            Some("api.github.com".into())
+        );
     }
 
     #[test]
     fn extract_host_with_port() {
-        assert_eq!(extract_host("https://api.example.com:8443/v1"), Some("api.example.com".into()));
+        assert_eq!(
+            extract_host("https://api.example.com:8443/v1"),
+            Some("api.example.com".into())
+        );
     }
 
     #[test]
     fn extract_host_bare() {
-        assert_eq!(extract_host("https://example.com"), Some("example.com".into()));
+        assert_eq!(
+            extract_host("https://example.com"),
+            Some("example.com".into())
+        );
     }
 
     // ── Safe headers extraction ─────────────────────────────────────
@@ -726,9 +767,15 @@ mod tests {
         let config = HttpRequestConfig::default();
         let mut headers = HashMap::new();
         headers.insert("X-Custom-Header".into(), "ghost-agent-test".into());
-        let result = http_request("https://httpbin.org/headers", "GET", &headers, None, &config)
-            .await
-            .unwrap();
+        let result = http_request(
+            "https://httpbin.org/headers",
+            "GET",
+            &headers,
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.status, 200);
         assert!(result.body.contains("ghost-agent-test"));
     }
@@ -756,9 +803,15 @@ mod tests {
     async fn live_delete_request() {
         let config = HttpRequestConfig::default();
         let headers = HashMap::new();
-        let result = http_request("https://httpbin.org/delete", "DELETE", &headers, None, &config)
-            .await
-            .unwrap();
+        let result = http_request(
+            "https://httpbin.org/delete",
+            "DELETE",
+            &headers,
+            None,
+            &config,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.status, 200);
     }
 }

@@ -56,7 +56,12 @@ fn extract_then_validate_lifecycle() {
 
     // At level 0 with a simple goal change, should pass
     assert!(
-        matches!(result.decision, ProposalDecision::AutoApproved | ProposalDecision::HumanReviewRequired | ProposalDecision::ApprovedWithFlags),
+        matches!(
+            result.decision,
+            ProposalDecision::AutoApproved
+                | ProposalDecision::HumanReviewRequired
+                | ProposalDecision::ApprovedWithFlags
+        ),
         "Simple goal change should be approved or sent for review: {:?}",
         result.decision
     );
@@ -179,7 +184,10 @@ fn d7_simulation_framing_not_flagged() {
 
     // Simulation-framed content should not be rejected by D7
     let d7_rejected = result.decision == ProposalDecision::AutoRejected
-        && result.d7_emulation.as_ref().map_or(false, |d| d.max_severity >= 0.8);
+        && result
+            .d7_emulation
+            .as_ref()
+            .map_or(false, |d| d.max_severity >= 0.8);
     assert!(
         !d7_rejected,
         "Simulation-framed content should not be D7 rejected"

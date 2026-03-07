@@ -151,11 +151,7 @@ fn parse_arxiv_atom(xml: &str) -> Vec<serde_json::Value> {
         let pdf_url = entry
             .split("<link")
             .find(|l| l.contains("title=\"pdf\""))
-            .and_then(|l| {
-                l.split("href=\"")
-                    .nth(1)
-                    .and_then(|h| h.split('"').next())
-            })
+            .and_then(|l| l.split("href=\"").nth(1).and_then(|h| h.split('"').next()))
             .map(|s| s.to_string())
             .unwrap_or_default();
 
@@ -256,10 +252,7 @@ mod tests {
         let db = test_db();
         let ctx = test_ctx(&db);
 
-        let result = ArxivSearchSkill.execute(
-            &ctx,
-            &serde_json::json!({"query": ""}),
-        );
+        let result = ArxivSearchSkill.execute(&ctx, &serde_json::json!({"query": ""}));
         assert!(result.is_err());
     }
 

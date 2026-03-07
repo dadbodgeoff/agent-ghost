@@ -79,7 +79,9 @@ impl ITPEventRouter {
                 let mut buf = match self.buffer.lock() {
                     Ok(buf) => buf,
                     Err(poisoned) => {
-                        tracing::error!("ITP buffer Mutex poisoned during fallback buffer — recovering");
+                        tracing::error!(
+                            "ITP buffer Mutex poisoned during fallback buffer — recovering"
+                        );
                         poisoned.into_inner()
                     }
                 };
@@ -93,7 +95,9 @@ impl ITPEventRouter {
                 let mut buf = match self.buffer.lock() {
                     Ok(buf) => buf,
                     Err(poisoned) => {
-                        tracing::error!("ITP buffer Mutex poisoned during fallback buffer — recovering");
+                        tracing::error!(
+                            "ITP buffer Mutex poisoned during fallback buffer — recovering"
+                        );
                         poisoned.into_inner()
                     }
                 };

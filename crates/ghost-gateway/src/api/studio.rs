@@ -115,82 +115,93 @@ pub async fn run_prompt(
         .and_then(|env| std::env::var(env).ok())
         .unwrap_or_default();
 
-    let provider: Arc<dyn ghost_llm::provider::LLMProvider> =
-        match provider_config.name.as_str() {
-            "ollama" => {
-                let base_url = provider_config
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "http://localhost:11434".to_string());
-                let ollama_model = provider_config
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| model.clone());
-                Arc::new(ghost_llm::provider::OllamaProvider {
-                    model: ollama_model,
-                    base_url,
-                })
-            }
-            "anthropic" => {
-                if api_key.is_empty() {
-                    return Err(ApiError::bad_request(format!(
-                        "Model provider 'anthropic' has no API key (set {} env var)",
-                        provider_config.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY"),
-                    )));
-                }
-                Arc::new(ghost_llm::provider::AnthropicProvider {
-                    model: model.clone(),
-                    api_key: std::sync::RwLock::new(api_key),
-                })
-            }
-            "openai" => {
-                if api_key.is_empty() {
-                    return Err(ApiError::bad_request(format!(
-                        "Model provider 'openai' has no API key (set {} env var)",
-                        provider_config.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY"),
-                    )));
-                }
-                Arc::new(ghost_llm::provider::OpenAIProvider {
-                    model: model.clone(),
-                    api_key: std::sync::RwLock::new(api_key),
-                })
-            }
-            "gemini" => {
-                if api_key.is_empty() {
-                    return Err(ApiError::bad_request(format!(
-                        "Model provider 'gemini' has no API key (set {} env var)",
-                        provider_config.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY"),
-                    )));
-                }
-                Arc::new(ghost_llm::provider::GeminiProvider {
-                    model: provider_config.model.clone().unwrap_or(model.clone()),
-                    api_key: std::sync::RwLock::new(api_key),
-                })
-            }
-            "openai_compat" => {
-                if api_key.is_empty() {
-                    return Err(ApiError::bad_request(format!(
-                        "Model provider 'openai_compat' has no API key (set {} env var)",
-                        provider_config.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY"),
-                    )));
-                }
-                let base_url = provider_config
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "http://localhost:8080".to_string());
-                Arc::new(ghost_llm::provider::OpenAICompatProvider {
-                    model: provider_config.model.clone().unwrap_or(model.clone()),
-                    api_key: std::sync::RwLock::new(api_key),
-                    base_url,
-                    context_window_size: 128_000,
-                })
-            }
-            other => {
+    let provider: Arc<dyn ghost_llm::provider::LLMProvider> = match provider_config.name.as_str() {
+        "ollama" => {
+            let base_url = provider_config
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434".to_string());
+            let ollama_model = provider_config
+                .model
+                .clone()
+                .unwrap_or_else(|| model.clone());
+            Arc::new(ghost_llm::provider::OllamaProvider {
+                model: ollama_model,
+                base_url,
+            })
+        }
+        "anthropic" => {
+            if api_key.is_empty() {
                 return Err(ApiError::bad_request(format!(
-                    "Unsupported model provider: {other}"
+                    "Model provider 'anthropic' has no API key (set {} env var)",
+                    provider_config
+                        .api_key_env
+                        .as_deref()
+                        .unwrap_or("ANTHROPIC_API_KEY"),
                 )));
             }
-        };
+            Arc::new(ghost_llm::provider::AnthropicProvider {
+                model: model.clone(),
+                api_key: std::sync::RwLock::new(api_key),
+            })
+        }
+        "openai" => {
+            if api_key.is_empty() {
+                return Err(ApiError::bad_request(format!(
+                    "Model provider 'openai' has no API key (set {} env var)",
+                    provider_config
+                        .api_key_env
+                        .as_deref()
+                        .unwrap_or("OPENAI_API_KEY"),
+                )));
+            }
+            Arc::new(ghost_llm::provider::OpenAIProvider {
+                model: model.clone(),
+                api_key: std::sync::RwLock::new(api_key),
+            })
+        }
+        "gemini" => {
+            if api_key.is_empty() {
+                return Err(ApiError::bad_request(format!(
+                    "Model provider 'gemini' has no API key (set {} env var)",
+                    provider_config
+                        .api_key_env
+                        .as_deref()
+                        .unwrap_or("GEMINI_API_KEY"),
+                )));
+            }
+            Arc::new(ghost_llm::provider::GeminiProvider {
+                model: provider_config.model.clone().unwrap_or(model.clone()),
+                api_key: std::sync::RwLock::new(api_key),
+            })
+        }
+        "openai_compat" => {
+            if api_key.is_empty() {
+                return Err(ApiError::bad_request(format!(
+                    "Model provider 'openai_compat' has no API key (set {} env var)",
+                    provider_config
+                        .api_key_env
+                        .as_deref()
+                        .unwrap_or("OPENAI_API_KEY"),
+                )));
+            }
+            let base_url = provider_config
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:8080".to_string());
+            Arc::new(ghost_llm::provider::OpenAICompatProvider {
+                model: provider_config.model.clone().unwrap_or(model.clone()),
+                api_key: std::sync::RwLock::new(api_key),
+                base_url,
+                context_window_size: 128_000,
+            })
+        }
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "Unsupported model provider: {other}"
+            )));
+        }
+    };
 
     // Call the LLM provider.
     match provider.complete(&llm_messages, &[]).await {
@@ -220,7 +231,9 @@ pub fn build_default_system_prompt() -> String {
     let mut sections = Vec::new();
 
     // L2: SOUL.md
-    let soul_path = crate::bootstrap::ghost_home().join("config").join("SOUL.md");
+    let soul_path = crate::bootstrap::ghost_home()
+        .join("config")
+        .join("SOUL.md");
     if let Ok(content) = std::fs::read_to_string(&soul_path) {
         if !content.is_empty() {
             sections.push(content);

@@ -251,7 +251,10 @@ impl OAuthBroker {
             .clear();
 
         if errors.is_empty() {
-            tracing::warn!(count = all.len(), "revoke_all: all OAuth connections revoked");
+            tracing::warn!(
+                count = all.len(),
+                "revoke_all: all OAuth connections revoked"
+            );
             Ok(())
         } else {
             tracing::error!(errors = ?errors, "revoke_all: some deletions failed");
@@ -326,12 +329,11 @@ impl OAuthBroker {
         let refresh = path
             .refresh_token
             .as_ref()
-            .ok_or_else(|| {
-                OAuthError::RefreshFailed("no refresh token available".into())
-            })?;
+            .ok_or_else(|| OAuthError::RefreshFailed("no refresh token available".into()))?;
 
         let new_ts = provider.refresh_token(refresh.expose_secret())?;
-        self.token_store.store_token(ref_id, provider_name, &new_ts)?;
+        self.token_store
+            .store_token(ref_id, provider_name, &new_ts)?;
 
         tracing::info!(
             provider = %provider_name,

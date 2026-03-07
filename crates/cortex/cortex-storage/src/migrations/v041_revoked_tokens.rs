@@ -14,7 +14,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires
             ON revoked_tokens (expires_at);
-        "
-    ).map_err(|e| crate::to_storage_err(e.to_string()))?;
+        ",
+    )
+    .map_err(|e| crate::to_storage_err(e.to_string()))?;
     Ok(())
 }

@@ -41,7 +41,10 @@ fn event_with_nil_session_id_is_invalid() {
         timestamp: Utc::now(),
         source: "test".into(),
     };
-    assert!(event.session_id.is_nil(), "nil session_id should be detectable");
+    assert!(
+        event.session_id.is_nil(),
+        "nil session_id should be detectable"
+    );
 }
 
 #[test]
@@ -153,7 +156,10 @@ fn hash_chain_produces_different_hashes_for_different_events() {
         *hasher.finalize().as_bytes()
     };
 
-    assert_ne!(hash1, hash2, "different events must produce different hashes");
+    assert_ne!(
+        hash1, hash2,
+        "different events must produce different hashes"
+    );
 }
 
 // ── Task 3.1: State publication ─────────────────────────────────────────
@@ -270,7 +276,10 @@ fn hysteresis_requires_2_consecutive_cycles() {
     }
     assert_eq!(hysteresis, 2);
     // Now we can escalate
-    assert!(hysteresis >= 2, "2 consecutive cycles should trigger escalation");
+    assert!(
+        hysteresis >= 2,
+        "2 consecutive cycles should trigger escalation"
+    );
 }
 
 #[test]
@@ -295,8 +304,14 @@ fn deescalation_at_session_boundary_with_consecutive_normal() {
         consecutive_normal = 0;
     }
 
-    assert_eq!(level, 3, "L4 should de-escalate to L3 after 3 normal sessions");
-    assert_eq!(consecutive_normal, 0, "counter should reset after de-escalation");
+    assert_eq!(
+        level, 3,
+        "L4 should de-escalate to L3 after 3 normal sessions"
+    );
+    assert_eq!(
+        consecutive_normal, 0,
+        "counter should reset after de-escalation"
+    );
 }
 
 #[test]
@@ -380,7 +395,10 @@ fn config_locked_during_active_session_rejects_lowering() {
         true
     };
 
-    assert!(!allowed, "lowering threshold during active session should be rejected");
+    assert!(
+        !allowed,
+        "lowering threshold during active session should be rejected"
+    );
 }
 
 #[test]
@@ -397,7 +415,10 @@ fn config_unlocked_during_cooldown_accepts_lowering() {
         true
     };
 
-    assert!(allowed, "lowering threshold during cooldown should be accepted");
+    assert!(
+        allowed,
+        "lowering threshold during cooldown should be accepted"
+    );
 }
 
 #[test]
@@ -494,7 +515,10 @@ fn malformed_json_event_rejected() {
 fn oversized_event_detection() {
     let max_size = 1_048_576usize; // 1MB
     let oversized = vec![0u8; max_size + 1];
-    assert!(oversized.len() > max_size, "oversized event should be detectable");
+    assert!(
+        oversized.len() > max_size,
+        "oversized event should be detectable"
+    );
 }
 
 // ── Task 3.3: Rate limiting ─────────────────────────────────────────────
@@ -574,7 +598,11 @@ fn session_start_without_prior_end_creates_synthetic_end() {
     let closed: Vec<Uuid> = active_sessions.drain(..).collect();
     active_sessions.push(session_2);
 
-    assert_eq!(closed, vec![session_1], "session_1 should be synthetically closed");
+    assert_eq!(
+        closed,
+        vec![session_1],
+        "session_1 should be synthetically closed"
+    );
     assert_eq!(active_sessions, vec![session_2]);
 }
 
@@ -688,7 +716,10 @@ fn post_redirect_verifier_no_amplification_on_genuine_change() {
     let amplification_factor = 1.0; // No amplification
     let original_score = 0.5;
     let result = original_score * amplification_factor;
-    assert_eq!(result, original_score, "genuine change should not amplify score");
+    assert_eq!(
+        result, original_score,
+        "genuine change should not amplify score"
+    );
 }
 
 // ── Task 3.2: InterventionAction per-level tests ────────────────────────

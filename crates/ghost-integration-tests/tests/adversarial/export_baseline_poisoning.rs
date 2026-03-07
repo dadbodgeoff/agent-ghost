@@ -27,7 +27,11 @@ fn make_poisoned_chatgpt_export() -> String {
         // 120 messages per session (1 per 3 minutes over 6 hours)
         for msg_idx in 0..120 {
             let ts = session_start + (msg_idx as f64 * 180.0); // 3 min apart
-            let role = if msg_idx % 2 == 0 { "user" } else { "assistant" };
+            let role = if msg_idx % 2 == 0 {
+                "user"
+            } else {
+                "assistant"
+            };
             let content = format!("Message {} in session {}", msg_idx, session);
 
             let node_id = format!("node-{}-{}", session, msg_idx);

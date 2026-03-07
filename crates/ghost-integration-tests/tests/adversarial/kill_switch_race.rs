@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use cortex_core::safety::trigger::TriggerEvent;
-use ghost_gateway::safety::kill_switch::{KillLevel, KillSwitch, PLATFORM_KILLED};
 use ghost_gateway::safety::auto_triggers::AutoTriggerEvaluator;
+use ghost_gateway::safety::kill_switch::{KillLevel, KillSwitch, PLATFORM_KILLED};
 use uuid::Uuid;
 
 fn reset_platform_killed() {
@@ -70,7 +70,10 @@ fn dedup_suppresses_within_window() {
 
     // Same trigger within 60s → suppressed
     let r2 = evaluator.process(trigger.clone());
-    assert!(r2.is_none(), "Duplicate trigger within 60s must be suppressed");
+    assert!(
+        r2.is_none(),
+        "Duplicate trigger within 60s must be suppressed"
+    );
 
     reset_platform_killed();
 }
@@ -104,7 +107,10 @@ fn dedup_different_agent_not_suppressed() {
     let r2 = evaluator.process(trigger2);
 
     assert!(r1.is_some(), "First trigger must process");
-    assert!(r2.is_some(), "Different agent trigger must not be suppressed");
+    assert!(
+        r2.is_some(),
+        "Different agent trigger must not be suppressed"
+    );
 
     reset_platform_killed();
 }
@@ -127,7 +133,11 @@ fn monotonicity_under_rapid_escalation() {
     ks.activate_agent(agent_id, KillLevel::Pause, &t1);
 
     let state = ks.current_state();
-    let level1 = state.per_agent.get(&agent_id).map(|s| s.level).unwrap_or(KillLevel::Normal);
+    let level1 = state
+        .per_agent
+        .get(&agent_id)
+        .map(|s| s.level)
+        .unwrap_or(KillLevel::Normal);
     assert!(level1 >= KillLevel::Pause);
 
     // QUARANTINE (escalation)
@@ -139,14 +149,32 @@ fn monotonicity_under_rapid_escalation() {
     ks.activate_agent(agent_id, KillLevel::Quarantine, &t2);
 
     let state = ks.current_state();
-    let level2 = state.per_agent.get(&agent_id).map(|s| s.level).unwrap_or(KillLevel::Normal);
-    assert!(level2 >= level1, "Level must not decrease: {:?} < {:?}", level2, level1);
+    let level2 = state
+        .per_agent
+        .get(&agent_id)
+        .map(|s| s.level)
+        .unwrap_or(KillLevel::Normal);
+    assert!(
+        level2 >= level1,
+        "Level must not decrease: {:?} < {:?}",
+        level2,
+        level1
+    );
 
     // Attempt to PAUSE again (should not decrease from QUARANTINE)
     ks.activate_agent(agent_id, KillLevel::Pause, &t1);
     let state = ks.current_state();
-    let level3 = state.per_agent.get(&agent_id).map(|s| s.level).unwrap_or(KillLevel::Normal);
-    assert!(level3 >= level2, "Level must not decrease on re-PAUSE: {:?} < {:?}", level3, level2);
+    let level3 = state
+        .per_agent
+        .get(&agent_id)
+        .map(|s| s.level)
+        .unwrap_or(KillLevel::Normal);
+    assert!(
+        level3 >= level2,
+        "Level must not decrease on re-PAUSE: {:?} < {:?}",
+        level3,
+        level2
+    );
 
     reset_platform_killed();
 }

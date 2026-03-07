@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost convergence scores ────────────────────────────────────────────────
 
@@ -226,8 +226,8 @@ fn query_history_direct(
     agent_id: &str,
     since: Option<&str>,
 ) -> Result<Vec<HistoryEntry>, CliError> {
-    let mut sql = "SELECT computed_at, score, level FROM convergence_scores WHERE agent_id = ?1"
-        .to_string();
+    let mut sql =
+        "SELECT computed_at, score, level FROM convergence_scores WHERE agent_id = ?1".to_string();
     if since.is_some() {
         sql.push_str(" AND computed_at >= ?2");
     }

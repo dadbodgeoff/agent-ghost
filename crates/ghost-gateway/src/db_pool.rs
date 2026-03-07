@@ -64,9 +64,7 @@ impl DbPool {
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )?;
             r.pragma_update(None, "busy_timeout", 5000)?;
-            readers
-                .push(r)
-                .map_err(|_| DbPoolError::PoolFull)?;
+            readers.push(r).map_err(|_| DbPoolError::PoolFull)?;
         }
 
         Ok(Self {
@@ -131,19 +129,24 @@ impl DbPool {
     /// Logs checkpoint results including busy/log/checkpointed page counts.
     pub async fn checkpoint(&self) -> Result<(), DbPoolError> {
         let w = self.writer.lock().await;
-        let result: (i32, i32, i32) = w.pragma_query_value(
-            None,
-            "wal_checkpoint(TRUNCATE)",
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+        let result: (i32, i32, i32) =
+            w.pragma_query_value(None, "wal_checkpoint(TRUNCATE)", |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
         let (busy, log_pages, checkpointed) = result;
         if busy != 0 {
             tracing::warn!(
-                busy, log_pages, checkpointed,
+                busy,
+                log_pages,
+                checkpointed,
                 "WAL checkpoint was partial — readers may have been active"
             );
         } else {
-            tracing::info!(log_pages, checkpointed, "WAL checkpoint completed successfully");
+            tracing::info!(
+                log_pages,
+                checkpointed,
+                "WAL checkpoint completed successfully"
+            );
         }
         Ok(())
     }
@@ -153,11 +156,12 @@ impl DbPool {
     /// `SkillBridge`). Opens a new read-write connection to the same database.
     ///
     /// This should be used sparingly — prefer `read()` / `write()` where possible.
-    pub fn legacy_connection(&self) -> Result<std::sync::Arc<std::sync::Mutex<Connection>>, DbPoolError> {
+    pub fn legacy_connection(
+        &self,
+    ) -> Result<std::sync::Arc<std::sync::Mutex<Connection>>, DbPoolError> {
         let conn = Connection::open_with_flags(
             &self.db_path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -202,17 +206,18 @@ pub enum CheckpointMode {
 impl DbPool {
     /// Run a WAL checkpoint with the specified mode.
     /// Returns (busy, log_pages, checkpointed) on success.
-    pub async fn checkpoint_with_mode(&self, mode: CheckpointMode) -> Result<(i32, i32, i32), DbPoolError> {
+    pub async fn checkpoint_with_mode(
+        &self,
+        mode: CheckpointMode,
+    ) -> Result<(i32, i32, i32), DbPoolError> {
         let w = self.writer.lock().await;
         let pragma = match mode {
             CheckpointMode::Passive => "wal_checkpoint(PASSIVE)",
             CheckpointMode::Truncate => "wal_checkpoint(TRUNCATE)",
         };
-        let result: (i32, i32, i32) = w.pragma_query_value(
-            None,
-            pragma,
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+        let result: (i32, i32, i32) = w.pragma_query_value(None, pragma, |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
         Ok(result)
     }
 
@@ -236,9 +241,7 @@ pub async fn wal_checkpoint_task(db: Arc<DbPool>) {
 
         // Check WAL file size before checkpoint.
         let wal_path = db.db_path().with_extension("db-wal");
-        let wal_size = std::fs::metadata(&wal_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let wal_size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
 
         if wal_size > WAL_SIZE_WARN_BYTES {
             tracing::warn!(
@@ -251,14 +254,13 @@ pub async fn wal_checkpoint_task(db: Arc<DbPool>) {
             Ok((busy, log_pages, checkpointed)) => {
                 if busy != 0 {
                     tracing::debug!(
-                        busy, log_pages, checkpointed,
+                        busy,
+                        log_pages,
+                        checkpointed,
                         "periodic WAL checkpoint partial (readers active)"
                     );
                 } else {
-                    tracing::debug!(
-                        log_pages, checkpointed,
-                        "periodic WAL checkpoint completed"
-                    );
+                    tracing::debug!(log_pages, checkpointed, "periodic WAL checkpoint completed");
                 }
             }
             Err(e) => {

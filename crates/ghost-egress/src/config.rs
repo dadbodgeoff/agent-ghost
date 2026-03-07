@@ -71,7 +71,10 @@ pub enum EgressPolicyMode {
 }
 
 fn default_allowed_domains() -> Vec<String> {
-    DEFAULT_ALLOWED_DOMAINS.iter().map(|s| s.to_string()).collect()
+    DEFAULT_ALLOWED_DOMAINS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn default_true() -> bool {

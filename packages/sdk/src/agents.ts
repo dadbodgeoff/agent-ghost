@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 // ── Types ──
 
@@ -37,12 +37,17 @@ export class AgentsAPI {
   }
 
   /** Create a new agent with optional keypair generation. */
-  async create(params: CreateAgentParams): Promise<AgentDetail> {
-    return this.request<AgentDetail>('POST', '/api/agents', params);
+  async create(params: CreateAgentParams, options?: GhostRequestOptions): Promise<AgentDetail> {
+    return this.request<AgentDetail>('POST', '/api/agents', params, options);
   }
 
   /** Delete an agent by ID or name. */
-  async delete(id: string): Promise<DeleteAgentResult> {
-    return this.request<DeleteAgentResult>('DELETE', `/api/agents/${encodeURIComponent(id)}`);
+  async delete(id: string, options?: GhostRequestOptions): Promise<DeleteAgentResult> {
+    return this.request<DeleteAgentResult>(
+      'DELETE',
+      `/api/agents/${encodeURIComponent(id)}`,
+      undefined,
+      options,
+    );
   }
 }

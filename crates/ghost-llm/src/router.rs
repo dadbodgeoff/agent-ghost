@@ -25,11 +25,7 @@ impl ComplexityClassifier {
     /// Classify a user message into a complexity tier.
     ///
     /// Slash command overrides take precedence, then heuristics.
-    pub fn classify(
-        message: &str,
-        is_heartbeat: bool,
-        convergence_level: u8,
-    ) -> ComplexityTier {
+    pub fn classify(message: &str, is_heartbeat: bool, convergence_level: u8) -> ComplexityTier {
         // Convergence downgrade at L3+ (AC6)
         if convergence_level >= 3 {
             return if message.len() < 100 {

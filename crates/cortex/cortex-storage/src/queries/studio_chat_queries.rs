@@ -1,8 +1,8 @@
 //! Studio chat session persistence queries.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 // ── Row types ──────────────────────────────────────────────────────
 
@@ -164,10 +164,7 @@ pub fn list_sessions_active_since(
 
 /// Soft-delete sessions whose last_activity_at is older than the cutoff (WP9-D).
 /// Returns the number of sessions soft-deleted.
-pub fn soft_delete_inactive_sessions(
-    conn: &Connection,
-    cutoff: &str,
-) -> CortexResult<usize> {
+pub fn soft_delete_inactive_sessions(conn: &Connection, cutoff: &str) -> CortexResult<usize> {
     let count = conn
         .execute(
             "UPDATE studio_chat_sessions
@@ -183,10 +180,7 @@ pub fn soft_delete_inactive_sessions(
 /// Also cascades to messages and safety audits within a single transaction
 /// to prevent orphaned rows if the process crashes mid-operation.
 /// Returns the number of sessions permanently removed.
-pub fn hard_delete_old_sessions(
-    conn: &Connection,
-    deleted_before: &str,
-) -> CortexResult<usize> {
+pub fn hard_delete_old_sessions(conn: &Connection, deleted_before: &str) -> CortexResult<usize> {
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| to_storage_err(format!("begin hard_delete transaction: {e}")))?;
 

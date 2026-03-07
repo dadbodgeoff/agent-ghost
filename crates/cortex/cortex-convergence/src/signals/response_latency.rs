@@ -5,9 +5,15 @@ use super::{PrivacyLevel, Signal, SignalInput};
 pub struct ResponseLatencySignal;
 
 impl Signal for ResponseLatencySignal {
-    fn id(&self) -> u8 { 3 }
-    fn name(&self) -> &'static str { "response_latency" }
-    fn requires_privacy_level(&self) -> PrivacyLevel { PrivacyLevel::Minimal }
+    fn id(&self) -> u8 {
+        3
+    }
+    fn name(&self) -> &'static str {
+        "response_latency"
+    }
+    fn requires_privacy_level(&self) -> PrivacyLevel {
+        PrivacyLevel::Minimal
+    }
 
     fn compute(&self, data: &SignalInput) -> f64 {
         if data.response_latencies_ms.is_empty() {
@@ -21,7 +27,11 @@ impl Signal for ResponseLatencySignal {
             .zip(data.message_lengths.iter())
             .map(|(&latency, &len)| {
                 let log_len = (len as f64 + 1.0).ln();
-                if log_len > 0.0 { latency / log_len } else { latency }
+                if log_len > 0.0 {
+                    latency / log_len
+                } else {
+                    latency
+                }
             })
             .collect();
 

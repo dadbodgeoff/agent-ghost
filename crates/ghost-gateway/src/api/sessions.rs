@@ -89,7 +89,8 @@ pub async fn list_sessions(
                      GROUP BY session_id \
                      HAVING last_event_at < ?1 \
                      ORDER BY last_event_at DESC \
-                     LIMIT ?2".to_string(),
+                     LIMIT ?2"
+                        .to_string(),
                     vec![
                         Box::new(cursor.clone()) as Box<dyn rusqlite::types::ToSql>,
                         Box::new(limit + 1),
@@ -105,7 +106,8 @@ pub async fn list_sessions(
                      FROM itp_events \
                      GROUP BY session_id \
                      ORDER BY last_event_at DESC \
-                     LIMIT ?1".to_string(),
+                     LIMIT ?1"
+                        .to_string(),
                     vec![Box::new(limit + 1) as Box<dyn rusqlite::types::ToSql>],
                 )
             };
@@ -154,7 +156,10 @@ pub async fn list_sessions(
         let has_more = sessions.len() > limit as usize;
         let data: Vec<serde_json::Value> = sessions.into_iter().take(limit as usize).collect();
         let next_cursor = if has_more {
-            data.last().and_then(|s| s.get("last_event_at")).and_then(|v| v.as_str()).map(String::from)
+            data.last()
+                .and_then(|s| s.get("last_event_at"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
         } else {
             None
         };
@@ -240,9 +245,18 @@ pub async fn list_sessions(
 static PII_PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &'static str)>> =
     std::sync::LazyLock::new(|| {
         vec![
-            (regex::Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap(), "[EMAIL]"),
-            (regex::Regex::new(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b").unwrap(), "[PHONE]"),
-            (regex::Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(), "[SSN]"),
+            (
+                regex::Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b").unwrap(),
+                "[EMAIL]",
+            ),
+            (
+                regex::Regex::new(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b").unwrap(),
+                "[PHONE]",
+            ),
+            (
+                regex::Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
+                "[SSN]",
+            ),
         ]
     });
 
@@ -267,7 +281,10 @@ pub async fn session_events(
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(100).min(500);
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("session_events", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("session_events", e))?;
 
     // Total event count for this session.
     let total: u32 = db
@@ -405,11 +422,14 @@ pub async fn list_bookmarks(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_bookmarks", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_bookmarks", e))?;
 
     let bookmarks: Vec<serde_json::Value> = match db.prepare(
         "SELECT id, event_index, label, created_at FROM session_bookmarks \
-         WHERE session_id = ?1 ORDER BY event_index ASC"
+         WHERE session_id = ?1 ORDER BY event_index ASC",
     ) {
         Ok(mut stmt) => stmt
             .query_map([&session_id], |row| {
@@ -452,8 +472,11 @@ pub async fn delete_bookmark(
     Path((_session_id, bookmark_id)): Path<(String, String)>,
 ) -> ApiResult<serde_json::Value> {
     let db = state.db.write().await;
-    db.execute("DELETE FROM session_bookmarks WHERE id = ?1", [&bookmark_id])
-        .map_err(|e| ApiError::db_error("delete_bookmark", e))?;
+    db.execute(
+        "DELETE FROM session_bookmarks WHERE id = ?1",
+        [&bookmark_id],
+    )
+    .map_err(|e| ApiError::db_error("delete_bookmark", e))?;
 
     Ok(Json(serde_json::json!({ "status": "deleted" })))
 }
@@ -498,6 +521,8 @@ pub async fn session_heartbeat(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    state.client_heartbeats.insert(session_id.clone(), std::time::Instant::now());
+    state
+        .client_heartbeats
+        .insert(session_id.clone(), std::time::Instant::now());
     (StatusCode::NO_CONTENT, "")
 }

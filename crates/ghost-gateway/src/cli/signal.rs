@@ -39,7 +39,7 @@ pub async fn read_line_async() -> Option<String> {
         let mut line = String::new();
         let stdin = io::stdin();
         match stdin.lock().read_line(&mut line) {
-            Ok(0) => None,        // EOF (Ctrl+D)
+            Ok(0) => None, // EOF (Ctrl+D)
             Ok(_) => Some(line),
             Err(_) => None,
         }

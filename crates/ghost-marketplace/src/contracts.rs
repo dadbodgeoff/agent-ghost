@@ -166,10 +166,9 @@ pub fn transition_contract(
     let contract = cortex_storage::queries::marketplace_queries::get_contract(conn, contract_id)?
         .ok_or_else(|| MarketplaceError::NotFound(format!("contract {contract_id}")))?;
 
-    let current = ContractState::from_str(&contract.state)
-        .ok_or_else(|| {
-            MarketplaceError::Validation(format!("unknown state: {}", contract.state))
-        })?;
+    let current = ContractState::from_str(&contract.state).ok_or_else(|| {
+        MarketplaceError::Validation(format!("unknown state: {}", contract.state))
+    })?;
 
     if !current.can_transition_to(target_state) {
         return Err(MarketplaceError::InvalidTransition {
@@ -235,14 +234,10 @@ pub fn transition_contract(
             // Future: result field could indicate "release" vs "refund" for arbitration.
             if let Some(escrow_id) = &contract.escrow_id {
                 if result == Some("release_to_worker") {
-                    cortex_storage::queries::marketplace_queries::release_escrow(
-                        conn, escrow_id,
-                    )?;
+                    cortex_storage::queries::marketplace_queries::release_escrow(conn, escrow_id)?;
                 } else {
                     // Default: refund to hirer
-                    cortex_storage::queries::marketplace_queries::refund_escrow(
-                        conn, escrow_id,
-                    )?;
+                    cortex_storage::queries::marketplace_queries::refund_escrow(conn, escrow_id)?;
                 }
             }
         }

@@ -1,9 +1,9 @@
 //! Platform-specific export parsers (Req 35 AC2).
 
-pub mod chatgpt;
 pub mod character_ai;
-pub mod google_takeout;
+pub mod chatgpt;
 pub mod claude;
+pub mod google_takeout;
 pub mod jsonl;
 
 use std::path::Path;

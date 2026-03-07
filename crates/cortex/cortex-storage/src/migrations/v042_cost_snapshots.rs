@@ -3,9 +3,9 @@
 //! Allows CostTracker to survive process restarts by persisting per-agent
 //! daily totals, per-session totals, and compaction costs.
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -21,6 +21,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_cost_snapshots_scope_date
             ON cost_snapshots(scope, snapshot_date);
-        "
-    ).map_err(|e| to_storage_err(e.to_string()))
+        ",
+    )
+    .map_err(|e| to_storage_err(e.to_string()))
 }

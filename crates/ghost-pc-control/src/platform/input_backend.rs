@@ -83,9 +83,7 @@ impl EnigoBackend {
     /// Requires a display server (X11, Quartz, Windows) to be available.
     /// Returns an error if initialization fails (e.g., headless environment).
     pub fn try_new() -> Result<Self, String> {
-        let result = std::panic::catch_unwind(|| {
-            enigo::Enigo::new(&enigo::Settings::default())
-        });
+        let result = std::panic::catch_unwind(|| enigo::Enigo::new(&enigo::Settings::default()));
         match result {
             Ok(Ok(enigo)) => Ok(Self { enigo }),
             Ok(Err(e)) => Err(format!("failed to initialize enigo: {e}")),
@@ -102,7 +100,9 @@ impl InputBackend for EnigoBackend {
 
     fn mouse_click(&mut self, button: MouseButton) {
         use enigo::Mouse;
-        let _ = self.enigo.button(to_enigo_button(button), enigo::Direction::Click);
+        let _ = self
+            .enigo
+            .button(to_enigo_button(button), enigo::Direction::Click);
     }
 
     fn mouse_double_click(&mut self, button: MouseButton) {
@@ -114,12 +114,16 @@ impl InputBackend for EnigoBackend {
 
     fn mouse_down(&mut self, button: MouseButton) {
         use enigo::Mouse;
-        let _ = self.enigo.button(to_enigo_button(button), enigo::Direction::Press);
+        let _ = self
+            .enigo
+            .button(to_enigo_button(button), enigo::Direction::Press);
     }
 
     fn mouse_up(&mut self, button: MouseButton) {
         use enigo::Mouse;
-        let _ = self.enigo.button(to_enigo_button(button), enigo::Direction::Release);
+        let _ = self
+            .enigo
+            .button(to_enigo_button(button), enigo::Direction::Release);
     }
 
     fn key_sequence(&mut self, text: &str) {
@@ -239,43 +243,73 @@ impl Default for MockInputBackend {
 
 impl InputBackend for MockInputBackend {
     fn mouse_move_to(&mut self, x: i32, y: i32) {
-        self.actions.lock().unwrap().push(RecordedAction::MouseMoveTo(x, y));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::MouseMoveTo(x, y));
     }
 
     fn mouse_click(&mut self, button: MouseButton) {
-        self.actions.lock().unwrap().push(RecordedAction::MouseClick(button));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::MouseClick(button));
     }
 
     fn mouse_double_click(&mut self, button: MouseButton) {
-        self.actions.lock().unwrap().push(RecordedAction::MouseDoubleClick(button));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::MouseDoubleClick(button));
     }
 
     fn mouse_down(&mut self, button: MouseButton) {
-        self.actions.lock().unwrap().push(RecordedAction::MouseDown(button));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::MouseDown(button));
     }
 
     fn mouse_up(&mut self, button: MouseButton) {
-        self.actions.lock().unwrap().push(RecordedAction::MouseUp(button));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::MouseUp(button));
     }
 
     fn key_sequence(&mut self, text: &str) {
-        self.actions.lock().unwrap().push(RecordedAction::KeySequence(text.to_string()));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::KeySequence(text.to_string()));
     }
 
     fn key_down(&mut self, key: &Key) {
-        self.actions.lock().unwrap().push(RecordedAction::KeyDown(key.clone()));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::KeyDown(key.clone()));
     }
 
     fn key_up(&mut self, key: &Key) {
-        self.actions.lock().unwrap().push(RecordedAction::KeyUp(key.clone()));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::KeyUp(key.clone()));
     }
 
     fn scroll_y(&mut self, length: i32) {
-        self.actions.lock().unwrap().push(RecordedAction::ScrollY(length));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::ScrollY(length));
     }
 
     fn scroll_x(&mut self, length: i32) {
-        self.actions.lock().unwrap().push(RecordedAction::ScrollX(length));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(RecordedAction::ScrollX(length));
     }
 }
 

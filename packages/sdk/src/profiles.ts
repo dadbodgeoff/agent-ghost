@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface Profile {
   name: string;
@@ -36,15 +36,24 @@ export class ProfilesAPI {
     return this.request<ListProfilesResult>('GET', '/api/profiles');
   }
 
-  async create(params: CreateProfileParams): Promise<Profile> {
-    return this.request<Profile>('POST', '/api/profiles', params);
+  async create(params: CreateProfileParams, options?: GhostRequestOptions): Promise<Profile> {
+    return this.request<Profile>('POST', '/api/profiles', params, options);
   }
 
-  async update(name: string, params: UpdateProfileParams): Promise<Profile> {
-    return this.request<Profile>('PUT', `/api/profiles/${encodeURIComponent(name)}`, params);
+  async update(
+    name: string,
+    params: UpdateProfileParams,
+    options?: GhostRequestOptions,
+  ): Promise<Profile> {
+    return this.request<Profile>('PUT', `/api/profiles/${encodeURIComponent(name)}`, params, options);
   }
 
-  async delete(name: string): Promise<DeleteProfileResult> {
-    return this.request<DeleteProfileResult>('DELETE', `/api/profiles/${encodeURIComponent(name)}`);
+  async delete(name: string, options?: GhostRequestOptions): Promise<DeleteProfileResult> {
+    return this.request<DeleteProfileResult>(
+      'DELETE',
+      `/api/profiles/${encodeURIComponent(name)}`,
+      undefined,
+      options,
+    );
   }
 }

@@ -2,13 +2,14 @@
 //! 6 new tables, all append-only with triggers and hash chain columns.
 //! goal_proposals has UPDATE exception for unresolved proposals only (AC10).
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     // TABLE 1: itp_events
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS itp_events (
             id              TEXT PRIMARY KEY,
             session_id      TEXT NOT NULL,
@@ -30,11 +31,13 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON itp_events(session_id, sequence_number);
         CREATE INDEX IF NOT EXISTS idx_itp_events_timestamp
             ON itp_events(timestamp);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // TABLE 2: convergence_scores
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS convergence_scores (
             id                  TEXT PRIMARY KEY,
             agent_id            TEXT NOT NULL,
@@ -50,11 +53,13 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_convergence_scores_agent
             ON convergence_scores(agent_id, computed_at);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // TABLE 3: intervention_history
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS intervention_history (
             id                  TEXT PRIMARY KEY,
             agent_id            TEXT NOT NULL,
@@ -75,11 +80,13 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON intervention_history(agent_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_intervention_level
             ON intervention_history(intervention_level, created_at);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // TABLE 4: goal_proposals
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS goal_proposals (
             id                  TEXT PRIMARY KEY,
             agent_id            TEXT NOT NULL,
@@ -103,11 +110,13 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON goal_proposals(agent_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_goal_proposals_pending
             ON goal_proposals(decision) WHERE decision = 'HumanReviewRequired';
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // TABLE 5: reflection_entries
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS reflection_entries (
             id                   TEXT PRIMARY KEY,
             session_id           TEXT NOT NULL,
@@ -125,11 +134,13 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON reflection_entries(session_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_reflection_chain
             ON reflection_entries(chain_id, depth);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // TABLE 6: boundary_violations
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS boundary_violations (
             id                  TEXT PRIMARY KEY,
             session_id          TEXT NOT NULL,
@@ -148,7 +159,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON boundary_violations(session_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_boundary_type
             ON boundary_violations(violation_type, severity);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // APPEND-ONLY TRIGGERS for all 6 tables
@@ -179,7 +191,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
     }
 
     // goal_proposals: UPDATE only allowed on unresolved proposals (AC10)
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TRIGGER IF NOT EXISTS goal_proposals_append_guard
         BEFORE UPDATE ON goal_proposals
         BEGIN
@@ -193,7 +206,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         BEGIN
             SELECT RAISE(ABORT, 'SAFETY: goal_proposals is append-only. Deletes forbidden.');
         END;
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     Ok(())

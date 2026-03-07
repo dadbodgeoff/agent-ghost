@@ -1,8 +1,8 @@
 //! Marketplace queries (v038 marketplace tables).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 // ── Agent Listings ──
 
@@ -100,11 +100,15 @@ pub fn list_agent_listings(
         param_values.push(Box::new(r));
         idx += 1;
     }
-    sql.push_str(&format!(" ORDER BY trust_score DESC LIMIT ?{idx} OFFSET ?{}", idx + 1));
+    sql.push_str(&format!(
+        " ORDER BY trust_score DESC LIMIT ?{idx} OFFSET ?{}",
+        idx + 1
+    ));
     param_values.push(Box::new(limit));
     param_values.push(Box::new(offset));
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn
         .prepare(&sql)
@@ -134,7 +138,14 @@ pub fn update_agent_listing_stats(
                 trust_score = ?2, total_completed = ?3, total_failed = ?4,
                 average_rating = ?5, total_reviews = ?6, updated_at = datetime('now')
              WHERE agent_id = ?1",
-            params![agent_id, trust_score, total_completed, total_failed, average_rating, total_reviews],
+            params![
+                agent_id,
+                trust_score,
+                total_completed,
+                total_failed,
+                average_rating,
+                total_reviews
+            ],
         )
         .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(updated > 0)
@@ -158,7 +169,14 @@ pub fn upsert_skill_listing(
          ON CONFLICT(skill_name) DO UPDATE SET
             version = ?2, description = ?4, signature = COALESCE(?5, signature),
             price_credits = ?6",
-        params![skill_name, version, author_agent_id, description, signature, price_credits],
+        params![
+            skill_name,
+            version,
+            author_agent_id,
+            description,
+            signature,
+            price_credits
+        ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())
@@ -252,8 +270,15 @@ pub fn insert_contract(
              max_duration_secs, escrow_id, event_hash, previous_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
-            id, hirer_agent_id, worker_agent_id, task_description, agreed_price,
-            max_duration_secs, escrow_id, event_hash, previous_hash,
+            id,
+            hirer_agent_id,
+            worker_agent_id,
+            task_description,
+            agreed_price,
+            max_duration_secs,
+            escrow_id,
+            event_hash,
+            previous_hash,
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
@@ -281,16 +306,21 @@ pub fn transition_contract(
                 previous_hash = COALESCE(?7, previous_hash),
                 updated_at = datetime('now')
              WHERE id = ?1",
-            params![id, new_state, delegation_id, mesh_task_id, result, event_hash, previous_hash],
+            params![
+                id,
+                new_state,
+                delegation_id,
+                mesh_task_id,
+                result,
+                event_hash,
+                previous_hash
+            ],
         )
         .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(updated > 0)
 }
 
-pub fn get_contract(
-    conn: &Connection,
-    id: &str,
-) -> CortexResult<Option<ContractRow>> {
+pub fn get_contract(conn: &Connection, id: &str) -> CortexResult<Option<ContractRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, hirer_agent_id, worker_agent_id, state, task_description,
@@ -326,7 +356,9 @@ pub fn list_contracts(
     let mut idx = 1;
 
     if let Some(a) = agent_id {
-        sql.push_str(&format!(" AND (hirer_agent_id = ?{idx} OR worker_agent_id = ?{idx})"));
+        sql.push_str(&format!(
+            " AND (hirer_agent_id = ?{idx} OR worker_agent_id = ?{idx})"
+        ));
         param_values.push(Box::new(a.to_string()));
         idx += 1;
     }
@@ -335,11 +367,15 @@ pub fn list_contracts(
         param_values.push(Box::new(s.to_string()));
         idx += 1;
     }
-    sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{idx} OFFSET ?{}", idx + 1));
+    sql.push_str(&format!(
+        " ORDER BY created_at DESC LIMIT ?{idx} OFFSET ?{}",
+        idx + 1
+    ));
     param_values.push(Box::new(limit));
     param_values.push(Box::new(offset));
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn
         .prepare(&sql)
@@ -392,7 +428,8 @@ pub fn seed_wallet(conn: &Connection, agent_id: &str, amount: i64) -> CortexResu
     if amount <= 0 {
         return Err(to_storage_err("seed amount must be positive".to_string()));
     }
-    conn.execute("BEGIN IMMEDIATE", []).map_err(|e| to_storage_err(e.to_string()))?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|e| to_storage_err(e.to_string()))?;
     let result = (|| {
         ensure_wallet(conn, agent_id)?;
         conn.execute(
@@ -410,8 +447,13 @@ pub fn seed_wallet(conn: &Connection, agent_id: &str, amount: i64) -> CortexResu
         Ok(())
     })();
     match &result {
-        Ok(()) => { conn.execute("COMMIT", []).map_err(|e| to_storage_err(e.to_string()))?; }
-        Err(_) => { let _ = conn.execute("ROLLBACK", []); }
+        Ok(()) => {
+            conn.execute("COMMIT", [])
+                .map_err(|e| to_storage_err(e.to_string()))?;
+        }
+        Err(_) => {
+            let _ = conn.execute("ROLLBACK", []);
+        }
     }
     result
 }
@@ -427,7 +469,8 @@ pub fn create_escrow(
     if amount <= 0 {
         return Err(to_storage_err("escrow amount must be positive".to_string()));
     }
-    conn.execute("BEGIN IMMEDIATE", []).map_err(|e| to_storage_err(e.to_string()))?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|e| to_storage_err(e.to_string()))?;
     let result = (|| {
         // Debit depositor's available balance
         let updated = conn
@@ -439,7 +482,9 @@ pub fn create_escrow(
             .map_err(|e| to_storage_err(e.to_string()))?;
 
         if updated == 0 {
-            return Err(to_storage_err("insufficient balance for escrow".to_string()));
+            return Err(to_storage_err(
+                "insufficient balance for escrow".to_string(),
+            ));
         }
 
         conn.execute(
@@ -459,14 +504,20 @@ pub fn create_escrow(
         Ok(())
     })();
     match &result {
-        Ok(()) => { conn.execute("COMMIT", []).map_err(|e| to_storage_err(e.to_string()))?; }
-        Err(_) => { let _ = conn.execute("ROLLBACK", []); }
+        Ok(()) => {
+            conn.execute("COMMIT", [])
+                .map_err(|e| to_storage_err(e.to_string()))?;
+        }
+        Err(_) => {
+            let _ = conn.execute("ROLLBACK", []);
+        }
     }
     result
 }
 
 pub fn release_escrow(conn: &Connection, escrow_id: &str) -> CortexResult<()> {
-    conn.execute("BEGIN IMMEDIATE", []).map_err(|e| to_storage_err(e.to_string()))?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|e| to_storage_err(e.to_string()))?;
     let result = (|| {
         let (depositor, beneficiary, amount): (String, String, i64) = conn
             .query_row(
@@ -514,14 +565,20 @@ pub fn release_escrow(conn: &Connection, escrow_id: &str) -> CortexResult<()> {
         Ok(())
     })();
     match &result {
-        Ok(()) => { conn.execute("COMMIT", []).map_err(|e| to_storage_err(e.to_string()))?; }
-        Err(_) => { let _ = conn.execute("ROLLBACK", []); }
+        Ok(()) => {
+            conn.execute("COMMIT", [])
+                .map_err(|e| to_storage_err(e.to_string()))?;
+        }
+        Err(_) => {
+            let _ = conn.execute("ROLLBACK", []);
+        }
     }
     result
 }
 
 pub fn refund_escrow(conn: &Connection, escrow_id: &str) -> CortexResult<()> {
-    conn.execute("BEGIN IMMEDIATE", []).map_err(|e| to_storage_err(e.to_string()))?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|e| to_storage_err(e.to_string()))?;
     let result = (|| {
         let (depositor, amount): (String, i64) = conn
             .query_row(
@@ -555,8 +612,13 @@ pub fn refund_escrow(conn: &Connection, escrow_id: &str) -> CortexResult<()> {
         Ok(())
     })();
     match &result {
-        Ok(()) => { conn.execute("COMMIT", []).map_err(|e| to_storage_err(e.to_string()))?; }
-        Err(_) => { let _ = conn.execute("ROLLBACK", []); }
+        Ok(()) => {
+            conn.execute("COMMIT", [])
+                .map_err(|e| to_storage_err(e.to_string()))?;
+        }
+        Err(_) => {
+            let _ = conn.execute("ROLLBACK", []);
+        }
     }
     result
 }
@@ -627,13 +689,20 @@ pub fn insert_review(
     rating: i32,
     comment: &str,
 ) -> CortexResult<()> {
-    conn.execute("BEGIN IMMEDIATE", []).map_err(|e| to_storage_err(e.to_string()))?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|e| to_storage_err(e.to_string()))?;
     let result = (|| {
         conn.execute(
             "INSERT INTO marketplace_reviews
                 (contract_id, reviewer_agent_id, reviewee_agent_id, rating, comment)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![contract_id, reviewer_agent_id, reviewee_agent_id, rating, comment],
+            params![
+                contract_id,
+                reviewer_agent_id,
+                reviewee_agent_id,
+                rating,
+                comment
+            ],
         )
         .map_err(|e| to_storage_err(e.to_string()))?;
 
@@ -656,8 +725,13 @@ pub fn insert_review(
         Ok(())
     })();
     match &result {
-        Ok(()) => { conn.execute("COMMIT", []).map_err(|e| to_storage_err(e.to_string()))?; }
-        Err(_) => { let _ = conn.execute("ROLLBACK", []); }
+        Ok(()) => {
+            conn.execute("COMMIT", [])
+                .map_err(|e| to_storage_err(e.to_string()))?;
+        }
+        Err(_) => {
+            let _ = conn.execute("ROLLBACK", []);
+        }
     }
     result
 }
@@ -741,7 +815,8 @@ pub fn discover_agents(
     sql.push_str(&format!(" LIMIT ?{idx}"));
     param_values.push(Box::new(limit));
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
 
     let mut stmt = conn
         .prepare(&sql)

@@ -77,7 +77,7 @@
     }, frecencyScore: 0 },
     { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
     { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
-    { id: 'nav-approvals', label: 'Go to Approvals', category: 'command', action: () => goto('/approvals'), frecencyScore: 0 },
+    { id: 'nav-approvals', label: 'Go to Proposals', category: 'command', action: () => goto('/approvals'), frecencyScore: 0 },
     { id: 'nav-channels', label: 'Go to Channels', category: 'setting', action: () => goto('/settings/channels'), frecencyScore: 0 },
     { id: 'nav-webhooks', label: 'Go to Webhooks', category: 'setting', action: () => goto('/settings/webhooks'), frecencyScore: 0 },
     { id: 'nav-oauth', label: 'Go to OAuth Settings', category: 'setting', action: () => goto('/settings/oauth'), frecencyScore: 0 },

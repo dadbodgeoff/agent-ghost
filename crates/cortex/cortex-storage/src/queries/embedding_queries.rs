@@ -1,8 +1,8 @@
 //! Embedding storage queries (v032 memory_embeddings table).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 /// Store an embedding for a memory.
 ///
@@ -94,11 +94,9 @@ pub fn embeddings_available(conn: &Connection) -> bool {
 
 /// Count the number of stored embeddings.
 pub fn embedding_count(conn: &Connection) -> CortexResult<i64> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM memory_embeddings",
-        [],
-        |row| row.get(0),
-    )
+    conn.query_row("SELECT COUNT(*) FROM memory_embeddings", [], |row| {
+        row.get(0)
+    })
     .map_err(|e| to_storage_err(e.to_string()))
 }
 

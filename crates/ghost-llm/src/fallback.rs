@@ -6,9 +6,7 @@ use std::time::{Duration, Instant};
 
 use rand::Rng;
 
-use crate::provider::{
-    ChatMessage, CompletionResult, LLMError, LLMProvider, ToolSchema,
-};
+use crate::provider::{ChatMessage, CompletionResult, LLMError, LLMProvider, ToolSchema};
 
 /// Circuit breaker state for a single provider (A22.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,7 +96,11 @@ pub struct AuthProfile {
 /// Fallback chain: rotates auth profiles on 401/429, falls back to next
 /// provider, exponential backoff + jitter, 30s total retry budget.
 pub struct FallbackChain {
-    providers: Vec<(Arc<dyn LLMProvider>, Vec<AuthProfile>, ProviderCircuitBreaker)>,
+    providers: Vec<(
+        Arc<dyn LLMProvider>,
+        Vec<AuthProfile>,
+        ProviderCircuitBreaker,
+    )>,
     total_retry_budget: Duration,
 }
 
@@ -111,11 +113,7 @@ impl FallbackChain {
     }
 
     /// Add a provider with its auth profiles.
-    pub fn add_provider(
-        &mut self,
-        provider: Arc<dyn LLMProvider>,
-        profiles: Vec<AuthProfile>,
-    ) {
+    pub fn add_provider(&mut self, provider: Arc<dyn LLMProvider>, profiles: Vec<AuthProfile>) {
         let cb = ProviderCircuitBreaker::new(3, Duration::from_secs(300));
         self.providers.push((provider, profiles, cb));
     }

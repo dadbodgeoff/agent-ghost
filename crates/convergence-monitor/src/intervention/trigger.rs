@@ -75,14 +75,17 @@ impl InterventionStateMachine {
         hysteresis_count: u32,
         de_escalation_credits: u32,
     ) {
-        self.states.insert(agent_id, AgentInterventionState {
-            level,
-            consecutive_normal,
-            cooldown_until,
-            ack_required,
-            hysteresis_count: hysteresis_count as u8,
-            de_escalation_credits,
-        });
+        self.states.insert(
+            agent_id,
+            AgentInterventionState {
+                level,
+                consecutive_normal,
+                cooldown_until,
+                ack_required,
+                hysteresis_count: hysteresis_count as u8,
+                de_escalation_credits,
+            },
+        );
     }
 
     /// Get current state for an agent.

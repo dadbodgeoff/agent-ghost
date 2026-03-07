@@ -34,9 +34,9 @@ pub mod v042_cost_snapshots;
 pub mod v043_session_lifecycle;
 pub mod v044_studio_session_agent_id;
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub const LATEST_VERSION: u32 = 44;
 
@@ -55,7 +55,11 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 29] = [
     (22, "session_event_index", v022_session_event_index::migrate),
     (23, "otel_spans", v023_otel_spans::migrate),
     (24, "backup_manifest", v024_backup_manifest::migrate),
-    (25, "convergence_profiles", v025_convergence_profiles::migrate),
+    (
+        25,
+        "convergence_profiles",
+        v025_convergence_profiles::migrate,
+    ),
     (26, "webhooks", v026_webhooks::migrate),
     (27, "installed_skills", v027_installed_skills::migrate),
     (28, "a2a_tasks", v028_a2a_tasks::migrate),
@@ -63,7 +67,11 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 29] = [
     (30, "memory_compaction", v030_memory_compaction::migrate),
     (31, "fts5_search", v031_fts5_search::migrate),
     (32, "embeddings", v032_embeddings::migrate),
-    (33, "bundled_skill_tables", v033_bundled_skill_tables::migrate),
+    (
+        33,
+        "bundled_skill_tables",
+        v033_bundled_skill_tables::migrate,
+    ),
     (34, "pc_control_actions", v034_pc_control_actions::migrate),
     (35, "convergence_links", v035_convergence_links::migrate),
     (36, "citation_count", v036_citation_count::migrate),
@@ -74,7 +82,11 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 29] = [
     (41, "revoked_tokens", v041_revoked_tokens::migrate),
     (42, "cost_snapshots", v042_cost_snapshots::migrate),
     (43, "session_lifecycle", v043_session_lifecycle::migrate),
-    (44, "studio_session_agent_id", v044_studio_session_agent_id::migrate),
+    (
+        44,
+        "studio_session_agent_id",
+        v044_studio_session_agent_id::migrate,
+    ),
 ];
 
 /// Query the current schema version from the database.
@@ -86,8 +98,9 @@ pub fn current_version(conn: &Connection) -> CortexResult<u32> {
             version INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );"
-    ).map_err(|e| to_storage_err(e.to_string()))?;
+        );",
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
 
     conn.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM schema_version",
@@ -121,8 +134,9 @@ pub fn run_migrations_with_backup(
             version INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );"
-    ).map_err(|e| to_storage_err(e.to_string()))?;
+        );",
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
 
     let current: u32 = conn
         .query_row(
@@ -133,7 +147,8 @@ pub fn run_migrations_with_backup(
         .map_err(|e| to_storage_err(e.to_string()))?;
 
     // Collect pending migrations.
-    let pending: Vec<_> = MIGRATIONS.iter()
+    let pending: Vec<_> = MIGRATIONS
+        .iter()
         .filter(|(version, _, _)| *version > current)
         .collect();
 
@@ -146,9 +161,7 @@ pub fn run_migrations_with_backup(
 
     // Create pre-migration backup if db_path is provided.
     let backup_path = if let Some(path) = db_path {
-        let backup = path.with_extension(
-            format!("pre-migration-v{first_pending_version}.bak")
-        );
+        let backup = path.with_extension(format!("pre-migration-v{first_pending_version}.bak"));
         tracing::info!(
             from_version = current,
             to_version = last_pending_version,

@@ -77,33 +77,35 @@ pub async fn convergence_watcher_task(state: Arc<AppState>) {
 
             let changed = match previous.get(agent_id) {
                 Some(prev) => {
-                    (prev.score - new_score).abs() > f64::EPSILON
-                        || prev.level != new_level
+                    (prev.score - new_score).abs() > f64::EPSILON || prev.level != new_level
                 }
                 None => true,
             };
 
             if changed {
-                let old_level = previous
-                    .get(agent_id)
-                    .map(|p| p.level)
-                    .unwrap_or(0);
+                let old_level = previous.get(agent_id).map(|p| p.level).unwrap_or(0);
 
                 // Broadcast ScoreUpdate (Finding #13).
-                crate::api::websocket::broadcast_event(&state, WsEvent::ScoreUpdate {
-                    agent_id: agent_id.clone(),
-                    score: new_score,
-                    level: new_level,
-                    signals: signals.clone(),
-                });
+                crate::api::websocket::broadcast_event(
+                    &state,
+                    WsEvent::ScoreUpdate {
+                        agent_id: agent_id.clone(),
+                        score: new_score,
+                        level: new_level,
+                        signals: signals.clone(),
+                    },
+                );
 
                 // Broadcast InterventionChange if level changed (Finding #14).
                 if old_level != new_level {
-                    crate::api::websocket::broadcast_event(&state, WsEvent::InterventionChange {
-                        agent_id: agent_id.clone(),
-                        old_level,
-                        new_level,
-                    });
+                    crate::api::websocket::broadcast_event(
+                        &state,
+                        WsEvent::InterventionChange {
+                            agent_id: agent_id.clone(),
+                            old_level,
+                            new_level,
+                        },
+                    );
                 }
 
                 previous.insert(

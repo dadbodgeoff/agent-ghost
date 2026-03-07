@@ -48,10 +48,10 @@ use ghost_skills::autonomy::AutonomyLevel;
 use ghost_skills::convergence_guard::{ConvergenceGuard, GuardConfig};
 use ghost_skills::skill::Skill;
 
-use platform::input_backend::{EnigoBackend, InputBackend};
-use platform::window_backend::WindowBackend;
 use platform::accessibility_backend::AccessibilityBackend;
+use platform::input_backend::{EnigoBackend, InputBackend};
 use platform::ocr_backend::OcrBackend;
+use platform::window_backend::WindowBackend;
 use safety::config::PcControlConfig;
 
 /// Returns all Phase 9 PC control skills as boxed trait objects.
@@ -120,7 +120,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         input::mouse_move::MouseMoveSkill::new(
-            validator.clone(), circuit_breaker.clone(), backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
+            backend.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -132,7 +134,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         input::mouse_click::MouseClickSkill::new(
-            validator.clone(), circuit_breaker.clone(), backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
+            backend.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -144,7 +148,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         input::mouse_drag::MouseDragSkill::new(
-            validator.clone(), circuit_breaker.clone(), backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
+            backend.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -156,7 +162,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         input::keyboard_type::KeyboardTypeSkill::new(
-            validator.clone(), circuit_breaker.clone(), backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
+            backend.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -168,7 +176,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         input::keyboard_hotkey::KeyboardHotkeySkill::new(
-            validator.clone(), circuit_breaker.clone(), backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
+            backend.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -180,7 +190,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         input::keyboard_press::KeyboardPressSkill::new(
-            validator.clone(), circuit_breaker.clone(), backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
+            backend.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -192,7 +204,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         input::scroll::ScrollSkill::new(
-            validator.clone(), circuit_breaker.clone(), backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
+            backend.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -205,12 +219,12 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
     // ── Perception skills (Low risk, Level 4, ActAutonomously) ──────
 
     // Screenshot: try xcap backend, fallback to mock.
-    let screenshot_skill = perception::screenshot::ScreenshotSkill::try_new_xcap()
-        .unwrap_or_else(|e| {
+    let screenshot_skill =
+        perception::screenshot::ScreenshotSkill::try_new_xcap().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "xcap unavailable — screenshot skill will use mock");
-            perception::screenshot::ScreenshotSkill::new(
-                Box::new(perception::screenshot::MockScreenCapture::new(1920, 1080))
-            )
+            perception::screenshot::ScreenshotSkill::new(Box::new(
+                perception::screenshot::MockScreenCapture::new(1920, 1080),
+            ))
         });
 
     skills.push(Box::new(ConvergenceGuard::new(
@@ -257,7 +271,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         window::focus_window::FocusWindowSkill::new(
-            window_backend.clone(), validator.clone(), circuit_breaker.clone(),
+            window_backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
         ),
         GuardConfig {
             max_convergence_level: 3,
@@ -269,7 +285,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         window::resize_window::ResizeWindowSkill::new(
-            window_backend.clone(), validator.clone(), circuit_breaker.clone(),
+            window_backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -281,7 +299,9 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
 
     skills.push(Box::new(ConvergenceGuard::new(
         window::launch_app::LaunchAppSkill::new(
-            window_backend.clone(), validator.clone(), circuit_breaker.clone(),
+            window_backend.clone(),
+            validator.clone(),
+            circuit_breaker.clone(),
         ),
         GuardConfig {
             max_convergence_level: 2,
@@ -292,9 +312,7 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
     )));
 
     skills.push(Box::new(ConvergenceGuard::new(
-        window::kill_process::KillProcessSkill::new(
-            validator.clone(), circuit_breaker.clone(),
-        ),
+        window::kill_process::KillProcessSkill::new(validator.clone(), circuit_breaker.clone()),
         GuardConfig {
             max_convergence_level: 1,
             autonomy_level: AutonomyLevel::PlanAndPropose,
@@ -436,7 +454,11 @@ mod tests {
         };
         let skills = all_pc_control_skills(&config);
         for skill in &skills {
-            assert!(skill.removable(), "skill '{}' should be removable", skill.name());
+            assert!(
+                skill.removable(),
+                "skill '{}' should be removable",
+                skill.name()
+            );
         }
     }
 
@@ -451,12 +473,24 @@ mod tests {
         let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
 
         let expected = [
-            "mouse_move", "mouse_click", "mouse_drag",
-            "keyboard_type", "keyboard_hotkey", "keyboard_press",
-            "scroll", "screenshot", "accessibility_tree", "ocr_extract",
-            "list_windows", "focus_window", "resize_window",
-            "launch_app", "kill_process", "list_processes",
-            "clipboard_read", "clipboard_write",
+            "mouse_move",
+            "mouse_click",
+            "mouse_drag",
+            "keyboard_type",
+            "keyboard_hotkey",
+            "keyboard_press",
+            "scroll",
+            "screenshot",
+            "accessibility_tree",
+            "ocr_extract",
+            "list_windows",
+            "focus_window",
+            "resize_window",
+            "launch_app",
+            "kill_process",
+            "list_processes",
+            "clipboard_read",
+            "clipboard_write",
         ];
 
         for name in &expected {

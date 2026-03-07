@@ -25,23 +25,34 @@ use crate::audit;
 pub struct ClipboardReadSkill;
 
 impl ClipboardReadSkill {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for ClipboardReadSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Skill for ClipboardReadSkill {
-    fn name(&self) -> &str { "clipboard_read" }
-    fn description(&self) -> &str { "Read the current system clipboard contents" }
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn name(&self) -> &str {
+        "clipboard_read"
+    }
+    fn description(&self) -> &str {
+        "Read the current system clipboard contents"
+    }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
-        let mut clipboard = arboard::Clipboard::new().map_err(|e| {
-            SkillError::Internal(format!("failed to access clipboard: {e}"))
-        })?;
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| SkillError::Internal(format!("failed to access clipboard: {e}")))?;
 
         let text = clipboard.get_text().ok();
         let has_image = clipboard.get_image().is_ok();
@@ -54,7 +65,14 @@ impl Skill for ClipboardReadSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "clipboard_read", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "clipboard_read",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -76,7 +94,12 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     #[test]
@@ -104,6 +127,9 @@ mod tests {
     #[test]
     fn preview_output() {
         let skill = ClipboardReadSkill::new();
-        assert_eq!(skill.preview(&serde_json::json!({})), Some("Read clipboard".into()));
+        assert_eq!(
+            skill.preview(&serde_json::json!({})),
+            Some("Read clipboard".into())
+        );
     }
 }

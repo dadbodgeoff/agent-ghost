@@ -38,22 +38,35 @@ impl ScrollSkill {
         circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
         backend: Arc<Mutex<dyn InputBackend>>,
     ) -> Self {
-        Self { validator, circuit_breaker, backend }
+        Self {
+            validator,
+            circuit_breaker,
+            backend,
+        }
     }
 }
 
 impl Skill for ScrollSkill {
-    fn name(&self) -> &str { "scroll" }
+    fn name(&self) -> &str {
+        "scroll"
+    }
 
     fn description(&self) -> &str {
         "Scroll the mouse wheel vertically or horizontally"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
-        let direction = input.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
+        let direction = input
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("down");
         let amount = input.get("amount").and_then(|v| v.as_i64()).unwrap_or(3) as i32;
         let target_app = input.get("target_app").and_then(|v| v.as_str());
 
@@ -74,13 +87,22 @@ impl Skill for ScrollSkill {
         // Safety: validate app if specified.
         if let Some(app) = target_app {
             if let ValidationResult::Denied(reason) = self.validator.validate_app(app) {
-                audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "scroll", input, &reason);
+                audit::log_blocked_action(
+                    ctx.db,
+                    ctx.agent_id,
+                    ctx.session_id,
+                    "scroll",
+                    input,
+                    &reason,
+                );
                 return Err(SkillError::PcControlBlocked(reason));
             }
         }
 
         // Safety: circuit breaker.
-        { self.circuit_breaker.lock().unwrap().check("scroll")?; }
+        {
+            self.circuit_breaker.lock().unwrap().check("scroll")?;
+        }
 
         // Execute: scroll in the requested direction.
         {
@@ -95,7 +117,9 @@ impl Skill for ScrollSkill {
         }
 
         // Record success.
-        { self.circuit_breaker.lock().unwrap().record_success(); }
+        {
+            self.circuit_breaker.lock().unwrap().record_success();
+        }
 
         let result = serde_json::json!({
             "direction": direction,
@@ -103,13 +127,23 @@ impl Skill for ScrollSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "scroll", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "scroll",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
 
     fn preview(&self, input: &serde_json::Value) -> Option<String> {
-        let direction = input.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
+        let direction = input
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("down");
         let amount = input.get("amount").and_then(|v| v.as_i64()).unwrap_or(3);
         Some(format!("Scroll {direction} {amount} steps"))
     }
@@ -129,13 +163,22 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> (ScrollSkill, MockInputBackend) {
         let mock = MockInputBackend::new();
         let validator = Arc::new(InputValidator::new(vec!["Firefox".into()], None, vec![]));
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, std::time::Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            std::time::Duration::from_secs(30),
+        )));
         let backend: Arc<Mutex<dyn InputBackend>> = Arc::new(Mutex::new(mock.clone()));
         (ScrollSkill::new(validator, cb, backend), mock)
     }
@@ -162,7 +205,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"direction": "up", "amount": 5})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"direction": "up", "amount": 5}))
+            .unwrap();
         assert_eq!(result["direction"], "up");
         assert_eq!(result["amount"], 5);
 
@@ -176,12 +221,19 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        skill.execute(&ctx, &serde_json::json!({"direction": "left", "amount": 2})).unwrap();
+        skill
+            .execute(&ctx, &serde_json::json!({"direction": "left", "amount": 2}))
+            .unwrap();
         let actions = mock.actions();
         assert_eq!(actions[0], RecordedAction::ScrollX(-2));
 
         mock.clear();
-        skill.execute(&ctx, &serde_json::json!({"direction": "right", "amount": 4})).unwrap();
+        skill
+            .execute(
+                &ctx,
+                &serde_json::json!({"direction": "right", "amount": 4}),
+            )
+            .unwrap();
         let actions = mock.actions();
         assert_eq!(actions[0], RecordedAction::ScrollX(4));
     }

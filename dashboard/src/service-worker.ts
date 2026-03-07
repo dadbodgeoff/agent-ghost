@@ -59,6 +59,15 @@ self.addEventListener('activate', (event: ExtendableEvent) => {
   self.clients.claim();
 });
 
+self.addEventListener('message', (event: ExtendableMessageEvent) => {
+  if (
+    event.data?.type === 'ghost-auth-cleared' ||
+    event.data?.type === 'ghost-auth-changed'
+  ) {
+    event.waitUntil(clearAuthenticatedState());
+  }
+});
+
 // ── Fetch ───────────────────────────────────────────────────────────────
 
 self.addEventListener('fetch', (event: FetchEvent) => {
@@ -77,6 +86,10 @@ self.addEventListener('fetch', (event: FetchEvent) => {
 
   // API calls: tiered strategy.
   if (url.pathname.startsWith('/api/')) {
+    if (isAuthPath(url.pathname)) {
+      event.respondWith(networkOnly(event.request));
+      return;
+    }
     if (isStaleRevalidatePath(url.pathname)) {
       event.respondWith(staleWhileRevalidate(event.request));
     } else {
@@ -98,6 +111,14 @@ function isSafetyPath(pathname: string): boolean {
 
 function isStaleRevalidatePath(pathname: string): boolean {
   return STALE_REVALIDATE_PATHS.some((p) => pathname.startsWith(p));
+}
+
+function isAuthPath(pathname: string): boolean {
+  return pathname.startsWith('/api/auth/');
+}
+
+function isCacheableApiRequest(request: Request): boolean {
+  return request.method === 'GET' && !request.headers.has('Authorization');
 }
 
 // ── Caching strategies ──────────────────────────────────────────────────
@@ -122,7 +143,7 @@ async function cacheFirstWithNetwork(request: Request): Promise<Response> {
 async function networkFirstWithCache(request: Request): Promise<Response> {
   try {
     const response = await fetch(request);
-    if (response.ok && request.method === 'GET') {
+    if (response.ok && isCacheableApiRequest(request)) {
       const cache = await caches.open(CACHE_NAME);
       // Add last-sync timestamp header to cached response.
       const headers = new Headers(response.headers);
@@ -136,7 +157,7 @@ async function networkFirstWithCache(request: Request): Promise<Response> {
     }
     return response;
   } catch {
-    const cached = await caches.match(request);
+    const cached = isCacheableApiRequest(request) ? await caches.match(request) : undefined;
     return cached ?? new Response(JSON.stringify({ error: 'offline' }), {
       status: 503,
       headers: { 'Content-Type': 'application/json' },
@@ -146,11 +167,11 @@ async function networkFirstWithCache(request: Request): Promise<Response> {
 
 async function staleWhileRevalidate(request: Request): Promise<Response> {
   const cache = await caches.open(CACHE_NAME);
-  const cached = await cache.match(request);
+  const cached = isCacheableApiRequest(request) ? await cache.match(request) : undefined;
 
   // Start network fetch in background.
   const networkFetch = fetch(request).then(async (response) => {
-    if (response.ok && request.method === 'GET') {
+    if (response.ok && isCacheableApiRequest(request)) {
       const headers = new Headers(response.headers);
       headers.set('X-Ghost-Last-Sync', new Date().toISOString());
       const cachedResponse = new Response(await response.clone().arrayBuffer(), {
@@ -176,6 +197,36 @@ async function staleWhileRevalidate(request: Request): Promise<Response> {
     status: 503,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+async function clearAuthenticatedApiCache(): Promise<void> {
+  const cache = await caches.open(CACHE_NAME);
+  const keys = await cache.keys();
+
+  await Promise.all(
+    keys
+      .filter((request) => new URL(request.url).pathname.startsWith('/api/'))
+      .map((request) => cache.delete(request)),
+  );
+}
+
+async function clearPendingActions(): Promise<void> {
+  const db = await openPendingActionsDB().catch(() => null);
+  if (!db) return;
+
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction('pending_actions', 'readwrite');
+    tx.objectStore('pending_actions').clear();
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => resolve();
+    tx.onerror = () => resolve();
+  });
+
+  db.close();
+}
+
+async function clearAuthenticatedState(): Promise<void> {
+  await Promise.all([clearAuthenticatedApiCache(), clearPendingActions()]);
 }
 
 async function networkOnly(request: Request): Promise<Response> {

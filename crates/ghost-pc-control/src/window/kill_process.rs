@@ -33,24 +33,38 @@ impl KillProcessSkill {
         validator: Arc<InputValidator>,
         circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
     ) -> Self {
-        Self { validator, circuit_breaker }
+        Self {
+            validator,
+            circuit_breaker,
+        }
     }
 }
 
 impl Skill for KillProcessSkill {
-    fn name(&self) -> &str { "kill_process" }
-    fn description(&self) -> &str { "Terminate a running process" }
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn name(&self) -> &str {
+        "kill_process"
+    }
+    fn description(&self) -> &str {
+        "Terminate a running process"
+    }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let pid = input.get("pid").and_then(|v| v.as_u64()).map(|p| p as u32);
         let app_name = input.get("app").and_then(|v| v.as_str());
-        let force = input.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        let force = input
+            .get("force")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         if pid.is_none() && app_name.is_none() {
             return Err(SkillError::InvalidInput(
-                "at least one of 'pid' or 'app' must be provided".into()
+                "at least one of 'pid' or 'app' must be provided".into(),
             ));
         }
 
@@ -59,28 +73,43 @@ impl Skill for KillProcessSkill {
 
         // Resolve the target PID and process name.
         let (target_pid, resolved_name) = if let Some(p) = pid {
-            let name = sys.process(sysinfo::Pid::from_u32(p))
+            let name = sys
+                .process(sysinfo::Pid::from_u32(p))
                 .map(|proc| proc.name().to_string_lossy().to_string())
                 .unwrap_or_else(|| format!("PID {p}"));
             (p, name)
         } else {
             let app = app_name.unwrap();
-            let proc = sys.processes().values()
+            let proc = sys
+                .processes()
+                .values()
                 .find(|p| p.name().to_string_lossy().to_lowercase() == app.to_lowercase())
-                .ok_or_else(|| SkillError::InvalidInput(
-                    format!("no process found matching app name '{app}'")
-                ))?;
-            (proc.pid().as_u32(), proc.name().to_string_lossy().to_string())
+                .ok_or_else(|| {
+                    SkillError::InvalidInput(format!("no process found matching app name '{app}'"))
+                })?;
+            (
+                proc.pid().as_u32(),
+                proc.name().to_string_lossy().to_string(),
+            )
         };
 
         // Validate against app allowlist.
         if let ValidationResult::Denied(reason) = self.validator.validate_app(&resolved_name) {
-            audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "kill_process", input, &reason);
+            audit::log_blocked_action(
+                ctx.db,
+                ctx.agent_id,
+                ctx.session_id,
+                "kill_process",
+                input,
+                &reason,
+            );
             return Err(SkillError::PcControlBlocked(reason));
         }
 
         // Circuit breaker check.
-        { self.circuit_breaker.lock().unwrap().check("kill_process")?; }
+        {
+            self.circuit_breaker.lock().unwrap().check("kill_process")?;
+        }
 
         // Send signal via kill command (avoids unsafe libc).
         let signal = if force { "KILL" } else { "TERM" };
@@ -94,13 +123,16 @@ impl Skill for KillProcessSkill {
 
         if !status.success() {
             self.circuit_breaker.lock().unwrap().record_failure();
-            return Err(SkillError::Internal(
-                format!("kill -{signal} {target_pid} failed with exit code {:?}", status.code())
-            ));
+            return Err(SkillError::Internal(format!(
+                "kill -{signal} {target_pid} failed with exit code {:?}",
+                status.code()
+            )));
         }
 
         // Record success.
-        { self.circuit_breaker.lock().unwrap().record_success(); }
+        {
+            self.circuit_breaker.lock().unwrap().record_success();
+        }
 
         let result = serde_json::json!({
             "pid": target_pid,
@@ -109,17 +141,34 @@ impl Skill for KillProcessSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "kill_process", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "kill_process",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
 
     fn preview(&self, input: &serde_json::Value) -> Option<String> {
-        let target = input.get("app").and_then(|v| v.as_str())
+        let target = input
+            .get("app")
+            .and_then(|v| v.as_str())
             .map(|a| a.to_string())
-            .or_else(|| input.get("pid").and_then(|v| v.as_u64()).map(|p| format!("PID {p}")))
+            .or_else(|| {
+                input
+                    .get("pid")
+                    .and_then(|v| v.as_u64())
+                    .map(|p| format!("PID {p}"))
+            })
             .unwrap_or_else(|| "process".into());
-        let force = input.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        let force = input
+            .get("force")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if force {
             Some(format!("Force kill: {target}"))
         } else {
@@ -132,8 +181,8 @@ impl Skill for KillProcessSkill {
 mod tests {
     use super::*;
     use crate::safety::input_validator::ScreenRegion;
-    use uuid::Uuid;
     use std::time::Duration;
+    use uuid::Uuid;
 
     fn test_db() -> rusqlite::Connection {
         let db = rusqlite::Connection::open_in_memory().unwrap();
@@ -142,16 +191,30 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> KillProcessSkill {
         let validator = Arc::new(InputValidator::new(
             vec!["Firefox".into(), "TestApp".into()],
-            Some(ScreenRegion { x: 0, y: 0, width: 1920, height: 1080 }),
+            Some(ScreenRegion {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }),
             vec![],
         ));
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            Duration::from_secs(30),
+        )));
         KillProcessSkill::new(validator, cb)
     }
 
@@ -171,7 +234,10 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"app": "nonexistent_app_xyz_12345"}));
+        let result = skill.execute(
+            &ctx,
+            &serde_json::json!({"app": "nonexistent_app_xyz_12345"}),
+        );
         assert!(matches!(result, Err(SkillError::InvalidInput(_))));
     }
 

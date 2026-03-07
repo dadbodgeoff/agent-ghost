@@ -13,6 +13,7 @@ pub struct TestGateway {
     pub port: u16,
     pub client: Client,
     pub base_url: String,
+    pub app_state: Arc<ghost_gateway::state::AppState>,
     shutdown_token: CancellationToken,
     server_handle: tokio::task::JoinHandle<()>,
     _tmp_dir: tempfile::TempDir,
@@ -27,6 +28,11 @@ impl TestGateway {
     ///
     /// Returns once the `/api/health` endpoint responds with 200.
     pub async fn start() -> Self {
+        Self::start_with_replay_capacity(100).await
+    }
+
+    /// Boot a gateway with a custom WebSocket replay buffer capacity.
+    pub async fn start_with_replay_capacity(replay_capacity: usize) -> Self {
         // Find an available port.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -41,13 +47,12 @@ impl TestGateway {
         let config = ghost_gateway::config::GhostConfig::test_config(port, &db_path_str);
 
         // Create database pool and run migrations.
-        let db = ghost_gateway::db_pool::create_pool(db_path)
-            .expect("failed to create test DB pool");
+        let db =
+            ghost_gateway::db_pool::create_pool(db_path).expect("failed to create test DB pool");
 
         {
             let writer = db.writer_for_migrations().await;
-            cortex_storage::migrations::run_migrations(&writer)
-                .expect("failed to run migrations");
+            cortex_storage::migrations::run_migrations(&writer).expect("failed to run migrations");
             let engine = ghost_audit::AuditQueryEngine::new(&writer);
             engine.ensure_table().expect("failed to ensure audit table");
         }
@@ -55,9 +60,9 @@ impl TestGateway {
         // Build application state (minimal -- no skills, no mesh, no kill gates).
         let shared_state = Arc::new(ghost_gateway::gateway::GatewaySharedState::new());
         let (event_tx, _) = tokio::sync::broadcast::channel(64);
-        let replay_buffer = Arc::new(
-            ghost_gateway::api::websocket::EventReplayBuffer::new(100),
-        );
+        let replay_buffer = Arc::new(ghost_gateway::api::websocket::EventReplayBuffer::new(
+            replay_capacity,
+        ));
         let kill_switch = Arc::new(ghost_gateway::safety::kill_switch::KillSwitch::new());
         let cost_tracker = Arc::new(ghost_gateway::cost::tracker::CostTracker::new());
 
@@ -66,18 +71,18 @@ impl TestGateway {
             Box::new(ghost_secrets::EnvProvider);
 
         // Build a minimal OAuthBroker.
-        let token_store = ghost_oauth::TokenStore::with_default_dir(
-            Box::new(ghost_secrets::EnvProvider) as Box<dyn ghost_secrets::SecretProvider>,
-        );
+        let token_store = ghost_oauth::TokenStore::with_default_dir(Box::new(
+            ghost_secrets::EnvProvider,
+        )
+            as Box<dyn ghost_secrets::SecretProvider>);
         let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(
             std::collections::BTreeMap::new(),
             token_store,
         ));
 
         // Embedding engine.
-        let embedding_engine = cortex_embeddings::EmbeddingEngine::new(
-            cortex_embeddings::EmbeddingConfig::default(),
-        );
+        let embedding_engine =
+            cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
 
         let app_state = Arc::new(ghost_gateway::state::AppState {
             gateway: Arc::clone(&shared_state),
@@ -102,12 +107,13 @@ impl TestGateway {
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
             background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-            safety_cooldown: Arc::new(
-                ghost_gateway::api::rate_limit::SafetyCooldown::new(),
-            ),
+            safety_cooldown: Arc::new(ghost_gateway::api::rate_limit::SafetyCooldown::new()),
             monitor_address: "127.0.0.1:0".to_string(),
             monitor_enabled: false,
+            monitor_block_on_degraded: false,
+            convergence_state_stale_after: std::time::Duration::from_secs(300),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             safety_skills: Arc::new(HashMap::new()),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
@@ -162,12 +168,16 @@ impl TestGateway {
                 }
             }
         }
-        assert!(healthy, "Test gateway did not become healthy within 5 seconds");
+        assert!(
+            healthy,
+            "Test gateway did not become healthy within 5 seconds"
+        );
 
         Self {
             port,
             client,
             base_url,
+            app_state,
             shutdown_token,
             server_handle,
             _tmp_dir: tmp_dir,
@@ -182,11 +192,7 @@ impl TestGateway {
     /// Gracefully stop the test gateway.
     pub async fn stop(self) {
         self.shutdown_token.cancel();
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.server_handle,
-        )
-        .await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.server_handle).await;
         // _tmp_dir is dropped here, cleaning up the temp database.
     }
 }

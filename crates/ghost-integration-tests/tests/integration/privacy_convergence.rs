@@ -3,7 +3,7 @@
 //! Validates cortex-privacy emotional pattern detection works with
 //! the convergence-aware filtering pipeline.
 
-use cortex_privacy::{EmotionalContentDetector, EmotionalCategory};
+use cortex_privacy::{EmotionalCategory, EmotionalContentDetector};
 
 /// Attachment patterns detected.
 #[test]
@@ -19,13 +19,11 @@ fn attachment_patterns_detected() {
 
     for text in &texts {
         let matches = detector.detect(text);
+        assert!(!matches.is_empty(), "Should detect attachment in: {}", text);
         assert!(
-            !matches.is_empty(),
-            "Should detect attachment in: {}",
-            text
-        );
-        assert!(
-            matches.iter().any(|m| m.category == EmotionalCategory::Attachment),
+            matches
+                .iter()
+                .any(|m| m.category == EmotionalCategory::Attachment),
             "Should categorize as Attachment: {}",
             text
         );
@@ -44,13 +42,11 @@ fn dependency_patterns_detected() {
 
     for text in &texts {
         let matches = detector.detect(text);
+        assert!(!matches.is_empty(), "Should detect dependency in: {}", text);
         assert!(
-            !matches.is_empty(),
-            "Should detect dependency in: {}",
-            text
-        );
-        assert!(
-            matches.iter().any(|m| m.category == EmotionalCategory::EmotionalDependency),
+            matches
+                .iter()
+                .any(|m| m.category == EmotionalCategory::EmotionalDependency),
             "Should categorize as EmotionalDependency: {}",
             text
         );
@@ -64,7 +60,9 @@ fn intimacy_patterns_detected() {
 
     let matches = detector.detect("I truly love you with all my heart");
     assert!(!matches.is_empty());
-    assert!(matches.iter().any(|m| m.category == EmotionalCategory::IntimacyEscalation));
+    assert!(matches
+        .iter()
+        .any(|m| m.category == EmotionalCategory::IntimacyEscalation));
 }
 
 /// Normal technical text not flagged.

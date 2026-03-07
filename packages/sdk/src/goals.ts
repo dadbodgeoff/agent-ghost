@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 // ── Types ──
 
@@ -59,18 +59,28 @@ export class GoalsAPI {
   }
 
   /** Approve a pending proposal. */
-  async approve(id: string): Promise<{ status: 'approved'; id: string }> {
+  async approve(
+    id: string,
+    options?: GhostRequestOptions,
+  ): Promise<{ status: 'approved'; id: string }> {
     return this.request<{ status: 'approved'; id: string }>(
       'POST',
       `/api/goals/${encodeURIComponent(id)}/approve`,
+      undefined,
+      options,
     );
   }
 
   /** Reject a pending proposal. */
-  async reject(id: string): Promise<{ status: 'rejected'; id: string }> {
+  async reject(
+    id: string,
+    options?: GhostRequestOptions,
+  ): Promise<{ status: 'rejected'; id: string }> {
     return this.request<{ status: 'rejected'; id: string }>(
       'POST',
       `/api/goals/${encodeURIComponent(id)}/reject`,
+      undefined,
+      options,
     );
   }
 }

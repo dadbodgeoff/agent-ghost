@@ -35,12 +35,12 @@ impl CliError {
     /// Map error variant to sysexits.h exit code.
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Config(_) => 78,                          // EX_CONFIG
-            Self::Database(_) => 76,                        // EX_PROTOCOL
-            Self::GatewayRequired | Self::NoBackend => 69,  // EX_UNAVAILABLE
-            Self::AuthRequired | Self::Auth(_) => 77,       // EX_NOPERM
-            Self::Internal(_) => 70,                        // EX_SOFTWARE
-            Self::Usage(_) => 64,                           // EX_USAGE
+            Self::Config(_) => 78,                         // EX_CONFIG
+            Self::Database(_) => 76,                       // EX_PROTOCOL
+            Self::GatewayRequired | Self::NoBackend => 69, // EX_UNAVAILABLE
+            Self::AuthRequired | Self::Auth(_) => 77,      // EX_NOPERM
+            Self::Internal(_) => 70,                       // EX_SOFTWARE
+            Self::Usage(_) => 64,                          // EX_USAGE
             Self::Http(_) | Self::NotFound(_) | Self::Conflict(_) | Self::Cancelled => 1,
         }
     }

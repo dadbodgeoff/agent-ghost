@@ -51,7 +51,11 @@ fn compact_reduces_tokens() {
     let pre_tokens: usize = history.iter().map(|m| m.len()).sum();
     let result = compactor.compact(&mut history, 1, None);
 
-    assert!(result.is_ok(), "Compaction must succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Compaction must succeed: {:?}",
+        result.err()
+    );
     let new_tokens: usize = history.iter().map(|m| m.len()).sum();
     assert!(
         new_tokens < pre_tokens,
@@ -60,7 +64,6 @@ fn compact_reduces_tokens() {
         pre_tokens
     );
 }
-
 
 // ── Max passes enforced ─────────────────────────────────────────────────
 
@@ -73,17 +76,11 @@ fn max_passes_enforced() {
     };
     let compactor = SessionCompactor::new(config);
 
-    let mut history: Vec<String> = vec![
-        "a".repeat(300),
-        "b".repeat(300),
-    ];
+    let mut history: Vec<String> = vec!["a".repeat(300), "b".repeat(300)];
 
     // Pass 4 must be rejected
     let result = compactor.compact(&mut history, 4, None);
-    assert!(
-        result.is_err(),
-        "Pass 4 must be rejected when max_passes=3"
-    );
+    assert!(result.is_err(), "Pass 4 must be rejected when max_passes=3");
 }
 
 // ── CompactionBlock never re-compressed ─────────────────────────────────
@@ -108,10 +105,16 @@ fn compaction_block_never_recompressed() {
     ];
 
     let result = compactor.compact(&mut history, 2, None);
-    assert!(result.is_ok(), "Compaction must succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Compaction must succeed: {:?}",
+        result.err()
+    );
 
     // The original CompactionBlock JSON should still be in history
-    let has_original_block = history.iter().any(|m| m.contains("\"pass_number\":1") || m.contains("\"pass_number\": 1"));
+    let has_original_block = history
+        .iter()
+        .any(|m| m.contains("\"pass_number\":1") || m.contains("\"pass_number\": 1"));
     assert!(
         has_original_block,
         "Original CompactionBlock must be preserved, not re-compressed"
@@ -129,10 +132,7 @@ fn tight_budget_no_panic() {
     };
     let compactor = SessionCompactor::new(config);
 
-    let mut history: Vec<String> = vec![
-        "Hello".to_string(),
-        "Hi".to_string(),
-    ];
+    let mut history: Vec<String> = vec!["Hello".to_string(), "Hi".to_string()];
 
     // Should not panic even with minimal content (may error, that's fine)
     let _ = compactor.compact(&mut history, 1, None);
@@ -169,7 +169,8 @@ fn prune_preserves_non_tool_messages() {
         "Follow-up question".to_string(),
     ];
 
-    let original_non_tool_count = history.iter()
+    let original_non_tool_count = history
+        .iter()
         .filter(|m| {
             serde_json::from_str::<serde_json::Value>(m)
                 .ok()

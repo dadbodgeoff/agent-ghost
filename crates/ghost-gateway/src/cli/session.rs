@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost session list ───────────────────────────────────────────────────────
 
@@ -233,10 +233,7 @@ impl TableDisplay for SessionReplay {
             // Format based on event type.
             match entry.event_type.as_str() {
                 "llm_request" | "user_message" | "message" => {
-                    println!(
-                        "[{} | #{}] {} >",
-                        entry.timestamp, entry.seq, sender
-                    );
+                    println!("[{} | #{}] {} >", entry.timestamp, entry.seq, sender);
                     // Indent message content.
                     for line in entry.content.lines() {
                         println!("  {line}");
@@ -244,10 +241,7 @@ impl TableDisplay for SessionReplay {
                     println!();
                 }
                 "llm_response" | "assistant_message" => {
-                    println!(
-                        "[{} | #{}] {} <",
-                        entry.timestamp, entry.seq, sender
-                    );
+                    println!("[{} | #{}] {} <", entry.timestamp, entry.seq, sender);
                     for line in entry.content.lines() {
                         println!("  {line}");
                     }
@@ -290,8 +284,7 @@ pub async fn run_replay(args: SessionReplayArgs, backend: &CliBackend) -> Result
                 .json()
                 .await
                 .map_err(|e| CliError::Internal(format!("parse session events: {e}")))?;
-            serde_json::from_value::<Vec<SessionEvent>>(body["events"].clone())
-                .unwrap_or_default()
+            serde_json::from_value::<Vec<SessionEvent>>(body["events"].clone()).unwrap_or_default()
         }
         CliBackend::Direct { db, .. } => {
             let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
@@ -428,7 +421,9 @@ fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> 
         started_at: row.get(1)?,
         last_event_at: row.get(2)?,
         event_count: row.get(3)?,
-        agents: row.get::<_, Option<String>>(4)?.unwrap_or_else(|| "-".into()),
+        agents: row
+            .get::<_, Option<String>>(4)?
+            .unwrap_or_else(|| "-".into()),
     })
 }
 
@@ -447,8 +442,9 @@ fn query_events_direct(
 
     let rows: Result<Vec<SessionEvent>, _> = stmt
         .query_map(rusqlite::params![session_id], |row| {
-            let attrs_str: String =
-                row.get::<_, Option<String>>(12)?.unwrap_or_else(|| "{}".into());
+            let attrs_str: String = row
+                .get::<_, Option<String>>(12)?
+                .unwrap_or_else(|| "{}".into());
             let attributes = serde_json::from_str(&attrs_str)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             Ok(SessionEvent {

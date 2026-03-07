@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ghost_llm::provider::ToolSchema;
 use ghost_skills::skill::{Skill, SkillContext, SkillError};
@@ -18,6 +19,10 @@ use super::registry::{RegisteredTool, ToolRegistry};
 pub struct ExecutionContext {
     pub agent_id: Uuid,
     pub session_id: Uuid,
+    pub intervention_level: u8,
+    pub session_duration: Duration,
+    pub session_reflection_count: u32,
+    pub is_compaction_flush: bool,
 }
 
 /// Bridge between the Skill system and the ToolRegistry/ToolExecutor.
@@ -36,30 +41,37 @@ impl SkillBridge {
         db: Arc<Mutex<Connection>>,
         convergence_profile: String,
     ) -> Self {
-        Self { skills, db, convergence_profile }
+        Self {
+            skills,
+            db,
+            convergence_profile,
+        }
     }
 
     /// Generate `RegisteredTool` entries for all skills.
     ///
     /// Each skill becomes a tool with a `skill_` prefix (e.g. `skill_note_take`).
     pub fn registered_tools(&self) -> Vec<RegisteredTool> {
-        self.skills.iter().map(|(name, skill)| {
-            let tool_name = format!("skill_{name}");
-            RegisteredTool {
-                name: tool_name.clone(),
-                description: skill.description().to_string(),
-                schema: ToolSchema {
-                    name: tool_name,
+        self.skills
+            .iter()
+            .map(|(name, skill)| {
+                let tool_name = format!("skill_{name}");
+                RegisteredTool {
+                    name: tool_name.clone(),
                     description: skill.description().to_string(),
-                    parameters: skill.parameters_schema(),
-                },
-                capability: format!("skill:{name}"),
-                // Safety skills (not removable) are always visible (level 5 = never hidden).
-                // Other skills are visible up to intervention level 3.
-                hidden_at_level: if skill.removable() { 3 } else { 5 },
-                timeout_secs: 30,
-            }
-        }).collect()
+                    schema: ToolSchema {
+                        name: tool_name,
+                        description: skill.description().to_string(),
+                        parameters: skill.parameters_schema(),
+                    },
+                    capability: format!("skill:{name}"),
+                    // Safety skills (not removable) are always visible (level 5 = never hidden).
+                    // Other skills are visible up to intervention level 3.
+                    hidden_at_level: if skill.removable() { 3 } else { 5 },
+                    timeout_secs: 30,
+                }
+            })
+            .collect()
     }
 
     /// Execute a skill by name, constructing a `SkillContext` from the
@@ -70,12 +82,13 @@ impl SkillBridge {
         input: &serde_json::Value,
         exec_ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, SkillError> {
-        let skill = self.skills.get(skill_name)
-            .ok_or_else(|| SkillError::Internal(
-                format!("skill '{skill_name}' not found in bridge")
-            ))?;
+        let skill = self.skills.get(skill_name).ok_or_else(|| {
+            SkillError::Internal(format!("skill '{skill_name}' not found in bridge"))
+        })?;
 
-        let db = self.db.lock()
+        let db = self
+            .db
+            .lock()
             .map_err(|_| SkillError::Storage("DB lock poisoned".into()))?;
 
         let ctx = SkillContext {
@@ -109,7 +122,9 @@ pub fn register_skills(
         let skill_name = tool.name.strip_prefix("skill_").unwrap_or(&tool.name);
 
         if let Some(allowlist) = skill_allowlist {
-            let is_safety = bridge.skills.get(skill_name)
+            let is_safety = bridge
+                .skills
+                .get(skill_name)
                 .map_or(false, |s| !s.removable());
             if !is_safety && !allowlist.iter().any(|a| a == skill_name) {
                 continue;

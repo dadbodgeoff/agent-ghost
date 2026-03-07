@@ -95,7 +95,11 @@ fn normalized_row_sums_to_one() {
 fn dirty_flag_set_on_interaction() {
     let mut store = LocalTrustStore::new();
     assert!(!store.is_dirty());
-    store.record_interaction(Uuid::new_v4(), Uuid::new_v4(), InteractionOutcome::TaskCompleted);
+    store.record_interaction(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        InteractionOutcome::TaskCompleted,
+    );
     assert!(store.is_dirty());
     store.clear_dirty();
     assert!(!store.is_dirty());
@@ -218,10 +222,7 @@ fn power_iteration_converges_medium_network() {
     let result = computer.compute_global_trust(&mut store, &[agents[0], agents[1]]);
 
     for (&_id, &trust) in &result {
-        assert!(
-            (0.0..=1.0).contains(&trust),
-            "trust {trust} out of range"
-        );
+        assert!((0.0..=1.0).contains(&trust), "trust {trust} out of range");
     }
 }
 

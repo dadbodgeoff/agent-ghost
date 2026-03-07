@@ -57,7 +57,12 @@ fn inflight_compaction_aborts_on_shutdown() {
     let shutdown_signal = AtomicBool::new(false);
 
     let mut history: Vec<String> = (0..20)
-        .map(|i| format!("Message {} with content for compaction testing during shutdown scenario", i))
+        .map(|i| {
+            format!(
+                "Message {} with content for compaction testing during shutdown scenario",
+                i
+            )
+        })
         .collect();
     let snapshot = history.clone();
 
@@ -65,7 +70,10 @@ fn inflight_compaction_aborts_on_shutdown() {
     shutdown_signal.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let result = compactor.compact(&mut history, 1, Some(&shutdown_signal));
-    assert!(result.is_err(), "Compaction should abort when shutdown signal is set");
+    assert!(
+        result.is_err(),
+        "Compaction should abort when shutdown signal is set"
+    );
 
     // History must be unchanged (rollback)
     assert_eq!(history, snapshot, "History must be rolled back on abort");

@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface StudioRunMessageInput {
   role: 'user' | 'assistant' | 'system';
@@ -23,7 +23,7 @@ export interface StudioRunResult {
 export class StudioAPI {
   constructor(private request: GhostRequestFn) {}
 
-  async run(params: StudioRunParams): Promise<StudioRunResult> {
-    return this.request<StudioRunResult>('POST', '/api/studio/run', params);
+  async run(params: StudioRunParams, options?: GhostRequestOptions): Promise<StudioRunResult> {
+    return this.request<StudioRunResult>('POST', '/api/studio/run', params, options);
   }
 }

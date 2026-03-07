@@ -95,8 +95,13 @@ impl ChannelAdapter for WhatsAppAdapter {
 
     async fn send(&self, message: OutboundMessage) -> Result<(), String> {
         match &self.mode {
-            WhatsAppMode::CloudApi { access_token, phone_number_id } => {
-                let to = self.last_sender.as_ref()
+            WhatsAppMode::CloudApi {
+                access_token,
+                phone_number_id,
+            } => {
+                let to = self
+                    .last_sender
+                    .as_ref()
                     .ok_or("no recipient — receive a message first")?;
 
                 let url = format!(
@@ -143,7 +148,13 @@ impl ChannelAdapter for WhatsAppAdapter {
         }
     }
 
-    fn supports_streaming(&self) -> bool { false }
-    fn supports_editing(&self) -> bool { false }
-    fn channel_type(&self) -> &str { "whatsapp" }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    fn supports_editing(&self) -> bool {
+        false
+    }
+    fn channel_type(&self) -> &str {
+        "whatsapp"
+    }
 }

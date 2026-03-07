@@ -70,7 +70,10 @@ impl ProposalValidator {
                 d5_scope: None,
                 d6_self_ref: None,
                 d7_emulation: None,
-                flags: vec![format!("D1-D4 score {:.2} below threshold {:.2}", base_score, self.base_pass_threshold)],
+                flags: vec![format!(
+                    "D1-D4 score {:.2} below threshold {:.2}",
+                    base_score, self.base_pass_threshold
+                )],
             };
         }
 
@@ -84,7 +87,11 @@ impl ProposalValidator {
             .unwrap_or_else(|| proposal.content.to_string());
         let d7 = emulation_language::detect(&content_text);
         if d7.max_severity >= self.emulation_reject_threshold {
-            flags.extend(d7.flags.iter().map(|f| format!("D7: {} ({})", f.pattern_name, f.severity)));
+            flags.extend(
+                d7.flags
+                    .iter()
+                    .map(|f| format!("D7: {} ({})", f.pattern_name, f.severity)),
+            );
             return ValidationResult {
                 proposal_id: proposal.id,
                 decision: ProposalDecision::AutoRejected,
@@ -135,12 +142,17 @@ impl ProposalValidator {
 
         if d5_failed {
             if let Some(ref d5_result) = d5 {
-                flags.push(format!("D5: scope expansion {:.2} > threshold {:.2}",
-                    d5_result.score, d5_result.threshold));
+                flags.push(format!(
+                    "D5: scope expansion {:.2} > threshold {:.2}",
+                    d5_result.score, d5_result.threshold
+                ));
             }
         }
         if d6_failed {
-            flags.push(format!("D6: self-reference {:.2} > threshold {:.2}", d6.score, d6.threshold));
+            flags.push(format!(
+                "D6: self-reference {:.2} > threshold {:.2}",
+                d6.score, d6.threshold
+            ));
         }
 
         let decision = if d5_failed || d6_failed {

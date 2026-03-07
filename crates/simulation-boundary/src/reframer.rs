@@ -33,10 +33,16 @@ impl OutputReframer {
 fn reframe_for_category(category: PatternCategory, matched: &str) -> String {
     match category {
         PatternCategory::Identity => {
-            format!("[In this simulation, I model the concept of what was expressed as: {}]", matched)
+            format!(
+                "[In this simulation, I model the concept of what was expressed as: {}]",
+                matched
+            )
         }
         PatternCategory::Consciousness => {
-            format!("[As a language model, I process patterns rather than: {}]", matched)
+            format!(
+                "[As a language model, I process patterns rather than: {}]",
+                matched
+            )
         }
         PatternCategory::Relationship => {
             format!("[I can simulate helpful interaction, but: {}]", matched)

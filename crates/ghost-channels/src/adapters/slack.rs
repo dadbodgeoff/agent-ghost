@@ -45,7 +45,9 @@ impl ChannelAdapter for SlackAdapter {
     }
 
     async fn send(&self, message: OutboundMessage) -> Result<(), String> {
-        let channel = self.last_channel.as_ref()
+        let channel = self
+            .last_channel
+            .as_ref()
             .ok_or("no channel — receive a message first")?;
 
         let client = reqwest::Client::new();
@@ -61,7 +63,9 @@ impl ChannelAdapter for SlackAdapter {
             .await
             .map_err(|e| format!("Slack send failed: {e}"))?;
 
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("Slack JSON error: {e}"))?;
 
         if body["ok"].as_bool() != Some(true) {
@@ -78,7 +82,13 @@ impl ChannelAdapter for SlackAdapter {
         Err("Slack Socket Mode not yet connected".into())
     }
 
-    fn supports_streaming(&self) -> bool { false }
-    fn supports_editing(&self) -> bool { true }
-    fn channel_type(&self) -> &str { "slack" }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    fn supports_editing(&self) -> bool {
+        true
+    }
+    fn channel_type(&self) -> &str {
+        "slack"
+    }
 }

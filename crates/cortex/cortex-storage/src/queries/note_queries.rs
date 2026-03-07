@@ -1,8 +1,8 @@
 //! Note queries for the `note_take` skill.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_note(
     conn: &Connection,

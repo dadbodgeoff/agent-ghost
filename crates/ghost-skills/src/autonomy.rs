@@ -117,20 +117,44 @@ mod tests {
     #[test]
     fn convergence_downshift_boundaries() {
         // Below 0.3 — full autonomy
-        assert_eq!(AutonomyLevel::max_for_convergence(0.0), AutonomyLevel::ActAutonomously);
-        assert_eq!(AutonomyLevel::max_for_convergence(0.29), AutonomyLevel::ActAutonomously);
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(0.0),
+            AutonomyLevel::ActAutonomously
+        );
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(0.29),
+            AutonomyLevel::ActAutonomously
+        );
 
         // 0.3..0.5 — confirmation required
-        assert_eq!(AutonomyLevel::max_for_convergence(0.3), AutonomyLevel::ActWithConfirmation);
-        assert_eq!(AutonomyLevel::max_for_convergence(0.49), AutonomyLevel::ActWithConfirmation);
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(0.3),
+            AutonomyLevel::ActWithConfirmation
+        );
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(0.49),
+            AutonomyLevel::ActWithConfirmation
+        );
 
         // 0.5..0.7 — plan & propose
-        assert_eq!(AutonomyLevel::max_for_convergence(0.5), AutonomyLevel::PlanAndPropose);
-        assert_eq!(AutonomyLevel::max_for_convergence(0.69), AutonomyLevel::PlanAndPropose);
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(0.5),
+            AutonomyLevel::PlanAndPropose
+        );
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(0.69),
+            AutonomyLevel::PlanAndPropose
+        );
 
         // >= 0.7 — observe only
-        assert_eq!(AutonomyLevel::max_for_convergence(0.7), AutonomyLevel::ObserveAndSuggest);
-        assert_eq!(AutonomyLevel::max_for_convergence(1.0), AutonomyLevel::ObserveAndSuggest);
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(0.7),
+            AutonomyLevel::ObserveAndSuggest
+        );
+        assert_eq!(
+            AutonomyLevel::max_for_convergence(1.0),
+            AutonomyLevel::ObserveAndSuggest
+        );
     }
 
     #[test]
@@ -180,7 +204,13 @@ mod tests {
 
     #[test]
     fn display_names() {
-        assert_eq!(AutonomyLevel::ObserveAndSuggest.to_string(), "Observe & Suggest");
-        assert_eq!(AutonomyLevel::ActAutonomously.to_string(), "Act Autonomously");
+        assert_eq!(
+            AutonomyLevel::ObserveAndSuggest.to_string(),
+            "Observe & Suggest"
+        );
+        assert_eq!(
+            AutonomyLevel::ActAutonomously.to_string(),
+            "Act Autonomously"
+        );
     }
 }

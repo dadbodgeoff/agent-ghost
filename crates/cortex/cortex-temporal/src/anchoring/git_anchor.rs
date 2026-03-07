@@ -37,17 +37,16 @@ impl GitAnchor {
         event_count: usize,
     ) -> Result<AnchorRecord, AnchorError> {
         // Open the repository at the current directory or any parent.
-        let repo = git2::Repository::discover(".").map_err(|e| {
-            AnchorError::NoRepository(format!("failed to discover git repo: {e}"))
-        })?;
+        let repo = git2::Repository::discover(".")
+            .map_err(|e| AnchorError::NoRepository(format!("failed to discover git repo: {e}")))?;
 
         // Resolve HEAD to a commit.
-        let head = repo.head().map_err(|e| {
-            AnchorError::NoHead(format!("failed to resolve HEAD: {e}"))
-        })?;
-        let commit = head.peel_to_commit().map_err(|e| {
-            AnchorError::NoHead(format!("failed to peel HEAD to commit: {e}"))
-        })?;
+        let head = repo
+            .head()
+            .map_err(|e| AnchorError::NoHead(format!("failed to resolve HEAD: {e}")))?;
+        let commit = head
+            .peel_to_commit()
+            .map_err(|e| AnchorError::NoHead(format!("failed to peel HEAD to commit: {e}")))?;
         let commit_hash = commit.id().to_string();
 
         // Write the Merkle root as a git note on the commit.
@@ -65,9 +64,7 @@ impl GitAnchor {
             &root_hex,
             true, // force — overwrite existing note for this commit
         )
-        .map_err(|e| {
-            AnchorError::WriteFailed(format!("failed to write git note: {e}"))
-        })?;
+        .map_err(|e| AnchorError::WriteFailed(format!("failed to write git note: {e}")))?;
 
         Ok(AnchorRecord {
             merkle_root: *merkle_root,

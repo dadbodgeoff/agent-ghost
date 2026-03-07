@@ -32,7 +32,10 @@ pub async fn verify_chain(
 ) -> ApiResult<serde_json::Value> {
     let chain_type = params.chain.unwrap_or_else(|| "both".to_string());
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("verify_chain", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("verify_chain", e))?;
 
     let mut results = serde_json::Map::new();
 
@@ -93,9 +96,9 @@ fn verify_itp_chain(
         let events: Vec<(String, String, String)> = stmt
             .query_map([session_id], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,                                    // id
-                    row.get::<_, Option<String>>(4)?.unwrap_or_default(),        // event_hash hex
-                    row.get::<_, Option<String>>(5)?.unwrap_or_default(),        // previous_hash hex
+                    row.get::<_, String>(0)?,                             // id
+                    row.get::<_, Option<String>>(4)?.unwrap_or_default(), // event_hash hex
+                    row.get::<_, Option<String>>(5)?.unwrap_or_default(), // previous_hash hex
                 ))
             })
             .map_err(|e| ApiError::db_error("integrity_itp_events_query", e))?
@@ -142,9 +145,7 @@ fn verify_memory_chain(
 ) -> Result<serde_json::Value, ApiError> {
     // Group by memory_id and verify each chain independently.
     let mut mem_stmt = conn
-        .prepare(
-            "SELECT DISTINCT memory_id FROM memory_events WHERE actor_id = ?1",
-        )
+        .prepare("SELECT DISTINCT memory_id FROM memory_events WHERE actor_id = ?1")
         .map_err(|e| ApiError::db_error("integrity_mem_ids", e))?;
 
     let memory_ids: Vec<String> = mem_stmt

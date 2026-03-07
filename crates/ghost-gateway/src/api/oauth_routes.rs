@@ -13,14 +13,12 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
 
-use std::sync::Arc;
-use axum::extract::State;
 use crate::state::AppState;
+use axum::extract::State;
+use std::sync::Arc;
 
 /// GET /api/oauth/providers — list configured providers.
-pub async fn list_providers(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let names = state.oauth_broker.provider_names();
     let providers: Vec<serde_json::Value> = names
         .iter()
@@ -48,7 +46,10 @@ pub async fn connect(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ConnectRequest>,
 ) -> impl IntoResponse {
-    match state.oauth_broker.connect(&req.provider, &req.scopes, &req.redirect_uri) {
+    match state
+        .oauth_broker
+        .connect(&req.provider, &req.scopes, &req.redirect_uri)
+    {
         Ok((auth_url, ref_id)) => (
             StatusCode::OK,
             Json(serde_json::json!({
@@ -104,20 +105,20 @@ pub async fn callback(
 }
 
 /// GET /api/oauth/connections — list active connections.
-pub async fn list_connections(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn list_connections(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.oauth_broker.list_connections() {
         Ok(connections) => {
             let json: Vec<serde_json::Value> = connections
                 .iter()
-                .map(|c| serde_json::json!({
-                    "ref_id": c.ref_id.to_string(),
-                    "provider": c.provider,
-                    "scopes": c.scopes,
-                    "connected_at": c.connected_at.to_rfc3339(),
-                    "status": c.status,
-                }))
+                .map(|c| {
+                    serde_json::json!({
+                        "ref_id": c.ref_id.to_string(),
+                        "provider": c.provider,
+                        "scopes": c.scopes,
+                        "connected_at": c.connected_at.to_rfc3339(),
+                        "status": c.status,
+                    })
+                })
                 .collect();
             (StatusCode::OK, Json(serde_json::json!(json)))
         }
@@ -182,9 +183,7 @@ pub async fn execute_api_call(
                 ghost_oauth::OAuthError::ProviderError(_) => StatusCode::BAD_GATEWAY,
                 ghost_oauth::OAuthError::RefreshFailed(_) => StatusCode::BAD_GATEWAY,
                 ghost_oauth::OAuthError::StorageError(_)
-                | ghost_oauth::OAuthError::EncryptionError(_) => {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
+                | ghost_oauth::OAuthError::EncryptionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 _ => StatusCode::BAD_REQUEST,
             };
             (status, Json(serde_json::json!({"error": e.to_string()})))

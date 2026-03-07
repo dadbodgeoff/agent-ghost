@@ -80,9 +80,8 @@ impl Skill for FindReferencesSkill {
         // Build word-boundary regex for the symbol.
         let escaped = regex::escape(symbol);
         let pattern = format!(r"\b{escaped}\b");
-        let re = Regex::new(&pattern).map_err(|e| {
-            SkillError::Internal(format!("failed to compile regex: {e}"))
-        })?;
+        let re = Regex::new(&pattern)
+            .map_err(|e| SkillError::Internal(format!("failed to compile regex: {e}")))?;
 
         // Collect definition patterns for this language.
         let def_patterns = definition_patterns(&language, symbol);
@@ -96,9 +95,7 @@ impl Skill for FindReferencesSkill {
             for mat in re.find_iter(line) {
                 let column = mat.start() + 1; // 1-based
 
-                let is_definition = def_patterns
-                    .iter()
-                    .any(|def_re| def_re.is_match(line));
+                let is_definition = def_patterns.iter().any(|def_re| def_re.is_match(line));
 
                 if !include_definitions && is_definition {
                     continue;
@@ -131,7 +128,9 @@ fn definition_patterns(language: &str, symbol: &str) -> Vec<Regex> {
     // Replace the generic capture group with the specific symbol name.
     let definition_strs: Vec<String> = match language {
         "rust" => vec![
-            format!(r"(?:pub(?:\([\w:]+\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?fn\s+{escaped}\b"),
+            format!(
+                r"(?:pub(?:\([\w:]+\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?fn\s+{escaped}\b"
+            ),
             format!(r"(?:pub(?:\([\w:]+\))?\s+)?struct\s+{escaped}\b"),
             format!(r"(?:pub(?:\([\w:]+\))?\s+)?(?:enum|trait)\s+{escaped}\b"),
             format!(r"(?:pub(?:\([\w:]+\))?\s+)?(?:const|static)\s+{escaped}\b"),

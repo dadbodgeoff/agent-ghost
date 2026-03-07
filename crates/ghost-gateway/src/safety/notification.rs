@@ -194,9 +194,7 @@ impl NotificationDispatcher {
                     .timeout(Some(std::time::Duration::from_secs(*timeout_secs)))
                     .build();
 
-                mailer
-                    .send(&email)
-                    .map_err(|e| format!("smtp send: {e}"))?;
+                mailer.send(&email).map_err(|e| format!("smtp send: {e}"))?;
 
                 tracing::info!(to = %to, subject = %payload.subject, "Email notification sent");
                 Ok(())
@@ -215,7 +213,10 @@ impl NotificationDispatcher {
                     .form(&[
                         ("To", to.as_str()),
                         ("From", from.as_str()),
-                        ("Body", &format!("[GHOST] {}: {}", payload.subject, payload.body)),
+                        (
+                            "Body",
+                            &format!("[GHOST] {}: {}", payload.subject, payload.body),
+                        ),
                     ])
                     .send()
                     .await;
@@ -234,7 +235,10 @@ impl NotificationDispatcher {
                             .form(&[
                                 ("To", to.as_str()),
                                 ("From", from.as_str()),
-                                ("Body", &format!("[GHOST] {}: {}", payload.subject, payload.body)),
+                                (
+                                    "Body",
+                                    &format!("[GHOST] {}: {}", payload.subject, payload.body),
+                                ),
                             ])
                             .send()
                             .await

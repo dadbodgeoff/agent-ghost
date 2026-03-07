@@ -23,10 +23,12 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         let mut stmt = conn
             .prepare("SELECT id FROM studio_chat_sessions WHERE agent_id IS NULL OR agent_id = ''")
             .map_err(|e| to_storage_err(e.to_string()))?;
-        stmt.query_map([], |row| row.get(0))
+        let rows = stmt
+            .query_map([], |row| row.get(0))
             .map_err(|e| to_storage_err(e.to_string()))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| to_storage_err(e.to_string()))?
+            .map_err(|e| to_storage_err(e.to_string()))?;
+        rows
     };
 
     for session_id in session_ids {

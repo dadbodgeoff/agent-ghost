@@ -3,9 +3,9 @@
 //! Stores pre-computed embeddings for memories, enabling vector similarity
 //! search alongside FTS5 text search.
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(

@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:e2e": "playwright test",
+    "test:e2e:service-worker": "playwright test tests/service-worker-auth.spec.ts --project=\"Desktop Chrome\""
   },
   "dependencies": {
     "@ghost/sdk": "workspace:*",
@@ -39,6 +41,7 @@
     "tauri-pty": "^0.2.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "@sveltejs/adapter-static": "^3.0.0",
     "@sveltejs/kit": "^2.0.0",
     "@sveltejs/vite-plugin-svelte": "^4.0.0",

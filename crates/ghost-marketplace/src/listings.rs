@@ -79,8 +79,7 @@ pub fn list_agents(
 
 /// Get a single agent listing.
 pub fn get_agent(conn: &Connection, agent_id: &str) -> MarketplaceResult<Option<AgentListing>> {
-    let row =
-        cortex_storage::queries::marketplace_queries::get_agent_listing(conn, agent_id)?;
+    let row = cortex_storage::queries::marketplace_queries::get_agent_listing(conn, agent_id)?;
     Ok(row.map(row_to_agent_listing))
 }
 
@@ -90,9 +89,11 @@ pub fn set_agent_status(
     agent_id: &str,
     status: &str,
 ) -> MarketplaceResult<bool> {
-    Ok(cortex_storage::queries::marketplace_queries::update_agent_listing_status(
-        conn, agent_id, status,
-    )?)
+    Ok(
+        cortex_storage::queries::marketplace_queries::update_agent_listing_status(
+            conn, agent_id, status,
+        )?,
+    )
 }
 
 /// Publish or update a skill listing.
@@ -142,12 +143,8 @@ pub fn list_skills(
 }
 
 /// Get a single skill listing.
-pub fn get_skill(
-    conn: &Connection,
-    skill_name: &str,
-) -> MarketplaceResult<Option<SkillListing>> {
-    let row =
-        cortex_storage::queries::marketplace_queries::get_skill_listing(conn, skill_name)?;
+pub fn get_skill(conn: &Connection, skill_name: &str) -> MarketplaceResult<Option<SkillListing>> {
+    let row = cortex_storage::queries::marketplace_queries::get_skill_listing(conn, skill_name)?;
     Ok(row.map(|r| SkillListing {
         skill_name: r.skill_name,
         version: r.version,
@@ -164,8 +161,7 @@ pub fn get_skill(
 fn row_to_agent_listing(
     r: cortex_storage::queries::marketplace_queries::AgentListingRow,
 ) -> AgentListing {
-    let capabilities: Vec<String> =
-        serde_json::from_str(&r.capabilities).unwrap_or_default();
+    let capabilities: Vec<String> = serde_json::from_str(&r.capabilities).unwrap_or_default();
     AgentListing {
         agent_id: r.agent_id,
         description: r.description,

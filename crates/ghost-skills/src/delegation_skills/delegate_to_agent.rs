@@ -50,9 +50,7 @@ impl Skill for DelegateToAgentSkill {
         let task_description = input
             .get("task")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SkillError::InvalidInput("missing required field 'task'".into())
-            })?;
+            .ok_or_else(|| SkillError::InvalidInput("missing required field 'task'".into()))?;
 
         if task_description.trim().is_empty() {
             return Err(SkillError::InvalidInput(
@@ -71,10 +69,8 @@ impl Skill for DelegateToAgentSkill {
 
         // 3. Get parent convergence score
         let parent_score_row =
-            cortex_storage::queries::convergence_score_queries::latest_by_agent(
-                ctx.db, &sender_id,
-            )
-            .map_err(|e| SkillError::Storage(format!("query convergence: {e}")))?;
+            cortex_storage::queries::convergence_score_queries::latest_by_agent(ctx.db, &sender_id)
+                .map_err(|e| SkillError::Storage(format!("query convergence: {e}")))?;
 
         let (parent_score, parent_level) = match parent_score_row {
             Some(ref row) => (row.composite_score, row.level),
@@ -83,11 +79,9 @@ impl Skill for DelegateToAgentSkill {
 
         // 4. Compute hash chain
         let previous_hash =
-            cortex_storage::queries::delegation_state_queries::query_last_hash(
-                ctx.db, &sender_id,
-            )
-            .map_err(|e| SkillError::Storage(format!("query last hash: {e}")))?
-            .unwrap_or_else(super::zero_hash);
+            cortex_storage::queries::delegation_state_queries::query_last_hash(ctx.db, &sender_id)
+                .map_err(|e| SkillError::Storage(format!("query last hash: {e}")))?
+                .unwrap_or_else(super::zero_hash);
 
         let delegation_id = Uuid::now_v7().to_string();
         let id = Uuid::now_v7().to_string();
@@ -272,10 +266,8 @@ mod tests {
 
         // Verify convergence link exists
         let children =
-            cortex_storage::queries::convergence_propagation_queries::get_children(
-                &db, &agent_str,
-            )
-            .unwrap();
+            cortex_storage::queries::convergence_propagation_queries::get_children(&db, &agent_str)
+                .unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].child_agent_id, recipient);
         assert!((children[0].inherited_score - 0.1).abs() < 0.001);

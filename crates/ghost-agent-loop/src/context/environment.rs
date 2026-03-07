@@ -184,10 +184,7 @@ mod tests {
 
     #[test]
     fn test_shorten_git_url_ssh() {
-        assert_eq!(
-            shorten_git_url("git@github.com:org/repo.git"),
-            "org/repo"
-        );
+        assert_eq!(shorten_git_url("git@github.com:org/repo.git"), "org/repo");
     }
 
     #[test]

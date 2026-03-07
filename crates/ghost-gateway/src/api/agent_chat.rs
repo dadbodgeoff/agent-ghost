@@ -4,6 +4,7 @@
 //! POST /api/agent/chat/stream — runs one turn with SSE streaming + event persistence
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -13,13 +14,15 @@ use uuid::Uuid;
 
 use ghost_agent_loop::runner::AgentStreamEvent;
 use ghost_llm::fallback::AuthProfile;
-use ghost_llm::provider::{AnthropicProvider, GeminiProvider, OllamaProvider, OpenAICompatProvider, OpenAIProvider};
+use ghost_llm::provider::{
+    AnthropicProvider, GeminiProvider, OllamaProvider, OpenAICompatProvider, OpenAIProvider,
+};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::websocket::WsEvent;
 use crate::config::ProviderConfig;
 use crate::runtime_safety::{
-    RuntimeSafetyBuilder, RuntimeSafetyContext, RuntimeSafetyError, RunnerBuildOptions,
+    RunnerBuildOptions, RuntimeSafetyBuilder, RuntimeSafetyContext, RuntimeSafetyError,
     API_SYNTHETIC_AGENT_NAME,
 };
 use crate::state::AppState;
@@ -58,14 +61,8 @@ pub fn build_fallback_chain_from_providers(
                     .base_url
                     .clone()
                     .unwrap_or_else(|| "http://localhost:11434".into());
-                let model = p
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "llama3.1".into());
-                chain.add_provider(
-                    Arc::new(OllamaProvider { model, base_url }),
-                    vec![],
-                );
+                let model = p.model.clone().unwrap_or_else(|| "llama3.1".into());
+                chain.add_provider(Arc::new(OllamaProvider { model, base_url }), vec![]);
             }
             "anthropic" => {
                 let key_env = p.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY");
@@ -80,7 +77,10 @@ pub fn build_fallback_chain_from_providers(
                                 model,
                                 api_key: std::sync::RwLock::new(key.clone()),
                             }),
-                            vec![AuthProfile { api_key: key, org_id: None }],
+                            vec![AuthProfile {
+                                api_key: key,
+                                org_id: None,
+                            }],
                         );
                     }
                 }
@@ -89,16 +89,16 @@ pub fn build_fallback_chain_from_providers(
                 let key_env = p.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
                 if let Some(key) = crate::state::get_api_key(key_env) {
                     if !key.is_empty() {
-                        let model = p
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| "gpt-4o".into());
+                        let model = p.model.clone().unwrap_or_else(|| "gpt-4o".into());
                         chain.add_provider(
                             Arc::new(OpenAIProvider {
                                 model,
                                 api_key: std::sync::RwLock::new(key.clone()),
                             }),
-                            vec![AuthProfile { api_key: key, org_id: None }],
+                            vec![AuthProfile {
+                                api_key: key,
+                                org_id: None,
+                            }],
                         );
                     }
                 }
@@ -107,16 +107,16 @@ pub fn build_fallback_chain_from_providers(
                 let key_env = p.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY");
                 if let Some(key) = crate::state::get_api_key(key_env) {
                     if !key.is_empty() {
-                        let model = p
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| "gemini-2.0-flash".into());
+                        let model = p.model.clone().unwrap_or_else(|| "gemini-2.0-flash".into());
                         chain.add_provider(
                             Arc::new(GeminiProvider {
                                 model,
                                 api_key: std::sync::RwLock::new(key.clone()),
                             }),
-                            vec![AuthProfile { api_key: key, org_id: None }],
+                            vec![AuthProfile {
+                                api_key: key,
+                                org_id: None,
+                            }],
                         );
                     }
                 }
@@ -129,10 +129,7 @@ pub fn build_fallback_chain_from_providers(
                             .base_url
                             .clone()
                             .unwrap_or_else(|| "http://localhost:8080".into());
-                        let model = p
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| "default".into());
+                        let model = p.model.clone().unwrap_or_else(|| "default".into());
                         chain.add_provider(
                             Arc::new(OpenAICompatProvider {
                                 model,
@@ -140,7 +137,10 @@ pub fn build_fallback_chain_from_providers(
                                 base_url,
                                 context_window_size: 128_000,
                             }),
-                            vec![AuthProfile { api_key: key, org_id: None }],
+                            vec![AuthProfile {
+                                api_key: key,
+                                org_id: None,
+                            }],
                         );
                     }
                 }
@@ -185,14 +185,19 @@ pub async fn agent_chat(
 
     // 2. Run pre_loop + run_turn
     let mut ctx = runner
-        .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "api", &req.message)
+        .pre_loop(
+            runtime_ctx.agent.id,
+            runtime_ctx.session_id,
+            "api",
+            &req.message,
+        )
         .await
-        .map_err(|e| ApiError::internal(format!("agent pre-loop failed: {e}")))?;
+        .map_err(map_runner_error)?;
 
     let result = runner
         .run_turn(&mut ctx, &mut fallback_chain, &req.message)
         .await
-        .map_err(|e| ApiError::internal(format!("agent run failed: {e}")))?;
+        .map_err(map_runner_error)?;
 
     Ok(Json(AgentChatResponse {
         content: result.output.unwrap_or_default(),
@@ -247,84 +252,150 @@ pub async fn agent_chat_stream(
         let tx_timeout = tx.clone();
         let turn_result = tokio::time::timeout(std::time::Duration::from_secs(300), async move {
             let mut ctx = match runner
-                .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "api", &user_message)
+                .pre_loop(
+                    runtime_ctx.agent.id,
+                    runtime_ctx.session_id,
+                    "api",
+                    &user_message,
+                )
                 .await
             {
                 Ok(ctx) => ctx,
                 Err(e) => {
-                    let _ = tx.send(AgentStreamEvent::Error {
-                        message: format!("agent pre-loop failed: {e}"),
-                    }).await;
+                    let _ = tx
+                        .send(AgentStreamEvent::Error {
+                            message: format!("agent pre-loop failed: {e}"),
+                        })
+                        .await;
                     return;
                 }
             };
 
             // Build get_stream closure based on provider type (mirrors studio_sessions pattern).
-            let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>, tools: Vec<ghost_llm::provider::ToolSchema>| -> ghost_llm::streaming::StreamChunkStream {
-                let provider: Arc<dyn ghost_llm::provider::LLMProvider> = match first_provider.name.as_str() {
-                    "ollama" => {
-                        let ollama = ghost_llm::provider::OllamaProvider {
-                            model: first_provider.model.clone().unwrap_or_else(|| "llama3.1".into()),
-                            base_url: first_provider.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into()),
-                        };
-                        return ollama.stream_chat(&messages, &tools);
-                    }
-                    "anthropic" => {
-                        let key = crate::state::get_api_key(first_provider.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY")).unwrap_or_default();
-                        Arc::new(ghost_llm::provider::AnthropicProvider {
-                            model: first_provider.model.clone().unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
-                            api_key: std::sync::RwLock::new(key),
-                        })
-                    }
-                    "openai" => {
-                        let key = crate::state::get_api_key(first_provider.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY")).unwrap_or_default();
-                        Arc::new(ghost_llm::provider::OpenAIProvider {
-                            model: first_provider.model.clone().unwrap_or_else(|| "gpt-4o".into()),
-                            api_key: std::sync::RwLock::new(key),
-                        })
-                    }
-                    "gemini" => {
-                        let key = crate::state::get_api_key(first_provider.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY")).unwrap_or_default();
-                        Arc::new(ghost_llm::provider::GeminiProvider {
-                            model: first_provider.model.clone().unwrap_or_else(|| "gemini-2.0-flash".into()),
-                            api_key: std::sync::RwLock::new(key),
-                        })
-                    }
-                    "openai_compat" => {
-                        let key = crate::state::get_api_key(first_provider.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY")).unwrap_or_default();
-                        let compat = ghost_llm::provider::OpenAICompatProvider {
-                            model: first_provider.model.clone().unwrap_or_else(|| "default".into()),
-                            api_key: std::sync::RwLock::new(key),
-                            base_url: first_provider.base_url.clone().unwrap_or_else(|| "http://localhost:8080".into()),
-                            context_window_size: 128_000,
-                        };
-                        return compat.stream_chat(&messages, &tools);
-                    }
-                    _ => {
-                        Arc::new(ghost_llm::provider::OllamaProvider {
-                            model: first_provider.model.clone().unwrap_or_else(|| "llama3.1".into()),
-                            base_url: first_provider.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into()),
-                        })
-                    }
-                };
+            let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
+                                   tools: Vec<ghost_llm::provider::ToolSchema>|
+                  -> ghost_llm::streaming::StreamChunkStream {
+                let provider: Arc<dyn ghost_llm::provider::LLMProvider> =
+                    match first_provider.name.as_str() {
+                        "ollama" => {
+                            let ollama = ghost_llm::provider::OllamaProvider {
+                                model: first_provider
+                                    .model
+                                    .clone()
+                                    .unwrap_or_else(|| "llama3.1".into()),
+                                base_url: first_provider
+                                    .base_url
+                                    .clone()
+                                    .unwrap_or_else(|| "http://localhost:11434".into()),
+                            };
+                            return ollama.stream_chat(&messages, &tools);
+                        }
+                        "anthropic" => {
+                            let key = crate::state::get_api_key(
+                                first_provider
+                                    .api_key_env
+                                    .as_deref()
+                                    .unwrap_or("ANTHROPIC_API_KEY"),
+                            )
+                            .unwrap_or_default();
+                            Arc::new(ghost_llm::provider::AnthropicProvider {
+                                model: first_provider
+                                    .model
+                                    .clone()
+                                    .unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
+                                api_key: std::sync::RwLock::new(key),
+                            })
+                        }
+                        "openai" => {
+                            let key = crate::state::get_api_key(
+                                first_provider
+                                    .api_key_env
+                                    .as_deref()
+                                    .unwrap_or("OPENAI_API_KEY"),
+                            )
+                            .unwrap_or_default();
+                            Arc::new(ghost_llm::provider::OpenAIProvider {
+                                model: first_provider
+                                    .model
+                                    .clone()
+                                    .unwrap_or_else(|| "gpt-4o".into()),
+                                api_key: std::sync::RwLock::new(key),
+                            })
+                        }
+                        "gemini" => {
+                            let key = crate::state::get_api_key(
+                                first_provider
+                                    .api_key_env
+                                    .as_deref()
+                                    .unwrap_or("GEMINI_API_KEY"),
+                            )
+                            .unwrap_or_default();
+                            Arc::new(ghost_llm::provider::GeminiProvider {
+                                model: first_provider
+                                    .model
+                                    .clone()
+                                    .unwrap_or_else(|| "gemini-2.0-flash".into()),
+                                api_key: std::sync::RwLock::new(key),
+                            })
+                        }
+                        "openai_compat" => {
+                            let key = crate::state::get_api_key(
+                                first_provider
+                                    .api_key_env
+                                    .as_deref()
+                                    .unwrap_or("OPENAI_API_KEY"),
+                            )
+                            .unwrap_or_default();
+                            let compat = ghost_llm::provider::OpenAICompatProvider {
+                                model: first_provider
+                                    .model
+                                    .clone()
+                                    .unwrap_or_else(|| "default".into()),
+                                api_key: std::sync::RwLock::new(key),
+                                base_url: first_provider
+                                    .base_url
+                                    .clone()
+                                    .unwrap_or_else(|| "http://localhost:8080".into()),
+                                context_window_size: 128_000,
+                            };
+                            return compat.stream_chat(&messages, &tools);
+                        }
+                        _ => Arc::new(ghost_llm::provider::OllamaProvider {
+                            model: first_provider
+                                .model
+                                .clone()
+                                .unwrap_or_else(|| "llama3.1".into()),
+                            base_url: first_provider
+                                .base_url
+                                .clone()
+                                .unwrap_or_else(|| "http://localhost:11434".into()),
+                        }),
+                    };
                 ghost_llm::provider::complete_stream_shim(provider, messages, tools)
             };
 
-            let result = runner.run_turn_streaming(&mut ctx, &user_message, tx.clone(), get_stream).await;
+            let result = runner
+                .run_turn_streaming(&mut ctx, &user_message, tx.clone(), get_stream)
+                .await;
             match result {
                 Ok(_) => {} // TurnComplete already sent
                 Err(e) => {
-                    let _ = tx.send(AgentStreamEvent::Error {
-                        message: format!("agent run failed: {e}"),
-                    }).await;
+                    let _ = tx
+                        .send(AgentStreamEvent::Error {
+                            message: format!("agent run failed: {e}"),
+                        })
+                        .await;
                 }
             }
-        }).await;
+        })
+        .await;
 
         if turn_result.is_err() {
-            let _ = tx_timeout.send(AgentStreamEvent::Error {
-                message: "Agent turn timed out after 5 minutes".into(),
-            }).await;
+            let _ = tx_timeout
+                .send(AgentStreamEvent::Error {
+                    message: "Agent turn timed out after 5 minutes".into(),
+                })
+                .await;
         }
     });
 
@@ -483,5 +554,32 @@ fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
     match error {
         RuntimeSafetyError::AgentNotFound(message) => ApiError::bad_request(message),
         _ => ApiError::internal(error.to_string()),
+    }
+}
+
+fn map_runner_error(error: ghost_agent_loop::runner::RunError) -> ApiError {
+    match error {
+        ghost_agent_loop::runner::RunError::AgentPaused => {
+            ApiError::custom(StatusCode::LOCKED, "AGENT_PAUSED", "Agent is paused")
+        }
+        ghost_agent_loop::runner::RunError::AgentQuarantined => ApiError::custom(
+            StatusCode::LOCKED,
+            "AGENT_QUARANTINED",
+            "Agent is quarantined",
+        ),
+        ghost_agent_loop::runner::RunError::PlatformKilled => ApiError::KillSwitchActive,
+        ghost_agent_loop::runner::RunError::KillGateClosed => ApiError::custom(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "DISTRIBUTED_KILL_GATE_CLOSED",
+            "Distributed kill gate is closed",
+        ),
+        ghost_agent_loop::runner::RunError::ConvergenceProtectionDegraded(status) => {
+            ApiError::custom(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CONVERGENCE_PROTECTION_DEGRADED",
+                format!("Convergence protection is {status}"),
+            )
+        }
+        other => ApiError::internal(format!("agent run failed: {other}")),
     }
 }

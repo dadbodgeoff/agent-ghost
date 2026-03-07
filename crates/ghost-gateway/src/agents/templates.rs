@@ -16,7 +16,9 @@ pub struct AgentTemplate {
     pub convergence_profile: String,
 }
 
-fn default_spending_cap() -> f64 { 5.0 }
+fn default_spending_cap() -> f64 {
+    5.0
+}
 
 impl AgentTemplate {
     /// Load a template from YAML string.

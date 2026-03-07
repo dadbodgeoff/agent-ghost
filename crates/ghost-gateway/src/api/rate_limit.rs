@@ -93,10 +93,7 @@ impl Default for RateLimitState {
 /// Must run AFTER auth middleware so `Claims` are available in extensions.
 ///
 /// Skip paths: health, ready, auth endpoints (same as auth middleware).
-pub async fn rate_limit_middleware(
-    request: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn rate_limit_middleware(request: Request<Body>, next: Next) -> Response {
     let path = request.uri().path();
 
     // Skip rate limiting for health/auth endpoints.
@@ -142,7 +139,11 @@ pub async fn rate_limit_middleware(
 
     // T-5.11.1: Determine rate limit quota for header emission.
     let quota_limit: u32 = if claims.is_some() {
-        if is_safety { 10 } else { 200 }
+        if is_safety {
+            10
+        } else {
+            200
+        }
     } else {
         20
     };
@@ -161,8 +162,8 @@ pub async fn rate_limit_middleware(
             resp
         }
         Err(not_until) => {
-            let wait = not_until
-                .wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+            let wait =
+                not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
             let secs = wait.as_secs().max(1);
 
             let body = serde_json::json!({
@@ -250,10 +251,7 @@ impl Default for SafetyCooldown {
 ///
 /// Injects `X-Request-ID` into every request (from header or generated UUID v7).
 /// Propagates the same ID into the response headers for client correlation.
-pub async fn request_id_middleware(
-    mut request: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn request_id_middleware(mut request: Request<Body>, next: Next) -> Response {
     // Read existing X-Request-ID or generate a new one.
     let request_id = request
         .headers()
@@ -263,7 +261,9 @@ pub async fn request_id_middleware(
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
 
     // Store in extensions for handlers/tracing to access.
-    request.extensions_mut().insert(RequestId(request_id.clone()));
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
 
     let mut response = next.run(request).await;
 

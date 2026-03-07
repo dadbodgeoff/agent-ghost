@@ -56,9 +56,15 @@ pub struct FetchConfig {
     pub user_agent: String,
 }
 
-fn default_max_body_bytes() -> u64 { 1_048_576 } // 1MB
-fn default_max_text_chars() -> usize { 16_000 }
-fn default_fetch_timeout() -> u64 { 15 }
+fn default_max_body_bytes() -> u64 {
+    1_048_576
+} // 1MB
+fn default_max_text_chars() -> usize {
+    16_000
+}
+fn default_fetch_timeout() -> u64 {
+    15
+}
 fn default_user_agent() -> String {
     "GHOST-Agent/0.1 (autonomous-agent; +https://github.com/ghost-agent)".into()
 }
@@ -97,10 +103,7 @@ pub struct FetchResult {
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Fetch a URL and extract its text content.
-pub async fn fetch_url(
-    url: &str,
-    config: &FetchConfig,
-) -> Result<FetchResult, FetchError> {
+pub async fn fetch_url(url: &str, config: &FetchConfig) -> Result<FetchResult, FetchError> {
     let url = url.trim();
 
     // Validate URL scheme.
@@ -134,12 +137,18 @@ pub async fn fetch_url(
 
     let resp = client
         .get(url)
-        .header("Accept", "text/html,application/xhtml+xml,text/plain,application/json")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,text/plain,application/json",
+        )
         .send()
         .await
         .map_err(|e| {
             if e.is_timeout() {
-                FetchError::RequestFailed(format!("Request timed out after {}s", config.timeout_secs))
+                FetchError::RequestFailed(format!(
+                    "Request timed out after {}s",
+                    config.timeout_secs
+                ))
             } else {
                 FetchError::RequestFailed(e.to_string())
             }
@@ -212,10 +221,7 @@ pub async fn fetch_url(
 // ── Internals ───────────────────────────────────────────────────────────
 
 /// Read response body up to `max_bytes`, returning an error if exceeded.
-async fn read_limited_body(
-    resp: reqwest::Response,
-    max_bytes: u64,
-) -> Result<Vec<u8>, FetchError> {
+async fn read_limited_body(resp: reqwest::Response, max_bytes: u64) -> Result<Vec<u8>, FetchError> {
     // Use bytes() which reads the full body — we rely on the content-length
     // pre-check above for known sizes. For chunked/unknown, we read and check.
     let bytes = resp
@@ -252,7 +258,7 @@ fn html_to_markdown(html: &str) -> String {
     let mut collecting_tag = false;
     // Stack for nested list tracking: true = ordered, false = unordered.
     let mut list_stack: Vec<(bool, u32)> = Vec::new(); // (is_ordered, item_count)
-    // Link state: collecting link text, pending href.
+                                                       // Link state: collecting link text, pending href.
     let mut link_href: Option<String> = None;
     let mut link_text = String::new();
     let mut in_link = false;
@@ -279,14 +285,38 @@ fn html_to_markdown(html: &str) -> String {
 
                 // Skip content regions.
                 match tag_name {
-                    "script" => { in_script = true; continue; }
-                    "/script" => { in_script = false; continue; }
-                    "style" => { in_style = true; continue; }
-                    "/style" => { in_style = false; continue; }
-                    "nav" => { in_nav = true; continue; }
-                    "/nav" => { in_nav = false; continue; }
-                    "footer" => { in_footer = true; continue; }
-                    "/footer" => { in_footer = false; continue; }
+                    "script" => {
+                        in_script = true;
+                        continue;
+                    }
+                    "/script" => {
+                        in_script = false;
+                        continue;
+                    }
+                    "style" => {
+                        in_style = true;
+                        continue;
+                    }
+                    "/style" => {
+                        in_style = false;
+                        continue;
+                    }
+                    "nav" => {
+                        in_nav = true;
+                        continue;
+                    }
+                    "/nav" => {
+                        in_nav = false;
+                        continue;
+                    }
+                    "footer" => {
+                        in_footer = true;
+                        continue;
+                    }
+                    "/footer" => {
+                        in_footer = false;
+                        continue;
+                    }
                     _ => {}
                 }
 
@@ -296,12 +326,30 @@ fn html_to_markdown(html: &str) -> String {
 
                 match tag_name {
                     // Headings → markdown headings.
-                    "h1" => { ensure_double_newline(&mut out); out.push_str("# "); }
-                    "h2" => { ensure_double_newline(&mut out); out.push_str("## "); }
-                    "h3" => { ensure_double_newline(&mut out); out.push_str("### "); }
-                    "h4" => { ensure_double_newline(&mut out); out.push_str("#### "); }
-                    "h5" => { ensure_double_newline(&mut out); out.push_str("##### "); }
-                    "h6" => { ensure_double_newline(&mut out); out.push_str("###### "); }
+                    "h1" => {
+                        ensure_double_newline(&mut out);
+                        out.push_str("# ");
+                    }
+                    "h2" => {
+                        ensure_double_newline(&mut out);
+                        out.push_str("## ");
+                    }
+                    "h3" => {
+                        ensure_double_newline(&mut out);
+                        out.push_str("### ");
+                    }
+                    "h4" => {
+                        ensure_double_newline(&mut out);
+                        out.push_str("#### ");
+                    }
+                    "h5" => {
+                        ensure_double_newline(&mut out);
+                        out.push_str("##### ");
+                    }
+                    "h6" => {
+                        ensure_double_newline(&mut out);
+                        out.push_str("###### ");
+                    }
                     "/h1" | "/h2" | "/h3" | "/h4" | "/h5" | "/h6" => {
                         out.push('\n');
                     }
@@ -315,7 +363,9 @@ fn html_to_markdown(html: &str) -> String {
                     }
 
                     // Line breaks.
-                    "br" | "br/" => { out.push('\n'); }
+                    "br" | "br/" => {
+                        out.push('\n');
+                    }
 
                     // Horizontal rule.
                     "hr" | "hr/" => {
@@ -324,14 +374,28 @@ fn html_to_markdown(html: &str) -> String {
                     }
 
                     // Emphasis.
-                    "strong" | "b" => { out.push_str("**"); }
-                    "/strong" | "/b" => { out.push_str("**"); }
-                    "em" | "i" => { out.push('*'); }
-                    "/em" | "/i" => { out.push('*'); }
+                    "strong" | "b" => {
+                        out.push_str("**");
+                    }
+                    "/strong" | "/b" => {
+                        out.push_str("**");
+                    }
+                    "em" | "i" => {
+                        out.push('*');
+                    }
+                    "/em" | "/i" => {
+                        out.push('*');
+                    }
 
                     // Code.
-                    "code" if !in_pre => { out.push('`'); in_code = true; }
-                    "/code" if !in_pre => { out.push('`'); in_code = false; }
+                    "code" if !in_pre => {
+                        out.push('`');
+                        in_code = true;
+                    }
+                    "/code" if !in_pre => {
+                        out.push('`');
+                        in_code = false;
+                    }
                     "pre" => {
                         ensure_double_newline(&mut out);
                         out.push_str("```\n");
@@ -347,14 +411,22 @@ fn html_to_markdown(html: &str) -> String {
                         ensure_double_newline(&mut out);
                         out.push_str("> ");
                     }
-                    "/blockquote" => { out.push('\n'); }
+                    "/blockquote" => {
+                        out.push('\n');
+                    }
 
                     // Lists.
-                    "ul" => { list_stack.push((false, 0)); }
-                    "ol" => { list_stack.push((true, 0)); }
+                    "ul" => {
+                        list_stack.push((false, 0));
+                    }
+                    "ol" => {
+                        list_stack.push((true, 0));
+                    }
                     "/ul" | "/ol" => {
                         list_stack.pop();
-                        if list_stack.is_empty() { out.push('\n'); }
+                        if list_stack.is_empty() {
+                            out.push('\n');
+                        }
                     }
                     "li" => {
                         out.push('\n');
@@ -382,7 +454,8 @@ fn html_to_markdown(html: &str) -> String {
                     "/a" => {
                         if let Some(href) = link_href.take() {
                             let text = link_text.trim().to_string();
-                            if !text.is_empty() && !href.is_empty()
+                            if !text.is_empty()
+                                && !href.is_empty()
                                 && !href.starts_with('#')
                                 && !href.starts_with("javascript:")
                             {
@@ -413,10 +486,18 @@ fn html_to_markdown(html: &str) -> String {
                     }
 
                     // Table elements → simple pipe-delimited.
-                    "tr" => { out.push('\n'); }
-                    "th" | "td" => { out.push_str("| "); }
-                    "/th" | "/td" => { out.push(' '); }
-                    "/tr" => { out.push('|'); }
+                    "tr" => {
+                        out.push('\n');
+                    }
+                    "th" | "td" => {
+                        out.push_str("| ");
+                    }
+                    "/th" | "/td" => {
+                        out.push(' ');
+                    }
+                    "/tr" => {
+                        out.push('|');
+                    }
 
                     // Skip everything else (header, aside, form, input, etc.)
                     _ => {}
@@ -506,7 +587,8 @@ fn extract_attr(tag: &str, attr: &str) -> Option<String> {
         Some(content[..end].to_string())
     } else {
         // Unquoted — take until whitespace or >.
-        let end = after_eq.find(|c: char| c.is_whitespace() || c == '>')
+        let end = after_eq
+            .find(|c: char| c.is_whitespace() || c == '>')
             .unwrap_or(after_eq.len());
         Some(after_eq[..end].to_string())
     }
@@ -568,11 +650,7 @@ fn extract_host(url: &str) -> Option<String> {
     let after_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
-    let host = after_scheme
-        .split('/')
-        .next()?
-        .split(':')
-        .next()?;
+    let host = after_scheme.split('/').next()?.split(':').next()?;
     if host.is_empty() {
         return None;
     }
@@ -614,9 +692,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
                 || v4.is_unspecified() // 0.0.0.0
                 || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // 100.64.0.0/10 (CGNAT)
         }
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unspecified()
-        }
+        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
     }
 }
 
@@ -688,7 +764,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_ftp_scheme() {
         let config = FetchConfig::default();
-        let err = fetch_url("ftp://example.com/file", &config).await.unwrap_err();
+        let err = fetch_url("ftp://example.com/file", &config)
+            .await
+            .unwrap_err();
         assert!(matches!(err, FetchError::UrlNotAllowed(_)));
     }
 
@@ -705,7 +783,9 @@ mod tests {
             allow_http: true,
             ..Default::default()
         };
-        let err = fetch_url("http://localhost/admin", &config).await.unwrap_err();
+        let err = fetch_url("http://localhost/admin", &config)
+            .await
+            .unwrap_err();
         assert!(matches!(err, FetchError::SsrfBlocked(_)));
     }
 
@@ -727,7 +807,9 @@ mod tests {
             allow_http: true,
             ..Default::default()
         };
-        let err = fetch_url("http://10.0.0.1/internal", &config).await.unwrap_err();
+        let err = fetch_url("http://10.0.0.1/internal", &config)
+            .await
+            .unwrap_err();
         assert!(matches!(err, FetchError::SsrfBlocked(_)));
     }
 
@@ -915,7 +997,9 @@ mod tests {
     #[ignore = "requires network access"]
     async fn live_fetch_https() {
         let config = FetchConfig::default();
-        let result = fetch_url("https://httpbin.org/html", &config).await.unwrap();
+        let result = fetch_url("https://httpbin.org/html", &config)
+            .await
+            .unwrap();
         assert_eq!(result.status, 200);
         assert!(!result.content.is_empty());
         assert!(result.content.contains("Herman Melville"));

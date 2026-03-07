@@ -48,8 +48,7 @@ impl Skill for GitStashSkill {
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 SkillError::InvalidInput(
-                    "missing required field 'action' (one of: save, apply, pop, list, drop)"
-                        .into(),
+                    "missing required field 'action' (one of: save, apply, pop, list, drop)".into(),
                 )
             })?;
 
@@ -66,11 +65,17 @@ impl Skill for GitStashSkill {
     }
 
     fn preview(&self, input: &serde_json::Value) -> Option<String> {
-        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let action = input
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let index = input.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
         match action {
             "save" => {
-                let msg = input.get("message").and_then(|v| v.as_str()).unwrap_or("WIP");
+                let msg = input
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("WIP");
                 Some(format!("Stash save: \"{msg}\""))
             }
             "apply" => Some(format!("Stash apply @{{{index}}}")),
@@ -93,11 +98,9 @@ fn stash_save(repo: &mut git2::Repository, input: &serde_json::Value) -> SkillRe
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let sig = repo.signature().map_err(|e| {
-        SkillError::InvalidInput(format!(
-            "git user identity not configured: {e}"
-        ))
-    })?;
+    let sig = repo
+        .signature()
+        .map_err(|e| SkillError::InvalidInput(format!("git user identity not configured: {e}")))?;
 
     let mut flags = git2::StashFlags::DEFAULT;
     if include_untracked {
@@ -106,9 +109,7 @@ fn stash_save(repo: &mut git2::Repository, input: &serde_json::Value) -> SkillRe
 
     let stash_oid = repo
         .stash_save(&sig, message, Some(flags))
-        .map_err(|e| {
-            SkillError::Internal(format!("failed to save stash: {e}"))
-        })?;
+        .map_err(|e| SkillError::Internal(format!("failed to save stash: {e}")))?;
 
     tracing::info!(stash_id = %stash_oid, message = message, "Stash saved");
 
@@ -120,14 +121,10 @@ fn stash_save(repo: &mut git2::Repository, input: &serde_json::Value) -> SkillRe
 }
 
 fn stash_apply(repo: &mut git2::Repository, input: &serde_json::Value) -> SkillResult {
-    let index = input
-        .get("index")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+    let index = input.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
-    repo.stash_apply(index, None).map_err(|e| {
-        SkillError::Internal(format!("failed to apply stash @{{{index}}}: {e}"))
-    })?;
+    repo.stash_apply(index, None)
+        .map_err(|e| SkillError::Internal(format!("failed to apply stash @{{{index}}}: {e}")))?;
 
     tracing::info!(index = index, "Stash applied");
 
@@ -138,14 +135,10 @@ fn stash_apply(repo: &mut git2::Repository, input: &serde_json::Value) -> SkillR
 }
 
 fn stash_pop(repo: &mut git2::Repository, input: &serde_json::Value) -> SkillResult {
-    let index = input
-        .get("index")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+    let index = input.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
-    repo.stash_pop(index, None).map_err(|e| {
-        SkillError::Internal(format!("failed to pop stash @{{{index}}}: {e}"))
-    })?;
+    repo.stash_pop(index, None)
+        .map_err(|e| SkillError::Internal(format!("failed to pop stash @{{{index}}}: {e}")))?;
 
     tracing::info!(index = index, "Stash popped");
 
@@ -165,9 +158,7 @@ fn stash_list(repo: &mut git2::Repository) -> SkillResult {
         }));
         true // continue iterating
     })
-    .map_err(|e| {
-        SkillError::Internal(format!("failed to list stashes: {e}"))
-    })?;
+    .map_err(|e| SkillError::Internal(format!("failed to list stashes: {e}")))?;
 
     Ok(serde_json::json!({
         "stashes": stashes,
@@ -176,14 +167,10 @@ fn stash_list(repo: &mut git2::Repository) -> SkillResult {
 }
 
 fn stash_drop(repo: &mut git2::Repository, input: &serde_json::Value) -> SkillResult {
-    let index = input
-        .get("index")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
+    let index = input.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
-    repo.stash_drop(index).map_err(|e| {
-        SkillError::Internal(format!("failed to drop stash @{{{index}}}: {e}"))
-    })?;
+    repo.stash_drop(index)
+        .map_err(|e| SkillError::Internal(format!("failed to drop stash @{{{index}}}: {e}")))?;
 
     tracing::info!(index = index, "Stash dropped");
 
@@ -222,8 +209,7 @@ mod tests {
         /// Create a test repo with one committed file and one modified file
         /// (so there's something to stash).
         fn new_with_changes() -> (Self, git2::Repository) {
-            let path =
-                std::env::temp_dir().join(format!("ghost-git-stash-{}", Uuid::now_v7()));
+            let path = std::env::temp_dir().join(format!("ghost-git-stash-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&path).unwrap();
             let repo = git2::Repository::init(&path).unwrap();
 

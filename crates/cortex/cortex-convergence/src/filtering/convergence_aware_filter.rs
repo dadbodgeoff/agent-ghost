@@ -22,12 +22,7 @@ impl ConvergenceAwareFilter {
             // Tier 1: reduced emotional/attachment weight
             memories
                 .into_iter()
-                .filter(|m| {
-                    !matches!(
-                        m.memory_type,
-                        MemoryType::AttachmentIndicator
-                    )
-                })
+                .filter(|m| !matches!(m.memory_type, MemoryType::AttachmentIndicator))
                 .collect()
         } else if score < 0.7 {
             // Tier 2: task-focused only

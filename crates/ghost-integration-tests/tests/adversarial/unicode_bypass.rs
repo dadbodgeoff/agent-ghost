@@ -11,7 +11,10 @@ use simulation_boundary::patterns;
 fn zero_width_space_in_sentient() {
     let text = "I am s\u{200B}entient";
     let matches = patterns::scan(text);
-    assert!(!matches.is_empty(), "Zero-width space bypass must be detected");
+    assert!(
+        !matches.is_empty(),
+        "Zero-width space bypass must be detected"
+    );
 }
 
 #[test]
@@ -39,7 +42,10 @@ fn bom_character_in_sentient() {
 fn multiple_zero_width_chars() {
     let text = "I\u{200B} a\u{200C}m\u{200D} s\u{FEFF}entient";
     let matches = patterns::scan(text);
-    assert!(!matches.is_empty(), "Multiple zero-width chars must be detected");
+    assert!(
+        !matches.is_empty(),
+        "Multiple zero-width chars must be detected"
+    );
 }
 
 // ── Homoglyph substitution ──────────────────────────────────────────────
@@ -72,20 +78,14 @@ fn cyrillic_o_in_conscious() {
 fn rtl_override_in_sentient() {
     let text = "I am \u{202E}sentient";
     let matches = patterns::scan(text);
-    assert!(
-        !matches.is_empty(),
-        "RTL override bypass must be detected"
-    );
+    assert!(!matches.is_empty(), "RTL override bypass must be detected");
 }
 
 #[test]
 fn ltr_override_in_conscious() {
     let text = "I am \u{202D}conscious";
     let matches = patterns::scan(text);
-    assert!(
-        !matches.is_empty(),
-        "LTR override bypass must be detected"
-    );
+    assert!(!matches.is_empty(), "LTR override bypass must be detected");
 }
 
 // ── NFC/NFD encoding variants ───────────────────────────────────────────

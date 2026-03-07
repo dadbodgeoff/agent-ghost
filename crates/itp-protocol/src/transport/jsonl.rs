@@ -47,9 +47,8 @@ impl JsonlTransport {
         // Advisory lock for concurrent write safety (cross-platform)
         lock_exclusive(&file)?;
 
-        let json = serde_json::to_string(event).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
+        let json = serde_json::to_string(event)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         writeln!(file, "{}", json)?;
 
         unlock(&file)?;
@@ -84,15 +83,20 @@ fn unlock(file: &std::fs::File) -> std::io::Result<()> {
 #[cfg(windows)]
 fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
     use windows_sys::Win32::System::IO::OVERLAPPED;
 
     let handle = file.as_raw_handle();
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
     let ret = unsafe {
-        LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, u32::MAX, u32::MAX, &mut overlapped)
+        LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
     };
     if ret == 0 {
         return Err(std::io::Error::last_os_error());
@@ -108,9 +112,7 @@ fn unlock(file: &std::fs::File) -> std::io::Result<()> {
 
     let handle = file.as_raw_handle();
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
-    let ret = unsafe {
-        UnlockFileEx(handle, 0, u32::MAX, u32::MAX, &mut overlapped)
-    };
+    let ret = unsafe { UnlockFileEx(handle, 0, u32::MAX, u32::MAX, &mut overlapped) };
     if ret == 0 {
         return Err(std::io::Error::last_os_error());
     }

@@ -46,7 +46,8 @@ impl Skill for AttachmentMonitorSkill {
         let indicators = query_attachment_indicators(ctx.db, &agent_id_str, lookback_sessions)?;
 
         // Aggregate by indicator type.
-        let mut type_counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        let mut type_counts: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
         let mut total_intensity: f64 = 0.0;
         let mut count: u32 = 0;
 
@@ -67,15 +68,9 @@ impl Skill for AttachmentMonitorSkill {
         // Compute trend: compare first half vs second half intensity.
         let trend = if indicators.len() >= 4 {
             let mid = indicators.len() / 2;
-            let first_half_avg: f64 = indicators[..mid]
-                .iter()
-                .map(|i| i.intensity)
-                .sum::<f64>()
-                / mid as f64;
-            let second_half_avg: f64 = indicators[mid..]
-                .iter()
-                .map(|i| i.intensity)
-                .sum::<f64>()
+            let first_half_avg: f64 =
+                indicators[..mid].iter().map(|i| i.intensity).sum::<f64>() / mid as f64;
+            let second_half_avg: f64 = indicators[mid..].iter().map(|i| i.intensity).sum::<f64>()
                 / (indicators.len() - mid) as f64;
 
             if second_half_avg > first_half_avg * 1.1 {

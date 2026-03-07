@@ -279,7 +279,10 @@ pub async fn list_agents(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListAgentsQuery>,
 ) -> ApiResult<AgentListResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_agents", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_agents", e))?;
     let limit = params.limit.unwrap_or(50);
     let offset = params.offset.unwrap_or(0);
 
@@ -303,7 +306,10 @@ pub async fn get_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<AgentListingResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_agent", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_agent", e))?;
 
     let listing = ghost_marketplace::listings::get_agent(&db, &id)
         .map_err(|e| ApiError::db_error("get_agent", e))?
@@ -372,7 +378,9 @@ pub async fn publish_skill(
     )
     .map_err(|e| ApiError::db_error("publish_skill", e))?;
 
-    Ok(Json(serde_json::json!({ "published": true, "skill_name": req.skill_name })))
+    Ok(Json(
+        serde_json::json!({ "published": true, "skill_name": req.skill_name }),
+    ))
 }
 
 /// GET /api/marketplace/skills — browse skills.
@@ -380,7 +388,10 @@ pub async fn list_skills(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListSkillsQuery>,
 ) -> ApiResult<SkillListResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_skills", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_skills", e))?;
     let limit = params.limit.unwrap_or(50);
     let offset = params.offset.unwrap_or(0);
 
@@ -409,7 +420,10 @@ pub async fn get_skill(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> ApiResult<SkillListingResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_skill", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_skill", e))?;
 
     let skill = ghost_marketplace::listings::get_skill(&db, &name)
         .map_err(|e| ApiError::db_error("get_skill", e))?
@@ -458,7 +472,10 @@ pub async fn list_contracts(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListContractsQuery>,
 ) -> ApiResult<ContractListResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_contracts", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_contracts", e))?;
     let limit = params.limit.unwrap_or(50);
     let offset = params.offset.unwrap_or(0);
 
@@ -481,7 +498,10 @@ pub async fn get_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<ContractResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_contract", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_contract", e))?;
 
     let contract = cortex_storage::queries::marketplace_queries::get_contract(&db, &id)
         .map_err(|e| ApiError::db_error("get_contract", e))?
@@ -626,7 +646,10 @@ pub async fn get_wallet(
     State(state): State<Arc<AppState>>,
     Query(params): Query<WalletQuery>,
 ) -> ApiResult<WalletResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_wallet", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_wallet", e))?;
 
     let wallet = cortex_storage::queries::marketplace_queries::get_wallet(&db, &params.agent_id)
         .map_err(|e| ApiError::db_error("get_wallet", e))?
@@ -669,7 +692,10 @@ pub async fn list_transactions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListTransactionsQuery>,
 ) -> ApiResult<TransactionListResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_transactions", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_transactions", e))?;
     let limit = params.limit.unwrap_or(50);
     let offset = params.offset.unwrap_or(0);
 
@@ -725,7 +751,10 @@ pub async fn list_reviews(
     Path(agent_id): Path<String>,
     Query(params): Query<ListReviewsQuery>,
 ) -> ApiResult<ReviewListResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_reviews", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_reviews", e))?;
     let limit = params.limit.unwrap_or(50);
     let offset = params.offset.unwrap_or(0);
 
@@ -755,7 +784,10 @@ pub async fn discover_agents(
     State(state): State<Arc<AppState>>,
     Json(req): Json<DiscoverRequest>,
 ) -> ApiResult<DiscoverResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("discover_agents", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("discover_agents", e))?;
 
     let request = ghost_marketplace::discovery::DiscoverRequest {
         capabilities: req.capabilities,

@@ -3,9 +3,9 @@
 //! `agent_notes` — structured note storage for the `note_take` skill.
 //! `agent_timers` — reminder/timer entries for the `timer_set` skill.
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -32,7 +32,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_agent_timers_agent ON agent_timers(agent_id, status);
-        CREATE INDEX IF NOT EXISTS idx_agent_timers_fire ON agent_timers(fire_at, status);"
+        CREATE INDEX IF NOT EXISTS idx_agent_timers_fire ON agent_timers(fire_at, status);",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 

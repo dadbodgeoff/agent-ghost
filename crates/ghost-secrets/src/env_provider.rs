@@ -34,12 +34,10 @@ impl SecretProvider for EnvProvider {
         Self::validate_key(key)?;
         match std::env::var(key) {
             Ok(val) => Ok(SecretString::from(val)),
-            Err(std::env::VarError::NotPresent) => {
-                Err(SecretsError::NotFound(key.to_string()))
-            }
-            Err(std::env::VarError::NotUnicode(_)) => Err(SecretsError::ProviderError(
-                format!("env var '{key}' contains non-UTF-8 data"),
-            )),
+            Err(std::env::VarError::NotPresent) => Err(SecretsError::NotFound(key.to_string())),
+            Err(std::env::VarError::NotUnicode(_)) => Err(SecretsError::ProviderError(format!(
+                "env var '{key}' contains non-UTF-8 data"
+            ))),
         }
     }
 

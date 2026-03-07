@@ -6,10 +6,10 @@
 use std::collections::BTreeMap;
 
 use chrono::Utc;
+use ghost_mesh::trust::local_trust::InteractionOutcome;
 use ghost_mesh::types::{
     AgentCard, DelegationRequest, DelegationResponse, MeshMessage, MeshTask, TaskStatus,
 };
-use ghost_mesh::trust::local_trust::InteractionOutcome;
 use uuid::Uuid;
 
 // ── AgentCard Discovery ─────────────────────────────────────────────────
@@ -82,7 +82,10 @@ fn agent_card_tampered_fails_verification() {
 
     // Tamper with the name.
     card.name = "evil-agent".into();
-    assert!(!card.verify_signature(), "Tampered card should fail verification");
+    assert!(
+        !card.verify_signature(),
+        "Tampered card should fail verification"
+    );
 }
 
 /// AgentCard with wrong public key fails verification.
@@ -115,7 +118,10 @@ fn agent_card_wrong_key_fails_verification() {
     };
 
     card.sign(&signing_key);
-    assert!(!card.verify_signature(), "Wrong public key should fail verification");
+    assert!(
+        !card.verify_signature(),
+        "Wrong public key should fail verification"
+    );
 }
 
 /// AgentCard canonical_bytes is deterministic.
@@ -162,10 +168,12 @@ fn mesh_task_happy_path_lifecycle() {
     );
     assert_eq!(task.status, TaskStatus::Submitted);
 
-    task.transition(TaskStatus::Working).expect("Submitted → Working");
+    task.transition(TaskStatus::Working)
+        .expect("Submitted → Working");
     assert_eq!(task.status, TaskStatus::Working);
 
-    task.transition(TaskStatus::Completed).expect("Working → Completed");
+    task.transition(TaskStatus::Completed)
+        .expect("Working → Completed");
     assert_eq!(task.status, TaskStatus::Completed);
     assert!(task.status.is_terminal());
 }
@@ -176,7 +184,8 @@ fn mesh_task_failure_lifecycle() {
     let mut task = MeshTask::new(Uuid::new_v4(), Uuid::new_v4(), serde_json::json!({}), 60);
 
     task.transition(TaskStatus::Working).unwrap();
-    task.transition(TaskStatus::Failed("timeout".into())).unwrap();
+    task.transition(TaskStatus::Failed("timeout".into()))
+        .unwrap();
     assert!(task.status.is_terminal());
 }
 
@@ -203,12 +212,15 @@ fn mesh_task_terminal_state_immutable() {
 #[test]
 fn mesh_task_cancellation() {
     let mut task = MeshTask::new(Uuid::new_v4(), Uuid::new_v4(), serde_json::json!({}), 60);
-    task.transition(TaskStatus::Canceled).expect("Submitted → Canceled");
+    task.transition(TaskStatus::Canceled)
+        .expect("Submitted → Canceled");
     assert!(task.status.is_terminal());
 
     let mut task2 = MeshTask::new(Uuid::new_v4(), Uuid::new_v4(), serde_json::json!({}), 60);
     task2.transition(TaskStatus::Working).unwrap();
-    task2.transition(TaskStatus::Canceled).expect("Working → Canceled");
+    task2
+        .transition(TaskStatus::Canceled)
+        .expect("Working → Canceled");
 }
 
 /// MeshTask: delegation depth tracking.
@@ -361,7 +373,10 @@ fn delegation_response_rejected() {
     let json = serde_json::to_string(&resp).expect("serialize");
     let deserialized: DelegationResponse = serde_json::from_str(&json).expect("deserialize");
     assert!(!deserialized.accepted);
-    assert_eq!(deserialized.rejection_reason.as_deref(), Some("Trust too low"));
+    assert_eq!(
+        deserialized.rejection_reason.as_deref(),
+        Some("Trust too low")
+    );
 }
 
 /// ghost-mesh depends on ghost-signing (for Ed25519) but not on ghost-gateway.

@@ -127,23 +127,23 @@ impl PolicyEngine {
         call: &ToolCall,
         feedback: DenialFeedback,
     ) -> PolicyDecision {
-        let count = self
-            .session_denials
-            .entry(ctx.session_id)
-            .or_insert(0);
+        let count = self.session_denials.entry(ctx.session_id).or_insert(0);
         *count += 1;
 
         // Emit TriggerEvent at threshold (Req 13 AC6)
         if *count == self.denial_trigger_threshold {
             if let Some(sender) = &self.trigger_sender {
-                if sender.try_send(TriggerEvent::PolicyDenialThreshold {
-                    agent_id: ctx.agent_id,
-                    session_id: ctx.session_id,
-                    denial_count: *count,
-                    denied_tools: vec![call.tool_name.clone()],
-                    denied_reasons: vec![feedback.reason.clone()],
-                    detected_at: chrono::Utc::now(),
-                }).is_err() {
+                if sender
+                    .try_send(TriggerEvent::PolicyDenialThreshold {
+                        agent_id: ctx.agent_id,
+                        session_id: ctx.session_id,
+                        denial_count: *count,
+                        denied_tools: vec![call.tool_name.clone()],
+                        denied_reasons: vec![feedback.reason.clone()],
+                        detected_at: chrono::Utc::now(),
+                    })
+                    .is_err()
+                {
                     tracing::error!(
                         agent_id = %ctx.agent_id,
                         "trigger channel full — PolicyDenialThreshold event dropped (AC13)"

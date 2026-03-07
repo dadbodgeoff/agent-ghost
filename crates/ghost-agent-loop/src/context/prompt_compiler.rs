@@ -248,29 +248,27 @@ impl PromptCompiler {
         stats.l8_original_tokens = l8_original_tokens;
 
         let conversation_history = match &self.observation_masker {
-            Some(masker) => {
-                match masker.mask_history(&input.conversation_history) {
-                    Ok(masked) => {
-                        let masked_tokens = self.counter.count(&masked);
-                        stats.l8_masked_tokens = masked_tokens;
-                        let saved = l8_original_tokens.saturating_sub(masked_tokens);
-                        if saved > 0 {
-                            tracing::info!(
-                                original_tokens = l8_original_tokens,
-                                masked_tokens,
-                                saved,
-                                "Observation masking applied"
-                            );
-                        }
-                        masked
+            Some(masker) => match masker.mask_history(&input.conversation_history) {
+                Ok(masked) => {
+                    let masked_tokens = self.counter.count(&masked);
+                    stats.l8_masked_tokens = masked_tokens;
+                    let saved = l8_original_tokens.saturating_sub(masked_tokens);
+                    if saved > 0 {
+                        tracing::info!(
+                            original_tokens = l8_original_tokens,
+                            masked_tokens,
+                            saved,
+                            "Observation masking applied"
+                        );
                     }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Observation masking failed, using unmasked history");
-                        stats.l8_masked_tokens = l8_original_tokens;
-                        input.conversation_history.clone()
-                    }
+                    masked
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Observation masking failed, using unmasked history");
+                    stats.l8_masked_tokens = l8_original_tokens;
+                    input.conversation_history.clone()
+                }
+            },
             None => {
                 stats.l8_masked_tokens = l8_original_tokens;
                 input.conversation_history.clone()
@@ -334,8 +332,12 @@ impl PromptCompiler {
         };
 
         tracing::info!(
-            l7_saved = stats.l7_original_tokens.saturating_sub(stats.l7_compressed_tokens),
-            l8_saved = stats.l8_original_tokens.saturating_sub(stats.l8_masked_tokens),
+            l7_saved = stats
+                .l7_original_tokens
+                .saturating_sub(stats.l7_compressed_tokens),
+            l8_saved = stats
+                .l8_original_tokens
+                .saturating_sub(stats.l8_masked_tokens),
             total_original = stats.total_original_tokens,
             total_optimized = stats.total_optimized_tokens,
             compression_ratio = format!("{:.3}", stats.compression_ratio),
@@ -468,17 +470,13 @@ pub fn tool_constraint_instruction(intervention_level: u8) -> String {
     }
 }
 
-static RE_ISO_SECONDS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}):\d{2}(?:\.\d+)?Z?").unwrap()
-});
+static RE_ISO_SECONDS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}):\d{2}(?:\.\d+)?Z?").unwrap());
 
-static RE_TIME_SECONDS: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"((?:^|[\sT,;])\d{2}:\d{2}):\d{2}").unwrap()
-});
+static RE_TIME_SECONDS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"((?:^|[\sT,;])\d{2}:\d{2}):\d{2}").unwrap());
 
-static RE_UNIX_EPOCH: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{10,13}\b").unwrap()
-});
+static RE_UNIX_EPOCH: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{10,13}\b").unwrap());
 
 pub fn sanitize_environment_timestamps(content: &str) -> String {
     let result = RE_ISO_SECONDS.replace_all(content, "$1");
@@ -545,7 +543,9 @@ fn truncate_at_message_boundary(
     let mut result = String::with_capacity(content.len());
     result.push_str(first);
     result.push_str("\n\n");
-    result.push_str(&format!("[CONTEXT TRUNCATED: {removed_count} messages removed]"));
+    result.push_str(&format!(
+        "[CONTEXT TRUNCATED: {removed_count} messages removed]"
+    ));
     for msg in kept_from_end {
         result.push_str("\n\n");
         result.push_str(msg);

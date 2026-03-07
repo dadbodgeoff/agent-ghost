@@ -8,15 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use ghost_gateway::gateway::{GatewaySharedState, GatewayState};
+use ghost_gateway::gateway::{GatewayError, GatewaySharedState, GatewayState};
 use ghost_gateway::health::{MonitorHealthChecker, MonitorHealthConfig};
 use ghost_gateway::messaging::dispatcher::{MessageDispatcher, VerifyResult};
 use ghost_gateway::messaging::protocol::AgentMessage;
 use ghost_gateway::session::compaction::{CompactionBlock, CompactionConfig, SessionCompactor};
 use ghost_llm::fallback::{AuthProfile, FallbackChain};
-use ghost_llm::provider::{
-    AnthropicProvider, LLMProvider, OpenAIProvider,
-};
+use ghost_llm::provider::{AnthropicProvider, LLMProvider, OpenAIProvider};
 use uuid::Uuid;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -46,14 +44,18 @@ fn dispatcher_monotonicity_no_stale_state_after_construction() {
 
     // First message should always be accepted
     let msg1 = AgentMessage::new(
-        sender, recipient, "Notification".into(),
+        sender,
+        recipient,
+        "Notification".into(),
         serde_json::json!({"message": "first"}),
     );
     assert!(matches!(dispatcher.verify(&msg1), VerifyResult::Accepted));
 
     // Second message from same sender with a newer nonce should be accepted
     let msg2 = AgentMessage::new(
-        sender, recipient, "Notification".into(),
+        sender,
+        recipient,
+        "Notification".into(),
         serde_json::json!({"message": "second"}),
     );
     assert!(matches!(dispatcher.verify(&msg2), VerifyResult::Accepted));
@@ -69,11 +71,15 @@ fn dispatcher_uuidv7_monotonicity_rejects_old_nonce() {
 
     // Send two messages — the second gets a newer UUIDv7 nonce
     let msg1 = AgentMessage::new(
-        sender, recipient, "Notification".into(),
+        sender,
+        recipient,
+        "Notification".into(),
         serde_json::json!({"message": "first"}),
     );
     let msg2 = AgentMessage::new(
-        sender, recipient, "Notification".into(),
+        sender,
+        recipient,
+        "Notification".into(),
         serde_json::json!({"message": "second"}),
     );
 
@@ -144,9 +150,18 @@ fn openai_provider_update_auth_mutates() {
 #[test]
 fn fallback_chain_auth_profiles_are_distinct() {
     let profiles = vec![
-        AuthProfile { api_key: "key-1".into(), org_id: None },
-        AuthProfile { api_key: "key-2".into(), org_id: Some("org-2".into()) },
-        AuthProfile { api_key: "key-3".into(), org_id: None },
+        AuthProfile {
+            api_key: "key-1".into(),
+            org_id: None,
+        },
+        AuthProfile {
+            api_key: "key-2".into(),
+            org_id: Some("org-2".into()),
+        },
+        AuthProfile {
+            api_key: "key-3".into(),
+            org_id: None,
+        },
     ];
 
     // Verify profiles are actually distinct
@@ -307,7 +322,9 @@ fn dispatcher_rejects_future_dated_messages() {
     let recipient = Uuid::now_v7();
 
     let mut msg = AgentMessage::new(
-        sender, recipient, "Notification".into(),
+        sender,
+        recipient,
+        "Notification".into(),
         serde_json::json!({"message": "from the future"}),
     );
     // Set timestamp 1 hour in the future (well beyond 30s tolerance)
@@ -333,7 +350,9 @@ fn dispatcher_accepts_slight_clock_skew() {
     let recipient = Uuid::now_v7();
 
     let mut msg = AgentMessage::new(
-        sender, recipient, "Notification".into(),
+        sender,
+        recipient,
+        "Notification".into(),
         serde_json::json!({"message": "slight skew"}),
     );
     // 10 seconds in the future — within 30s tolerance
@@ -356,7 +375,9 @@ fn dispatcher_rejects_at_future_boundary() {
     let recipient = Uuid::now_v7();
 
     let mut msg = AgentMessage::new(
-        sender, recipient, "Notification".into(),
+        sender,
+        recipient,
+        "Notification".into(),
         serde_json::json!({"message": "boundary"}),
     );
     // 31 seconds in the future — just past 30s tolerance
@@ -470,35 +491,54 @@ fn compaction_partial_json_not_treated_as_block() {
 
 /// Direct AtomicU8 writes are forbidden — all transitions must go through
 /// GatewaySharedState::transition_to() which validates the FSM.
-/// In debug builds, illegal transitions panic (caught here with catch_unwind).
 #[test]
 fn fsm_rejects_illegal_transitions() {
     // Initializing → Recovering is NOT valid
-    let result = std::panic::catch_unwind(|| {
-        let shared = GatewaySharedState::new();
-        shared.transition_to(GatewayState::Recovering)
-    });
-    assert!(result.is_err(), "Initializing → Recovering should be illegal (panic in debug)");
+    let shared = GatewaySharedState::new();
+    let result = shared.transition_to(GatewayState::Recovering);
+    assert!(
+        matches!(
+            result,
+            Err(GatewayError::IllegalTransition {
+                from: GatewayState::Initializing,
+                to: GatewayState::Recovering
+            })
+        ),
+        "Initializing → Recovering should be rejected"
+    );
 
     // Initializing → ShuttingDown is NOT valid
-    let result = std::panic::catch_unwind(|| {
-        let shared = GatewaySharedState::new();
-        shared.transition_to(GatewayState::ShuttingDown)
-    });
-    assert!(result.is_err(), "Initializing → ShuttingDown should be illegal (panic in debug)");
+    let shared = GatewaySharedState::new();
+    let result = shared.transition_to(GatewayState::ShuttingDown);
+    assert!(
+        matches!(
+            result,
+            Err(GatewayError::IllegalTransition {
+                from: GatewayState::Initializing,
+                to: GatewayState::ShuttingDown
+            })
+        ),
+        "Initializing → ShuttingDown should be rejected"
+    );
 
     // Valid: Initializing → Healthy
     let shared = GatewaySharedState::new();
     shared.transition_to(GatewayState::Healthy).unwrap();
 
     // Healthy → Recovering is NOT valid (must go through Degraded first)
-    let shared2 = Arc::new(GatewaySharedState::new());
+    let shared2 = GatewaySharedState::new();
     shared2.transition_to(GatewayState::Healthy).unwrap();
-    let shared2_clone = Arc::clone(&shared2);
-    let result = std::panic::catch_unwind(move || {
-        shared2_clone.transition_to(GatewayState::Recovering)
-    });
-    assert!(result.is_err(), "Healthy → Recovering should be illegal (panic in debug)");
+    let result = shared2.transition_to(GatewayState::Recovering);
+    assert!(
+        matches!(
+            result,
+            Err(GatewayError::IllegalTransition {
+                from: GatewayState::Healthy,
+                to: GatewayState::Recovering
+            })
+        ),
+        "Healthy → Recovering should be rejected"
+    );
 }
 
 /// FatalError is terminal — no transitions out, ever.
@@ -511,13 +551,17 @@ fn fsm_fatal_error_is_truly_terminal() {
         GatewayState::Recovering,
         GatewayState::ShuttingDown,
     ] {
-        let result = std::panic::catch_unwind(move || {
-            let shared = GatewaySharedState::new();
-            shared.transition_to(GatewayState::FatalError).unwrap();
-            shared.transition_to(target)
-        });
+        let shared = GatewaySharedState::new();
+        shared.transition_to(GatewayState::FatalError).unwrap();
+        let result = shared.transition_to(target);
         assert!(
-            result.is_err(),
+            matches!(
+                result,
+                Err(GatewayError::IllegalTransition {
+                    from: GatewayState::FatalError,
+                    to
+                }) if to == target
+            ),
             "SECURITY: FatalError → {:?} was allowed. FatalError must be terminal.",
             target
         );
@@ -557,7 +601,9 @@ fn dispatcher_many_senders_no_panic() {
     for _ in 0..1000 {
         let sender = Uuid::now_v7();
         let msg = AgentMessage::new(
-            sender, recipient, "Notification".into(),
+            sender,
+            recipient,
+            "Notification".into(),
             serde_json::json!({"message": "bulk"}),
         );
         let _ = dispatcher.verify(&msg);
@@ -572,13 +618,14 @@ fn compaction_shutdown_signal_rollback() {
     let compactor = SessionCompactor::new(CompactionConfig::default());
     let signal = std::sync::atomic::AtomicBool::new(true); // Already signaled
 
-    let mut history: Vec<String> = (0..10)
-        .map(|i| format!("Message {}", i))
-        .collect();
+    let mut history: Vec<String> = (0..10).map(|i| format!("Message {}", i)).collect();
     let snapshot = history.clone();
 
     let result = compactor.compact(&mut history, 1, Some(&signal));
-    assert!(result.is_err(), "Compaction should abort on shutdown signal");
+    assert!(
+        result.is_err(),
+        "Compaction should abort on shutdown signal"
+    );
     assert_eq!(
         history, snapshot,
         "CRITICAL: History was modified despite shutdown signal — rollback failed"
@@ -608,30 +655,49 @@ fn nan_signal_sanitization_arithmetic() {
 
     // WITHOUT fix: NaN propagates
     let raw_sum: f64 = signals.iter().zip(weights.iter()).map(|(s, w)| s * w).sum();
-    assert!(raw_sum.is_nan(), "Raw sum with NaN signals must be NaN (proving the bug exists)");
+    assert!(
+        raw_sum.is_nan(),
+        "Raw sum with NaN signals must be NaN (proving the bug exists)"
+    );
 
     let raw_base = raw_sum / 8.0;
     assert!(raw_base.is_nan(), "Raw base_score must be NaN");
 
     // clamp does NOT catch NaN — this is the critical bug
     let clamped = raw_base.clamp(0.0, 1.0);
-    assert!(clamped.is_nan(), "CRITICAL: clamp(0.0, 1.0) does NOT catch NaN — this is the bug");
+    assert!(
+        clamped.is_nan(),
+        "CRITICAL: clamp(0.0, 1.0) does NOT catch NaN — this is the bug"
+    );
 
     // WITH fix: sanitize NaN to 0.0 first
     let sanitized: [f64; 8] = {
         let mut s = signals;
         for v in s.iter_mut() {
-            if v.is_nan() { *v = 0.0; }
+            if v.is_nan() {
+                *v = 0.0;
+            }
         }
         s
     };
-    let fixed_sum: f64 = sanitized.iter().zip(weights.iter()).map(|(s, w)| s * w).sum();
+    let fixed_sum: f64 = sanitized
+        .iter()
+        .zip(weights.iter())
+        .map(|(s, w)| s * w)
+        .sum();
     assert!(!fixed_sum.is_nan(), "Sanitized sum must not be NaN");
     let fixed_base = fixed_sum / 8.0;
     assert!(!fixed_base.is_nan(), "Sanitized base_score must not be NaN");
     let fixed_clamped = fixed_base.clamp(0.0, 1.0);
-    assert!(!fixed_clamped.is_nan(), "Sanitized clamped score must not be NaN");
-    assert!((fixed_clamped - 0.1).abs() < 0.001, "Expected 0.8/8.0 = 0.1, got {}", fixed_clamped);
+    assert!(
+        !fixed_clamped.is_nan(),
+        "Sanitized clamped score must not be NaN"
+    );
+    assert!(
+        (fixed_clamped - 0.1).abs() < 0.001,
+        "Expected 0.8/8.0 = 0.1, got {}",
+        fixed_clamped
+    );
 }
 
 /// Verify that all-NaN signals produce score 0.0, not NaN.
@@ -644,11 +710,17 @@ fn all_nan_signals_produce_zero_score() {
     let sanitized: [f64; 8] = {
         let mut s = signals;
         for v in s.iter_mut() {
-            if v.is_nan() { *v = 0.0; }
+            if v.is_nan() {
+                *v = 0.0;
+            }
         }
         s
     };
-    let sum: f64 = sanitized.iter().zip(weights.iter()).map(|(s, w)| s * w).sum();
+    let sum: f64 = sanitized
+        .iter()
+        .zip(weights.iter())
+        .map(|(s, w)| s * w)
+        .sum();
     let base = sum / 8.0;
     assert_eq!(base, 0.0, "All-NaN signals must produce score 0.0");
 }
@@ -663,17 +735,30 @@ fn single_nan_high_weight_signal_contained() {
     let sanitized: [f64; 8] = {
         let mut s = signals;
         for v in s.iter_mut() {
-            if v.is_nan() { *v = 0.0; }
+            if v.is_nan() {
+                *v = 0.0;
+            }
         }
         s
     };
-    let sum: f64 = sanitized.iter().zip(weights.iter()).map(|(s, w)| s * w).sum();
+    let sum: f64 = sanitized
+        .iter()
+        .zip(weights.iter())
+        .map(|(s, w)| s * w)
+        .sum();
     let weight_total: f64 = weights.iter().sum();
     let base = sum / weight_total;
 
-    assert!(!base.is_nan(), "Score must not be NaN even with NaN in highest-weight signal");
+    assert!(
+        !base.is_nan(),
+        "Score must not be NaN even with NaN in highest-weight signal"
+    );
     // 0.0*10 + 0.9*7 = 6.3 / 17.0 ≈ 0.3706
-    assert!(base > 0.0 && base < 1.0, "Score should be in valid range, got {}", base);
+    assert!(
+        base > 0.0 && base < 1.0,
+        "Score should be in valid range, got {}",
+        base
+    );
 }
 
 // ── deliver_queued future-timestamp gap ──────────────────────────────
@@ -692,7 +777,9 @@ fn deliver_queued_rejects_future_dated_messages() {
 
     // Create a message with timestamp 5 minutes in the future
     let mut msg = AgentMessage::new(
-        sender, agent, "Notification".into(),
+        sender,
+        agent,
+        "Notification".into(),
         serde_json::json!({"message": "future attack"}),
     );
     msg.timestamp = Utc::now() + chrono::Duration::minutes(5);
@@ -717,7 +804,9 @@ fn deliver_queued_allows_slight_clock_skew() {
 
     // Create a message 20s in the future (within 30s tolerance)
     let mut msg = AgentMessage::new(
-        sender, agent, "Notification".into(),
+        sender,
+        agent,
+        "Notification".into(),
         serde_json::json!({"message": "slight skew"}),
     );
     msg.timestamp = Utc::now() + chrono::Duration::seconds(20);
@@ -727,7 +816,8 @@ fn deliver_queued_allows_slight_clock_skew() {
 
     let delivered = dispatcher.deliver_queued(agent);
     assert_eq!(
-        delivered.len(), 1,
+        delivered.len(),
+        1,
         "Messages within 30s clock skew should be delivered"
     );
 }
@@ -741,13 +831,17 @@ fn deliver_queued_mixed_valid_expired_future() {
 
     // Valid message (now)
     let valid = AgentMessage::new(
-        sender, agent, "Notification".into(),
+        sender,
+        agent,
+        "Notification".into(),
         serde_json::json!({"message": "valid"}),
     );
 
     // Expired message (10 minutes ago — beyond 5min REPLAY_WINDOW)
     let mut expired = AgentMessage::new(
-        sender, agent, "Notification".into(),
+        sender,
+        agent,
+        "Notification".into(),
         serde_json::json!({"message": "expired"}),
     );
     expired.timestamp = Utc::now() - chrono::Duration::minutes(10);
@@ -755,7 +849,9 @@ fn deliver_queued_mixed_valid_expired_future() {
 
     // Future-dated message (1 hour ahead)
     let mut future = AgentMessage::new(
-        sender, agent, "Notification".into(),
+        sender,
+        agent,
+        "Notification".into(),
         serde_json::json!({"message": "future"}),
     );
     future.timestamp = Utc::now() + chrono::Duration::hours(1);
@@ -767,7 +863,8 @@ fn deliver_queued_mixed_valid_expired_future() {
 
     let delivered = dispatcher.deliver_queued(agent);
     assert_eq!(
-        delivered.len(), 1,
+        delivered.len(),
+        1,
         "Only the valid message should be delivered, got {} messages. \
          Expired and future-dated must be filtered.",
         delivered.len()
@@ -832,10 +929,7 @@ fn spending_cap_neg_infinity_rejected() {
 fn spending_cap_inf_current_spend_rejected() {
     let compactor = SessionCompactor::new(CompactionConfig::default());
     let result = compactor.check_spending_cap(10.0, f64::INFINITY, 100.0);
-    assert!(
-        result.is_err(),
-        "Infinite current_spend must be rejected"
-    );
+    assert!(result.is_err(), "Infinite current_spend must be rejected");
 }
 
 /// All three params NaN — triple bypass attempt.
@@ -866,7 +960,10 @@ fn prune_tool_results_correct_format() {
     ];
 
     let result = SessionCompactor::prune_tool_results(&mut history);
-    assert_eq!(result.results_pruned, 2, "Must prune 2 tool_result messages");
+    assert_eq!(
+        result.results_pruned, 2,
+        "Must prune 2 tool_result messages"
+    );
     assert_eq!(history.len(), 2, "Only non-tool messages should remain");
     assert_eq!(history[0], "User question");
     assert_eq!(history[1], "Agent response");
@@ -901,7 +998,10 @@ fn prune_tool_results_mixed_formats() {
     ];
 
     let result = SessionCompactor::prune_tool_results(&mut history);
-    assert_eq!(result.results_pruned, 1, "Only the correct-format tool_result should be pruned");
+    assert_eq!(
+        result.results_pruned, 1,
+        "Only the correct-format tool_result should be pruned"
+    );
     assert_eq!(history.len(), 3);
 }
 
@@ -914,9 +1014,15 @@ fn prune_tool_results_user_message_with_keyword() {
     ];
 
     let result = SessionCompactor::prune_tool_results(&mut history);
-    assert_eq!(result.results_pruned, 1, "Only actual tool_result type should be pruned");
+    assert_eq!(
+        result.results_pruned, 1,
+        "Only actual tool_result type should be pruned"
+    );
     assert_eq!(history.len(), 1);
-    assert!(history[0].contains("user_message"), "User message must survive");
+    assert!(
+        history[0].contains("user_message"),
+        "User message must survive"
+    );
 }
 
 // ── reconstruct_state zeroed signal_scores ───────────────────────────
@@ -950,7 +1056,12 @@ fn cached_score_zeroed_signals_level_consistency() {
     // The fix ensures compute_score is called before publishing,
     // which overwrites the stale cache. Verify the level is at least
     // consistent with the score.
-    assert!(level > 0, "Level {} should be > 0 for score {}", level, score);
+    assert!(
+        level > 0,
+        "Level {} should be > 0 for score {}",
+        level,
+        score
+    );
 }
 
 // ── Dedup key correctness ────────────────────────────────────────────

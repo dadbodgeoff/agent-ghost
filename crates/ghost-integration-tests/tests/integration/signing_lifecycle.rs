@@ -64,7 +64,10 @@ fn signing_deterministic() {
 
     let sig1 = sign(payload, &signing_key);
     let sig2 = sign(payload, &signing_key);
-    assert_eq!(sig1, sig2, "Same key + same payload should produce same signature");
+    assert_eq!(
+        sig1, sig2,
+        "Same key + same payload should produce same signature"
+    );
 }
 
 /// Multiple messages signed with same key, each verifies independently.

@@ -3,10 +3,8 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
-  import { isTauriEnvironment } from '$lib/platform/runtime';
+  import { getRuntime } from '$lib/platform/runtime';
   import '@xterm/xterm/css/xterm.css';
-
-  const isTauri = isTauriEnvironment();
 
   let containerEl: HTMLDivElement;
   let term: Terminal | null = null;
@@ -56,9 +54,11 @@
     });
     resizeObserver.observe(containerEl);
 
-    if (isTauri) {
+    const runtime = await getRuntime();
+
+    if (runtime.isDesktop()) {
       // Don't block mount on PTY — fire and forget so the UI stays responsive.
-      startPty().catch((err) => {
+      startPty(runtime).catch((err) => {
         term?.writeln(`Failed to start PTY: ${err}`);
       });
     } else {
@@ -74,17 +74,18 @@
     term?.dispose();
   });
 
-  async function startPty() {
+  async function startPty(runtime: Awaited<ReturnType<typeof getRuntime>>) {
     if (!term || !fitAddon) return;
 
     try {
-      const { spawn } = await import('tauri-pty');
-      const shell = getDefaultShell();
-
-      const pty = spawn(shell, [], {
+      const shell = (await runtime.getDefaultShell()) ?? getFallbackShell();
+      const pty = await runtime.spawnTerminalPty(shell, {
         cols: term.cols,
         rows: term.rows,
       });
+      if (!pty) {
+        throw new Error('PTY support is unavailable in this runtime');
+      }
 
       // PTY → xterm
       const dataSub = pty.onData((data: Uint8Array) => {
@@ -114,9 +115,8 @@
     }
   }
 
-  function getDefaultShell(): string {
-    // macOS/Linux
-    return '/bin/zsh';
+  function getFallbackShell(): string {
+    return navigator.userAgent.includes('Windows') ? 'cmd.exe' : '/bin/sh';
   }
 </script>
 

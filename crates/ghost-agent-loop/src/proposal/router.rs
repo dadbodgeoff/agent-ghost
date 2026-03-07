@@ -171,6 +171,14 @@ impl ProposalRouter {
         })
     }
 
+    /// Reflection count accumulated for a session in the current process.
+    pub fn session_reflection_count(&self, session_id: Uuid) -> u32 {
+        self.session_reflection_counts
+            .get(&session_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Cache a convergence score.
     pub fn cache_score(&mut self, agent_id: Uuid, score: f64, level: u8) {
         self.score_cache.insert(

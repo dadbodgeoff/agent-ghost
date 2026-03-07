@@ -1,8 +1,8 @@
 //! Memory archival queries (v029 memory_archival_log table).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 /// Insert an archival record for a memory.
 pub fn insert_archival_record(

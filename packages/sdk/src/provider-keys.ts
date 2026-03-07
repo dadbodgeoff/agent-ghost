@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface ProviderKeyInfo {
   provider_name: string;
@@ -35,14 +35,22 @@ export class ProviderKeysAPI {
     return this.request<ListProviderKeysResult>('GET', '/api/admin/provider-keys');
   }
 
-  async set(params: SetProviderKeyParams): Promise<SetProviderKeyResult> {
-    return this.request<SetProviderKeyResult>('PUT', '/api/admin/provider-keys', params);
+  async set(
+    params: SetProviderKeyParams,
+    options?: GhostRequestOptions,
+  ): Promise<SetProviderKeyResult> {
+    return this.request<SetProviderKeyResult>('PUT', '/api/admin/provider-keys', params, options);
   }
 
-  async delete(envName: string): Promise<DeleteProviderKeyResult> {
+  async delete(
+    envName: string,
+    options?: GhostRequestOptions,
+  ): Promise<DeleteProviderKeyResult> {
     return this.request<DeleteProviderKeyResult>(
       'DELETE',
       `/api/admin/provider-keys/${encodeURIComponent(envName)}`,
+      undefined,
+      options,
     );
   }
 }

@@ -136,10 +136,7 @@ pub enum WsEvent {
         agent_id: String,
     },
     /// Agent state changed (created, deleted, lifecycle transition).
-    AgentStateChange {
-        agent_id: String,
-        new_state: String,
-    },
+    AgentStateChange { agent_id: String, new_state: String },
     /// Session event for live DAG updates and replay (T-2.1.8).
     SessionEvent {
         session_id: String,
@@ -172,10 +169,7 @@ pub enum WsEvent {
         status_code: u16,
     },
     /// Skill installed or uninstalled (T-4.2.1).
-    SkillChange {
-        skill_name: String,
-        action: String,
-    },
+    SkillChange { skill_name: String, action: String },
     /// A2A task status update (T-4.1.2).
     A2ATaskUpdate {
         task_id: String,
@@ -198,7 +192,10 @@ pub enum WsEvent {
     /// WP4-C/WP9-J: System-level warning for dashboard display.
     SystemWarning { message: String },
     /// WP9-J: Context window pressure — a prompt layer was truncated.
-    ContextTruncated { layer: String, removed_tokens: usize },
+    ContextTruncated {
+        layer: String,
+        removed_tokens: usize,
+    },
 }
 
 impl WsEvent {
@@ -229,7 +226,9 @@ impl WsEvent {
             WsEvent::A2ATaskUpdate { .. } => vec!["a2a:tasks".to_string()],
             WsEvent::ChatMessage { session_id, .. } => vec![format!("studio:session:{session_id}")],
             WsEvent::Ping | WsEvent::Resync { .. } => vec![],
-            WsEvent::SystemWarning { .. } | WsEvent::ContextTruncated { .. } => vec!["system:warning".to_string()],
+            WsEvent::SystemWarning { .. } | WsEvent::ContextTruncated { .. } => {
+                vec!["system:warning".to_string()]
+            }
         }
     }
 }
@@ -331,7 +330,9 @@ pub async fn ws_handler(
         if let Some(ref t) = token_from_header {
             token_str = t.clone();
         } else if let Some(ref t) = params.token {
-            tracing::warn!("WebSocket auth via query param is deprecated — use Sec-WebSocket-Protocol header");
+            tracing::warn!(
+                "WebSocket auth via query param is deprecated — use Sec-WebSocket-Protocol header"
+            );
             token_str = t.clone();
         } else {
             ws_tracker.release(client_ip);
@@ -342,8 +343,7 @@ pub async fn ws_handler(
         // Try JWT validation first.
         if let Some(ref secret) = auth_config.jwt_secret {
             let key = jsonwebtoken::DecodingKey::from_secret(secret.as_bytes());
-            let mut validation =
-                jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
             validation.validate_exp = true;
             validation.leeway = 30;
             match jsonwebtoken::decode::<crate::api::auth::Claims>(token, &key, &validation) {
@@ -413,14 +413,15 @@ async fn handle_socket(
 
     // Wait briefly for a potential reconnect message with last_seq.
     // Use a short timeout so fresh connections aren't delayed.
-    let reconnect_check = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        socket.recv(),
-    ).await;
+    let reconnect_check =
+        tokio::time::timeout(std::time::Duration::from_millis(500), socket.recv()).await;
 
     if let Ok(Some(Ok(Message::Text(text)))) = reconnect_check {
         if let Ok(reconnect) = serde_json::from_str::<ReconnectMessage>(&text) {
-            tracing::info!(last_seq = reconnect.last_seq, "WS client reconnecting with last_seq");
+            tracing::info!(
+                last_seq = reconnect.last_seq,
+                "WS client reconnecting with last_seq"
+            );
             match state.replay_buffer.replay_after(reconnect.last_seq) {
                 Some(missed) => {
                     tracing::info!(count = missed.len(), "Replaying missed events");
@@ -438,7 +439,10 @@ async fn handle_socket(
                 None => {
                     // Gap too large — send Resync directly to THIS client only.
                     // Do NOT broadcast to all clients (they are not affected).
-                    tracing::warn!(last_seq = reconnect.last_seq, "Replay gap too large — sending Resync to reconnecting client");
+                    tracing::warn!(
+                        last_seq = reconnect.last_seq,
+                        "Replay gap too large — sending Resync to reconnecting client"
+                    );
                     let resync_envelope = WsEnvelope {
                         seq: 0,
                         timestamp: chrono::Utc::now().to_rfc3339(),

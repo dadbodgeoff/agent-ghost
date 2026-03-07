@@ -5,5 +5,5 @@
 
 pub mod enforcer;
 pub mod patterns;
-pub mod reframer;
 pub mod prompt;
+pub mod reframer;

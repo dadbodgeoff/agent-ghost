@@ -91,12 +91,13 @@ fn preset_profiles() -> Vec<ProfileSummary> {
 // ── Handlers ────────────────────────────────────────────────────────
 
 /// GET /api/profiles — list all profiles (presets + custom from DB).
-pub async fn list_profiles(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<ProfileListResponse> {
+pub async fn list_profiles(State(state): State<Arc<AppState>>) -> ApiResult<ProfileListResponse> {
     let mut profiles = preset_profiles();
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_profiles", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_profiles", e))?;
 
     // Load custom profiles stored in convergence_profiles table (if exists).
     let custom: Vec<ProfileSummary> = db

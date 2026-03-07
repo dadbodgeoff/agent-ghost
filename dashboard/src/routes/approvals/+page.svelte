@@ -1,44 +1,54 @@
 <script lang="ts">
   /**
-   * Approval Queue — Pending agent proposals that require human approval (Phase 2, Task 3.6).
+   * Proposal Queue — gateway goal proposals that can be approved or rejected.
    *
-   * Shows pending proposals with approve/deny/modify actions.
-   * Real-time updates via WS ProposalDecision events.
+   * This page intentionally reflects the real goals contract. It does not
+   * invent approval types, risk levels, tool arguments, or mutable approval
+   * payloads that the gateway does not actually own.
    */
   import { onMount, onDestroy } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
-  import type { Approval } from '@ghost/sdk';
+  import type { Proposal, ProposalDetail } from '@ghost/sdk';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
 
-  type Proposal = Approval & { status: Approval['status'] | 'modified' };
-
   let proposals = $state<Proposal[]>([]);
+  let proposalDetails = $state<Record<string, ProposalDetail>>({});
+  let detailLoading = $state<Record<string, boolean>>({});
+  let detailErrors = $state<Record<string, string>>({});
   let loading = $state(false);
   let error = $state('');
   let activeTab = $state<'pending' | 'history'>('pending');
-  let modifyingId = $state<string | null>(null);
-  let modifiedArgs = $state('');
+  let expandedProposalId = $state<string | null>(null);
   let unsubs: Array<() => void> = [];
 
-  let pendingProposals = $derived(proposals.filter(p => p.status === 'pending'));
-  let historyProposals = $derived(proposals.filter(p => p.status !== 'pending'));
+  let pendingProposals = $derived(
+    proposals.filter((proposal) => proposal.decision === null && proposal.resolved_at === null),
+  );
+  let historyProposals = $derived(
+    proposals.filter((proposal) => proposal.decision !== null || proposal.resolved_at !== null),
+  );
 
   onMount(async () => {
     await loadProposals();
 
     unsubs.push(
       wsStore.on('ProposalDecision', (msg: WsMessage) => {
-        const data = msg as any;
-        const idx = proposals.findIndex(p => p.id === data.proposal_id);
-        if (idx >= 0) {
-          proposals[idx] = {
-            ...proposals[idx],
-            status: data.decision === 'rejected' ? 'denied' : 'approved',
-            decided_at: new Date().toISOString(),
-            decided_by: data.decided_by ?? 'system',
-          };
-          proposals = [...proposals];
+        const data = msg as { proposal_id?: string; decision?: 'approved' | 'rejected' };
+        if (!data.proposal_id || !data.decision) {
+          return;
         }
+
+        const idx = proposals.findIndex((proposal) => proposal.id === data.proposal_id);
+        if (idx < 0) {
+          return;
+        }
+
+        proposals[idx] = {
+          ...proposals[idx],
+          decision: data.decision,
+          resolved_at: new Date().toISOString(),
+        };
+        proposals = [...proposals];
       }),
       wsStore.on('Resync', () => {
         setTimeout(() => loadProposals(), Math.random() * 2000);
@@ -47,91 +57,115 @@
   });
 
   onDestroy(() => {
-    for (const unsub of unsubs) unsub();
+    for (const unsub of unsubs) {
+      unsub();
+    }
   });
 
   async function loadProposals() {
     loading = true;
     error = '';
+
     try {
       const client = await getGhostClient();
-      const data = await client.approvals.list();
+      const data = await client.goals.list();
       proposals = data.proposals ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load proposals';
     }
+
     loading = false;
   }
 
   async function approveProposal(id: string) {
     try {
       const client = await getGhostClient();
-      await client.approvals.approve(id);
-      const idx = proposals.findIndex(p => p.id === id);
-      if (idx >= 0) {
-        proposals[idx] = { ...proposals[idx], status: 'approved', decided_at: new Date().toISOString() };
-        proposals = [...proposals];
-      }
+      await client.goals.approve(id);
+      markProposalResolved(id, 'approved');
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to approve';
+      error = e instanceof Error ? e.message : 'Failed to approve proposal';
     }
   }
 
-  async function denyProposal(id: string) {
+  async function rejectProposal(id: string) {
     try {
       const client = await getGhostClient();
-      await client.approvals.deny(id);
-      const idx = proposals.findIndex(p => p.id === id);
-      if (idx >= 0) {
-        proposals[idx] = { ...proposals[idx], status: 'denied', decided_at: new Date().toISOString() };
-        proposals = [...proposals];
-      }
+      await client.goals.reject(id);
+      markProposalResolved(id, 'rejected');
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to deny';
+      error = e instanceof Error ? e.message : 'Failed to reject proposal';
     }
   }
 
-  async function modifyAndApprove(id: string) {
+  function markProposalResolved(id: string, decision: 'approved' | 'rejected') {
+    const idx = proposals.findIndex((proposal) => proposal.id === id);
+    if (idx < 0) {
+      return;
+    }
+
+    proposals[idx] = {
+      ...proposals[idx],
+      decision,
+      resolved_at: new Date().toISOString(),
+    };
+    proposals = [...proposals];
+  }
+
+  async function toggleProposalDetail(id: string) {
+    if (expandedProposalId === id) {
+      expandedProposalId = null;
+      return;
+    }
+
+    expandedProposalId = id;
+
+    if (proposalDetails[id] || detailLoading[id]) {
+      return;
+    }
+
+    detailLoading = { ...detailLoading, [id]: true };
+    detailErrors = { ...detailErrors, [id]: '' };
+
     try {
-      const parsedArgs = JSON.parse(modifiedArgs);
       const client = await getGhostClient();
-      await client.approvals.approve(id, { modified_args: parsedArgs });
-      const idx = proposals.findIndex(p => p.id === id);
-      if (idx >= 0) {
-        proposals[idx] = { ...proposals[idx], status: 'modified', decided_at: new Date().toISOString() };
-        proposals = [...proposals];
-      }
-      modifyingId = null;
-      modifiedArgs = '';
+      const detail = await client.goals.get(id);
+      proposalDetails = { ...proposalDetails, [id]: detail };
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Invalid JSON or approval failed';
+      detailErrors = {
+        ...detailErrors,
+        [id]: e instanceof Error ? e.message : 'Failed to load proposal detail',
+      };
+    } finally {
+      detailLoading = { ...detailLoading, [id]: false };
     }
   }
 
-  function startModify(proposal: Proposal) {
-    modifyingId = proposal.id;
-    modifiedArgs = JSON.stringify(proposal.details.args ?? {}, null, 2);
+  function proposalSummary(proposal: Proposal): string {
+    return `${proposal.operation} on ${proposal.target_type}`;
   }
 
-  function riskBadgeClass(risk?: string): string {
-    switch (risk) {
-      case 'high': return 'risk-high';
-      case 'medium': return 'risk-medium';
-      default: return 'risk-low';
+  function proposalStatus(proposal: Proposal): 'pending' | 'approved' | 'rejected' {
+    if (proposal.decision === 'approved') {
+      return 'approved';
     }
-  }
-
-  function typeIcon(type: string): string {
-    switch (type) {
-      case 'tool_call': return '!';
-      case 'spend': return '$';
-      case 'escalation': return '^';
-      case 'goal_change': return '~';
-      default: return '?';
+    if (proposal.decision === 'rejected') {
+      return 'rejected';
     }
+    return 'pending';
   }
 
-  function relativeTime(iso: string): string {
+  function formatJson(value: unknown): string {
+    if (value === undefined) {
+      return '';
+    }
+    return JSON.stringify(value, null, 2);
+  }
+
+  function relativeTime(iso: string | null): string {
+    if (!iso) {
+      return '';
+    }
+
     try {
       const diff = Date.now() - new Date(iso).getTime();
       const mins = Math.floor(diff / 60000);
@@ -140,18 +174,32 @@
       const hrs = Math.floor(mins / 60);
       if (hrs < 24) return `${hrs} hours ago`;
       return `${Math.floor(hrs / 24)} days ago`;
-    } catch { return ''; }
+    } catch {
+      return '';
+    }
+  }
+
+  function scoreEntries(proposal: Proposal): Array<[string, number]> {
+    return Object.entries(proposal.dimension_scores ?? {}).sort(([left], [right]) =>
+      left.localeCompare(right),
+    );
   }
 </script>
 
 <div class="approvals-page">
   <div class="page-header">
-    <h1>Approvals</h1>
+    <div>
+      <h1>Proposals</h1>
+      <p class="subtitle">Gateway goal proposals awaiting operator review.</p>
+    </div>
     <div class="tab-bar">
-      <button class:active={activeTab === 'pending'} onclick={() => activeTab = 'pending'}>
-        Pending {#if pendingProposals.length > 0}<span class="count-badge">{pendingProposals.length}</span>{/if}
+      <button class:active={activeTab === 'pending'} onclick={() => (activeTab = 'pending')}>
+        Pending
+        {#if pendingProposals.length > 0}
+          <span class="count-badge">{pendingProposals.length}</span>
+        {/if}
       </button>
-      <button class:active={activeTab === 'history'} onclick={() => activeTab = 'history'}>
+      <button class:active={activeTab === 'history'} onclick={() => (activeTab = 'history')}>
         History
       </button>
     </div>
@@ -165,82 +213,146 @@
     <div class="loading-state">Loading proposals...</div>
   {:else if activeTab === 'pending'}
     {#if pendingProposals.length === 0}
-      <div class="empty-state">No pending approvals</div>
+      <div class="empty-state">No pending proposals</div>
     {:else}
       <div class="proposal-list">
         {#each pendingProposals as proposal (proposal.id)}
-          <div class="proposal-card" class:high-risk={proposal.details.risk_level === 'high'}>
+          <div class="proposal-card">
             <div class="proposal-header">
-              <span class="type-icon">[{typeIcon(proposal.type)}]</span>
-              <span class="agent-name">{proposal.agent_name}</span>
-              <span class="proposal-type">{proposal.type.replace('_', ' ')}</span>
-              {#if proposal.details.risk_level}
-                <span class="risk-badge {riskBadgeClass(proposal.details.risk_level)}">
-                  {proposal.details.risk_level}
-                </span>
-              {/if}
+              <span class="agent-name">{proposal.agent_id}</span>
+              <span class="proposal-type">{proposal.proposer_type}</span>
+              <span class="status-badge status-{proposalStatus(proposal)}">{proposalStatus(proposal)}</span>
             </div>
 
             <div class="proposal-body">
-              <p class="proposal-desc">{proposal.description}</p>
-              {#if proposal.details.tool}
-                <code class="tool-preview">{proposal.details.tool}({JSON.stringify(proposal.details.args ?? {}).slice(0, 100)})</code>
+              <p class="proposal-desc">{proposalSummary(proposal)}</p>
+              <dl class="proposal-meta">
+                <div><dt>Target</dt><dd>{proposal.target_type}</dd></div>
+                <div><dt>Session</dt><dd class="mono">{proposal.session_id}</dd></div>
+                <div><dt>Created</dt><dd>{relativeTime(proposal.created_at)}</dd></div>
+              </dl>
+
+              {#if proposal.flags.length > 0}
+                <div class="chip-row">
+                  {#each proposal.flags as flag}
+                    <span class="chip">{flag}</span>
+                  {/each}
+                </div>
               {/if}
-              {#if proposal.details.cost_estimate !== undefined}
-                <span class="cost-label">Est. cost: ${proposal.details.cost_estimate.toFixed(2)}</span>
+
+              {#if scoreEntries(proposal).length > 0}
+                <div class="scores">
+                  {#each scoreEntries(proposal) as [name, value]}
+                    <div class="score-row">
+                      <span>{name}</span>
+                      <span class="mono">{value.toFixed(2)}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
+              {#if expandedProposalId === proposal.id}
+                <div class="detail-panel">
+                  {#if detailLoading[proposal.id]}
+                    <div class="detail-state">Loading full proposal detail...</div>
+                  {:else if detailErrors[proposal.id]}
+                    <div class="detail-error">{detailErrors[proposal.id]}</div>
+                  {:else if proposalDetails[proposal.id]}
+                    <dl class="detail-meta">
+                      <div><dt>Resolver</dt><dd>{proposalDetails[proposal.id].resolver ?? 'unresolved'}</dd></div>
+                      <div><dt>Memory Links</dt><dd>{proposalDetails[proposal.id].cited_memory_ids.length}</dd></div>
+                    </dl>
+
+                    {#if proposalDetails[proposal.id].denial_reason}
+                      <div class="detail-block">
+                        <div class="detail-label">Denial Reason</div>
+                        <div class="detail-text">{proposalDetails[proposal.id].denial_reason}</div>
+                      </div>
+                    {/if}
+
+                    <div class="detail-block">
+                      <div class="detail-label">Content</div>
+                      <pre class="detail-json">{formatJson(proposalDetails[proposal.id].content)}</pre>
+                    </div>
+
+                    {#if proposalDetails[proposal.id].cited_memory_ids.length > 0}
+                      <div class="detail-block">
+                        <div class="detail-label">Cited Memory IDs</div>
+                        <ul class="detail-list">
+                          {#each proposalDetails[proposal.id].cited_memory_ids as memoryId}
+                            <li class="mono">{memoryId}</li>
+                          {/each}
+                        </ul>
+                      </div>
+                    {/if}
+                  {/if}
+                </div>
               {/if}
             </div>
 
             <div class="proposal-footer">
-              <span class="time-label">{relativeTime(proposal.created_at)}</span>
+              <button class="btn-secondary" onclick={() => toggleProposalDetail(proposal.id)}>
+                {expandedProposalId === proposal.id ? 'Hide Detail' : 'View Detail'}
+              </button>
               <div class="action-buttons">
                 <button class="btn-approve" onclick={() => approveProposal(proposal.id)}>Approve</button>
-                <button class="btn-deny" onclick={() => denyProposal(proposal.id)}>Deny</button>
-                {#if proposal.details.args}
-                  <button class="btn-modify" onclick={() => startModify(proposal)}>Modify & Approve</button>
-                {/if}
+                <button class="btn-deny" onclick={() => rejectProposal(proposal.id)}>Reject</button>
               </div>
             </div>
-
-            {#if modifyingId === proposal.id}
-              <div class="modify-panel">
-                <label class="modify-label" for="modify-args-{proposal.id}">Modify arguments:</label>
-                <textarea
-                  id="modify-args-{proposal.id}"
-                  class="modify-textarea"
-                  bind:value={modifiedArgs}
-                  rows="5"
-                ></textarea>
-                <div class="modify-actions">
-                  <button class="btn-approve" onclick={() => modifyAndApprove(proposal.id)}>Submit Modified</button>
-                  <button class="btn-cancel" onclick={() => { modifyingId = null; modifiedArgs = ''; }}>Cancel</button>
-                </div>
-              </div>
-            {/if}
           </div>
         {/each}
       </div>
     {/if}
   {:else}
     {#if historyProposals.length === 0}
-      <div class="empty-state">No decision history</div>
+      <div class="empty-state">No proposal decision history</div>
     {:else}
       <div class="proposal-list">
         {#each historyProposals as proposal (proposal.id)}
           <div class="proposal-card history">
             <div class="proposal-header">
-              <span class="agent-name">{proposal.agent_name}</span>
-              <span class="proposal-type">{proposal.type.replace('_', ' ')}</span>
-              <span class="status-badge status-{proposal.status}">{proposal.status}</span>
+              <span class="agent-name">{proposal.agent_id}</span>
+              <span class="proposal-type">{proposal.proposer_type}</span>
+              <span class="status-badge status-{proposalStatus(proposal)}">{proposalStatus(proposal)}</span>
             </div>
+
             <div class="proposal-body">
-              <p class="proposal-desc">{proposal.description}</p>
-            </div>
-            <div class="proposal-footer">
-              <span class="time-label">Decided {relativeTime(proposal.decided_at ?? proposal.created_at)}</span>
-              {#if proposal.decided_by}
-                <span class="decided-by">by {proposal.decided_by}</span>
+              <p class="proposal-desc">{proposalSummary(proposal)}</p>
+              <div class="history-meta">
+                <span>Created {relativeTime(proposal.created_at)}</span>
+                <span>Resolved {relativeTime(proposal.resolved_at)}</span>
+              </div>
+
+              {#if expandedProposalId === proposal.id}
+                <div class="detail-panel">
+                  {#if detailLoading[proposal.id]}
+                    <div class="detail-state">Loading full proposal detail...</div>
+                  {:else if detailErrors[proposal.id]}
+                    <div class="detail-error">{detailErrors[proposal.id]}</div>
+                  {:else if proposalDetails[proposal.id]}
+                    <dl class="detail-meta">
+                      <div><dt>Resolver</dt><dd>{proposalDetails[proposal.id].resolver ?? 'unknown'}</dd></div>
+                      <div><dt>Decision</dt><dd>{proposalDetails[proposal.id].decision ?? 'pending'}</dd></div>
+                    </dl>
+                    <div class="detail-block">
+                      <div class="detail-label">Content</div>
+                      <pre class="detail-json">{formatJson(proposalDetails[proposal.id].content)}</pre>
+                    </div>
+                    {#if proposalDetails[proposal.id].denial_reason}
+                      <div class="detail-block">
+                        <div class="detail-label">Denial Reason</div>
+                        <div class="detail-text">{proposalDetails[proposal.id].denial_reason}</div>
+                      </div>
+                    {/if}
+                  {/if}
+                </div>
               {/if}
+            </div>
+
+            <div class="proposal-footer">
+              <button class="btn-secondary" onclick={() => toggleProposalDetail(proposal.id)}>
+                {expandedProposalId === proposal.id ? 'Hide Detail' : 'View Detail'}
+              </button>
             </div>
           </div>
         {/each}
@@ -252,14 +364,15 @@
 <style>
   .approvals-page {
     padding: var(--spacing-4);
-    max-width: 900px;
+    max-width: 960px;
     margin: 0 auto;
   }
 
   .page-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    gap: var(--spacing-4);
     margin-bottom: var(--spacing-4);
   }
 
@@ -267,6 +380,12 @@
     margin: 0;
     font-size: var(--font-size-lg);
     font-weight: var(--font-weight-bold);
+  }
+
+  .subtitle {
+    margin: var(--spacing-1) 0 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
   }
 
   .tab-bar {
@@ -286,6 +405,7 @@
     align-items: center;
     gap: var(--spacing-1);
   }
+
   .tab-bar button.active {
     background: var(--color-interactive-primary);
     color: var(--color-interactive-primary-text);
@@ -314,7 +434,8 @@
     margin-bottom: var(--spacing-3);
   }
 
-  .loading-state, .empty-state {
+  .loading-state,
+  .empty-state {
     text-align: center;
     padding: var(--spacing-12);
     color: var(--color-text-muted);
@@ -333,11 +454,9 @@
     border-radius: var(--radius-md);
     overflow: hidden;
   }
-  .proposal-card.high-risk {
-    border-color: var(--color-severity-hard);
-  }
+
   .proposal-card.history {
-    opacity: 0.8;
+    opacity: 0.9;
   }
 
   .proposal-header {
@@ -349,17 +468,11 @@
     background: var(--color-bg-elevated-2);
   }
 
-  .type-icon {
-    font-family: var(--font-family-mono);
-    font-size: var(--font-size-sm);
-    color: var(--color-severity-active);
-    font-weight: var(--font-weight-bold);
-  }
-
   .agent-name {
     font-size: var(--font-size-sm);
     font-weight: var(--font-weight-semibold);
     color: var(--color-text-primary);
+    font-family: var(--font-family-mono);
   }
 
   .proposal-type {
@@ -368,61 +481,141 @@
     text-transform: uppercase;
   }
 
-  .risk-badge {
-    font-size: 10px;
-    padding: 1px 6px;
-    border-radius: var(--radius-sm);
-    font-weight: var(--font-weight-bold);
-    text-transform: uppercase;
-    margin-left: auto;
-  }
-  .risk-high { background: color-mix(in srgb, #ef4444 15%, transparent); color: #ef4444; }
-  .risk-medium { background: color-mix(in srgb, #f59e0b 15%, transparent); color: #f59e0b; }
-  .risk-low { background: color-mix(in srgb, #22c55e 15%, transparent); color: #22c55e; }
-
   .proposal-body {
     padding: var(--spacing-3);
   }
 
   .proposal-desc {
-    margin: 0 0 var(--spacing-2);
+    margin: 0 0 var(--spacing-3);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-primary);
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .proposal-meta,
+  .detail-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--spacing-2);
+    margin: 0 0 var(--spacing-3);
+  }
+
+  .proposal-meta div,
+  .detail-meta div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .proposal-meta dt,
+  .detail-meta dt {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+  }
+
+  .proposal-meta dd,
+  .detail-meta dd {
+    margin: 0;
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
   }
 
-  .tool-preview {
-    display: block;
-    font-size: var(--font-size-xs);
+  .mono {
     font-family: var(--font-family-mono);
-    background: var(--color-bg-elevated-2);
-    padding: var(--spacing-2);
-    border-radius: var(--radius-sm);
-    overflow-x: auto;
-    margin-bottom: var(--spacing-2);
   }
 
-  .cost-label {
+  .chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-1);
+    margin-bottom: var(--spacing-3);
+  }
+
+  .chip {
+    font-size: var(--font-size-xs);
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--color-bg-elevated-2);
+    border: 1px solid var(--color-border-default);
+    color: var(--color-text-muted);
+  }
+
+  .scores {
+    display: grid;
+    gap: var(--spacing-1);
+    margin-bottom: var(--spacing-3);
+  }
+
+  .score-row {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--spacing-2);
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
+  }
+
+  .detail-panel {
+    border-top: 1px solid var(--color-border-subtle);
+    margin-top: var(--spacing-3);
+    padding-top: var(--spacing-3);
+  }
+
+  .detail-state,
+  .detail-error,
+  .detail-text {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .detail-error {
+    color: var(--color-severity-hard);
+  }
+
+  .detail-block {
+    margin-top: var(--spacing-3);
+  }
+
+  .detail-label {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    margin-bottom: var(--spacing-1);
+  }
+
+  .detail-json {
+    margin: 0;
+    padding: var(--spacing-2);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated-2);
+    overflow-x: auto;
+    font-size: var(--font-size-xs);
     font-family: var(--font-family-mono);
+    color: var(--color-text-primary);
+  }
+
+  .detail-list {
+    margin: 0;
+    padding-left: var(--spacing-4);
+    display: grid;
+    gap: 4px;
+  }
+
+  .history-meta {
+    display: flex;
+    gap: var(--spacing-3);
+    flex-wrap: wrap;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
   }
 
   .proposal-footer {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: var(--spacing-2);
     padding: var(--spacing-2) var(--spacing-3);
     border-top: 1px solid var(--color-border-subtle);
-  }
-
-  .time-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-  }
-
-  .decided-by {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
   }
 
   .action-buttons {
@@ -430,49 +623,32 @@
     gap: var(--spacing-2);
   }
 
-  .btn-approve {
+  .btn-approve,
+  .btn-deny,
+  .btn-secondary {
     padding: var(--spacing-1) var(--spacing-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .btn-approve {
     background: #22c55e;
     color: white;
     border: none;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
-    font-weight: var(--font-weight-semibold);
   }
-  .btn-approve:hover { opacity: 0.9; }
 
   .btn-deny {
-    padding: var(--spacing-1) var(--spacing-3);
     background: #ef4444;
     color: white;
     border: none;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
-    font-weight: var(--font-weight-semibold);
   }
-  .btn-deny:hover { opacity: 0.9; }
 
-  .btn-modify {
-    padding: var(--spacing-1) var(--spacing-3);
+  .btn-secondary {
     background: var(--color-bg-elevated-2);
     color: var(--color-text-primary);
     border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
-  }
-  .btn-modify:hover { background: var(--color-surface-hover); }
-
-  .btn-cancel {
-    padding: var(--spacing-1) var(--spacing-3);
-    background: none;
-    color: var(--color-text-muted);
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
   }
 
   .status-badge {
@@ -483,39 +659,19 @@
     text-transform: uppercase;
     margin-left: auto;
   }
-  .status-approved { background: color-mix(in srgb, #22c55e 15%, transparent); color: #22c55e; }
-  .status-denied { background: color-mix(in srgb, #ef4444 15%, transparent); color: #ef4444; }
-  .status-modified { background: color-mix(in srgb, #3b82f6 15%, transparent); color: #3b82f6; }
 
-  .modify-panel {
-    padding: var(--spacing-3);
-    border-top: 1px solid var(--color-border-subtle);
-    background: var(--color-bg-elevated-2);
+  .status-pending {
+    background: color-mix(in srgb, #3b82f6 15%, transparent);
+    color: #3b82f6;
   }
 
-  .modify-label {
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
-    margin-bottom: var(--spacing-1);
-    display: block;
+  .status-approved {
+    background: color-mix(in srgb, #22c55e 15%, transparent);
+    color: #22c55e;
   }
 
-  .modify-textarea {
-    width: 100%;
-    font-family: var(--font-family-mono);
-    font-size: var(--font-size-xs);
-    background: var(--color-bg-surface);
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-primary);
-    padding: var(--spacing-2);
-    resize: vertical;
-    box-sizing: border-box;
-  }
-
-  .modify-actions {
-    display: flex;
-    gap: var(--spacing-2);
-    margin-top: var(--spacing-2);
+  .status-rejected {
+    background: color-mix(in srgb, #ef4444 15%, transparent);
+    color: #ef4444;
   }
 </style>

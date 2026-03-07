@@ -3,9 +3,9 @@
 //! DomainFilter is the trust boundary. These tests stress domain filter
 //! logic, TLS inspection edge cases, and verify passthrough invariants.
 
+use ghost_proxy::server::ProxyConfig;
 use ghost_proxy::DomainFilter;
 use ghost_proxy::ProxyServer;
-use ghost_proxy::server::ProxyConfig;
 
 // ── Passthrough structural guarantee ────────────────────────────────────
 
@@ -21,10 +21,18 @@ fn proxy_is_always_passthrough() {
 fn allowed_domains_are_intercepted() {
     let filter = DomainFilter::new();
     for domain in &[
-        "chat.openai.com", "chatgpt.com", "claude.ai",
-        "character.ai", "gemini.google.com", "chat.deepseek.com", "grok.x.ai",
+        "chat.openai.com",
+        "chatgpt.com",
+        "claude.ai",
+        "character.ai",
+        "gemini.google.com",
+        "chat.deepseek.com",
+        "grok.x.ai",
     ] {
-        assert!(filter.should_intercept(domain), "{domain} should be intercepted");
+        assert!(
+            filter.should_intercept(domain),
+            "{domain} should be intercepted"
+        );
     }
 }
 
@@ -32,10 +40,19 @@ fn allowed_domains_are_intercepted() {
 fn non_allowed_domains_are_not_intercepted() {
     let filter = DomainFilter::new();
     for domain in &[
-        "google.com", "facebook.com", "evil-chat.openai.com.attacker.com",
-        "openai.com", "api.openai.com", "localhost", "127.0.0.1", "",
+        "google.com",
+        "facebook.com",
+        "evil-chat.openai.com.attacker.com",
+        "openai.com",
+        "api.openai.com",
+        "localhost",
+        "127.0.0.1",
+        "",
     ] {
-        assert!(!filter.should_intercept(domain), "{domain} should NOT be intercepted");
+        assert!(
+            !filter.should_intercept(domain),
+            "{domain} should NOT be intercepted"
+        );
     }
 }
 

@@ -128,7 +128,11 @@ fn audit_entries_match_trigger_count() {
     ks.activate_agent(agent, KillLevel::Quarantine, &triggers[1]);
 
     let entries = ks.audit_entries();
-    assert_eq!(entries.len(), 2, "Audit entries should match number of successful activations");
+    assert_eq!(
+        entries.len(),
+        2,
+        "Audit entries should match number of successful activations"
+    );
 }
 
 // ── State restoration (crash recovery) ──────────────────────────────────
@@ -180,7 +184,11 @@ fn t6_cascade_three_quarantined_count() {
         ks.activate_agent(*agent, KillLevel::Quarantine, &trigger);
     }
 
-    assert_eq!(ks.quarantined_count(), 3, "Should have 3 quarantined agents");
+    assert_eq!(
+        ks.quarantined_count(),
+        3,
+        "Should have 3 quarantined agents"
+    );
 }
 
 #[test]
@@ -222,6 +230,9 @@ fn cannot_resume_from_kill_all_via_agent_resume() {
     };
     ks.activate_kill_all(&trigger);
 
-    let result = ks.resume_agent(agent);
-    assert!(result.is_err(), "Cannot resume from KILL_ALL via agent resume");
+    let result = ks.resume_agent(agent, None);
+    assert!(
+        result.is_err(),
+        "Cannot resume from KILL_ALL via agent resume"
+    );
 }

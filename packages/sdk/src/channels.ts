@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface ChannelInfo {
   id: string;
@@ -44,19 +44,31 @@ export class ChannelsAPI {
     return this.request<ListChannelsResult>('GET', '/api/channels');
   }
 
-  async create(params: CreateChannelParams): Promise<CreateChannelResult> {
-    return this.request<CreateChannelResult>('POST', '/api/channels', params);
+  async create(
+    params: CreateChannelParams,
+    options?: GhostRequestOptions,
+  ): Promise<CreateChannelResult> {
+    return this.request<CreateChannelResult>('POST', '/api/channels', params, options);
   }
 
-  async reconnect(id: string): Promise<ReconnectChannelResult> {
+  async reconnect(
+    id: string,
+    options?: GhostRequestOptions,
+  ): Promise<ReconnectChannelResult> {
     return this.request<ReconnectChannelResult>(
       'POST',
       `/api/channels/${encodeURIComponent(id)}/reconnect`,
       {},
+      options,
     );
   }
 
-  async delete(id: string): Promise<DeleteChannelResult> {
-    return this.request<DeleteChannelResult>('DELETE', `/api/channels/${encodeURIComponent(id)}`);
+  async delete(id: string, options?: GhostRequestOptions): Promise<DeleteChannelResult> {
+    return this.request<DeleteChannelResult>(
+      'DELETE',
+      `/api/channels/${encodeURIComponent(id)}`,
+      undefined,
+      options,
+    );
   }
 }

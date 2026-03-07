@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 pub struct HeartbeatStatusArgs {
     pub output: OutputFormat,
@@ -47,23 +47,14 @@ pub async fn run_status(args: HeartbeatStatusArgs, backend: &CliBackend) -> Resu
 
     // Extract heartbeat-relevant fields from the health response.
     let state = HeartbeatState {
-        engine_state: body["status"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string(),
-        frequency_seconds: body["heartbeat_frequency"]
-            .as_u64()
-            .unwrap_or(60),
+        engine_state: body["status"].as_str().unwrap_or("unknown").to_string(),
+        frequency_seconds: body["heartbeat_frequency"].as_u64().unwrap_or(60),
         tier: body["convergence_tier"]
             .as_str()
             .unwrap_or("default")
             .to_string(),
-        last_beat: body["last_heartbeat"]
-            .as_str()
-            .map(String::from),
-        agents_monitored: body["agents_count"]
-            .as_u64()
-            .unwrap_or(0) as u32,
+        last_beat: body["last_heartbeat"].as_str().map(String::from),
+        agents_monitored: body["agents_count"].as_u64().unwrap_or(0) as u32,
     };
 
     print_output(&state, args.output);

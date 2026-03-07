@@ -58,7 +58,6 @@ class ConvergenceStore {
         const agentId = msg.agent_id as string;
         const newScore = msg.score as number;
         const newLevel = msg.level as number | undefined;
-        const signalScores = msg.signal_scores as Record<string, number> | undefined;
 
         const idx = this.scores.findIndex(s => s.agent_id === agentId);
         if (idx >= 0) {
@@ -66,7 +65,6 @@ class ConvergenceStore {
             ...this.scores[idx],
             score: newScore ?? this.scores[idx].score,
             level: newLevel ?? this.scores[idx].level,
-            signal_scores: signalScores ?? this.scores[idx].signal_scores,
             computed_at: new Date().toISOString(),
           };
           this.scores = [...this.scores];
@@ -74,7 +72,7 @@ class ConvergenceStore {
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
         const agentId = msg.agent_id as string;
-        const newLevel = msg.level as number;
+        const newLevel = msg.new_level as number;
         const idx = this.scores.findIndex(s => s.agent_id === agentId);
         if (idx >= 0) {
           this.scores[idx] = { ...this.scores[idx], level: newLevel };

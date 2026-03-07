@@ -28,16 +28,16 @@ impl TokenBudgetAllocator {
     /// Default budgets per layer (Req 11 AC2).
     pub fn default_budgets() -> [Budget; 10] {
         [
-            Budget::Uncapped,     // L0: CORP_POLICY.md
-            Budget::Fixed(200),   // L1: Simulation boundary prompt
-            Budget::Fixed(2000),  // L2: SOUL.md + IDENTITY.md
-            Budget::Fixed(3000),  // L3: Tool schemas
-            Budget::Fixed(200),   // L4: Environment context
-            Budget::Fixed(500),   // L5: Skill index
-            Budget::Fixed(1000),  // L6: Convergence state
-            Budget::Fixed(4000),  // L7: MEMORY.md + daily logs
-            Budget::Remainder,    // L8: Conversation history
-            Budget::Uncapped,     // L9: User message
+            Budget::Uncapped,    // L0: CORP_POLICY.md
+            Budget::Fixed(200),  // L1: Simulation boundary prompt
+            Budget::Fixed(2000), // L2: SOUL.md + IDENTITY.md
+            Budget::Fixed(3000), // L3: Tool schemas
+            Budget::Fixed(200),  // L4: Environment context
+            Budget::Fixed(500),  // L5: Skill index
+            Budget::Fixed(1000), // L6: Convergence state
+            Budget::Fixed(4000), // L7: MEMORY.md + daily logs
+            Budget::Remainder,   // L8: Conversation history
+            Budget::Uncapped,    // L9: User message
         ]
     }
 

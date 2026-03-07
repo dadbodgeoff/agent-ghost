@@ -23,7 +23,7 @@ static KILL_SWITCH_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 // ═══════════════════════════════════════════════════════════════════════
 
 mod state_machine {
-    use ghost_gateway::gateway::{GatewaySharedState, GatewayState};
+    use ghost_gateway::gateway::{GatewayError, GatewaySharedState, GatewayState};
 
     #[test]
     fn initializing_to_healthy_valid() {
@@ -45,32 +45,47 @@ mod state_machine {
     }
 
     #[test]
-    #[cfg_attr(not(debug_assertions), ignore)]
-    #[should_panic(expected = "illegal state transition")]
     fn healthy_to_recovering_invalid() {
         let state = GatewaySharedState::new();
         state.transition_to(GatewayState::Healthy).unwrap();
         // Must go through Degraded first
-        let _ = state.transition_to(GatewayState::Recovering);
+        let result = state.transition_to(GatewayState::Recovering);
+        assert!(matches!(
+            result,
+            Err(GatewayError::IllegalTransition {
+                from: GatewayState::Healthy,
+                to: GatewayState::Recovering
+            })
+        ));
     }
 
     #[test]
-    #[cfg_attr(not(debug_assertions), ignore)]
-    #[should_panic(expected = "illegal state transition")]
     fn fatal_error_is_terminal() {
         let state = GatewaySharedState::new();
         state.transition_to(GatewayState::FatalError).unwrap();
-        let _ = state.transition_to(GatewayState::Healthy);
+        let result = state.transition_to(GatewayState::Healthy);
+        assert!(matches!(
+            result,
+            Err(GatewayError::IllegalTransition {
+                from: GatewayState::FatalError,
+                to: GatewayState::Healthy
+            })
+        ));
     }
 
     #[test]
-    #[cfg_attr(not(debug_assertions), ignore)]
-    #[should_panic(expected = "illegal state transition")]
     fn shutting_down_is_terminal() {
         let state = GatewaySharedState::new();
         state.transition_to(GatewayState::Healthy).unwrap();
         state.transition_to(GatewayState::ShuttingDown).unwrap();
-        let _ = state.transition_to(GatewayState::Healthy);
+        let result = state.transition_to(GatewayState::Healthy);
+        assert!(matches!(
+            result,
+            Err(GatewayError::IllegalTransition {
+                from: GatewayState::ShuttingDown,
+                to: GatewayState::Healthy
+            })
+        ));
     }
 
     #[test]
@@ -237,8 +252,12 @@ mod agent_registry {
         reg.register(agent);
 
         assert!(reg.transition_state(id, AgentLifecycleState::Ready).is_ok());
-        assert!(reg.transition_state(id, AgentLifecycleState::Stopping).is_ok());
-        assert!(reg.transition_state(id, AgentLifecycleState::Stopped).is_ok());
+        assert!(reg
+            .transition_state(id, AgentLifecycleState::Stopping)
+            .is_ok());
+        assert!(reg
+            .transition_state(id, AgentLifecycleState::Stopped)
+            .is_ok());
     }
 
     #[test]
@@ -248,7 +267,9 @@ mod agent_registry {
         let id = agent.id;
         reg.register(agent);
         // Starting → Stopped is invalid (must go through Ready → Stopping)
-        assert!(reg.transition_state(id, AgentLifecycleState::Stopped).is_err());
+        assert!(reg
+            .transition_state(id, AgentLifecycleState::Stopped)
+            .is_err());
     }
 }
 
@@ -370,10 +391,10 @@ mod kill_switch {
     use std::sync::atomic::Ordering;
 
     use chrono::Utc;
+    use cortex_core::safety::trigger::TriggerEvent;
     use ghost_gateway::safety::kill_switch::{
         KillCheckResult, KillLevel, KillSwitch, PLATFORM_KILLED,
     };
-    use cortex_core::safety::trigger::TriggerEvent;
     use uuid::Uuid;
 
     use crate::KILL_SWITCH_MUTEX;
@@ -403,7 +424,10 @@ mod kill_switch {
             initiated_by: "test".into(),
         };
         ks.activate_agent(agent_id, KillLevel::Pause, &trigger);
-        assert!(matches!(ks.check(agent_id), KillCheckResult::AgentPaused(_)));
+        assert!(matches!(
+            ks.check(agent_id),
+            KillCheckResult::AgentPaused(_)
+        ));
     }
 
     #[test]
@@ -497,7 +521,7 @@ mod kill_switch {
             initiated_by: "test".into(),
         };
         ks.activate_agent(agent_id, KillLevel::Pause, &trigger);
-        assert!(ks.resume_agent(agent_id).is_ok());
+        assert!(ks.resume_agent(agent_id, Some(KillLevel::Pause)).is_ok());
         assert!(matches!(ks.check(agent_id), KillCheckResult::Ok));
         reset_platform_killed();
     }
@@ -513,7 +537,7 @@ mod kill_switch {
             initiated_by: "test".into(),
         };
         ks.activate_kill_all(&trigger);
-        assert!(ks.resume_agent(agent_id).is_err());
+        assert!(ks.resume_agent(agent_id, None).is_err());
         reset_platform_killed();
     }
 
@@ -551,7 +575,10 @@ mod kill_switch {
 
         let ks2 = KillSwitch::new();
         ks2.restore_state(saved);
-        assert!(matches!(ks2.check(agent_id), KillCheckResult::AgentPaused(_)));
+        assert!(matches!(
+            ks2.check(agent_id),
+            KillCheckResult::AgentPaused(_)
+        ));
         reset_platform_killed();
     }
 }
@@ -806,8 +833,14 @@ mod lane_queues {
     #[test]
     fn serializes_requests() {
         let mut q = LaneQueue::new(5);
-        let r1 = QueuedRequest { request_id: Uuid::now_v7(), payload: "first".into() };
-        let r2 = QueuedRequest { request_id: Uuid::now_v7(), payload: "second".into() };
+        let r1 = QueuedRequest {
+            request_id: Uuid::now_v7(),
+            payload: "first".into(),
+        };
+        let r2 = QueuedRequest {
+            request_id: Uuid::now_v7(),
+            payload: "second".into(),
+        };
         q.enqueue(r1).unwrap();
         q.enqueue(r2).unwrap();
         // Dequeue first
@@ -826,11 +859,17 @@ mod lane_queues {
     fn depth_limit_backpressure() {
         let mut q = LaneQueue::new(5);
         for i in 0..5 {
-            let r = QueuedRequest { request_id: Uuid::now_v7(), payload: format!("req_{i}") };
+            let r = QueuedRequest {
+                request_id: Uuid::now_v7(),
+                payload: format!("req_{i}"),
+            };
             assert!(q.enqueue(r).is_ok());
         }
         // 6th request rejected
-        let r6 = QueuedRequest { request_id: Uuid::now_v7(), payload: "rejected".into() };
+        let r6 = QueuedRequest {
+            request_id: Uuid::now_v7(),
+            payload: "rejected".into(),
+        };
         assert!(q.enqueue(r6).is_err());
     }
 
@@ -838,7 +877,10 @@ mod lane_queues {
     fn manager_enqueue_dequeue() {
         let mgr = LaneQueueManager::new(5);
         let session_id = Uuid::now_v7();
-        let req = QueuedRequest { request_id: Uuid::now_v7(), payload: "test".into() };
+        let req = QueuedRequest {
+            request_id: Uuid::now_v7(),
+            payload: "test".into(),
+        };
         assert!(mgr.enqueue(session_id, req).is_ok());
         let dequeued = mgr.dequeue(session_id).unwrap();
         assert_eq!(dequeued.payload, "test");
@@ -887,8 +929,8 @@ mod session_manager {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod session_boundary {
-    use ghost_gateway::session::boundary::SessionBoundaryProxy;
     use chrono::Utc;
+    use ghost_gateway::session::boundary::SessionBoundaryProxy;
 
     #[test]
     fn can_create_first_session() {
@@ -1009,10 +1051,10 @@ mod message_router {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod auth {
-    use ghost_gateway::auth::token_auth::validate_token;
     use ghost_gateway::auth::auth_profiles::AuthProfileManager;
-    use std::sync::Mutex;
+    use ghost_gateway::auth::token_auth::validate_token;
     use once_cell::sync::Lazy;
+    use std::sync::Mutex;
     use uuid::Uuid;
 
     /// Mutex to serialize tests that mutate the GHOST_TOKEN env var.
@@ -1093,9 +1135,7 @@ mod messaging {
     use chrono::Utc;
     use ghost_gateway::messaging::dispatcher::{MessageDispatcher, VerifyResult};
     use ghost_gateway::messaging::encryption::can_encrypt;
-    use ghost_gateway::messaging::protocol::{
-        AgentMessage, DelegationState, MessagePayload,
-    };
+    use ghost_gateway::messaging::protocol::{AgentMessage, DelegationState, MessagePayload};
     use uuid::Uuid;
 
     fn make_message(sender: Uuid, recipient: Uuid) -> AgentMessage {
@@ -1128,7 +1168,9 @@ mod messaging {
             id: Uuid::nil(),
             sender,
             recipient,
-            payload: MessagePayload::Notification { message: "test".into() },
+            payload: MessagePayload::Notification {
+                message: "test".into(),
+            },
             context: BTreeMap::new(),
             nonce,
             timestamp: ts,
@@ -1140,7 +1182,9 @@ mod messaging {
             id: Uuid::nil(),
             sender,
             recipient,
-            payload: MessagePayload::Notification { message: "test".into() },
+            payload: MessagePayload::Notification {
+                message: "test".into(),
+            },
             context: BTreeMap::new(),
             nonce,
             timestamp: ts,
@@ -1167,16 +1211,32 @@ mod messaging {
         ctx2.insert("z_key".into(), serde_json::json!("z_val"));
 
         let msg1 = AgentMessage {
-            id: Uuid::nil(), sender, recipient,
-            payload: MessagePayload::Notification { message: "test".into() },
-            context: ctx1, nonce, timestamp: ts,
-            content_hash: [0u8; 32], signature: Vec::new(), encrypted: false,
+            id: Uuid::nil(),
+            sender,
+            recipient,
+            payload: MessagePayload::Notification {
+                message: "test".into(),
+            },
+            context: ctx1,
+            nonce,
+            timestamp: ts,
+            content_hash: [0u8; 32],
+            signature: Vec::new(),
+            encrypted: false,
         };
         let msg2 = AgentMessage {
-            id: Uuid::nil(), sender, recipient,
-            payload: MessagePayload::Notification { message: "test".into() },
-            context: ctx2, nonce, timestamp: ts,
-            content_hash: [0u8; 32], signature: Vec::new(), encrypted: false,
+            id: Uuid::nil(),
+            sender,
+            recipient,
+            payload: MessagePayload::Notification {
+                message: "test".into(),
+            },
+            context: ctx2,
+            nonce,
+            timestamp: ts,
+            content_hash: [0u8; 32],
+            signature: Vec::new(),
+            encrypted: false,
         };
         assert_eq!(msg1.canonical_bytes(), msg2.canonical_bytes());
     }
@@ -1228,7 +1288,9 @@ mod messaging {
             id: Uuid::now_v7(),
             sender,
             recipient,
-            payload: MessagePayload::Notification { message: "old".into() },
+            payload: MessagePayload::Notification {
+                message: "old".into(),
+            },
             context: BTreeMap::new(),
             nonce: Uuid::now_v7(),
             timestamp: Utc::now() - chrono::Duration::minutes(6), // >5min old
@@ -1308,9 +1370,7 @@ mod messaging {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod compaction {
-    use ghost_gateway::session::compaction::{
-        CompactionConfig, SessionCompactor,
-    };
+    use ghost_gateway::session::compaction::{CompactionConfig, SessionCompactor};
 
     #[test]
     fn triggers_at_70_percent() {
@@ -1392,7 +1452,7 @@ mod config {
     #[test]
     fn default_config_valid() {
         let config = GhostConfig::default();
-        assert_eq!(config.gateway.port, 18789);
+        assert_eq!(config.gateway.port, 39780);
         assert_eq!(config.gateway.bind, "127.0.0.1");
     }
 
@@ -1449,9 +1509,9 @@ mod property_tests {
     use std::sync::Arc;
 
     use chrono::Utc;
+    use cortex_core::safety::trigger::TriggerEvent;
     use ghost_gateway::gateway::GatewayState;
     use ghost_gateway::safety::kill_switch::{KillLevel, KillSwitch, PLATFORM_KILLED};
-    use cortex_core::safety::trigger::TriggerEvent;
     use proptest::prelude::*;
     use uuid::Uuid;
 

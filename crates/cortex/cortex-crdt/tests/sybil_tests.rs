@@ -108,15 +108,16 @@ fn spawn_at_23h59m_still_rejected() {
 
     // 3 spawns at time T
     for _ in 0..3 {
-        guard
-            .register_spawn(parent, Uuid::new_v4(), now)
-            .unwrap();
+        guard.register_spawn(parent, Uuid::new_v4(), now).unwrap();
     }
 
     // Try 4th at T + 23h59m — still within 24h window
     let almost_24h = now + Duration::hours(23) + Duration::minutes(59);
     let result = guard.register_spawn(parent, Uuid::new_v4(), almost_24h);
-    assert!(result.is_err(), "4th spawn at 23h59m should still be rejected");
+    assert!(
+        result.is_err(),
+        "4th spawn at 23h59m should still be rejected"
+    );
 }
 
 #[test]
@@ -127,9 +128,7 @@ fn spawn_after_24h_window_succeeds() {
 
     // 3 spawns at time T
     for _ in 0..3 {
-        guard
-            .register_spawn(parent, Uuid::new_v4(), now)
-            .unwrap();
+        guard.register_spawn(parent, Uuid::new_v4(), now).unwrap();
     }
 
     // Try 4th at T + 24h01m — outside window, old records pruned
@@ -149,14 +148,15 @@ fn different_parents_have_independent_limits() {
 
     // Parent A: 3 spawns
     for _ in 0..3 {
-        guard
-            .register_spawn(parent_a, Uuid::new_v4(), now)
-            .unwrap();
+        guard.register_spawn(parent_a, Uuid::new_v4(), now).unwrap();
     }
 
     // Parent B: should still be able to spawn
     let result = guard.register_spawn(parent_b, Uuid::new_v4(), now);
-    assert!(result.is_ok(), "different parent should have independent limit");
+    assert!(
+        result.is_ok(),
+        "different parent should have independent limit"
+    );
 }
 
 // ── Unknown agent trust ─────────────────────────────────────────────────

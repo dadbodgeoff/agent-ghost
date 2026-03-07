@@ -48,9 +48,9 @@ impl Skill for GitStatusSkill {
         let repo = open_repo(repo_path)?;
 
         // Collect file statuses.
-        let statuses = repo.statuses(None).map_err(|e| {
-            SkillError::Internal(format!("failed to read statuses: {e}"))
-        })?;
+        let statuses = repo
+            .statuses(None)
+            .map_err(|e| SkillError::Internal(format!("failed to read statuses: {e}")))?;
 
         let entries: Vec<serde_json::Value> = statuses
             .iter()
@@ -109,8 +109,7 @@ mod tests {
 
     impl TestRepo {
         fn new() -> (Self, git2::Repository) {
-            let path =
-                std::env::temp_dir().join(format!("ghost-git-test-{}", Uuid::now_v7()));
+            let path = std::env::temp_dir().join(format!("ghost-git-test-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&path).unwrap();
             let repo = git2::Repository::init(&path).unwrap();
 

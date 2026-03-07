@@ -70,7 +70,10 @@ impl DomainMatcher {
 
         // Strip port if present.
         let without_port = if domain_part.contains(':') {
-            domain_part.rsplit_once(':').map(|(d, _)| d).unwrap_or(domain_part)
+            domain_part
+                .rsplit_once(':')
+                .map(|(d, _)| d)
+                .unwrap_or(domain_part)
         } else {
             domain_part
         };

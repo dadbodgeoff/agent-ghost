@@ -140,7 +140,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             CHECK(reviewer_agent_id != reviewee_agent_id)
         );
         CREATE INDEX IF NOT EXISTS idx_mkt_reviews_reviewee
-            ON marketplace_reviews(reviewee_agent_id);"
+            ON marketplace_reviews(reviewee_agent_id);",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 

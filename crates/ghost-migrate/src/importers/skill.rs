@@ -6,13 +6,13 @@ use crate::MigrateResult;
 
 /// Import skills, quarantining unsigned ones.
 /// Returns (imported, quarantined) lists.
-pub fn import_skills(
-    source: &Path,
-    target: &Path,
-) -> MigrateResult<(Vec<String>, Vec<String>)> {
+pub fn import_skills(source: &Path, target: &Path) -> MigrateResult<(Vec<String>, Vec<String>)> {
     let skills_dir = source.join("skills");
     if !skills_dir.exists() {
-        return Ok((vec!["No skills directory found, skipped".to_string()], Vec::new()));
+        return Ok((
+            vec!["No skills directory found, skipped".to_string()],
+            Vec::new(),
+        ));
     }
 
     let target_dir = target.join("skills");

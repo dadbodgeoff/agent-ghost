@@ -70,7 +70,9 @@ pub async fn send_task(
     }
     // T-5.5.2: Validate target URL against SSRF blocklist.
     if let Err(e) = crate::api::ssrf::validate_url(&req.target_url) {
-        return Err(ApiError::bad_request(format!("A2A target URL blocked: {e}")));
+        return Err(ApiError::bad_request(format!(
+            "A2A target URL blocked: {e}"
+        )));
     }
 
     let task_id = uuid::Uuid::now_v7().to_string();
@@ -154,11 +156,14 @@ pub async fn send_task(
     };
 
     // Broadcast WS event.
-    crate::api::websocket::broadcast_event(&state, WsEvent::A2ATaskUpdate {
-        task_id: task_id.clone(),
-        status: task_status.into(),
-        agent_name,
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::A2ATaskUpdate {
+            task_id: task_id.clone(),
+            status: task_status.into(),
+            agent_name,
+        },
+    );
 
     Ok(Json(task))
 }
@@ -168,7 +173,10 @@ pub async fn get_task(
     State(state): State<Arc<AppState>>,
     Path(task_id): Path<String>,
 ) -> ApiResult<A2ATask> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_task", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_task", e))?;
 
     let task = db
         .query_row(
@@ -196,10 +204,11 @@ pub async fn get_task(
 }
 
 /// GET /api/a2a/tasks — list all A2A tasks.
-pub async fn list_tasks(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<TaskListResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_tasks", e))?;
+pub async fn list_tasks(State(state): State<Arc<AppState>>) -> ApiResult<TaskListResponse> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_tasks", e))?;
 
     let mut stmt = db
         .prepare(
@@ -296,16 +305,16 @@ pub async fn stream_task(
 /// Probes all known mesh peer endpoints by fetching their
 /// `/.well-known/agent.json` agent card, upserts results back into the
 /// `discovered_agents` table, and returns the updated list.
-pub async fn discover_agents(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<DiscoverResponse> {
+pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<DiscoverResponse> {
     // 1. Collect known peer endpoint URLs from the DB.
     let peer_urls: Vec<String> = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("discover_agents_read_peers", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("discover_agents_read_peers", e))?;
         let mut urls = Vec::new();
-        let stmt_result = db.prepare(
-            "SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL",
-        );
+        let stmt_result =
+            db.prepare("SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL");
         if let Ok(mut stmt) = stmt_result {
             if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
                 urls.extend(rows.filter_map(|r| r.ok()));
@@ -321,10 +330,7 @@ pub async fn discover_agents(
     let client = reqwest::Client::new();
 
     let probe_futures = peer_urls.into_iter().map(|peer_url| {
-        let url = format!(
-            "{}/.well-known/agent.json",
-            peer_url.trim_end_matches('/')
-        );
+        let url = format!("{}/.well-known/agent.json", peer_url.trim_end_matches('/'));
         let client = client.clone();
 
         async move {
@@ -335,9 +341,7 @@ pub async fn discover_agents(
                 .await;
 
             let card = match resp {
-                Ok(r) if r.status().is_success() => {
-                    r.json::<serde_json::Value>().await.ok()
-                }
+                Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.ok(),
                 _ => None,
             };
             (peer_url, card)
@@ -366,19 +370,23 @@ pub async fn discover_agents(
             }
         };
 
-        let name = card.get("name")
+        let name = card
+            .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let description = card.get("description")
+        let description = card
+            .get("description")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let version = card.get("version")
+        let version = card
+            .get("version")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let capabilities: Vec<String> = card.get("capabilities")
+        let capabilities: Vec<String> = card
+            .get("capabilities")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
@@ -409,7 +417,8 @@ pub async fn discover_agents(
     {
         let db = state.db.write().await;
         for agent in &probed_agents {
-            let caps_json = serde_json::to_string(&agent.capabilities).unwrap_or_else(|_| "[]".into());
+            let caps_json =
+                serde_json::to_string(&agent.capabilities).unwrap_or_else(|_| "[]".into());
             let _ = db.execute(
                 "INSERT OR REPLACE INTO discovered_agents \
                  (endpoint_url, name, description, capabilities, trust_score, version) \
@@ -427,7 +436,10 @@ pub async fn discover_agents(
     }
 
     // 5. Re-read the full table so we return any agents not in our probe list too.
-    let db = state.db.read().map_err(|e| ApiError::db_error("discover_agents_reread", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("discover_agents_reread", e))?;
     let mut agents: Vec<DiscoveredAgent> = Vec::new();
 
     let stmt_result = db.prepare(

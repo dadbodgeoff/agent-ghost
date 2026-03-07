@@ -3,9 +3,9 @@
 use chrono::Utc;
 use uuid::Uuid;
 
+use itp_protocol::adapter::ITPAdapter;
 use itp_protocol::events::*;
 use itp_protocol::privacy::*;
-use itp_protocol::adapter::ITPAdapter;
 use itp_protocol::transport::jsonl::JsonlTransport;
 
 // ── Helper ──────────────────────────────────────────────────────────────
@@ -151,7 +151,10 @@ fn content_hash_uses_sha256() {
     // SHA-256 of "hello" is well-known
     let hash = hash_content("hello");
     // SHA-256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-    assert_eq!(hash, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    assert_eq!(
+        hash,
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    );
 }
 
 #[test]
@@ -301,7 +304,6 @@ fn concurrent_writes_to_same_session_no_corruption() {
     }
     assert_eq!(count, 100, "should have 100 events from 4 threads × 25");
 }
-
 
 // ── Proptest ────────────────────────────────────────────────────────────
 

@@ -3,8 +3,8 @@
 //! Tests attempts to game the scoring system via crafted ITP events,
 //! signal boundary conditions, and amplification edge cases.
 
-use cortex_convergence::scoring::composite::CompositeScorer;
 use cortex_convergence::scoring::baseline::BaselineState;
+use cortex_convergence::scoring::composite::CompositeScorer;
 
 /// Build a calibrated baseline for testing.
 fn calibrated_baseline() -> BaselineState {
@@ -112,7 +112,10 @@ fn baseline_not_updated_after_establishment() {
         let v = (i as f64) * 0.1;
         baseline.record_session(&[v, v, v, v, v, v, v, v]);
     }
-    assert!(!baseline.is_calibrating, "Should be calibrated after 10 sessions");
+    assert!(
+        !baseline.is_calibrating,
+        "Should be calibrated after 10 sessions"
+    );
 
     let mean_before = baseline.per_signal[0].mean;
 

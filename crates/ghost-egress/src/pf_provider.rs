@@ -143,7 +143,8 @@ impl PfEgressPolicy {
             Ok(out) if out.status.success() => Ok(()),
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                if stderr.contains("Permission denied") || stderr.contains("Operation not permitted")
+                if stderr.contains("Permission denied")
+                    || stderr.contains("Operation not permitted")
                 {
                     Err(EgressError::ProviderUnavailable(
                         "pfctl requires root privileges".to_string(),
@@ -256,32 +257,31 @@ impl EgressPolicy for PfEgressPolicy {
             }
         }
 
-        let (using_proxy_fallback, dns_reresolution_cancel) = match Self::try_apply_pf(&anchor, &rules) {
-            Ok(()) => {
-                tracing::info!(
-                    agent_id = %agent_id,
-                    anchor = %anchor,
-                    ip_count = allowed_ips.len(),
-                    "pf egress policy applied"
-                );
-                // Spawn periodic DNS re-resolution (every 5 minutes).
-                let cancel = Self::spawn_dns_reresolution_task(
-                    Arc::clone(&self.agents),
-                    *agent_id,
-                );
-                (false, Some(cancel))
-            }
-            Err(EgressError::ProviderUnavailable(reason)) => {
-                tracing::info!(
-                    agent_id = %agent_id,
-                    reason = %reason,
-                    "pf unavailable — falling back to proxy egress policy"
-                );
-                self.proxy_fallback.apply(agent_id, config)?;
-                (true, None)
-            }
-            Err(e) => return Err(e),
-        };
+        let (using_proxy_fallback, dns_reresolution_cancel) =
+            match Self::try_apply_pf(&anchor, &rules) {
+                Ok(()) => {
+                    tracing::info!(
+                        agent_id = %agent_id,
+                        anchor = %anchor,
+                        ip_count = allowed_ips.len(),
+                        "pf egress policy applied"
+                    );
+                    // Spawn periodic DNS re-resolution (every 5 minutes).
+                    let cancel =
+                        Self::spawn_dns_reresolution_task(Arc::clone(&self.agents), *agent_id);
+                    (false, Some(cancel))
+                }
+                Err(EgressError::ProviderUnavailable(reason)) => {
+                    tracing::info!(
+                        agent_id = %agent_id,
+                        reason = %reason,
+                        "pf unavailable — falling back to proxy egress policy"
+                    );
+                    self.proxy_fallback.apply(agent_id, config)?;
+                    (true, None)
+                }
+                Err(e) => return Err(e),
+            };
 
         let state = AgentPf {
             anchor,
@@ -355,9 +355,7 @@ impl EgressPolicy for PfEgressPolicy {
 
     fn log_violation(&self, agent_id: &Uuid, domain: &str, action: &str) {
         let agents = self.agents.lock().unwrap();
-        let using_fallback = agents
-            .get(agent_id)
-            .is_some_and(|s| s.using_proxy_fallback);
+        let using_fallback = agents.get(agent_id).is_some_and(|s| s.using_proxy_fallback);
         drop(agents);
 
         if using_fallback {

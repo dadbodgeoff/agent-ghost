@@ -64,7 +64,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
   const tx = db.transaction(PENDING_STORE, 'readonly');
   const store = tx.objectStore(PENDING_STORE);
   const index = store.index('synced');
-  const request = index.getAll(false);
+  const request = index.getAll(IDBKeyRange.only(false));
 
   return new Promise((resolve) => {
     request.onsuccess = async () => {

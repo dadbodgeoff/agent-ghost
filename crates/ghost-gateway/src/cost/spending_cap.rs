@@ -20,10 +20,7 @@ impl SpendingCapEnforcer {
         }
     }
 
-    pub fn with_trigger_sender(
-        mut self,
-        sender: tokio::sync::mpsc::Sender<TriggerEvent>,
-    ) -> Self {
+    pub fn with_trigger_sender(mut self, sender: tokio::sync::mpsc::Sender<TriggerEvent>) -> Self {
         self.trigger_sender = Some(sender);
         self
     }
@@ -53,13 +50,16 @@ impl SpendingCapEnforcer {
         let current = self.cost_tracker.get_daily_total(agent_id);
         if current > cap {
             if let Some(sender) = &self.trigger_sender {
-                if sender.try_send(TriggerEvent::SpendingCapExceeded {
-                    agent_id,
-                    daily_total: current,
-                    cap,
-                    overage: current - cap,
-                    detected_at: chrono::Utc::now(),
-                }).is_err() {
+                if sender
+                    .try_send(TriggerEvent::SpendingCapExceeded {
+                        agent_id,
+                        daily_total: current,
+                        cap,
+                        overage: current - cap,
+                        detected_at: chrono::Utc::now(),
+                    })
+                    .is_err()
+                {
                     tracing::error!(
                         agent_id = %agent_id,
                         "trigger channel full — SpendingCapExceeded event dropped (AC13)"

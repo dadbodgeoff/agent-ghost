@@ -1,8 +1,8 @@
 //! Memory snapshot queries (v016 memory_snapshots table).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_snapshot(
     conn: &Connection,

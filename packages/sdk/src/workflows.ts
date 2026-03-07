@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface Workflow {
   id: string;
@@ -98,23 +98,36 @@ export class WorkflowsAPI {
     return this.request<Workflow>('GET', `/api/workflows/${encodeURIComponent(id)}`);
   }
 
-  async create(params: CreateWorkflowParams): Promise<CreateWorkflowResult> {
-    return this.request<CreateWorkflowResult>('POST', '/api/workflows', params);
+  async create(
+    params: CreateWorkflowParams,
+    options?: GhostRequestOptions,
+  ): Promise<CreateWorkflowResult> {
+    return this.request<CreateWorkflowResult>('POST', '/api/workflows', params, options);
   }
 
-  async update(id: string, params: UpdateWorkflowParams): Promise<UpdateWorkflowResult> {
+  async update(
+    id: string,
+    params: UpdateWorkflowParams,
+    options?: GhostRequestOptions,
+  ): Promise<UpdateWorkflowResult> {
     return this.request<UpdateWorkflowResult>(
       'PUT',
       `/api/workflows/${encodeURIComponent(id)}`,
       params,
+      options,
     );
   }
 
-  async execute(id: string, params?: ExecuteWorkflowParams): Promise<ExecuteWorkflowResult> {
+  async execute(
+    id: string,
+    params?: ExecuteWorkflowParams,
+    options?: GhostRequestOptions,
+  ): Promise<ExecuteWorkflowResult> {
     return this.request<ExecuteWorkflowResult>(
       'POST',
       `/api/workflows/${encodeURIComponent(id)}/execute`,
       params ?? {},
+      options,
     );
   }
 }

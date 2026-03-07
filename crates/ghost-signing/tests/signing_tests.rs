@@ -60,7 +60,10 @@ fn truncated_signature_63_bytes_returns_false() {
     let sig = sign(b"data", &sk);
     let truncated = &sig.to_bytes()[..63];
     let bad_sig = Signature::from_bytes(truncated);
-    assert!(bad_sig.is_none(), "63-byte slice must not parse as Signature");
+    assert!(
+        bad_sig.is_none(),
+        "63-byte slice must not parse as Signature"
+    );
 }
 
 #[test]

@@ -64,21 +64,16 @@ impl Skill for EmailDraftSkill {
                     .ok_or_else(|| {
                         SkillError::InvalidInput("missing required field 'subject'".into())
                     })?;
-                let body = input
-                    .get("body")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        SkillError::InvalidInput("missing required field 'body'".into())
-                    })?;
+                let body = input.get("body").and_then(|v| v.as_str()).ok_or_else(|| {
+                    SkillError::InvalidInput("missing required field 'body'".into())
+                })?;
                 let empty_cc = serde_json::json!([]);
                 let cc = input.get("cc").unwrap_or(&empty_cc);
 
                 // Validate recipients.
-                let recipients = to
-                    .as_array()
-                    .ok_or_else(|| {
-                        SkillError::InvalidInput("'to' must be an array of email addresses".into())
-                    })?;
+                let recipients = to.as_array().ok_or_else(|| {
+                    SkillError::InvalidInput("'to' must be an array of email addresses".into())
+                })?;
                 if recipients.is_empty() {
                     return Err(SkillError::InvalidInput(
                         "'to' must contain at least one recipient".into(),
@@ -96,9 +91,7 @@ impl Skill for EmailDraftSkill {
                 }
 
                 if subject.trim().is_empty() {
-                    return Err(SkillError::InvalidInput(
-                        "subject must not be empty".into(),
-                    ));
+                    return Err(SkillError::InvalidInput("subject must not be empty".into()));
                 }
 
                 // Store draft as a structured note with special tag.
@@ -132,10 +125,7 @@ impl Skill for EmailDraftSkill {
                 }))
             }
             "list" => {
-                let limit = input
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50) as u32;
+                let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as u32;
 
                 let notes = cortex_storage::queries::note_queries::search_notes(
                     ctx.db,
@@ -173,12 +163,12 @@ impl Skill for EmailDraftSkill {
                     })?;
 
                 let note = cortex_storage::queries::note_queries::get_note(
-                    ctx.db, draft_id, &agent_id_str,
+                    ctx.db,
+                    draft_id,
+                    &agent_id_str,
                 )
                 .map_err(|e| SkillError::Storage(format!("read draft: {e}")))?
-                .ok_or_else(|| {
-                    SkillError::InvalidInput(format!("draft '{draft_id}' not found"))
-                })?;
+                .ok_or_else(|| SkillError::InvalidInput(format!("draft '{draft_id}' not found")))?;
 
                 let content: serde_json::Value =
                     serde_json::from_str(&note.content).unwrap_or(serde_json::json!({}));
@@ -201,7 +191,9 @@ impl Skill for EmailDraftSkill {
                     })?;
 
                 let deleted = cortex_storage::queries::note_queries::delete_note(
-                    ctx.db, draft_id, &agent_id_str,
+                    ctx.db,
+                    draft_id,
+                    &agent_id_str,
                 )
                 .map_err(|e| SkillError::Storage(format!("delete draft: {e}")))?;
 
@@ -240,10 +232,15 @@ impl Skill for EmailDraftSkill {
                             .join(", ")
                     })
                     .unwrap_or_else(|| "?".into());
-                Some(format!("Draft email to [{to}]: \"{subject}\" (will NOT be sent)"))
+                Some(format!(
+                    "Draft email to [{to}]: \"{subject}\" (will NOT be sent)"
+                ))
             }
             "delete" => {
-                let id = input.get("draft_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let id = input
+                    .get("draft_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 Some(format!("Delete email draft: {id}"))
             }
             _ => None,

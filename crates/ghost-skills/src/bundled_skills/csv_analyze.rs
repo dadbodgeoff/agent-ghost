@@ -43,9 +43,7 @@ impl Skill for CsvAnalyzeSkill {
         let file_path = input
             .get("file_path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SkillError::InvalidInput("missing required field 'file_path'".into())
-            })?;
+            .ok_or_else(|| SkillError::InvalidInput("missing required field 'file_path'".into()))?;
 
         let delimiter = input
             .get("delimiter")
@@ -89,9 +87,8 @@ impl Skill for CsvAnalyzeSkill {
             )));
         }
 
-        let content = std::fs::read_to_string(file_path).map_err(|e| {
-            SkillError::InvalidInput(format!("cannot read file as text: {e}"))
-        })?;
+        let content = std::fs::read_to_string(file_path)
+            .map_err(|e| SkillError::InvalidInput(format!("cannot read file as text: {e}")))?;
 
         let lines: Vec<&str> = content.lines().collect();
         if lines.is_empty() {
@@ -115,9 +112,7 @@ impl Skill for CsvAnalyzeSkill {
 
         // Collect column statistics.
         let col_count = header.len();
-        let mut col_stats: Vec<ColumnStats> = (0..col_count)
-            .map(|_| ColumnStats::new())
-            .collect();
+        let mut col_stats: Vec<ColumnStats> = (0..col_count).map(|_| ColumnStats::new()).collect();
 
         let mut sample_data: Vec<Vec<String>> = Vec::new();
 
@@ -149,9 +144,11 @@ impl Skill for CsvAnalyzeSkill {
                 if let Some(ref numeric) = stats.numeric {
                     col["min"] = serde_json::json!(numeric.min);
                     col["max"] = serde_json::json!(numeric.max);
-                    col["mean"] = serde_json::json!(
-                        if numeric.count > 0 { numeric.sum / numeric.count as f64 } else { 0.0 }
-                    );
+                    col["mean"] = serde_json::json!(if numeric.count > 0 {
+                        numeric.sum / numeric.count as f64
+                    } else {
+                        0.0
+                    });
                 }
                 col
             })
@@ -385,14 +382,8 @@ mod tests {
     #[test]
     fn split_csv_line_basic() {
         assert_eq!(split_csv_line("a,b,c", ','), vec!["a", "b", "c"]);
-        assert_eq!(
-            split_csv_line("\"a,b\",c,d", ','),
-            vec!["a,b", "c", "d"]
-        );
-        assert_eq!(
-            split_csv_line("a\tb\tc", '\t'),
-            vec!["a", "b", "c"]
-        );
+        assert_eq!(split_csv_line("\"a,b\",c,d", ','), vec!["a,b", "c", "d"]);
+        assert_eq!(split_csv_line("a\tb\tc", '\t'), vec!["a", "b", "c"]);
     }
 
     #[test]

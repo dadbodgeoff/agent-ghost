@@ -263,7 +263,14 @@ fn volume_spike_flagged() {
 
     // 11 writes in one batch — exceeds threshold.
     let writes: Vec<DelegatedWrite> = (0..11)
-        .map(|i| make_write(delegation_id, agent_id, &format!("key{i}"), WriteImportance::Normal))
+        .map(|i| {
+            make_write(
+                delegation_id,
+                agent_id,
+                &format!("key{i}"),
+                WriteImportance::Normal,
+            )
+        })
         .collect();
 
     let result = detector.check_writes(&writes, 0.8).unwrap();
@@ -307,7 +314,12 @@ fn high_importance_from_untrusted_agent_flagged() {
     let delegation_id = Uuid::new_v4();
     let agent_id = Uuid::new_v4();
 
-    let write = make_write(delegation_id, agent_id, "critical-data", WriteImportance::Critical);
+    let write = make_write(
+        delegation_id,
+        agent_id,
+        "critical-data",
+        WriteImportance::Critical,
+    );
 
     // Agent trust 0.3 < threshold 0.6.
     let result = detector.check_writes(&[write], 0.3).unwrap();
@@ -324,7 +336,12 @@ fn high_importance_from_trusted_agent_not_flagged() {
     let delegation_id = Uuid::new_v4();
     let agent_id = Uuid::new_v4();
 
-    let write = make_write(delegation_id, agent_id, "critical-data", WriteImportance::Critical);
+    let write = make_write(
+        delegation_id,
+        agent_id,
+        "critical-data",
+        WriteImportance::Critical,
+    );
 
     // Agent trust 0.8 >= threshold 0.6.
     let result = detector.check_writes(&[write], 0.8).unwrap();
@@ -350,7 +367,14 @@ fn clear_delegation_removes_tracking() {
     let agent_id = Uuid::new_v4();
 
     let writes: Vec<DelegatedWrite> = (0..5)
-        .map(|i| make_write(delegation_id, agent_id, &format!("key{i}"), WriteImportance::Normal))
+        .map(|i| {
+            make_write(
+                delegation_id,
+                agent_id,
+                &format!("key{i}"),
+                WriteImportance::Normal,
+            )
+        })
         .collect();
 
     detector.check_writes(&writes, 0.8).unwrap();
@@ -392,12 +416,22 @@ fn poisoning_detector_convergence_amplify_callback_invoked() {
 
     // Trigger volume spike (>10 writes).
     let writes: Vec<DelegatedWrite> = (0..11)
-        .map(|i| make_write(delegation_id, agent_id, &format!("key{i}"), WriteImportance::Normal))
+        .map(|i| {
+            make_write(
+                delegation_id,
+                agent_id,
+                &format!("key{i}"),
+                WriteImportance::Normal,
+            )
+        })
         .collect();
 
     let result = detector.check_writes(&writes, 0.8).unwrap();
     assert!(result.is_poisoned);
-    assert!(call_count.load(Ordering::SeqCst) > 0, "callback should have been invoked");
+    assert!(
+        call_count.load(Ordering::SeqCst) > 0,
+        "callback should have been invoked"
+    );
 }
 
 #[test]
@@ -417,8 +451,16 @@ fn poisoning_detector_audit_log_callback_invoked() {
     let agent_id = Uuid::new_v4();
 
     // Trigger untrusted high importance.
-    let write = make_write(delegation_id, agent_id, "critical", WriteImportance::Critical);
+    let write = make_write(
+        delegation_id,
+        agent_id,
+        "critical",
+        WriteImportance::Critical,
+    );
     let result = detector.check_writes(&[write], 0.3).unwrap();
     assert!(result.is_poisoned);
-    assert!(log_count.load(Ordering::SeqCst) > 0, "audit log callback should have been invoked");
+    assert!(
+        log_count.load(Ordering::SeqCst) > 0,
+        "audit log callback should have been invoked"
+    );
 }

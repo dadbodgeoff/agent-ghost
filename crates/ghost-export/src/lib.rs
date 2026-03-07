@@ -8,7 +8,7 @@ pub mod analyzer;
 pub mod parsers;
 pub mod timeline;
 
-pub use analyzer::{ExportAnalyzer, ExportAnalysisResult};
+pub use analyzer::{ExportAnalysisResult, ExportAnalyzer};
 pub use timeline::TimelineReconstructor;
 
 use serde::{Deserialize, Serialize};

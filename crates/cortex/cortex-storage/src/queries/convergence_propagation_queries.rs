@@ -4,9 +4,9 @@
 //! Used by delegation skills to track inheritance relationships
 //! and by the convergence watcher for upward score propagation.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 /// Insert a parent-child convergence link for a delegation.
 pub fn link_parent_child(
@@ -22,14 +22,24 @@ pub fn link_parent_child(
         "INSERT INTO convergence_links (id, parent_agent_id, child_agent_id,
          delegation_id, inherited_score, inherited_level)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, parent_agent_id, child_agent_id, delegation_id, inherited_score, inherited_level],
+        params![
+            id,
+            parent_agent_id,
+            child_agent_id,
+            delegation_id,
+            inherited_score,
+            inherited_level
+        ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())
 }
 
 /// Get all active children of a parent agent.
-pub fn get_children(conn: &Connection, parent_agent_id: &str) -> CortexResult<Vec<ConvergenceLinkRow>> {
+pub fn get_children(
+    conn: &Connection,
+    parent_agent_id: &str,
+) -> CortexResult<Vec<ConvergenceLinkRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, parent_agent_id, child_agent_id, delegation_id,
@@ -61,7 +71,10 @@ pub fn get_children(conn: &Connection, parent_agent_id: &str) -> CortexResult<Ve
 }
 
 /// Get the parent link for a child agent (if any).
-pub fn get_parent(conn: &Connection, child_agent_id: &str) -> CortexResult<Option<ConvergenceLinkRow>> {
+pub fn get_parent(
+    conn: &Connection,
+    child_agent_id: &str,
+) -> CortexResult<Option<ConvergenceLinkRow>> {
     let mut stmt = conn
         .prepare(
             "SELECT id, parent_agent_id, child_agent_id, delegation_id,
@@ -116,10 +129,7 @@ pub fn quarantine_child(
 }
 
 /// Mark a convergence link as completed (delegation finished normally).
-pub fn complete_link(
-    conn: &Connection,
-    delegation_id: &str,
-) -> CortexResult<bool> {
+pub fn complete_link(conn: &Connection, delegation_id: &str) -> CortexResult<bool> {
     let updated = conn
         .execute(
             "UPDATE convergence_links SET status = 'completed', updated_at = datetime('now')

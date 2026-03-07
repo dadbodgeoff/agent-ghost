@@ -1,8 +1,8 @@
 //! Migration v028: A2A tasks and discovered agents tables (T-4.1.2).
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -28,7 +28,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             version      TEXT NOT NULL DEFAULT '',
             discovered_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_discovered_agents_trust ON discovered_agents(trust_score);"
+        CREATE INDEX IF NOT EXISTS idx_discovered_agents_trust ON discovered_agents(trust_score);",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 

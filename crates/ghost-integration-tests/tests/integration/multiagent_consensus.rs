@@ -2,7 +2,10 @@
 //!
 //! Validates cortex-multiagent ConsensusShield for cross-agent state changes.
 
-use cortex_multiagent::{ConsensusShield, consensus::{ConsensusConfig, ConsensusResult, Vote}};
+use cortex_multiagent::{
+    consensus::{ConsensusConfig, ConsensusResult, Vote},
+    ConsensusShield,
+};
 use uuid::Uuid;
 
 /// Full consensus lifecycle: start → vote → approve.

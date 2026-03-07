@@ -72,7 +72,11 @@ impl TierSelector {
         convergence_level: u8,
     ) -> HeartbeatTier {
         // Sanitize NaN/Inf → treat as stable
-        let delta = if score_delta.is_nan() || score_delta.is_infinite() { 0.0 } else { score_delta };
+        let delta = if score_delta.is_nan() || score_delta.is_infinite() {
+            0.0
+        } else {
+            score_delta
+        };
 
         self.total_count += 1;
 
@@ -136,7 +140,11 @@ pub fn interval_for_state(
     convergence_level: u8,
 ) -> Duration {
     // Sanitize NaN/Inf → treat as stable
-    let delta = if score_delta.is_nan() || score_delta.is_infinite() { 0.0 } else { score_delta };
+    let delta = if score_delta.is_nan() || score_delta.is_infinite() {
+        0.0
+    } else {
+        score_delta
+    };
 
     if convergence_level >= 4 {
         Duration::from_secs(5) // Critical: 5s Tier0 binary pings
@@ -215,9 +223,13 @@ impl TieredHeartbeatState {
         session_duration: u32,
         error_count: u32,
     ) -> HeartbeatDelta {
-        let score_changed = self.last_score.map_or(true, |s| (s - current_score).abs() > f64::EPSILON);
+        let score_changed = self
+            .last_score
+            .map_or(true, |s| (s - current_score).abs() > f64::EPSILON);
         let goals_changed = self.last_active_goals.map_or(true, |g| g != active_goals);
-        let duration_changed = self.last_session_duration.map_or(true, |d| d != session_duration);
+        let duration_changed = self
+            .last_session_duration
+            .map_or(true, |d| d != session_duration);
         let errors_changed = self.last_error_count.map_or(true, |e| e != error_count);
 
         // Update last known state
@@ -229,10 +241,26 @@ impl TieredHeartbeatState {
         HeartbeatDelta {
             agent_id,
             seq: self.seq,
-            convergence_score: if score_changed { Some(current_score) } else { None },
-            active_goals: if goals_changed { Some(active_goals) } else { None },
-            session_duration_minutes: if duration_changed { Some(session_duration) } else { None },
-            error_count: if errors_changed { Some(error_count) } else { None },
+            convergence_score: if score_changed {
+                Some(current_score)
+            } else {
+                None
+            },
+            active_goals: if goals_changed {
+                Some(active_goals)
+            } else {
+                None
+            },
+            session_duration_minutes: if duration_changed {
+                Some(session_duration)
+            } else {
+                None
+            },
+            error_count: if errors_changed {
+                Some(error_count)
+            } else {
+                None
+            },
         }
     }
 }

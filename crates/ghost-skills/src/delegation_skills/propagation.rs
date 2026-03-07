@@ -38,11 +38,9 @@ pub fn propagate_convergence(
     new_child_score: f64,
 ) -> Result<PropagationResult, String> {
     // Find the parent link
-    let link = cortex_storage::queries::convergence_propagation_queries::get_parent(
-        conn,
-        child_agent_id,
-    )
-    .map_err(|e| format!("query parent link: {e}"))?;
+    let link =
+        cortex_storage::queries::convergence_propagation_queries::get_parent(conn, child_agent_id)
+            .map_err(|e| format!("query parent link: {e}"))?;
 
     let link = match link {
         Some(l) => l,
@@ -72,12 +70,11 @@ pub fn propagate_convergence(
     }
 
     // Get parent's current score
-    let parent_score_row =
-        cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            conn,
-            &link.parent_agent_id,
-        )
-        .map_err(|e| format!("query parent convergence: {e}"))?;
+    let parent_score_row = cortex_storage::queries::convergence_score_queries::latest_by_agent(
+        conn,
+        &link.parent_agent_id,
+    )
+    .map_err(|e| format!("query parent convergence: {e}"))?;
 
     let parent_old_score = parent_score_row
         .as_ref()
@@ -173,18 +170,21 @@ pub fn handle_boundary_violation(
     // (Note: quarantine_child sets status='quarantined', so get_parent won't
     //  find active links. We need to query before quarantine or use a broader query.
     //  Since quarantine already happened, let's query directly.)
-    let parent_link: Option<cortex_storage::queries::convergence_propagation_queries::ConvergenceLinkRow> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, parent_agent_id, child_agent_id, delegation_id,
+    let parent_link: Option<
+        cortex_storage::queries::convergence_propagation_queries::ConvergenceLinkRow,
+    > =
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, parent_agent_id, child_agent_id, delegation_id,
                         inherited_score, inherited_level, status, created_at
                  FROM convergence_links
                  WHERE child_agent_id = ?1
                  ORDER BY created_at DESC LIMIT 1",
-            )
-            .map_err(|e| format!("prepare parent query: {e}"))?;
+                )
+                .map_err(|e| format!("prepare parent query: {e}"))?;
 
-        let rows: Vec<_> = stmt
+            let rows: Vec<_> = stmt
             .query_map(rusqlite::params![child_agent_id], |row| {
                 Ok(cortex_storage::queries::convergence_propagation_queries::ConvergenceLinkRow {
                     id: row.get(0)?,
@@ -201,8 +201,8 @@ pub fn handle_boundary_violation(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("collect parent rows: {e}"))?;
 
-        rows.into_iter().next()
-    };
+            rows.into_iter().next()
+        };
 
     let link = match parent_link {
         Some(l) => l,
@@ -218,12 +218,11 @@ pub fn handle_boundary_violation(
     };
 
     // Apply +0.1 penalty to parent
-    let parent_score_row =
-        cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            conn,
-            &link.parent_agent_id,
-        )
-        .map_err(|e| format!("query parent convergence: {e}"))?;
+    let parent_score_row = cortex_storage::queries::convergence_score_queries::latest_by_agent(
+        conn,
+        &link.parent_agent_id,
+    )
+    .map_err(|e| format!("query parent convergence: {e}"))?;
 
     let parent_old_score = parent_score_row
         .as_ref()
@@ -384,8 +383,7 @@ mod tests {
         seed_parent_score(&db, &parent, 0.2);
         link_agents(&db, &parent, &child, 0.2);
 
-        let result =
-            handle_boundary_violation(&db, &child, "attempted blocked action").unwrap();
+        let result = handle_boundary_violation(&db, &child, "attempted blocked action").unwrap();
 
         assert_eq!(result.quarantined, vec![child.clone()]);
         assert!((result.parent_old_score - 0.2).abs() < 0.001);
@@ -393,10 +391,8 @@ mod tests {
 
         // Verify child is quarantined in DB
         let link =
-            cortex_storage::queries::convergence_propagation_queries::get_children(
-                &db, &parent,
-            )
-            .unwrap();
+            cortex_storage::queries::convergence_propagation_queries::get_children(&db, &parent)
+                .unwrap();
         // get_children only returns active links, so should be empty
         assert!(link.is_empty());
     }

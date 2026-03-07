@@ -41,15 +41,15 @@ impl CorpPolicyLoader {
             });
         }
 
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| CorpPolicyError::ReadError(e.to_string()))?;
+        let raw =
+            std::fs::read_to_string(path).map_err(|e| CorpPolicyError::ReadError(e.to_string()))?;
 
         // Extract signature from trailing comment
         let (content, signature_hex) = extract_signature(&raw)?;
 
         // Decode signature
-        let sig_bytes = hex_decode(&signature_hex)
-            .map_err(|_| CorpPolicyError::SignatureInvalid)?;
+        let sig_bytes =
+            hex_decode(&signature_hex).map_err(|_| CorpPolicyError::SignatureInvalid)?;
 
         let signature = ghost_signing::Signature::from_bytes(&sig_bytes)
             .ok_or(CorpPolicyError::SignatureInvalid)?;

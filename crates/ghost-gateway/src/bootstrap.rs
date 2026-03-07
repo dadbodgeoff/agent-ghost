@@ -261,8 +261,11 @@ impl GatewayBootstrap {
             }
         }
 
-        // Build distributed kill gate bridge if mesh is enabled.
-        let kill_gate = if config.mesh.enabled {
+        // Build distributed kill gate bridge only when the feature gate is on.
+        let kill_gate = if crate::runtime_status::should_enable_distributed_kill(
+            config.mesh.enabled,
+            config.mesh.distributed_kill_enabled,
+        ) {
             let node_id = uuid::Uuid::now_v7();
             let gate_config = ghost_kill_gates::config::KillGateConfig::default();
             let bridge = crate::safety::kill_gate_bridge::KillGateBridge::new(
@@ -273,6 +276,11 @@ impl GatewayBootstrap {
             tracing::info!(node_id = %node_id, "Distributed kill gate bridge initialized");
             Some(Arc::new(RwLock::new(bridge)))
         } else {
+            if config.mesh.enabled {
+                tracing::info!(
+                    "Distributed kill remains feature-gated and is disabled in this milestone"
+                );
+            }
             None
         };
 
@@ -392,7 +400,12 @@ impl GatewayBootstrap {
             safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
             monitor_address: config.convergence.monitor.address.clone(),
             monitor_enabled: config.convergence.monitor.enabled,
+            monitor_block_on_degraded: config.convergence.monitor.block_on_degraded,
+            convergence_state_stale_after: std::time::Duration::from_secs(
+                config.convergence.monitor.stale_after_secs,
+            ),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            distributed_kill_enabled: config.mesh.distributed_kill_enabled,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             safety_skills: Arc::new(safety_skills),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
@@ -791,6 +804,7 @@ impl GatewayBootstrap {
         // ── Read-only routes (authenticated, no minimum RBAC role) ────
         // Any authenticated user (including Viewer) can access these.
         let read_routes = axum::Router::new()
+            .route("/api/auth/session", get(crate::api::auth::session))
             .route("/api/agents", get(crate::api::agents::list_agents))
             .route("/api/audit", get(crate::api::audit::query_audit))
             .route(
@@ -814,6 +828,10 @@ impl GatewayBootstrap {
                 get(crate::api::sessions::list_bookmarks),
             )
             .route("/api/memory", get(crate::api::memory::list_memories))
+            .route(
+                "/api/memory/graph",
+                get(crate::api::memory::get_memory_graph),
+            )
             .route(
                 "/api/memory/search",
                 get(crate::api::memory::search_memories),

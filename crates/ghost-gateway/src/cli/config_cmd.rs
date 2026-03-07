@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::config::GhostConfig;
 
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 /// Regex-free secret field detection.
 fn is_secret_key(key: &str) -> bool {
@@ -76,13 +76,11 @@ impl TableDisplay for ConfigValidateResponse {
 }
 
 pub async fn run_show(config_path: Option<&str>, output: OutputFormat) -> Result<(), CliError> {
-    let config = GhostConfig::load_default(config_path).map_err(|e| {
-        CliError::Config(format!("failed to load config: {e}"))
-    })?;
+    let config = GhostConfig::load_default(config_path)
+        .map_err(|e| CliError::Config(format!("failed to load config: {e}")))?;
 
-    let mut json = serde_json::to_value(&config).map_err(|e| {
-        CliError::Internal(format!("failed to serialize config: {e}"))
-    })?;
+    let mut json = serde_json::to_value(&config)
+        .map_err(|e| CliError::Internal(format!("failed to serialize config: {e}")))?;
     redact_secrets(&mut json);
 
     // Resolve config path for display
@@ -92,7 +90,11 @@ pub async fn run_show(config_path: Option<&str>, output: OutputFormat) -> Result
         .or_else(|| {
             let home = crate::bootstrap::ghost_home();
             let p = home.join("config/ghost.yml");
-            if p.exists() { Some(p.display().to_string()) } else { None }
+            if p.exists() {
+                Some(p.display().to_string())
+            } else {
+                None
+            }
         });
 
     let resp = ConfigShowResponse {
@@ -104,9 +106,8 @@ pub async fn run_show(config_path: Option<&str>, output: OutputFormat) -> Result
 }
 
 pub async fn run_validate(config_path: Option<&str>, output: OutputFormat) -> Result<(), CliError> {
-    let config = GhostConfig::load_default(config_path).map_err(|e| {
-        CliError::Config(format!("failed to load config: {e}"))
-    })?;
+    let config = GhostConfig::load_default(config_path)
+        .map_err(|e| CliError::Config(format!("failed to load config: {e}")))?;
 
     let result = config.validate();
     let resp = ConfigValidateResponse {

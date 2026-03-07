@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 // ── Types ──
 
@@ -28,15 +28,25 @@ export class SkillsAPI {
   }
 
   /** Install a skill by name. */
-  async install(name: string): Promise<Skill> {
-    return this.request<Skill>('POST', `/api/skills/${encodeURIComponent(name)}/install`);
+  async install(name: string, options?: GhostRequestOptions): Promise<Skill> {
+    return this.request<Skill>(
+      'POST',
+      `/api/skills/${encodeURIComponent(name)}/install`,
+      undefined,
+      options,
+    );
   }
 
   /** Uninstall a skill by name. */
-  async uninstall(name: string): Promise<{ uninstalled: string }> {
+  async uninstall(
+    name: string,
+    options?: GhostRequestOptions,
+  ): Promise<{ uninstalled: string }> {
     return this.request<{ uninstalled: string }>(
       'POST',
       `/api/skills/${encodeURIComponent(name)}/uninstall`,
+      undefined,
+      options,
     );
   }
 }

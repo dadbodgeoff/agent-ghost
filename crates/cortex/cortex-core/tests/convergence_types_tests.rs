@@ -24,37 +24,49 @@ use cortex_core::traits::convergence::{CallerType, Proposal};
 
 #[test]
 fn agent_cannot_create_core() {
-    let caller = CallerType::Agent { agent_id: Uuid::new_v4() };
+    let caller = CallerType::Agent {
+        agent_id: Uuid::new_v4(),
+    };
     assert!(!caller.can_create_type(&MemoryType::Core));
 }
 
 #[test]
 fn agent_cannot_create_convergence_event() {
-    let caller = CallerType::Agent { agent_id: Uuid::new_v4() };
+    let caller = CallerType::Agent {
+        agent_id: Uuid::new_v4(),
+    };
     assert!(!caller.can_create_type(&MemoryType::ConvergenceEvent));
 }
 
 #[test]
 fn agent_cannot_create_boundary_violation() {
-    let caller = CallerType::Agent { agent_id: Uuid::new_v4() };
+    let caller = CallerType::Agent {
+        agent_id: Uuid::new_v4(),
+    };
     assert!(!caller.can_create_type(&MemoryType::BoundaryViolation));
 }
 
 #[test]
 fn agent_cannot_create_intervention_plan() {
-    let caller = CallerType::Agent { agent_id: Uuid::new_v4() };
+    let caller = CallerType::Agent {
+        agent_id: Uuid::new_v4(),
+    };
     assert!(!caller.can_create_type(&MemoryType::InterventionPlan));
 }
 
 #[test]
 fn agent_cannot_assign_critical_importance() {
-    let caller = CallerType::Agent { agent_id: Uuid::new_v4() };
+    let caller = CallerType::Agent {
+        agent_id: Uuid::new_v4(),
+    };
     assert!(!caller.can_assign_importance(&Importance::Critical));
 }
 
 #[test]
 fn agent_can_assign_non_critical_importance() {
-    let caller = CallerType::Agent { agent_id: Uuid::new_v4() };
+    let caller = CallerType::Agent {
+        agent_id: Uuid::new_v4(),
+    };
     assert!(caller.can_assign_importance(&Importance::Trivial));
     assert!(caller.can_assign_importance(&Importance::Low));
     assert!(caller.can_assign_importance(&Importance::Normal));
@@ -78,7 +90,9 @@ fn platform_can_assign_critical_importance() {
 
 #[test]
 fn human_can_create_all_restricted_types() {
-    let caller = CallerType::Human { user_id: "u-1".into() };
+    let caller = CallerType::Human {
+        user_id: "u-1".into(),
+    };
     assert!(caller.can_create_type(&MemoryType::Core));
     assert!(caller.can_create_type(&MemoryType::ConvergenceEvent));
     assert!(caller.can_create_type(&MemoryType::BoundaryViolation));
@@ -87,7 +101,9 @@ fn human_can_create_all_restricted_types() {
 
 #[test]
 fn human_can_assign_critical_importance() {
-    let caller = CallerType::Human { user_id: "u-1".into() };
+    let caller = CallerType::Human {
+        user_id: "u-1".into(),
+    };
     assert!(caller.can_assign_importance(&Importance::Critical));
 }
 
@@ -95,7 +111,9 @@ fn human_can_assign_critical_importance() {
 
 #[test]
 fn agent_can_create_non_restricted_types() {
-    let caller = CallerType::Agent { agent_id: Uuid::new_v4() };
+    let caller = CallerType::Agent {
+        agent_id: Uuid::new_v4(),
+    };
     assert!(caller.can_create_type(&MemoryType::AgentGoal));
     assert!(caller.can_create_type(&MemoryType::AgentReflection));
     assert!(caller.can_create_type(&MemoryType::Conversation));
@@ -143,8 +161,14 @@ fn session_boundary_config_defaults_match_spec() {
 fn convergence_config_default_composes_sub_defaults() {
     let cfg = cortex_core::config::ConvergenceConfig::default();
     assert_eq!(cfg.reflection, ReflectionConfig::default());
-    assert_eq!(cfg.intervention, cortex_core::config::InterventionConfig::default());
-    assert_eq!(cfg.session_boundary, cortex_core::config::SessionBoundaryConfig::default());
+    assert_eq!(
+        cfg.intervention,
+        cortex_core::config::InterventionConfig::default()
+    );
+    assert_eq!(
+        cfg.session_boundary,
+        cortex_core::config::SessionBoundaryConfig::default()
+    );
 }
 
 // ─── 8 content structs serde round-trip ──────────────────────────────────
@@ -276,7 +300,9 @@ fn attachment_indicator_content_round_trip() {
 fn proposal_with_uuid_v7_serializes_correctly() {
     let proposal = Proposal {
         id: Uuid::now_v7(),
-        proposer: CallerType::Agent { agent_id: Uuid::new_v4() },
+        proposer: CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
         operation: ProposalOperation::GoalChange,
         target_type: MemoryType::AgentGoal,
         content: serde_json::json!({"goal": "test"}),
@@ -330,44 +356,77 @@ fn trigger_event_has_all_10_variants() {
     let id = Uuid::new_v4();
     let events: Vec<TriggerEvent> = vec![
         TriggerEvent::SoulDrift {
-            agent_id: id, drift_score: 0.5, threshold: 0.3,
-            baseline_hash: "a".into(), current_hash: "b".into(), detected_at: now,
+            agent_id: id,
+            drift_score: 0.5,
+            threshold: 0.3,
+            baseline_hash: "a".into(),
+            current_hash: "b".into(),
+            detected_at: now,
         },
         TriggerEvent::SpendingCapExceeded {
-            agent_id: id, daily_total: 10.0, cap: 5.0, overage: 5.0, detected_at: now,
+            agent_id: id,
+            daily_total: 10.0,
+            cap: 5.0,
+            overage: 5.0,
+            detected_at: now,
         },
         TriggerEvent::PolicyDenialThreshold {
-            agent_id: id, session_id: id, denial_count: 5,
-            denied_tools: vec![], denied_reasons: vec![], detected_at: now,
+            agent_id: id,
+            session_id: id,
+            denial_count: 5,
+            denied_tools: vec![],
+            denied_reasons: vec![],
+            detected_at: now,
         },
         TriggerEvent::SandboxEscape {
-            agent_id: id, skill_name: "s".into(), escape_attempt: "e".into(), detected_at: now,
+            agent_id: id,
+            skill_name: "s".into(),
+            escape_attempt: "e".into(),
+            detected_at: now,
         },
         TriggerEvent::CredentialExfiltration {
-            agent_id: id, skill_name: None, exfil_type: ExfilType::OutputLeakage,
-            credential_id: "c".into(), detected_at: now,
+            agent_id: id,
+            skill_name: None,
+            exfil_type: ExfilType::OutputLeakage,
+            credential_id: "c".into(),
+            detected_at: now,
         },
         TriggerEvent::MultiAgentQuarantine {
-            quarantined_agents: vec![id], quarantine_reasons: vec!["r".into()],
-            count: 1, threshold: 3, detected_at: now,
+            quarantined_agents: vec![id],
+            quarantine_reasons: vec!["r".into()],
+            count: 1,
+            threshold: 3,
+            detected_at: now,
         },
         TriggerEvent::MemoryHealthCritical {
-            agent_id: id, health_score: 0.2, threshold: 0.3,
-            sub_scores: BTreeMap::new(), detected_at: now,
+            agent_id: id,
+            health_score: 0.2,
+            threshold: 0.3,
+            sub_scores: BTreeMap::new(),
+            detected_at: now,
         },
         // T8: Network egress violation (Phase 11).
         TriggerEvent::NetworkEgressViolation {
-            agent_id: id, domain: "evil.com".into(), policy_mode: "allowlist".into(),
-            violation_count: 5, threshold: 5, detected_at: now,
+            agent_id: id,
+            domain: "evil.com".into(),
+            policy_mode: "allowlist".into(),
+            violation_count: 5,
+            threshold: 5,
+            detected_at: now,
         },
         TriggerEvent::ManualPause {
-            agent_id: id, reason: "test".into(), initiated_by: "owner".into(),
+            agent_id: id,
+            reason: "test".into(),
+            initiated_by: "owner".into(),
         },
         TriggerEvent::ManualQuarantine {
-            agent_id: id, reason: "test".into(), initiated_by: "owner".into(),
+            agent_id: id,
+            reason: "test".into(),
+            initiated_by: "owner".into(),
         },
         TriggerEvent::ManualKillAll {
-            reason: "test".into(), initiated_by: "owner".into(),
+            reason: "test".into(),
+            initiated_by: "owner".into(),
         },
     ];
     assert_eq!(events.len(), 11);
@@ -383,13 +442,17 @@ fn trigger_event_has_all_10_variants() {
 
 #[test]
 fn cortex_error_has_authorization_denied() {
-    let err = CortexError::AuthorizationDenied { reason: "test".into() };
+    let err = CortexError::AuthorizationDenied {
+        reason: "test".into(),
+    };
     assert!(err.to_string().contains("authorization denied"));
 }
 
 #[test]
 fn cortex_error_has_session_boundary() {
-    let err = CortexError::SessionBoundary { reason: "test".into() };
+    let err = CortexError::SessionBoundary {
+        reason: "test".into(),
+    };
     assert!(err.to_string().contains("session boundary"));
 }
 
@@ -488,19 +551,37 @@ fn memory_type_has_31_variants() {
     // 23 existing + 8 convergence = 31 total.
     // Exhaustive list to catch accidental additions or removals.
     let all = [
-        MemoryType::Core, MemoryType::Tribal, MemoryType::Procedural,
-        MemoryType::Semantic, MemoryType::Episodic, MemoryType::Decision,
-        MemoryType::Insight, MemoryType::Reference, MemoryType::Preference,
-        MemoryType::Conversation, MemoryType::Feedback, MemoryType::Skill,
-        MemoryType::Goal, MemoryType::Relationship, MemoryType::Context,
-        MemoryType::Observation, MemoryType::Hypothesis, MemoryType::Experiment,
+        MemoryType::Core,
+        MemoryType::Tribal,
+        MemoryType::Procedural,
+        MemoryType::Semantic,
+        MemoryType::Episodic,
+        MemoryType::Decision,
+        MemoryType::Insight,
+        MemoryType::Reference,
+        MemoryType::Preference,
+        MemoryType::Conversation,
+        MemoryType::Feedback,
+        MemoryType::Skill,
+        MemoryType::Goal,
+        MemoryType::Relationship,
+        MemoryType::Context,
+        MemoryType::Observation,
+        MemoryType::Hypothesis,
+        MemoryType::Experiment,
         MemoryType::Lesson,
-        MemoryType::PatternRationale, MemoryType::ConstraintOverride,
-        MemoryType::DecisionContext, MemoryType::CodeSmell,
-        MemoryType::AgentGoal, MemoryType::AgentReflection,
-        MemoryType::ConvergenceEvent, MemoryType::BoundaryViolation,
-        MemoryType::ProposalRecord, MemoryType::SimulationResult,
-        MemoryType::InterventionPlan, MemoryType::AttachmentIndicator,
+        MemoryType::PatternRationale,
+        MemoryType::ConstraintOverride,
+        MemoryType::DecisionContext,
+        MemoryType::CodeSmell,
+        MemoryType::AgentGoal,
+        MemoryType::AgentReflection,
+        MemoryType::ConvergenceEvent,
+        MemoryType::BoundaryViolation,
+        MemoryType::ProposalRecord,
+        MemoryType::SimulationResult,
+        MemoryType::InterventionPlan,
+        MemoryType::AttachmentIndicator,
     ];
     assert_eq!(all.len(), 31);
 }
@@ -510,19 +591,37 @@ fn memory_type_has_31_variants() {
 #[test]
 fn all_memory_types_have_half_life_entries() {
     let all = [
-        MemoryType::Core, MemoryType::Tribal, MemoryType::Procedural,
-        MemoryType::Semantic, MemoryType::Episodic, MemoryType::Decision,
-        MemoryType::Insight, MemoryType::Reference, MemoryType::Preference,
-        MemoryType::Conversation, MemoryType::Feedback, MemoryType::Skill,
-        MemoryType::Goal, MemoryType::Relationship, MemoryType::Context,
-        MemoryType::Observation, MemoryType::Hypothesis, MemoryType::Experiment,
+        MemoryType::Core,
+        MemoryType::Tribal,
+        MemoryType::Procedural,
+        MemoryType::Semantic,
+        MemoryType::Episodic,
+        MemoryType::Decision,
+        MemoryType::Insight,
+        MemoryType::Reference,
+        MemoryType::Preference,
+        MemoryType::Conversation,
+        MemoryType::Feedback,
+        MemoryType::Skill,
+        MemoryType::Goal,
+        MemoryType::Relationship,
+        MemoryType::Context,
+        MemoryType::Observation,
+        MemoryType::Hypothesis,
+        MemoryType::Experiment,
         MemoryType::Lesson,
-        MemoryType::PatternRationale, MemoryType::ConstraintOverride,
-        MemoryType::DecisionContext, MemoryType::CodeSmell,
-        MemoryType::AgentGoal, MemoryType::AgentReflection,
-        MemoryType::ConvergenceEvent, MemoryType::BoundaryViolation,
-        MemoryType::ProposalRecord, MemoryType::SimulationResult,
-        MemoryType::InterventionPlan, MemoryType::AttachmentIndicator,
+        MemoryType::PatternRationale,
+        MemoryType::ConstraintOverride,
+        MemoryType::DecisionContext,
+        MemoryType::CodeSmell,
+        MemoryType::AgentGoal,
+        MemoryType::AgentReflection,
+        MemoryType::ConvergenceEvent,
+        MemoryType::BoundaryViolation,
+        MemoryType::ProposalRecord,
+        MemoryType::SimulationResult,
+        MemoryType::InterventionPlan,
+        MemoryType::AttachmentIndicator,
     ];
     // Calling half_life_days on every variant must not panic.
     for mt in &all {

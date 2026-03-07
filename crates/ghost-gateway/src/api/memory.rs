@@ -3,12 +3,16 @@
 //! Phase 2: Wired to cortex-storage memory_snapshots table
 //! (created in v016_convergence_safety migration).
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use chrono::{DateTime, Utc};
+use cortex_core::memory::types::MemoryType;
+use cortex_core::memory::{BaseMemory, Importance};
 use serde::Deserialize;
 
 use crate::api::error::{ApiError, ApiResult};
@@ -37,6 +41,40 @@ pub struct MemorySearchParams {
     pub limit: Option<u32>,
     /// Include archived memories in results (default: false).
     pub include_archived: Option<bool>,
+}
+
+/// Query parameters for the derived memory graph view.
+#[derive(Debug, Deserialize)]
+pub struct MemoryGraphParams {
+    pub agent_id: Option<String>,
+    pub limit: Option<u32>,
+    /// Include archived memories in the graph (default: false).
+    pub include_archived: Option<bool>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct MemoryGraphNode {
+    pub id: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub node_type: String,
+    pub importance: f64,
+    #[serde(rename = "decayFactor")]
+    pub decay_factor: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct MemoryGraphEdge {
+    pub source: String,
+    pub target: String,
+    pub relationship: String,
+    pub strength: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct MemoryGraphResponse {
+    pub nodes: Vec<MemoryGraphNode>,
+    pub edges: Vec<MemoryGraphEdge>,
 }
 
 /// GET /api/memory — list memory snapshots with optional agent_id filter.
@@ -125,17 +163,14 @@ pub async fn list_memories(
                 );
             }
         };
-        let rows = stmt.query_map(
-            rusqlite::params![agent_id, page_size, offset],
-            |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "memory_id": row.get::<_, String>(1)?,
-                    "snapshot": row.get::<_, String>(2)?,
-                    "created_at": row.get::<_, String>(3)?,
-                }))
-            },
-        );
+        let rows = stmt.query_map(rusqlite::params![agent_id, page_size, offset], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "memory_id": row.get::<_, String>(1)?,
+                "snapshot": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        });
         match rows {
             Ok(rows) => {
                 for row in rows {
@@ -174,17 +209,14 @@ pub async fn list_memories(
                 );
             }
         };
-        let rows = stmt.query_map(
-            rusqlite::params![page_size, offset],
-            |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "memory_id": row.get::<_, String>(1)?,
-                    "snapshot": row.get::<_, String>(2)?,
-                    "created_at": row.get::<_, String>(3)?,
-                }))
-            },
-        );
+        let rows = stmt.query_map(rusqlite::params![page_size, offset], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "memory_id": row.get::<_, String>(1)?,
+                "snapshot": row.get::<_, String>(2)?,
+                "created_at": row.get::<_, String>(3)?,
+            }))
+        });
         match rows {
             Ok(rows) => {
                 for row in rows {
@@ -253,9 +285,9 @@ pub async fn get_memory(
             // Only attempt numeric PK lookup if the id is a valid integer.
             // memory_snapshots.id is INTEGER PRIMARY KEY AUTOINCREMENT —
             // passing a non-numeric string would silently return 0 rows.
-            let numeric_id: i64 = id.parse().map_err(|_| {
-                rusqlite::Error::QueryReturnedNoRows
-            })?;
+            let numeric_id: i64 = id
+                .parse()
+                .map_err(|_| rusqlite::Error::QueryReturnedNoRows)?;
             db.query_row(
                 "SELECT id, memory_id, snapshot, created_at FROM memory_snapshots WHERE id = ?1",
                 [numeric_id],
@@ -283,6 +315,23 @@ pub async fn get_memory(
     }
 }
 
+/// GET /api/memory/graph — derive a graph view from the latest memory snapshots.
+pub async fn get_memory_graph(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<MemoryGraphParams>,
+) -> ApiResult<MemoryGraphResponse> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_memory_graph", e))?;
+
+    let limit = params.limit.unwrap_or(150).clamp(1, 300);
+    let include_archived = params.include_archived.unwrap_or(false);
+    let rows = query_graph_rows(&db, params.agent_id.as_deref(), include_archived, limit)?;
+
+    Ok(Json(build_memory_graph(rows)))
+}
+
 /// GET /api/memory/search — search memories with filters (T-2.1.2).
 ///
 /// Uses FTS5 full-text search when available (v031+), with RetrievalScorer
@@ -295,7 +344,10 @@ pub async fn search_memories(
     let limit = params.limit.unwrap_or(50).min(200);
     let include_archived = params.include_archived.unwrap_or(false);
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("search_memories", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("search_memories", e))?;
 
     // T-5.6.5: Validate confidence bounds.
     if let (Some(cmin), Some(cmax)) = (params.confidence_min, params.confidence_max) {
@@ -422,6 +474,438 @@ struct SearchCandidate {
     created_at: String,
 }
 
+#[derive(Debug, Clone)]
+struct MemoryGraphRow {
+    memory_id: String,
+    snapshot: String,
+    created_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct GraphNodeSource {
+    response: MemoryGraphNode,
+    tags: Vec<String>,
+    memory_type: Option<MemoryType>,
+    created_at: Option<DateTime<Utc>>,
+}
+
+fn query_graph_rows(
+    db: &rusqlite::Connection,
+    agent_id: Option<&str>,
+    include_archived: bool,
+    limit: u32,
+) -> Result<Vec<MemoryGraphRow>, ApiError> {
+    let archival_filter = if include_archived {
+        ""
+    } else {
+        " AND ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)"
+    };
+
+    let rows = if let Some(agent_id) = agent_id {
+        let sql = format!(
+            "SELECT ms.memory_id, ms.snapshot, ms.created_at \
+             FROM memory_snapshots ms \
+             JOIN (
+                 SELECT memory_id, MAX(created_at) AS max_created_at
+                 FROM memory_snapshots
+                 GROUP BY memory_id
+             ) latest
+               ON latest.memory_id = ms.memory_id
+              AND latest.max_created_at = ms.created_at \
+             JOIN memory_events me ON me.memory_id = ms.memory_id \
+             WHERE me.actor_id = ?1{archival_filter} \
+             GROUP BY ms.memory_id \
+             ORDER BY ms.created_at DESC \
+             LIMIT ?2"
+        );
+        let mut stmt = db
+            .prepare(&sql)
+            .map_err(|e| ApiError::db_error("memory_graph_prepare", e))?;
+        let rows = stmt.query_map(rusqlite::params![agent_id, limit], |row| {
+            Ok(MemoryGraphRow {
+                memory_id: row.get(0)?,
+                snapshot: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        });
+        let collected = rows
+            .map_err(|e| ApiError::db_error("memory_graph_query", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| ApiError::db_error("memory_graph_collect", e))?;
+        collected
+    } else {
+        let sql = format!(
+            "SELECT ms.memory_id, ms.snapshot, ms.created_at \
+             FROM memory_snapshots ms \
+             JOIN (
+                 SELECT memory_id, MAX(created_at) AS max_created_at
+                 FROM memory_snapshots
+                 GROUP BY memory_id
+             ) latest
+               ON latest.memory_id = ms.memory_id
+              AND latest.max_created_at = ms.created_at \
+             WHERE 1 = 1{archival_filter} \
+             GROUP BY ms.memory_id \
+             ORDER BY ms.created_at DESC \
+             LIMIT ?1"
+        );
+        let mut stmt = db
+            .prepare(&sql)
+            .map_err(|e| ApiError::db_error("memory_graph_prepare", e))?;
+        let rows = stmt.query_map(rusqlite::params![limit], |row| {
+            Ok(MemoryGraphRow {
+                memory_id: row.get(0)?,
+                snapshot: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        });
+        let collected = rows
+            .map_err(|e| ApiError::db_error("memory_graph_query", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| ApiError::db_error("memory_graph_collect", e))?;
+        collected
+    };
+
+    Ok(rows)
+}
+
+fn build_memory_graph(rows: Vec<MemoryGraphRow>) -> MemoryGraphResponse {
+    let sources: Vec<GraphNodeSource> = rows.into_iter().map(graph_node_from_row).collect();
+    let nodes = sources
+        .iter()
+        .map(|source| source.response.clone())
+        .collect();
+    let edges = build_graph_edges(&sources);
+
+    MemoryGraphResponse { nodes, edges }
+}
+
+fn graph_node_from_row(row: MemoryGraphRow) -> GraphNodeSource {
+    let parsed_memory = serde_json::from_str::<BaseMemory>(&row.snapshot).ok();
+    let snapshot_value = serde_json::from_str::<serde_json::Value>(&row.snapshot)
+        .unwrap_or_else(|_| serde_json::Value::String(row.snapshot.clone()));
+
+    let label = label_for_memory(&row.memory_id, parsed_memory.as_ref(), &snapshot_value);
+    let memory_type = parsed_memory.as_ref().map(|memory| memory.memory_type);
+    let node_type = classify_node_type(memory_type);
+    let importance = parsed_memory
+        .as_ref()
+        .map(|memory| importance_score(memory.importance))
+        .unwrap_or_else(|| importance_from_value(&snapshot_value));
+    let decay_factor = parsed_memory
+        .as_ref()
+        .map(memory_decay_factor)
+        .unwrap_or_else(|| decay_from_created_at(&row.created_at, None));
+    let tags = collect_graph_tags(parsed_memory.as_ref(), &snapshot_value);
+    let created_at = parsed_memory
+        .as_ref()
+        .map(|memory| memory.created_at)
+        .or_else(|| parse_rfc3339_utc(&row.created_at));
+
+    GraphNodeSource {
+        response: MemoryGraphNode {
+            id: row.memory_id,
+            label,
+            node_type,
+            importance,
+            decay_factor,
+        },
+        tags,
+        memory_type,
+        created_at,
+    }
+}
+
+fn build_graph_edges(sources: &[GraphNodeSource]) -> Vec<MemoryGraphEdge> {
+    let mut edges: HashMap<(String, String), MemoryGraphEdge> = HashMap::new();
+    let mut tag_groups: HashMap<String, Vec<&GraphNodeSource>> = HashMap::new();
+
+    for source in sources {
+        for tag in &source.tags {
+            tag_groups.entry(tag.clone()).or_default().push(source);
+        }
+    }
+
+    for (tag, mut group) in tag_groups {
+        if group.len() < 2 {
+            continue;
+        }
+        group.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        for pair in group.windows(2) {
+            insert_graph_edge(&mut edges, pair[0], pair[1], tag.clone());
+        }
+    }
+
+    if edges.is_empty() {
+        let mut type_groups: HashMap<String, Vec<&GraphNodeSource>> = HashMap::new();
+        for source in sources {
+            let key = source
+                .memory_type
+                .map(|memory_type| format!("{memory_type:?}"))
+                .unwrap_or_else(|| source.response.node_type.clone());
+            type_groups.entry(key).or_default().push(source);
+        }
+
+        for (relationship, mut group) in type_groups {
+            if group.len() < 2 {
+                continue;
+            }
+            group.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            for pair in group.windows(2) {
+                insert_graph_edge(&mut edges, pair[0], pair[1], relationship.clone());
+            }
+        }
+    }
+
+    let mut edge_list: Vec<_> = edges.into_values().collect();
+    edge_list.sort_by(|a, b| {
+        b.strength
+            .partial_cmp(&a.strength)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if edge_list.len() > 250 {
+        edge_list.truncate(250);
+    }
+    edge_list
+}
+
+fn insert_graph_edge(
+    edges: &mut HashMap<(String, String), MemoryGraphEdge>,
+    left: &GraphNodeSource,
+    right: &GraphNodeSource,
+    relationship: String,
+) {
+    if left.response.id == right.response.id {
+        return;
+    }
+
+    let (source, target) = if left.response.id <= right.response.id {
+        (left.response.id.clone(), right.response.id.clone())
+    } else {
+        (right.response.id.clone(), left.response.id.clone())
+    };
+
+    let strength = ((left.response.importance + right.response.importance) / 2.0).clamp(0.0, 1.0);
+    let key = (source.clone(), target.clone());
+
+    match edges.get_mut(&key) {
+        Some(existing) if strength > existing.strength => {
+            existing.relationship = relationship;
+            existing.strength = strength;
+        }
+        Some(_) => {}
+        None => {
+            edges.insert(
+                key,
+                MemoryGraphEdge {
+                    source,
+                    target,
+                    relationship,
+                    strength,
+                },
+            );
+        }
+    }
+}
+
+fn label_for_memory(
+    memory_id: &str,
+    parsed_memory: Option<&BaseMemory>,
+    snapshot_value: &serde_json::Value,
+) -> String {
+    if let Some(memory) = parsed_memory {
+        let summary = memory.summary.trim();
+        if !summary.is_empty() {
+            return truncate_label(summary);
+        }
+
+        if let Some(text) = first_string_from_value(
+            &memory.content,
+            &[
+                "title",
+                "name",
+                "subject",
+                "entity",
+                "label",
+                "message",
+                "description",
+                "text",
+            ],
+        ) {
+            return truncate_label(text);
+        }
+    }
+
+    if let Some(text) = first_string_from_value(
+        snapshot_value,
+        &[
+            "summary",
+            "title",
+            "name",
+            "subject",
+            "entity",
+            "label",
+            "message",
+            "description",
+            "text",
+        ],
+    ) {
+        return truncate_label(text);
+    }
+
+    truncate_label(memory_id)
+}
+
+fn collect_graph_tags(
+    parsed_memory: Option<&BaseMemory>,
+    snapshot_value: &serde_json::Value,
+) -> Vec<String> {
+    let mut tags = Vec::new();
+
+    if let Some(memory) = parsed_memory {
+        tags.extend(memory.tags.iter().cloned());
+
+        if let Some(strings) =
+            string_array_from_value(&memory.content, &["entities", "concepts", "topics"])
+        {
+            tags.extend(strings);
+        }
+        if let Some(value) =
+            first_string_from_value(&memory.content, &["subject", "entity", "topic"])
+        {
+            tags.push(value.to_string());
+        }
+    }
+
+    if let Some(strings) =
+        string_array_from_value(snapshot_value, &["tags", "entities", "concepts", "topics"])
+    {
+        tags.extend(strings);
+    }
+    if let Some(value) = first_string_from_value(snapshot_value, &["subject", "entity", "topic"]) {
+        tags.push(value.to_string());
+    }
+
+    let mut seen = HashSet::new();
+    tags.into_iter()
+        .map(|tag| tag.trim().to_lowercase())
+        .filter(|tag| !tag.is_empty() && tag.len() <= 64)
+        .filter(|tag| seen.insert(tag.clone()))
+        .collect()
+}
+
+fn string_array_from_value(value: &serde_json::Value, keys: &[&str]) -> Option<Vec<String>> {
+    let object = value.as_object()?;
+    let mut values = Vec::new();
+
+    for key in keys {
+        if let Some(items) = object.get(*key).and_then(|entry| entry.as_array()) {
+            for item in items {
+                if let Some(text) = item.as_str() {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        values.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
+fn first_string_from_value<'a>(value: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    let object = value.as_object()?;
+    for key in keys {
+        if let Some(candidate) = object.get(*key).and_then(|entry| entry.as_str()) {
+            let trimmed = candidate.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    None
+}
+
+fn classify_node_type(memory_type: Option<MemoryType>) -> String {
+    match memory_type {
+        Some(
+            MemoryType::Goal
+            | MemoryType::Relationship
+            | MemoryType::Preference
+            | MemoryType::AgentGoal,
+        ) => "entity".to_string(),
+        Some(
+            MemoryType::Conversation
+            | MemoryType::Episodic
+            | MemoryType::Observation
+            | MemoryType::Experiment
+            | MemoryType::ConvergenceEvent
+            | MemoryType::BoundaryViolation
+            | MemoryType::SimulationResult,
+        ) => "event".to_string(),
+        _ => "concept".to_string(),
+    }
+}
+
+fn importance_score(importance: Importance) -> f64 {
+    match importance {
+        Importance::Trivial => 0.15,
+        Importance::Low => 0.3,
+        Importance::Normal => 0.5,
+        Importance::High => 0.8,
+        Importance::Critical => 1.0,
+    }
+}
+
+fn importance_from_value(snapshot_value: &serde_json::Value) -> f64 {
+    match first_string_from_value(snapshot_value, &["importance"]) {
+        Some("Trivial") => 0.15,
+        Some("Low") => 0.3,
+        Some("High") => 0.8,
+        Some("Critical") => 1.0,
+        _ => 0.5,
+    }
+}
+
+fn memory_decay_factor(memory: &BaseMemory) -> f64 {
+    decay_from_datetime(memory.created_at, memory.memory_type.half_life_days())
+}
+
+fn decay_from_created_at(created_at: &str, half_life_days: Option<u32>) -> f64 {
+    parse_rfc3339_utc(created_at)
+        .map(|timestamp| decay_from_datetime(timestamp, half_life_days))
+        .unwrap_or(0.0)
+}
+
+fn decay_from_datetime(created_at: DateTime<Utc>, half_life_days: Option<u32>) -> f64 {
+    let Some(half_life_days) = half_life_days else {
+        return 0.0;
+    };
+    let age_days = (Utc::now() - created_at).num_seconds().max(0) as f64 / 86_400.0;
+    (age_days / f64::from(half_life_days)).clamp(0.0, 1.0)
+}
+
+fn parse_rfc3339_utc(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn truncate_label(value: &str) -> String {
+    const MAX_LABEL_CHARS: usize = 48;
+    let label: String = value.chars().take(MAX_LABEL_CHARS).collect();
+    if value.chars().count() > MAX_LABEL_CHARS {
+        format!("{label}...")
+    } else {
+        label
+    }
+}
+
 /// LIKE-based fallback for pre-FTS5 databases.
 fn search_like_fallback(
     db: &rusqlite::Connection,
@@ -434,15 +918,17 @@ fn search_like_fallback(
     let mut idx = 1u32;
 
     if !include_archived {
-        conditions.push(
-            "ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)".to_string(),
-        );
+        conditions
+            .push("ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)".to_string());
     }
 
     if let Some(ref q) = params.q {
         if !q.trim().is_empty() {
             conditions.push(format!("ms.snapshot LIKE ?{idx} ESCAPE '\\'"));
-            let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            let escaped = q
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
             bind_params.push(Box::new(format!("%{escaped}%")));
             idx += 1;
         }
@@ -545,17 +1031,14 @@ fn parse_and_score(
     convergence_score: f64,
     ctx: &cortex_retrieval::QueryContext,
 ) -> f64 {
-    use cortex_core::memory::{BaseMemory, Importance};
-    use cortex_core::memory::types::MemoryType;
-
     // Try to parse as BaseMemory; if it fails, return a neutral score.
     let parsed: Result<BaseMemory, _> = serde_json::from_str(snapshot_str);
     match parsed {
         Ok(memory) => scorer.score_with_context(&memory, convergence_score, ctx),
         Err(_) => {
             // Fallback: parse what we can for a minimal score.
-            let v: serde_json::Value = serde_json::from_str(snapshot_str)
-                .unwrap_or(serde_json::json!({}));
+            let v: serde_json::Value =
+                serde_json::from_str(snapshot_str).unwrap_or(serde_json::json!({}));
             let importance = match v.get("importance").and_then(|i| i.as_str()) {
                 Some("Critical") => Importance::Critical,
                 Some("High") => Importance::High,
@@ -563,10 +1046,7 @@ fn parse_and_score(
                 Some("Trivial") => Importance::Trivial,
                 _ => Importance::Normal,
             };
-            let confidence = v
-                .get("confidence")
-                .and_then(|c| c.as_f64())
-                .unwrap_or(0.5);
+            let confidence = v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.5);
             let memory = BaseMemory {
                 id: uuid::Uuid::nil(),
                 memory_type: MemoryType::Semantic,
@@ -625,8 +1105,13 @@ pub async fn write_memory(
 
     // 1. Insert memory event.
     if let Err(e) = cortex_storage::queries::memory_event_queries::insert_event(
-        &db, &body.memory_id, &body.event_type, &body.delta,
-        &body.actor_id, event_hash.as_bytes(), &[0u8; 32],
+        &db,
+        &body.memory_id,
+        &body.event_type,
+        &body.delta,
+        &body.actor_id,
+        event_hash.as_bytes(),
+        &[0u8; 32],
     ) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -638,7 +1123,10 @@ pub async fn write_memory(
     if let Some(ref snapshot) = body.snapshot {
         let state_hash = blake3::hash(snapshot.as_bytes());
         if let Err(e) = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-            &db, &body.memory_id, snapshot, Some(state_hash.as_bytes()),
+            &db,
+            &body.memory_id,
+            snapshot,
+            Some(state_hash.as_bytes()),
         ) {
             tracing::warn!(error = %e, memory_id = %body.memory_id, "snapshot insert failed (event was persisted)");
         }
@@ -647,7 +1135,10 @@ pub async fn write_memory(
     // 3. Audit log entry.
     let details = format!("event_type={}, actor={}", body.event_type, body.actor_id);
     if let Err(e) = cortex_storage::queries::memory_audit_queries::insert_audit(
-        &db, &body.memory_id, &body.event_type, Some(&details),
+        &db,
+        &body.memory_id,
+        &body.event_type,
+        Some(&details),
     ) {
         tracing::warn!(error = %e, memory_id = %body.memory_id, "audit log insert failed");
     }
@@ -744,14 +1235,15 @@ pub async fn archive_memory(
     if let Ok(Some(latest)) =
         cortex_storage::queries::memory_snapshot_queries::latest_by_memory(&db, &memory_id)
     {
-        if let Ok(mut snapshot) =
-            serde_json::from_str::<serde_json::Value>(&latest.snapshot)
-        {
+        if let Ok(mut snapshot) = serde_json::from_str::<serde_json::Value>(&latest.snapshot) {
             snapshot["archived"] = serde_json::json!(true);
             let updated = serde_json::to_string(&snapshot).unwrap_or_default();
             let state_hash = blake3::hash(updated.as_bytes());
             let _ = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-                &db, &memory_id, &updated, Some(state_hash.as_bytes()),
+                &db,
+                &memory_id,
+                &updated,
+                Some(state_hash.as_bytes()),
             );
         }
     }
@@ -784,14 +1276,15 @@ pub async fn unarchive_memory(
     if let Ok(Some(latest)) =
         cortex_storage::queries::memory_snapshot_queries::latest_by_memory(&db, &memory_id)
     {
-        if let Ok(mut snapshot) =
-            serde_json::from_str::<serde_json::Value>(&latest.snapshot)
-        {
+        if let Ok(mut snapshot) = serde_json::from_str::<serde_json::Value>(&latest.snapshot) {
             snapshot["archived"] = serde_json::json!(false);
             let updated = serde_json::to_string(&snapshot).unwrap_or_default();
             let state_hash = blake3::hash(updated.as_bytes());
             let _ = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-                &db, &memory_id, &updated, Some(state_hash.as_bytes()),
+                &db,
+                &memory_id,
+                &updated,
+                Some(state_hash.as_bytes()),
             );
         }
     }
@@ -803,10 +1296,11 @@ pub async fn unarchive_memory(
 }
 
 /// GET /api/memory/archived — list archived memories.
-pub async fn list_archived(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<serde_json::Value> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_archived", e))?;
+pub async fn list_archived(State(state): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_archived", e))?;
 
     let rows = cortex_storage::queries::archival_queries::query_archived(&db, 200)
         .map_err(|e| ApiError::internal(e.to_string()))?;
@@ -828,4 +1322,96 @@ pub async fn list_archived(
         "archived": results,
         "count": results.len(),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn sample_memory(id: &str, memory_type: MemoryType, summary: &str, tags: &[&str]) -> String {
+        serde_json::to_string(&BaseMemory {
+            id: Uuid::parse_str(id).unwrap(),
+            memory_type,
+            content: json!({
+                "subject": summary,
+                "entities": tags,
+            }),
+            summary: summary.to_string(),
+            importance: Importance::High,
+            confidence: 0.9,
+            created_at: Utc::now(),
+            last_accessed: None,
+            access_count: 0,
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            archived: false,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn graph_builds_edges_from_shared_tags() {
+        let rows = vec![
+            MemoryGraphRow {
+                memory_id: "memory-alpha".to_string(),
+                snapshot: sample_memory(
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    MemoryType::Semantic,
+                    "Shared architecture decision",
+                    &["rust", "gateway"],
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+            MemoryGraphRow {
+                memory_id: "memory-beta".to_string(),
+                snapshot: sample_memory(
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    MemoryType::Skill,
+                    "Gateway implementation note",
+                    &["gateway"],
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        ];
+
+        let graph = build_memory_graph(rows);
+
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].relationship, "gateway");
+        assert_eq!(graph.edges[0].source, "memory-alpha");
+        assert_eq!(graph.edges[0].target, "memory-beta");
+    }
+
+    #[test]
+    fn graph_falls_back_to_type_edges_without_shared_tags() {
+        let rows = vec![
+            MemoryGraphRow {
+                memory_id: "memory-one".to_string(),
+                snapshot: sample_memory(
+                    "11111111-1111-4111-8111-111111111111",
+                    MemoryType::Semantic,
+                    "First concept",
+                    &["alpha"],
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+            MemoryGraphRow {
+                memory_id: "memory-two".to_string(),
+                snapshot: sample_memory(
+                    "22222222-2222-4222-8222-222222222222",
+                    MemoryType::Semantic,
+                    "Second concept",
+                    &["beta"],
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        ];
+
+        let graph = build_memory_graph(rows);
+
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].relationship, "Semantic");
+    }
 }

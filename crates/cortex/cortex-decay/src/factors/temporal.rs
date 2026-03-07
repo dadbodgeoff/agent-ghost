@@ -90,6 +90,9 @@ mod tests {
         let created = now - chrono::Duration::days(90);
         let f_conv = temporal_factor(&MemoryType::Conversation, created, now); // half-life 30d
         let f_ref = temporal_factor(&MemoryType::Reference, created, now); // half-life 365d
-        assert!(f_conv > f_ref, "Conversation should decay faster than Reference");
+        assert!(
+            f_conv > f_ref,
+            "Conversation should decay faster than Reference"
+        );
     }
 }

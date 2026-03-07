@@ -68,7 +68,10 @@ pub async fn list_workflows(
     let page_size = params.page_size.unwrap_or(50).min(200);
     let offset = (page.saturating_sub(1)) * page_size;
 
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_workflows", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_workflows", e))?;
 
     let total: u32 = db
         .query_row("SELECT COUNT(*) FROM workflows", [], |row| row.get(0))
@@ -149,7 +152,10 @@ pub async fn get_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_workflow", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_workflow", e))?;
 
     let workflow = db
         .query_row(
@@ -240,10 +246,7 @@ pub async fn update_workflow(
     sets.push(format!("updated_at = datetime('now')"));
 
     // Add the WHERE id = ?N.
-    let query = format!(
-        "UPDATE workflows SET {} WHERE id = ?{idx}",
-        sets.join(", ")
-    );
+    let query = format!("UPDATE workflows SET {} WHERE id = ?{idx}", sets.join(", "));
     params.push(Box::new(id.clone()));
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
@@ -271,7 +274,8 @@ fn topological_sort(
     let node_set: HashSet<&str> = node_ids.iter().map(|s| s.as_str()).collect();
 
     let mut in_degree: HashMap<&str, usize> = node_ids.iter().map(|id| (id.as_str(), 0)).collect();
-    let mut adjacency: HashMap<&str, Vec<&str>> = node_ids.iter().map(|id| (id.as_str(), vec![])).collect();
+    let mut adjacency: HashMap<&str, Vec<&str>> =
+        node_ids.iter().map(|id| (id.as_str(), vec![])).collect();
 
     for edge in edges {
         let source = edge.get("source").and_then(|v| v.as_str()).unwrap_or("");
@@ -315,7 +319,10 @@ async fn persist_execution_state(
     db: &crate::db_pool::DbPool,
     exec_state: &serde_json::Value,
 ) -> Result<(), ApiError> {
-    let execution_id = exec_state.get("execution_id").and_then(|v| v.as_str()).unwrap_or("");
+    let execution_id = exec_state
+        .get("execution_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let state_json = serde_json::to_string(exec_state).unwrap_or_else(|_| "{}".to_string());
     let conn = db.write().await;
     conn.execute(
@@ -336,7 +343,10 @@ pub async fn execute_workflow(
     Json(body): Json<ExecuteWorkflowRequest>,
 ) -> ApiResult<serde_json::Value> {
     let (nodes, edges, name, execution_id) = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("workflow_exec_load", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("workflow_exec_load", e))?;
 
         let (nodes_json, edges_json, name): (String, String, String) = db
             .query_row(
@@ -351,10 +361,8 @@ pub async fn execute_workflow(
                 _ => ApiError::db_error("workflow_exec_load", e),
             })?;
 
-        let nodes: Vec<serde_json::Value> =
-            serde_json::from_str(&nodes_json).unwrap_or_default();
-        let edges: Vec<serde_json::Value> =
-            serde_json::from_str(&edges_json).unwrap_or_default();
+        let nodes: Vec<serde_json::Value> = serde_json::from_str(&nodes_json).unwrap_or_default();
+        let edges: Vec<serde_json::Value> = serde_json::from_str(&edges_json).unwrap_or_default();
         let execution_id = uuid::Uuid::now_v7().to_string();
         (nodes, edges, name, execution_id)
     };
@@ -396,15 +404,21 @@ pub async fn execute_workflow(
         .collect();
 
     // Build predecessor map from edges.
-    let mut predecessors: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut predecessors: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for edge in &edges {
         let source = edge.get("source").and_then(|v| v.as_str()).unwrap_or("");
         let target = edge.get("target").and_then(|v| v.as_str()).unwrap_or("");
-        predecessors.entry(target.to_string()).or_default().push(source.to_string());
+        predecessors
+            .entry(target.to_string())
+            .or_default()
+            .push(source.to_string());
     }
 
-    let mut node_states: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
-    let mut node_outputs: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+    let mut node_states: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    let mut node_outputs: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
 
     if let Some(ref input) = body.input {
         if let Some(first_id) = order.first() {
@@ -427,11 +441,15 @@ pub async fn execute_workflow(
             Some(n) => *n,
             None => continue,
         };
-        let node_type = node.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let node_type = node
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
 
         let preds = predecessors.get(node_id).cloned().unwrap_or_default();
         let all_preds_completed = preds.iter().all(|p| {
-            node_states.get(p)
+            node_states
+                .get(p)
                 .and_then(|s| s.get("status"))
                 .and_then(|s| s.as_str())
                 .map(|s| s == "completed" || s == "passed")
@@ -439,12 +457,15 @@ pub async fn execute_workflow(
         });
 
         if !preds.is_empty() && !all_preds_completed {
-            node_states.insert(node_id.clone(), serde_json::json!({
-                "node_id": node_id,
-                "node_type": node_type,
-                "status": "skipped",
-                "reason": "predecessor not completed",
-            }));
+            node_states.insert(
+                node_id.clone(),
+                serde_json::json!({
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "status": "skipped",
+                    "reason": "predecessor not completed",
+                }),
+            );
             continue;
         }
 
@@ -452,28 +473,32 @@ pub async fn execute_workflow(
         let input_val = if preds.len() == 1 {
             node_outputs.get(&preds[0]).cloned()
         } else if preds.len() > 1 {
-            Some(serde_json::json!(
-                preds.iter()
-                    .filter_map(|p| node_outputs.get(p).map(|o| (p.clone(), o.clone())))
-                    .collect::<std::collections::HashMap<String, serde_json::Value>>()
-            ))
+            Some(serde_json::json!(preds
+                .iter()
+                .filter_map(|p| node_outputs.get(p).map(|o| (p.clone(), o.clone())))
+                .collect::<std::collections::HashMap<String, serde_json::Value>>(
+                )))
         } else {
             node_outputs.get(node_id).cloned().or(body.input.clone())
         };
 
         let started_at = chrono::Utc::now().to_rfc3339();
 
-        crate::api::websocket::broadcast_event(&state, crate::api::websocket::WsEvent::SessionEvent {
-            session_id: execution_id.clone(),
-            event_id: uuid::Uuid::new_v4().to_string(),
-            event_type: "node_started".into(),
-            sender: None,
-            sequence_number: 0,
-        });
+        crate::api::websocket::broadcast_event(
+            &state,
+            crate::api::websocket::WsEvent::SessionEvent {
+                session_id: execution_id.clone(),
+                event_id: uuid::Uuid::new_v4().to_string(),
+                event_type: "node_started".into(),
+                sender: None,
+                sequence_number: 0,
+            },
+        );
 
         let step_result = match node_type {
             "agent" | "llm_call" => {
-                let prompt = node.get("prompt")
+                let prompt = node
+                    .get("prompt")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Process the input.");
                 let input_str = input_val
@@ -497,7 +522,9 @@ pub async fn execute_workflow(
                 ];
 
                 if let Some(pc) = state.model_providers.first() {
-                    let api_key = pc.api_key_env.as_deref()
+                    let api_key = pc
+                        .api_key_env
+                        .as_deref()
                         .and_then(|env| std::env::var(env).ok())
                         .unwrap_or_default();
                     if !api_key.is_empty() {
@@ -510,10 +537,13 @@ pub async fn execute_workflow(
                             Ok(result) => {
                                 let text = match &result.response {
                                     ghost_llm::provider::LLMResponse::Text(t) => t.clone(),
-                                    ghost_llm::provider::LLMResponse::Mixed { text, .. } => text.clone(),
+                                    ghost_llm::provider::LLMResponse::Mixed { text, .. } => {
+                                        text.clone()
+                                    }
                                     _ => String::new(),
                                 };
-                                node_outputs.insert(node_id.clone(), serde_json::json!({ "text": text }));
+                                node_outputs
+                                    .insert(node_id.clone(), serde_json::json!({ "text": text }));
                                 serde_json::json!({
                                     "status": "completed",
                                     "tokens": result.usage.total_tokens,
@@ -534,7 +564,8 @@ pub async fn execute_workflow(
                 }
             }
             "condition" => {
-                let condition_expr = node.get("condition")
+                let condition_expr = node
+                    .get("condition")
                     .and_then(|v| v.as_str())
                     .unwrap_or("true");
                 let passed = condition_expr == "true"
@@ -558,7 +589,8 @@ pub async fn execute_workflow(
                 serde_json::json!({ "status": "passed" })
             }
             "wait" => {
-                let wait_ms = node.get("wait_ms")
+                let wait_ms = node
+                    .get("wait_ms")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1000)
                     .min(30_000);
@@ -577,31 +609,37 @@ pub async fn execute_workflow(
         };
 
         let completed_at = chrono::Utc::now().to_rfc3339();
-        node_states.insert(node_id.clone(), serde_json::json!({
-            "node_id": node_id,
-            "node_type": node_type,
-            "status": step_result.get("status").and_then(|s| s.as_str()).unwrap_or("unknown"),
-            "result": step_result,
-            "started_at": started_at,
-            "completed_at": completed_at,
-        }));
+        node_states.insert(
+            node_id.clone(),
+            serde_json::json!({
+                "node_id": node_id,
+                "node_type": node_type,
+                "status": step_result.get("status").and_then(|s| s.as_str()).unwrap_or("unknown"),
+                "result": step_result,
+                "started_at": started_at,
+                "completed_at": completed_at,
+            }),
+        );
 
         // Persist checkpoint after each node for crash recovery.
         exec_state["node_states"] = serde_json::json!(node_states);
         let _ = persist_execution_state(&state.db, &exec_state).await;
 
-        crate::api::websocket::broadcast_event(&state, crate::api::websocket::WsEvent::SessionEvent {
-            session_id: execution_id.clone(),
-            event_id: uuid::Uuid::new_v4().to_string(),
-            event_type: "node_completed".into(),
-            sender: None,
-            sequence_number: 0,
-        });
+        crate::api::websocket::broadcast_event(
+            &state,
+            crate::api::websocket::WsEvent::SessionEvent {
+                session_id: execution_id.clone(),
+                event_id: uuid::Uuid::new_v4().to_string(),
+                event_type: "node_completed".into(),
+                sender: None,
+                sequence_number: 0,
+            },
+        );
     }
 
-    let any_failed = node_states.values().any(|s| {
-        s.get("status").and_then(|s| s.as_str()) == Some("failed")
-    });
+    let any_failed = node_states
+        .values()
+        .any(|s| s.get("status").and_then(|s| s.as_str()) == Some("failed"));
     let final_status = if any_failed { "failed" } else { "completed" };
 
     exec_state["status"] = serde_json::json!(final_status);
@@ -612,14 +650,16 @@ pub async fn execute_workflow(
         .iter()
         .enumerate()
         .filter_map(|(i, nid)| {
-            node_states.get(nid).map(|ns| serde_json::json!({
-                "step": i + 1,
-                "node_id": nid,
-                "node_type": ns.get("node_type"),
-                "result": ns.get("result"),
-                "started_at": ns.get("started_at"),
-                "completed_at": ns.get("completed_at"),
-            }))
+            node_states.get(nid).map(|ns| {
+                serde_json::json!({
+                    "step": i + 1,
+                    "node_id": nid,
+                    "node_type": ns.get("node_type"),
+                    "result": ns.get("result"),
+                    "started_at": ns.get("started_at"),
+                    "completed_at": ns.get("completed_at"),
+                })
+            })
         })
         .collect();
 
@@ -641,7 +681,10 @@ pub async fn list_executions(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_executions", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_executions", e))?;
 
     let mut stmt = db
         .prepare(

@@ -4,13 +4,14 @@
 //! - Hash chain columns (event_hash, previous_hash)
 //! - Genesis block marker
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     // Create base tables if they don't exist (for fresh databases)
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS memory_events (
             event_id    INTEGER PRIMARY KEY AUTOINCREMENT,
             memory_id   TEXT NOT NULL,
@@ -34,24 +35,30 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             snapshot     TEXT NOT NULL,
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // PART 1: Hash chain columns on memory_events
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         ALTER TABLE memory_events ADD COLUMN event_hash BLOB NOT NULL DEFAULT x'';
         ALTER TABLE memory_events ADD COLUMN previous_hash BLOB NOT NULL DEFAULT x'';
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // PART 2: Snapshot integrity column
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         ALTER TABLE memory_snapshots ADD COLUMN state_hash BLOB;
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // PART 3: Append-only triggers
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TRIGGER IF NOT EXISTS prevent_memory_events_update
         BEFORE UPDATE ON memory_events
         BEGIN
@@ -87,7 +94,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         BEGIN
             SELECT RAISE(ABORT, 'SAFETY: memory_snapshots is append-only. Deletes forbidden.');
         END;
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
     // PART 4: Genesis block marker

@@ -1,8 +1,8 @@
 //! Tests for ghost-audit (Task 6.1).
 
-use ghost_audit::query_engine::{AuditEntry, AuditFilter, AuditQueryEngine};
 use ghost_audit::aggregation::AuditAggregation;
 use ghost_audit::export::{AuditExporter, ExportFormat};
+use ghost_audit::query_engine::{AuditEntry, AuditFilter, AuditQueryEngine};
 use rusqlite::Connection;
 
 fn setup_db() -> Connection {
@@ -29,9 +29,15 @@ fn make_entry(id: &str, event_type: &str, severity: &str, agent: &str) -> AuditE
 fn insert_and_query_with_filter() {
     let conn = setup_db();
     let engine = AuditQueryEngine::new(&conn);
-    engine.insert(&make_entry("1", "violation", "high", "agent-a")).unwrap();
-    engine.insert(&make_entry("2", "policy_denial", "medium", "agent-b")).unwrap();
-    engine.insert(&make_entry("3", "violation", "low", "agent-a")).unwrap();
+    engine
+        .insert(&make_entry("1", "violation", "high", "agent-a"))
+        .unwrap();
+    engine
+        .insert(&make_entry("2", "policy_denial", "medium", "agent-b"))
+        .unwrap();
+    engine
+        .insert(&make_entry("3", "violation", "low", "agent-a"))
+        .unwrap();
 
     let mut filter = AuditFilter::new();
     filter.agent_id = Some("agent-a".to_string());
@@ -69,7 +75,9 @@ fn full_text_search() {
     let mut entry = make_entry("1", "violation", "high", "a");
     entry.details = "soul drift detected at threshold".to_string();
     engine.insert(&entry).unwrap();
-    engine.insert(&make_entry("2", "violation", "high", "a")).unwrap();
+    engine
+        .insert(&make_entry("2", "violation", "high", "a"))
+        .unwrap();
 
     let mut filter = AuditFilter::new();
     filter.search = Some("soul drift".to_string());
@@ -82,9 +90,15 @@ fn full_text_search() {
 fn aggregation_returns_correct_counts() {
     let conn = setup_db();
     let engine = AuditQueryEngine::new(&conn);
-    engine.insert(&make_entry("1", "violation", "high", "a")).unwrap();
-    engine.insert(&make_entry("2", "violation", "high", "a")).unwrap();
-    engine.insert(&make_entry("3", "policy_denial", "medium", "a")).unwrap();
+    engine
+        .insert(&make_entry("1", "violation", "high", "a"))
+        .unwrap();
+    engine
+        .insert(&make_entry("2", "violation", "high", "a"))
+        .unwrap();
+    engine
+        .insert(&make_entry("3", "policy_denial", "medium", "a"))
+        .unwrap();
 
     let agg = AuditAggregation::new(&conn);
     let result = agg.summarize(None).unwrap();
@@ -107,7 +121,9 @@ fn export_csv_valid_with_headers() {
     let mut buf = Vec::new();
     AuditExporter::export(&entries, ExportFormat::Csv, &mut buf).unwrap();
     let csv = String::from_utf8(buf).unwrap();
-    assert!(csv.starts_with("id,timestamp,agent_id,event_type,severity,tool_name,details,session_id"));
+    assert!(
+        csv.starts_with("id,timestamp,agent_id,event_type,severity,tool_name,details,session_id")
+    );
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(lines.len(), 2); // header + 1 data row
 }
@@ -143,7 +159,9 @@ fn query_no_results_returns_empty_list() {
 fn query_page_beyond_data_returns_empty() {
     let conn = setup_db();
     let engine = AuditQueryEngine::new(&conn);
-    engine.insert(&make_entry("1", "violation", "high", "a")).unwrap();
+    engine
+        .insert(&make_entry("1", "violation", "high", "a"))
+        .unwrap();
 
     let mut filter = AuditFilter::new();
     filter.page = 100;

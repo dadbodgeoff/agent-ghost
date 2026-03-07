@@ -49,16 +49,12 @@ impl Skill for SqliteQuerySkill {
         let db_path = input
             .get("db_path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SkillError::InvalidInput("missing required field 'db_path'".into())
-            })?;
+            .ok_or_else(|| SkillError::InvalidInput("missing required field 'db_path'".into()))?;
 
         let query = input
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SkillError::InvalidInput("missing required field 'query'".into())
-            })?;
+            .ok_or_else(|| SkillError::InvalidInput("missing required field 'query'".into()))?;
 
         let limit = input
             .get("limit")
@@ -85,12 +81,9 @@ impl Skill for SqliteQuerySkill {
         // Open database in read-only mode.
         let conn = rusqlite::Connection::open_with_flags(
             db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
-        .map_err(|e| {
-            SkillError::Internal(format!("cannot open database '{db_path}': {e}"))
-        })?;
+        .map_err(|e| SkillError::Internal(format!("cannot open database '{db_path}': {e}")))?;
 
         // Apply the row limit via LIMIT clause if not already present.
         let effective_query = if query.to_uppercase().contains("LIMIT") {
@@ -99,9 +92,9 @@ impl Skill for SqliteQuerySkill {
             format!("{query} LIMIT {limit}")
         };
 
-        let mut stmt = conn.prepare(&effective_query).map_err(|e| {
-            SkillError::InvalidInput(format!("invalid SQL: {e}"))
-        })?;
+        let mut stmt = conn
+            .prepare(&effective_query)
+            .map_err(|e| SkillError::InvalidInput(format!("invalid SQL: {e}")))?;
 
         // Bind parameters.
         let param_refs: Vec<Box<dyn rusqlite::types::ToSql>> = params
@@ -129,11 +122,8 @@ impl Skill for SqliteQuerySkill {
             param_refs.iter().map(|p| p.as_ref()).collect();
 
         // Get column names.
-        let column_names: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|&s| s.to_string())
-            .collect();
+        let column_names: Vec<String> =
+            stmt.column_names().iter().map(|&s| s.to_string()).collect();
 
         // Execute and collect rows.
         let rows = stmt
@@ -188,8 +178,8 @@ fn validate_read_only(query: &str) -> Result<(), SkillError> {
 
     // Reject dangerous keywords anywhere in the query.
     let forbidden = [
-        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
-        "ATTACH", "DETACH", "VACUUM", "REINDEX", "REPLACE",
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH", "VACUUM",
+        "REINDEX", "REPLACE",
     ];
     // Split on whitespace and check each token to avoid false positives
     // in string literals or column names.
@@ -322,9 +312,7 @@ mod tests {
 
     #[test]
     fn allows_with_cte() {
-        let result = validate_read_only(
-            "WITH cte AS (SELECT 1 AS x) SELECT * FROM cte",
-        );
+        let result = validate_read_only("WITH cte AS (SELECT 1 AS x) SELECT * FROM cte");
         assert!(result.is_ok());
     }
 

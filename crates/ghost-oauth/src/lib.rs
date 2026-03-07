@@ -6,19 +6,19 @@
 //!
 //! Kill switch integration: `OAuthBroker::revoke_all()` revokes every connection.
 
-pub mod error;
-pub mod types;
-pub mod provider;
-pub mod storage;
-pub mod providers;
 pub mod broker;
+pub mod error;
+pub mod provider;
+pub mod providers;
+pub mod storage;
+pub mod types;
 
 // Re-exports for convenience.
+pub use broker::OAuthBroker;
 pub use error::OAuthError;
-pub use types::{
-    ApiRequest, ApiResponse, ConnectionInfo, ConnectionStatus, OAuthRefId,
-    PkceChallenge, ProviderConfig, TokenSet,
-};
 pub use provider::OAuthProvider;
 pub use storage::TokenStore;
-pub use broker::OAuthBroker;
+pub use types::{
+    ApiRequest, ApiResponse, ConnectionInfo, ConnectionStatus, OAuthRefId, PkceChallenge,
+    ProviderConfig, TokenSet,
+};

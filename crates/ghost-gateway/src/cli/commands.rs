@@ -10,12 +10,10 @@ use super::error::CliError;
 pub fn run_backup(output: Option<&str>) -> Result<(), CliError> {
     let ghost_dir = shellexpand_tilde("~/.ghost");
     let ghost_dir = PathBuf::from(&ghost_dir);
-    let output_path = output
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-            ghost_dir.join(format!("backups/ghost_{}.ghost-backup", ts))
-        });
+    let output_path = output.map(PathBuf::from).unwrap_or_else(|| {
+        let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        ghost_dir.join(format!("backups/ghost_{}.ghost-backup", ts))
+    });
 
     if let Some(parent) = output_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {

@@ -1,8 +1,8 @@
 //! Delegation state queries (v018 delegation_state table).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_delegation(
     conn: &Connection,
@@ -20,8 +20,14 @@ pub fn insert_delegation(
          task, state, offer_message_id, event_hash, previous_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, 'Offered', ?6, ?7, ?8)",
         params![
-            id, delegation_id, sender_id, recipient_id, task,
-            offer_message_id, event_hash, previous_hash,
+            id,
+            delegation_id,
+            sender_id,
+            recipient_id,
+            task,
+            offer_message_id,
+            event_hash,
+            previous_hash,
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;

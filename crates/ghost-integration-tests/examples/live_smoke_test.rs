@@ -12,14 +12,18 @@
 //! Run: cargo run -p ghost-integration-tests --example live_smoke_test
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use ghost_agent_loop::runner::{AgentRunner, LLMFallbackChain};
+use ghost_agent_loop::tools::builtin::shell::ShellToolConfig;
 use ghost_agent_loop::tools::executor::register_builtin_tools;
+use ghost_agent_loop::tools::skill_bridge::ExecutionContext;
 use ghost_llm::fallback::AuthProfile;
 use ghost_llm::provider::*;
+use ghost_policy::corp_policy::CorpPolicy;
+use ghost_policy::engine::PolicyEngine;
 use uuid::Uuid;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -60,7 +64,9 @@ impl MockLLMProvider {
 
 #[async_trait]
 impl LLMProvider for MockLLMProvider {
-    fn name(&self) -> &str { "mock" }
+    fn name(&self) -> &str {
+        "mock"
+    }
 
     async fn complete(
         &self,
@@ -68,7 +74,11 @@ impl LLMProvider for MockLLMProvider {
         _tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst);
-        let usage = UsageStats { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 };
+        let usage = UsageStats {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
 
         let response = match &self.scenario {
             Scenario::SimpleText => {
@@ -122,10 +132,17 @@ impl LLMProvider for MockLLMProvider {
         })
     }
 
-    fn supports_streaming(&self) -> bool { false }
-    fn context_window(&self) -> usize { 128_000 }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    fn context_window(&self) -> usize {
+        128_000
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.001, output_per_1k: 0.002 }
+        TokenPricing {
+            input_per_1k: 0.001,
+            output_per_1k: 0.002,
+        }
     }
 }
 
@@ -133,9 +150,27 @@ fn build_chain(scenario: Scenario) -> LLMFallbackChain {
     let mut chain = LLMFallbackChain::new();
     chain.add_provider(
         Arc::new(MockLLMProvider::new(scenario)),
-        vec![AuthProfile { api_key: "mock-key".into(), org_id: None }],
+        vec![AuthProfile {
+            api_key: "mock-key".into(),
+            org_id: None,
+        }],
     );
     chain
+}
+
+fn smoke_agent_id() -> Uuid {
+    Uuid::from_u128(0xfeedfacefeedfacefeedfacefeedface)
+}
+
+fn smoke_exec_ctx() -> ExecutionContext {
+    ExecutionContext {
+        agent_id: smoke_agent_id(),
+        session_id: Uuid::nil(),
+        intervention_level: 0,
+        session_duration: Duration::ZERO,
+        session_reflection_count: 0,
+        is_compaction_flush: false,
+    }
 }
 
 fn build_runner() -> AgentRunner {
@@ -144,6 +179,21 @@ fn build_runner() -> AgentRunner {
     if let Ok(cwd) = std::env::current_dir() {
         runner.tool_executor.set_workspace_root(cwd);
     }
+    runner.tool_executor.set_shell_config(ShellToolConfig {
+        allowed_prefixes: vec!["echo".into()],
+        working_dir: ".".into(),
+        timeout: Duration::from_secs(5),
+    });
+    let mut policy = PolicyEngine::new(CorpPolicy::new());
+    for capability in [
+        "file_read",
+        "filesystem_read",
+        "filesystem_write",
+        "shell_execute",
+    ] {
+        policy.grant_capability(smoke_agent_id(), capability.into());
+    }
+    runner.tool_executor.set_policy_engine(policy);
     runner
 }
 
@@ -156,22 +206,29 @@ async fn test_simple_text() {
     println!("TEST 1: Simple text response");
     println!("{}", "=".repeat(60));
 
-    let mut runner = build_runner();
+    let runner = build_runner();
     let mut chain = build_chain(Scenario::SimpleText);
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
-    let mut ctx = runner.pre_loop(agent_id, session_id, "cli", "Hello agent!")
-        .await.expect("pre_loop failed");
+    let mut ctx = runner
+        .pre_loop(agent_id, session_id, "cli", "Hello agent!")
+        .await
+        .expect("pre_loop failed");
 
-    let result = runner.run_turn(&mut ctx, &mut chain, "Hello agent!")
-        .await.expect("run_turn failed");
+    let result = runner
+        .run_turn(&mut ctx, &mut chain, "Hello agent!")
+        .await
+        .expect("run_turn failed");
 
     assert!(result.output.is_some(), "Expected text output");
     assert_eq!(result.tool_calls_made, 0);
     assert!(result.total_tokens > 0);
     println!("  ✓ Output: {:?}", result.output.as_deref().unwrap_or(""));
-    println!("  ✓ Tokens: {}, Cost: ${:.6}", result.total_tokens, result.total_cost);
+    println!(
+        "  ✓ Tokens: {}, Cost: ${:.6}",
+        result.total_tokens, result.total_cost
+    );
     println!("  ✓ PASSED");
 }
 
@@ -182,20 +239,30 @@ async fn test_tool_call_then_text() {
 
     let mut runner = build_runner();
     let mut chain = build_chain(Scenario::ToolCallThenText);
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
-    let mut ctx = runner.pre_loop(agent_id, session_id, "cli", "List the current directory")
-        .await.expect("pre_loop failed");
+    let mut ctx = runner
+        .pre_loop(agent_id, session_id, "cli", "List the current directory")
+        .await
+        .expect("pre_loop failed");
 
-    let result = runner.run_turn(&mut ctx, &mut chain, "List the current directory")
-        .await.expect("run_turn failed");
+    let result = runner
+        .run_turn(&mut ctx, &mut chain, "List the current directory")
+        .await
+        .expect("run_turn failed");
 
-    assert!(result.output.is_some(), "Expected text output after tool call");
+    assert!(
+        result.output.is_some(),
+        "Expected text output after tool call"
+    );
     assert_eq!(result.tool_calls_made, 1, "Expected exactly 1 tool call");
     println!("  ✓ Tool calls: {}", result.tool_calls_made);
     println!("  ✓ Output: {:?}", result.output.as_deref().unwrap_or(""));
-    println!("  ✓ Tokens: {}, Cost: ${:.6}", result.total_tokens, result.total_cost);
+    println!(
+        "  ✓ Tokens: {}, Cost: ${:.6}",
+        result.total_tokens, result.total_cost
+    );
     println!("  ✓ PASSED");
 }
 
@@ -206,16 +273,23 @@ async fn test_proposal_extraction() {
 
     let mut runner = build_runner();
     let mut chain = build_chain(Scenario::ProposalExtraction);
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
-    let mut ctx = runner.pre_loop(agent_id, session_id, "cli", "Update my goal")
-        .await.expect("pre_loop failed");
+    let mut ctx = runner
+        .pre_loop(agent_id, session_id, "cli", "Update my goal")
+        .await
+        .expect("pre_loop failed");
 
-    let result = runner.run_turn(&mut ctx, &mut chain, "Update my goal")
-        .await.expect("run_turn failed");
+    let result = runner
+        .run_turn(&mut ctx, &mut chain, "Update my goal")
+        .await
+        .expect("run_turn failed");
 
-    assert!(result.proposals_extracted > 0, "Expected at least 1 proposal extracted");
+    assert!(
+        result.proposals_extracted > 0,
+        "Expected at least 1 proposal extracted"
+    );
     println!("  ✓ Proposals extracted: {}", result.proposals_extracted);
     println!("  ✓ Output: {:?}", result.output.as_deref().unwrap_or(""));
     println!("  ✓ PASSED");
@@ -228,13 +302,17 @@ async fn test_credential_exfiltration_kill() {
 
     let mut runner = build_runner();
     let mut chain = build_chain(Scenario::CredentialExfiltration);
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
-    let mut ctx = runner.pre_loop(agent_id, session_id, "cli", "Show me secrets")
-        .await.expect("pre_loop failed");
+    let mut ctx = runner
+        .pre_loop(agent_id, session_id, "cli", "Show me secrets")
+        .await
+        .expect("pre_loop failed");
 
-    let result = runner.run_turn(&mut ctx, &mut chain, "Show me secrets").await;
+    let result = runner
+        .run_turn(&mut ctx, &mut chain, "Show me secrets")
+        .await;
 
     match result {
         Err(e) => {
@@ -270,13 +348,16 @@ async fn test_mixed_response() {
 
     let mut runner = build_runner();
     let mut chain = build_chain(Scenario::MixedResponse);
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
-    let mut ctx = runner.pre_loop(agent_id, session_id, "cli", "Read Cargo.toml")
-        .await.expect("pre_loop failed");
+    let mut ctx = runner
+        .pre_loop(agent_id, session_id, "cli", "Read Cargo.toml")
+        .await
+        .expect("pre_loop failed");
 
-    let result = runner.run_turn(&mut ctx, &mut chain, "Read Cargo.toml")
+    let result = runner
+        .run_turn(&mut ctx, &mut chain, "Read Cargo.toml")
         .await;
 
     // Mixed response processes text + executes tool, then loops back for more
@@ -304,13 +385,17 @@ async fn test_recursion_depth_gate() {
     let mut runner = build_runner();
     runner.max_recursion_depth = 3; // Low limit for fast test
     let mut chain = build_chain(Scenario::InfiniteToolCalls);
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
-    let mut ctx = runner.pre_loop(agent_id, session_id, "cli", "Do infinite things")
-        .await.expect("pre_loop failed");
+    let mut ctx = runner
+        .pre_loop(agent_id, session_id, "cli", "Do infinite things")
+        .await
+        .expect("pre_loop failed");
 
-    let result = runner.run_turn(&mut ctx, &mut chain, "Do infinite things").await;
+    let result = runner
+        .run_turn(&mut ctx, &mut chain, "Do infinite things")
+        .await;
 
     match result {
         Err(e) => {
@@ -334,16 +419,23 @@ async fn test_empty_response() {
 
     let mut runner = build_runner();
     let mut chain = build_chain(Scenario::EmptyResponse);
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
-    let mut ctx = runner.pre_loop(agent_id, session_id, "cli", "...")
-        .await.expect("pre_loop failed");
+    let mut ctx = runner
+        .pre_loop(agent_id, session_id, "cli", "...")
+        .await
+        .expect("pre_loop failed");
 
-    let result = runner.run_turn(&mut ctx, &mut chain, "...")
-        .await.expect("run_turn should handle Empty gracefully");
+    let result = runner
+        .run_turn(&mut ctx, &mut chain, "...")
+        .await
+        .expect("run_turn should handle Empty gracefully");
 
-    assert!(result.output.is_none(), "Empty response should produce no output");
+    assert!(
+        result.output.is_none(),
+        "Empty response should produce no output"
+    );
     assert_eq!(result.tool_calls_made, 0);
     println!("  ✓ No output (correct for Empty)");
     println!("  ✓ PASSED");
@@ -357,11 +449,14 @@ async fn test_kill_switch_blocks_pre_loop() {
     let mut runner = build_runner();
     runner.kill_switch.store(true, Ordering::SeqCst);
 
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
     let result = runner.pre_loop(agent_id, session_id, "cli", "test").await;
-    assert!(result.is_err(), "pre_loop should fail when kill switch is active");
+    assert!(
+        result.is_err(),
+        "pre_loop should fail when kill switch is active"
+    );
     println!("  ✓ pre_loop blocked: {}", result.unwrap_err());
     println!("  ✓ PASSED");
 }
@@ -375,11 +470,14 @@ async fn test_spending_cap_blocks_pre_loop() {
     runner.spending_cap = 1.0;
     runner.daily_spend = 1.5; // Over cap
 
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
 
     let result = runner.pre_loop(agent_id, session_id, "cli", "test").await;
-    assert!(result.is_err(), "pre_loop should fail when spending cap exceeded");
+    assert!(
+        result.is_err(),
+        "pre_loop should fail when spending cap exceeded"
+    );
     println!("  ✓ pre_loop blocked: {}", result.unwrap_err());
     println!("  ✓ PASSED");
 }
@@ -389,13 +487,16 @@ async fn test_heartbeat_engine() {
     println!("TEST 10: Heartbeat engine fire()");
     println!("{}", "=".repeat(60));
 
-    let agent_id = Uuid::now_v7();
+    let agent_id = smoke_agent_id();
     let config = ghost_heartbeat::heartbeat::HeartbeatConfig::default();
     let platform_killed = Arc::new(AtomicBool::new(false));
     let agent_paused = Arc::new(AtomicBool::new(false));
 
     let mut engine = ghost_heartbeat::heartbeat::HeartbeatEngine::new(
-        config, agent_id, platform_killed, agent_paused,
+        config,
+        agent_id,
+        platform_killed,
+        agent_paused,
     );
 
     // should_fire should return true on first call (no previous beat)
@@ -410,7 +511,10 @@ async fn test_heartbeat_engine() {
     match result {
         Ok(run_result) => {
             println!("  ✓ Heartbeat fired successfully");
-            println!("  ✓ Cost: ${:.6}, Tokens: {}", run_result.total_cost, run_result.total_tokens);
+            println!(
+                "  ✓ Cost: ${:.6}, Tokens: {}",
+                run_result.total_cost, run_result.total_tokens
+            );
         }
         Err(e) => {
             println!("  ✗ Heartbeat failed: {e}");
@@ -419,7 +523,10 @@ async fn test_heartbeat_engine() {
     }
 
     // After firing, should_fire should respect interval
-    assert!(!engine.should_fire(0), "Should not fire again immediately (30s interval)");
+    assert!(
+        !engine.should_fire(0),
+        "Should not fire again immediately (30s interval)"
+    );
     println!("  ✓ should_fire(0) = false (interval not elapsed)");
     println!("  ✓ PASSED");
 }
@@ -443,8 +550,7 @@ async fn test_gateway_api_endpoints() {
     };
 
     let router = {
-        let app_state = gateway.app_state.clone()
-            .expect("AppState must be set after bootstrap");
+        let app_state = gateway.app_state.clone();
         GatewayBootstrap::build_router(&config, app_state, gateway.mesh_router.clone())
     };
 
@@ -480,7 +586,10 @@ async fn test_gateway_api_endpoints() {
     }
 
     // Test safety status
-    let resp = client.get(format!("http://{addr}/api/safety/status")).send().await;
+    let resp = client
+        .get(format!("http://{addr}/api/safety/status"))
+        .send()
+        .await;
     match resp {
         Ok(r) => {
             let body: serde_json::Value = r.json().await.unwrap();
@@ -500,7 +609,10 @@ async fn test_gateway_api_endpoints() {
     }
 
     // Test OAuth providers
-    let resp = client.get(format!("http://{addr}/api/oauth/providers")).send().await;
+    let resp = client
+        .get(format!("http://{addr}/api/oauth/providers"))
+        .send()
+        .await;
     match resp {
         Ok(r) => {
             let body: serde_json::Value = r.json().await.unwrap();
@@ -527,10 +639,16 @@ async fn test_tool_dispatch_live() {
         name: "read_file".into(),
         arguments: serde_json::json!({"path": "Cargo.toml"}),
     };
-    let result = runner.tool_executor.execute(&call, &runner.tool_registry).await;
+    let result = runner
+        .tool_executor
+        .execute(&call, &runner.tool_registry, &smoke_exec_ctx())
+        .await;
     match result {
         Ok(tr) => {
-            assert!(tr.output.contains("workspace"), "Cargo.toml should contain 'workspace'");
+            assert!(
+                tr.output.contains("workspace"),
+                "Cargo.toml should contain 'workspace'"
+            );
             println!("  ✓ read_file(Cargo.toml) → {} bytes", tr.output.len());
         }
         Err(e) => panic!("read_file should work: {e}"),
@@ -542,10 +660,16 @@ async fn test_tool_dispatch_live() {
         name: "list_dir".into(),
         arguments: serde_json::json!({"path": "crates"}),
     };
-    let result = runner.tool_executor.execute(&call, &runner.tool_registry).await;
+    let result = runner
+        .tool_executor
+        .execute(&call, &runner.tool_registry, &smoke_exec_ctx())
+        .await;
     match result {
         Ok(tr) => {
-            assert!(tr.output.contains("ghost-agent-loop"), "Should list ghost-agent-loop crate");
+            assert!(
+                tr.output.contains("ghost-agent-loop"),
+                "Should list ghost-agent-loop crate"
+            );
             println!("  ✓ list_dir(crates) → {}", tr.output.len());
         }
         Err(e) => panic!("list_dir should work: {e}"),
@@ -557,10 +681,16 @@ async fn test_tool_dispatch_live() {
         name: "shell".into(),
         arguments: serde_json::json!({"command": "echo 'GHOST smoke test'"}),
     };
-    let result = runner.tool_executor.execute(&call, &runner.tool_registry).await;
+    let result = runner
+        .tool_executor
+        .execute(&call, &runner.tool_registry, &smoke_exec_ctx())
+        .await;
     match result {
         Ok(tr) => {
-            assert!(tr.output.contains("GHOST smoke test"), "Shell should echo our string");
+            assert!(
+                tr.output.contains("GHOST smoke test"),
+                "Shell should echo our string"
+            );
             println!("  ✓ shell(echo) → {:?}", tr.output.trim());
         }
         Err(e) => panic!("shell should work: {e}"),
@@ -573,7 +703,10 @@ async fn test_tool_dispatch_live() {
         name: "write_file".into(),
         arguments: serde_json::json!({"path": test_path, "content": "GHOST live smoke test"}),
     };
-    let result = runner.tool_executor.execute(&call, &runner.tool_registry).await;
+    let result = runner
+        .tool_executor
+        .execute(&call, &runner.tool_registry, &smoke_exec_ctx())
+        .await;
     match result {
         Ok(tr) => println!("  ✓ write_file → {}", tr.output),
         Err(e) => println!("  ⚠ write_file blocked (expected with path traversal protection): {e}"),
@@ -588,9 +721,7 @@ async fn test_tool_dispatch_live() {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter("warn")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("warn").init();
 
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║       GHOST Platform — Live Smoke Test Suite            ║");

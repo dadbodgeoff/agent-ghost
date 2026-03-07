@@ -34,7 +34,12 @@ impl MicrosoftOAuthProvider {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| OAuthError::ProviderError(format!("HTTP client init: {e}")))?;
-        Ok(Self { client_id, client_secret, tenant, http })
+        Ok(Self {
+            client_id,
+            client_secret,
+            tenant,
+            http,
+        })
     }
 
     fn auth_url(&self) -> String {
@@ -53,7 +58,9 @@ impl MicrosoftOAuthProvider {
 }
 
 impl OAuthProvider for MicrosoftOAuthProvider {
-    fn name(&self) -> &str { "microsoft" }
+    fn name(&self) -> &str {
+        "microsoft"
+    }
 
     fn authorization_url(
         &self,
@@ -95,7 +102,11 @@ impl OAuthProvider for MicrosoftOAuthProvider {
             ("code_verifier", pkce_verifier),
         ];
 
-        let resp = self.http.post(self.token_url()).form(&params).send()
+        let resp = self
+            .http
+            .post(self.token_url())
+            .form(&params)
+            .send()
             .map_err(|e| OAuthError::FlowFailed(format!("token exchange: {e}")))?;
 
         parse_token_response(resp)
@@ -109,7 +120,11 @@ impl OAuthProvider for MicrosoftOAuthProvider {
             ("client_secret", self.client_secret.expose_secret()),
         ];
 
-        let resp = self.http.post(self.token_url()).form(&params).send()
+        let resp = self
+            .http
+            .post(self.token_url())
+            .form(&params)
+            .send()
             .map_err(|e| OAuthError::RefreshFailed(format!("refresh: {e}")))?;
 
         parse_token_response(resp)

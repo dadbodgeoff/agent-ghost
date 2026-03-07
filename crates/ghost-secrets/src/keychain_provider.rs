@@ -33,9 +33,8 @@ impl KeychainProvider {
     }
 
     fn entry(&self, key: &str) -> Result<keyring::Entry, SecretsError> {
-        keyring::Entry::new(&self.service_name, key).map_err(|e| {
-            SecretsError::ProviderError(format!("keyring entry creation failed: {e}"))
-        })
+        keyring::Entry::new(&self.service_name, key)
+            .map_err(|e| SecretsError::ProviderError(format!("keyring entry creation failed: {e}")))
     }
 }
 
@@ -59,9 +58,9 @@ impl SecretProvider for KeychainProvider {
             return Err(SecretsError::InvalidKey("key must not be empty".into()));
         }
         let entry = self.entry(key)?;
-        entry.set_password(value).map_err(|e| {
-            SecretsError::ProviderError(format!("keyring set failed: {e}"))
-        })
+        entry
+            .set_password(value)
+            .map_err(|e| SecretsError::ProviderError(format!("keyring set failed: {e}")))
     }
 
     fn delete_secret(&self, key: &str) -> Result<(), SecretsError> {

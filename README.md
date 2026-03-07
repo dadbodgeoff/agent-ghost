@@ -100,9 +100,10 @@ Most agent frameworks bolt safety on as middleware. GHOST builds it into the exe
 | Simulation Boundary | Detects and blocks agent identity emulation attempts |
 | Output Inspector | Scans for credential patterns, redacts or kills |
 | 7-Dimension Validation | Every proposal checked for scope creep, self-reference, emulation language |
-| 6-Gate Agent Loop | Circuit breaker → recursion depth → damage counter → spending cap → kill switch → distributed kill gate |
+| 6-Gate Agent Loop | Circuit breaker → recursion depth → damage counter → spending cap → kill switch → gated distributed-kill check (only when explicitly enabled) |
+| Convergence Protection | Missing, stale, or corrupted monitor state is surfaced explicitly and can be configured to block execution |
 | Egress Allowlisting | Per-agent network access control (eBPF on Linux, pf on macOS, proxy fallback) |
-| Kill Gate Quorum | Multi-node agreement required to resume after emergency stop |
+| Kill Gate Quorum | Available only behind the distributed-kill feature gate |
 | Hash Chains | Blake3 tamper-evident logs for every event |
 | Signed CRDTs | Ed25519 signatures on all distributed state changes |
 
@@ -328,7 +329,7 @@ All commands support `--help` for detailed usage. JSON output follows the
 | `ghost-oauth` | Self-hosted OAuth 2.0 PKCE broker (agent never sees raw tokens) |
 | `ghost-egress` | Per-agent network egress allowlisting (eBPF / pf / proxy) |
 | `ghost-mesh` | A2A agent networking with EigenTrust reputation |
-| `ghost-kill-gates` | Distributed kill gate coordination with quorum-based resume |
+| `ghost-kill-gates` | Feature-gated distributed kill coordination used only when explicitly enabled |
 
 </details>
 

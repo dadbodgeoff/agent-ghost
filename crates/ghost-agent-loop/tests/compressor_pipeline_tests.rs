@@ -22,7 +22,9 @@ struct MockCompressorProvider {
 
 #[async_trait]
 impl LLMProvider for MockCompressorProvider {
-    fn name(&self) -> &str { "mock-compressor" }
+    fn name(&self) -> &str {
+        "mock-compressor"
+    }
     async fn complete(
         &self,
         _messages: &[ChatMessage],
@@ -34,10 +36,17 @@ impl LLMProvider for MockCompressorProvider {
             model: "mock".into(),
         })
     }
-    fn supports_streaming(&self) -> bool { false }
-    fn context_window(&self) -> usize { 4096 }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    fn context_window(&self) -> usize {
+        4096
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 }
+        TokenPricing {
+            input_per_1k: 0.0,
+            output_per_1k: 0.0,
+        }
     }
 }
 
@@ -46,7 +55,9 @@ struct FailingProvider;
 
 #[async_trait]
 impl LLMProvider for FailingProvider {
-    fn name(&self) -> &str { "failing" }
+    fn name(&self) -> &str {
+        "failing"
+    }
     async fn complete(
         &self,
         _messages: &[ChatMessage],
@@ -54,10 +65,17 @@ impl LLMProvider for FailingProvider {
     ) -> Result<CompletionResult, LLMError> {
         Err(LLMError::Unavailable("mock failure".into()))
     }
-    fn supports_streaming(&self) -> bool { false }
-    fn context_window(&self) -> usize { 4096 }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    fn context_window(&self) -> usize {
+        4096
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 }
+        TokenPricing {
+            input_per_1k: 0.0,
+            output_per_1k: 0.0,
+        }
     }
 }
 
@@ -272,7 +290,10 @@ async fn compilation_stats_has_correct_token_counts() {
 
     // L7 stats
     assert!(stats.l7_original_tokens > 0, "L7 original should be > 0");
-    assert!(stats.l7_compressed_tokens > 0, "L7 compressed should be > 0");
+    assert!(
+        stats.l7_compressed_tokens > 0,
+        "L7 compressed should be > 0"
+    );
     assert!(
         stats.l7_compressed_tokens <= stats.l7_original_tokens,
         "L7 compressed ({}) should be <= original ({})",
@@ -375,12 +396,7 @@ fn each_optimization_independently_disabled_masker_only() {
 async fn each_optimization_independently_disabled_compressor_only() {
     // full() with masker disabled — compression enabled, masking disabled
     let compressor = make_memory_compressor("Short.", true, 5);
-    let compiler = PromptCompiler::full(
-        128_000,
-        spot_off(),
-        masker_config_disabled(),
-        compressor,
-    );
+    let compiler = PromptCompiler::full(128_000, spot_off(), masker_config_disabled(), compressor);
     let large_memory = "a ".repeat(200);
     let history = build_history(5, 500);
     let input = PromptInput {
@@ -406,12 +422,8 @@ async fn each_optimization_independently_disabled_compressor_only() {
 async fn full_pipeline_all_disabled_identical_to_new() {
     // full() with compressor disabled + masker disabled
     let compressor = make_memory_compressor("Should not be called.", false, 5);
-    let compiler_full = PromptCompiler::full(
-        128_000,
-        spot_off(),
-        masker_config_disabled(),
-        compressor,
-    );
+    let compiler_full =
+        PromptCompiler::full(128_000, spot_off(), masker_config_disabled(), compressor);
     let compiler_new = PromptCompiler::new(128_000);
 
     let input = default_input();
@@ -441,7 +453,10 @@ async fn full_pipeline_all_disabled_identical_to_new() {
     }
 
     // Stats should show no savings
-    assert_eq!(stats_full.l7_original_tokens, stats_full.l7_compressed_tokens);
+    assert_eq!(
+        stats_full.l7_original_tokens,
+        stats_full.l7_compressed_tokens
+    );
     assert_eq!(stats_full.l8_original_tokens, stats_full.l8_masked_tokens);
 }
 
@@ -504,12 +519,7 @@ async fn all_optimizations_fail_graceful_fallback() {
         cache_dir: bad_path.join("subdir"),
     };
 
-    let compiler = PromptCompiler::full(
-        128_000,
-        spot_off(),
-        bad_masker_config,
-        failing_compressor,
-    );
+    let compiler = PromptCompiler::full(128_000, spot_off(), bad_masker_config, failing_compressor);
 
     let large_memory = "a ".repeat(200);
     let history = build_history(5, 500);
@@ -537,8 +547,14 @@ async fn all_optimizations_fail_graceful_fallback() {
         stats.l8_masked_tokens
     );
     // Content should still be present
-    assert!(!layers[7].content.is_empty(), "L7 should have content despite failure");
-    assert!(!layers[8].content.is_empty(), "L8 should have content despite failure");
+    assert!(
+        !layers[7].content.is_empty(),
+        "L7 should have content despite failure"
+    );
+    assert!(
+        !layers[8].content.is_empty(),
+        "L8 should have content despite failure"
+    );
 }
 
 // ====================================================================

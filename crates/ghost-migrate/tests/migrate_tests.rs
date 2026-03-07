@@ -19,8 +19,16 @@ fn setup_openclaw(tmp: &TempDir) -> std::path::PathBuf {
 
     let skills = oc.join("skills");
     fs::create_dir_all(&skills).unwrap();
-    fs::write(skills.join("signed.yml"), "name: test\nsignature: abc\n-----BEGIN\ndata\n-----END").unwrap();
-    fs::write(skills.join("unsigned.yml"), "name: unsigned_skill\naction: do_thing").unwrap();
+    fs::write(
+        skills.join("signed.yml"),
+        "name: test\nsignature: abc\n-----BEGIN\ndata\n-----END",
+    )
+    .unwrap();
+    fs::write(
+        skills.join("unsigned.yml"),
+        "name: unsigned_skill\naction: do_thing",
+    )
+    .unwrap();
 
     fs::write(
         oc.join("config.yml"),

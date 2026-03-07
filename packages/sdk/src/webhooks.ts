@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export type WebhookEventType =
   | 'intervention_change'
@@ -55,19 +55,41 @@ export class WebhooksAPI {
     return this.request<ListWebhooksResult>('GET', '/api/webhooks');
   }
 
-  async create(params: CreateWebhookParams): Promise<WebhookSummary> {
-    return this.request<WebhookSummary>('POST', '/api/webhooks', params);
+  async create(
+    params: CreateWebhookParams,
+    options?: GhostRequestOptions,
+  ): Promise<WebhookSummary> {
+    return this.request<WebhookSummary>('POST', '/api/webhooks', params, options);
   }
 
-  async update(id: string, params: UpdateWebhookParams): Promise<{ updated: string }> {
-    return this.request<{ updated: string }>('PUT', `/api/webhooks/${encodeURIComponent(id)}`, params);
+  async update(
+    id: string,
+    params: UpdateWebhookParams,
+    options?: GhostRequestOptions,
+  ): Promise<{ updated: string }> {
+    return this.request<{ updated: string }>(
+      'PUT',
+      `/api/webhooks/${encodeURIComponent(id)}`,
+      params,
+      options,
+    );
   }
 
-  async delete(id: string): Promise<DeleteWebhookResult> {
-    return this.request<DeleteWebhookResult>('DELETE', `/api/webhooks/${encodeURIComponent(id)}`);
+  async delete(id: string, options?: GhostRequestOptions): Promise<DeleteWebhookResult> {
+    return this.request<DeleteWebhookResult>(
+      'DELETE',
+      `/api/webhooks/${encodeURIComponent(id)}`,
+      undefined,
+      options,
+    );
   }
 
-  async test(id: string): Promise<TestWebhookResult> {
-    return this.request<TestWebhookResult>('POST', `/api/webhooks/${encodeURIComponent(id)}/test`, {});
+  async test(id: string, options?: GhostRequestOptions): Promise<TestWebhookResult> {
+    return this.request<TestWebhookResult>(
+      'POST',
+      `/api/webhooks/${encodeURIComponent(id)}/test`,
+      {},
+      options,
+    );
   }
 }

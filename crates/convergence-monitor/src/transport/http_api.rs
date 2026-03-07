@@ -161,7 +161,10 @@ pub fn build_router(state: Arc<tokio::sync::RwLock<HttpApiState>>) -> Router {
         .route("/events/batch", post(events_batch_handler))
         .route("/recalculate", post(recalculate_handler))
         .route("/gateway-shutdown", post(gateway_shutdown_handler))
-        .route("/interventions/{agent_id}/acknowledge", post(acknowledge_handler))
+        .route(
+            "/interventions/{agent_id}/acknowledge",
+            post(acknowledge_handler),
+        )
         .route("/config/threshold", post(threshold_change_handler))
         .route("/config/threshold/confirm", post(threshold_confirm_handler))
         .with_state(state)
@@ -289,7 +292,9 @@ async fn recalculate_handler(
         if last.elapsed().as_secs() < 10 {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!({"error": "rate limited — at most 1 recalculation per 10 seconds"})),
+                Json(
+                    serde_json::json!({"error": "rate limited — at most 1 recalculation per 10 seconds"}),
+                ),
             );
         }
     }
@@ -371,7 +376,9 @@ async fn acknowledge_handler(
         ),
         Ok(AckResult::NotLevel2) => (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "agent is not at Level 2 or does not require acknowledgment"})),
+            Json(
+                serde_json::json!({"error": "agent is not at Level 2 or does not require acknowledgment"}),
+            ),
         ),
         Ok(AckResult::NotFound) => (
             StatusCode::NOT_FOUND,

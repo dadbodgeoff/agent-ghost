@@ -8,13 +8,13 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use chrono::Utc;
+use cortex_convergence::scoring::composite::CompositeScorer;
 use cortex_core::config::ReflectionConfig;
 use cortex_core::memory::types::MemoryType;
 use cortex_core::memory::Importance;
 use cortex_core::models::proposal::{ProposalDecision, ProposalOperation};
 use cortex_core::safety::trigger::TriggerEvent;
 use cortex_core::traits::convergence::{CallerType, Proposal, ProposalContext};
-use cortex_convergence::scoring::composite::CompositeScorer;
 use cortex_temporal::hash_chain::{compute_event_hash, verify_chain, ChainEvent, GENESIS_HASH};
 use cortex_validation::proposal_validator::ProposalValidator;
 use ghost_agent_loop::circuit_breaker::{CircuitBreaker, CircuitBreakerState};
@@ -107,8 +107,11 @@ fn kill_switch_cannot_resume_from_kill_all() {
         initiated_by: "owner".into(),
     });
 
-    let result = ks.resume_agent(agent_id);
-    assert!(result.is_err(), "SECURITY: Agent resume succeeded after KILL_ALL");
+    let result = ks.resume_agent(agent_id, None);
+    assert!(
+        result.is_err(),
+        "SECURITY: Agent resume succeeded after KILL_ALL"
+    );
 
     let state = ks.current_state();
     assert_eq!(state.platform_level, KillLevel::KillAll);
@@ -123,16 +126,36 @@ fn kill_switch_audit_completeness_all_trigger_types() {
     let agent1 = Uuid::now_v7();
     let agent2 = Uuid::now_v7();
 
-    ks.activate_agent(agent1, KillLevel::Pause, &TriggerEvent::SpendingCapExceeded {
-        agent_id: agent1, daily_total: 100.0, cap: 50.0, overage: 50.0, detected_at: Utc::now(),
-    });
-    ks.activate_agent(agent2, KillLevel::Quarantine, &TriggerEvent::SoulDrift {
-        agent_id: agent2, drift_score: 0.5, threshold: 0.25,
-        baseline_hash: "b".into(), current_hash: "c".into(), detected_at: Utc::now(),
-    });
+    ks.activate_agent(
+        agent1,
+        KillLevel::Pause,
+        &TriggerEvent::SpendingCapExceeded {
+            agent_id: agent1,
+            daily_total: 100.0,
+            cap: 50.0,
+            overage: 50.0,
+            detected_at: Utc::now(),
+        },
+    );
+    ks.activate_agent(
+        agent2,
+        KillLevel::Quarantine,
+        &TriggerEvent::SoulDrift {
+            agent_id: agent2,
+            drift_score: 0.5,
+            threshold: 0.25,
+            baseline_hash: "b".into(),
+            current_hash: "c".into(),
+            detected_at: Utc::now(),
+        },
+    );
 
     let entries = ks.audit_entries();
-    assert!(entries.len() >= 2, "AUDIT GAP: Expected >=2 entries, got {}", entries.len());
+    assert!(
+        entries.len() >= 2,
+        "AUDIT GAP: Expected >=2 entries, got {}",
+        entries.len()
+    );
     assert_eq!(entries[0].action, KillLevel::Pause);
     assert_eq!(entries[1].action, KillLevel::Quarantine);
     PLATFORM_KILLED.store(false, Ordering::SeqCst);
@@ -145,13 +168,17 @@ fn kill_all_blocks_unknown_agents() {
     PLATFORM_KILLED.store(false, Ordering::SeqCst);
     let ks = KillSwitch::new();
     ks.activate_kill_all(&TriggerEvent::ManualKillAll {
-        reason: "test".into(), initiated_by: "owner".into(),
+        reason: "test".into(),
+        initiated_by: "owner".into(),
     });
 
     let unknown = Uuid::now_v7();
     let result = ks.check(unknown);
     assert!(
-        matches!(result, ghost_gateway::safety::kill_switch::KillCheckResult::PlatformKilled),
+        matches!(
+            result,
+            ghost_gateway::safety::kill_switch::KillCheckResult::PlatformKilled
+        ),
         "SECURITY: Unknown agent was NOT blocked after KILL_ALL"
     );
     PLATFORM_KILLED.store(false, Ordering::SeqCst);
@@ -174,7 +201,8 @@ fn compaction_user_message_mimics_compaction_block() {
 
     let result = compactor.compact(&mut history, 1, None);
     if result.is_ok() {
-        let preserved_blocks: Vec<&String> = history.iter()
+        let preserved_blocks: Vec<&String> = history
+            .iter()
             .filter(|m| m.contains("\"pass_number\"") && m.contains("\"compressed_token_count\""))
             .collect();
         // The fake user message should have been compacted away, leaving only
@@ -198,7 +226,10 @@ fn compaction_zero_context_window_no_panic() {
     // with a warning log rather than dividing by zero (which would produce
     // Infinity >= 0.70 = true, triggering compaction on invalid data).
     let result = compactor.should_compact(100, 0);
-    assert!(!result, "should_compact(100, 0) should return false for zero context window");
+    assert!(
+        !result,
+        "should_compact(100, 0) should return false for zero context window"
+    );
 }
 
 /// Compaction pass 0 is a valid boundary condition.
@@ -207,7 +238,11 @@ fn compaction_pass_zero_boundary() {
     let compactor = SessionCompactor::new(CompactionConfig::default());
     let mut history: Vec<String> = (0..5).map(|i| format!("Message {}", i)).collect();
     let result = compactor.compact(&mut history, 0, None);
-    assert!(result.is_ok(), "Compaction pass 0 should be valid: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Compaction pass 0 should be valid: {:?}",
+        result.err()
+    );
 }
 
 /// NaN spending cap silently passes — this is a real bug.
@@ -238,7 +273,10 @@ fn compaction_spending_cap_nan_bypass() {
 
     // Infinity cost must definitely fail
     let inf_result = compactor.check_spending_cap(f64::INFINITY, 0.0, 100.0);
-    assert!(inf_result.is_err(), "SPENDING CAP BYPASS: Infinite cost passed spending cap check");
+    assert!(
+        inf_result.is_err(),
+        "SPENDING CAP BYPASS: Infinite cost passed spending cap check"
+    );
 }
 
 /// Empty history compaction must not panic.
@@ -247,8 +285,14 @@ fn compaction_empty_history() {
     let compactor = SessionCompactor::new(CompactionConfig::default());
     let mut history: Vec<String> = Vec::new();
     let result = compactor.compact(&mut history, 1, None);
-    assert!(result.is_err(), "Compacting empty history should return error");
-    assert!(history.is_empty(), "Empty history must remain empty after failed compaction");
+    assert!(
+        result.is_err(),
+        "Compacting empty history should return error"
+    );
+    assert!(
+        history.is_empty(),
+        "Empty history must remain empty after failed compaction"
+    );
 }
 
 /// History containing ONLY CompactionBlocks must not be re-compressed.
@@ -259,13 +303,20 @@ fn compaction_only_blocks_not_recompressed() {
         "summary": "test", "original_token_count": 100,
         "compressed_token_count": 10, "pass_number": 1,
         "timestamp": "2024-01-01T00:00:00Z"
-    }).to_string();
+    })
+    .to_string();
     let mut history = vec![block_json];
     let snapshot = history.clone();
 
     let result = compactor.compact(&mut history, 2, None);
-    assert!(result.is_err(), "Compacting only CompactionBlocks should fail");
-    assert_eq!(history, snapshot, "History must be unchanged when only blocks remain");
+    assert!(
+        result.is_err(),
+        "Compacting only CompactionBlocks should fail"
+    );
+    assert_eq!(
+        history, snapshot,
+        "History must be unchanged when only blocks remain"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -283,7 +334,9 @@ fn reframed_output_rescan_behavior() {
     assert!(!scan.violations.is_empty(), "Should detect violations");
 
     let result = enforcer.enforce(text, &scan);
-    if let simulation_boundary::enforcer::EnforcementResult::Reframed { text: reframed, .. } = result {
+    if let simulation_boundary::enforcer::EnforcementResult::Reframed { text: reframed, .. } =
+        result
+    {
         let rescan = enforcer.scan_output(&reframed, EnforcementMode::Hard);
         if !rescan.violations.is_empty() {
             eprintln!(
@@ -330,9 +383,7 @@ fn mathematical_italic_bypass_attempt() {
     let text = "\u{1D43C} \u{1D44E}\u{1D45A} \u{1D460}\u{1D452}\u{1D45B}\u{1D461}\u{1D456}\u{1D452}\u{1D45B}\u{1D461}";
     let scan = enforcer.scan_output(text, EnforcementMode::Hard);
     if scan.violations.is_empty() {
-        eprintln!(
-            "BYPASS VECTOR: Mathematical italic Unicode characters evade pattern matching."
-        );
+        eprintln!("BYPASS VECTOR: Mathematical italic Unicode characters evade pattern matching.");
     }
 }
 
@@ -354,7 +405,11 @@ fn convergence_all_nan_signals_produce_zero() {
 fn convergence_negative_infinity_clamped() {
     let scorer = CompositeScorer::default();
     let score = scorer.compute(&[f64::NEG_INFINITY; 7]);
-    assert!(score >= 0.0 && score <= 1.0, "NEG_INFINITY produced out-of-bounds score: {}", score);
+    assert!(
+        score >= 0.0 && score <= 1.0,
+        "NEG_INFINITY produced out-of-bounds score: {}",
+        score
+    );
 }
 
 /// Positive infinity signals must be clamped to 1.0.
@@ -362,7 +417,11 @@ fn convergence_negative_infinity_clamped() {
 fn convergence_positive_infinity_clamped() {
     let scorer = CompositeScorer::default();
     let score = scorer.compute(&[f64::INFINITY; 7]);
-    assert!(score >= 0.0 && score <= 1.0, "INFINITY produced out-of-bounds score: {}", score);
+    assert!(
+        score >= 0.0 && score <= 1.0,
+        "INFINITY produced out-of-bounds score: {}",
+        score
+    );
 }
 
 /// Mixed NaN and valid signals must not corrupt the valid ones.
@@ -371,8 +430,15 @@ fn convergence_mixed_nan_valid_signals() {
     let scorer = CompositeScorer::default();
     let signals = [f64::NAN, f64::NAN, f64::NAN, 0.5, 0.5, 0.5, 0.5];
     let score = scorer.compute(&signals);
-    assert!(!score.is_nan(), "Mixed NaN/valid signals produced NaN score");
-    assert!(score > 0.0, "Mixed signals with 4/7 at 0.5 should produce non-zero score, got {}", score);
+    assert!(
+        !score.is_nan(),
+        "Mixed NaN/valid signals produced NaN score"
+    );
+    assert!(
+        score > 0.0,
+        "Mixed signals with 4/7 at 0.5 should produce non-zero score, got {}",
+        score
+    );
 }
 
 /// Zero weights must not cause division by zero.
@@ -380,7 +446,10 @@ fn convergence_mixed_nan_valid_signals() {
 fn convergence_zero_weights_no_panic() {
     let scorer = CompositeScorer::new([0.0; 8], [0.3, 0.5, 0.7, 0.85]);
     let score = scorer.compute(&[0.5; 7]);
-    assert_eq!(score, 0.0, "Zero weights should produce score 0.0, not panic or NaN");
+    assert_eq!(
+        score, 0.0,
+        "Zero weights should produce score 0.0, not panic or NaN"
+    );
 }
 
 /// Dual amplification (meso + macro) must not exceed 1.0.
@@ -388,7 +457,11 @@ fn convergence_zero_weights_no_panic() {
 fn convergence_dual_amplification_bounded() {
     let scorer = CompositeScorer::default();
     let score = scorer.compute_with_amplification(&[0.9; 7], true, true);
-    assert!(score <= 1.0, "Dual amplification produced score {} > 1.0", score);
+    assert!(
+        score <= 1.0,
+        "Dual amplification produced score {} > 1.0",
+        score
+    );
 }
 
 /// Score exactly at threshold boundary must map to correct level.
@@ -410,7 +483,11 @@ fn convergence_critical_override_forces_l2() {
     let scorer = CompositeScorer::default();
     let signals = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let level = scorer.score_to_level_with_overrides(&signals, 0.0);
-    assert!(level >= 2, "Critical override (S1 >= 1.0) did not force L2. Got L{}", level);
+    assert!(
+        level >= 2,
+        "Critical override (S1 >= 1.0) did not force L2. Got L{}",
+        level
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -423,12 +500,18 @@ fn hash_chain_first_event_wrong_genesis() {
     let bad_previous = [0xFF; 32];
     let hash = compute_event_hash("test", "{}", "actor", "2024-01-01", &bad_previous);
     let events = vec![ChainEvent {
-        event_type: "test".into(), delta_json: "{}".into(),
-        actor_id: "actor".into(), recorded_at: "2024-01-01".into(),
-        event_hash: hash, previous_hash: bad_previous,
+        event_type: "test".into(),
+        delta_json: "{}".into(),
+        actor_id: "actor".into(),
+        recorded_at: "2024-01-01".into(),
+        event_hash: hash,
+        previous_hash: bad_previous,
     }];
     let result = verify_chain(&events);
-    assert!(!result.is_valid, "Chain with wrong genesis hash was accepted");
+    assert!(
+        !result.is_valid,
+        "Chain with wrong genesis hash was accepted"
+    );
 }
 
 /// Tampered event in the middle must be detected.
@@ -439,15 +522,30 @@ fn hash_chain_tampered_middle_event() {
     let hash3 = compute_event_hash("e3", "{}", "a", "t3", &hash2);
 
     let mut events = vec![
-        ChainEvent { event_type: "e1".into(), delta_json: "{}".into(),
-            actor_id: "a".into(), recorded_at: "t1".into(),
-            event_hash: hash1, previous_hash: GENESIS_HASH },
-        ChainEvent { event_type: "e2".into(), delta_json: "{}".into(),
-            actor_id: "a".into(), recorded_at: "t2".into(),
-            event_hash: hash2, previous_hash: hash1 },
-        ChainEvent { event_type: "e3".into(), delta_json: "{}".into(),
-            actor_id: "a".into(), recorded_at: "t3".into(),
-            event_hash: hash3, previous_hash: hash2 },
+        ChainEvent {
+            event_type: "e1".into(),
+            delta_json: "{}".into(),
+            actor_id: "a".into(),
+            recorded_at: "t1".into(),
+            event_hash: hash1,
+            previous_hash: GENESIS_HASH,
+        },
+        ChainEvent {
+            event_type: "e2".into(),
+            delta_json: "{}".into(),
+            actor_id: "a".into(),
+            recorded_at: "t2".into(),
+            event_hash: hash2,
+            previous_hash: hash1,
+        },
+        ChainEvent {
+            event_type: "e3".into(),
+            delta_json: "{}".into(),
+            actor_id: "a".into(),
+            recorded_at: "t3".into(),
+            event_hash: hash3,
+            previous_hash: hash2,
+        },
     ];
 
     // Tamper event 2's content but keep stored hash
@@ -467,12 +565,22 @@ fn hash_chain_tampered_middle_event() {
 fn hash_chain_duplicate_event_hashes() {
     let hash1 = compute_event_hash("e1", "{}", "a", "t1", &GENESIS_HASH);
     let events = vec![
-        ChainEvent { event_type: "e1".into(), delta_json: "{}".into(),
-            actor_id: "a".into(), recorded_at: "t1".into(),
-            event_hash: hash1, previous_hash: GENESIS_HASH },
-        ChainEvent { event_type: "e2".into(), delta_json: "{}".into(),
-            actor_id: "a".into(), recorded_at: "t2".into(),
-            event_hash: hash1, previous_hash: hash1 }, // DUPLICATE
+        ChainEvent {
+            event_type: "e1".into(),
+            delta_json: "{}".into(),
+            actor_id: "a".into(),
+            recorded_at: "t1".into(),
+            event_hash: hash1,
+            previous_hash: GENESIS_HASH,
+        },
+        ChainEvent {
+            event_type: "e2".into(),
+            delta_json: "{}".into(),
+            actor_id: "a".into(),
+            recorded_at: "t2".into(),
+            event_hash: hash1,
+            previous_hash: hash1,
+        }, // DUPLICATE
     ];
     let result = verify_chain(&events);
     assert!(!result.is_valid, "Duplicate event hashes were not detected");
@@ -486,11 +594,19 @@ fn hash_chain_duplicate_event_hashes() {
 #[test]
 fn messaging_tampered_content_hash_rejected() {
     let mut dispatcher = MessageDispatcher::new();
-    let mut msg = AgentMessage::new(Uuid::now_v7(), Uuid::now_v7(), "Notification".into(), serde_json::json!({"message": "Hello"}));
+    let mut msg = AgentMessage::new(
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        "Notification".into(),
+        serde_json::json!({"message": "Hello"}),
+    );
     msg.content_hash = [0xFF; 32];
     let result = dispatcher.verify(&msg);
     assert!(
-        matches!(result, ghost_gateway::messaging::dispatcher::VerifyResult::RejectedSignature(_)),
+        matches!(
+            result,
+            ghost_gateway::messaging::dispatcher::VerifyResult::RejectedSignature(_)
+        ),
         "Tampered content hash was accepted"
     );
 }
@@ -499,12 +615,23 @@ fn messaging_tampered_content_hash_rejected() {
 #[test]
 fn messaging_exact_replay_rejected() {
     let mut dispatcher = MessageDispatcher::new();
-    let msg = AgentMessage::new(Uuid::now_v7(), Uuid::now_v7(), "Notification".into(), serde_json::json!({"message": "Hello"}));
+    let msg = AgentMessage::new(
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        "Notification".into(),
+        serde_json::json!({"message": "Hello"}),
+    );
     let r1 = dispatcher.verify(&msg);
-    assert!(matches!(r1, ghost_gateway::messaging::dispatcher::VerifyResult::Accepted));
+    assert!(matches!(
+        r1,
+        ghost_gateway::messaging::dispatcher::VerifyResult::Accepted
+    ));
     let r2 = dispatcher.verify(&msg);
     assert!(
-        matches!(r2, ghost_gateway::messaging::dispatcher::VerifyResult::RejectedReplay(_)),
+        matches!(
+            r2,
+            ghost_gateway::messaging::dispatcher::VerifyResult::RejectedReplay(_)
+        ),
         "Replayed message was accepted"
     );
 }
@@ -516,12 +643,20 @@ fn messaging_signature_anomaly_detection() {
     let sender = Uuid::now_v7();
 
     for i in 0..3 {
-        let mut msg = AgentMessage::new(sender, Uuid::now_v7(), "Notification".into(), serde_json::json!({"message": format!("msg {}", i)}));
+        let mut msg = AgentMessage::new(
+            sender,
+            Uuid::now_v7(),
+            "Notification".into(),
+            serde_json::json!({"message": format!("msg {}", i)}),
+        );
         msg.content_hash = [0xFF; 32];
         let result = dispatcher.verify(&msg);
         if i == 2 {
             assert!(
-                matches!(result, ghost_gateway::messaging::dispatcher::VerifyResult::AnomalyDetected { .. }),
+                matches!(
+                    result,
+                    ghost_gateway::messaging::dispatcher::VerifyResult::AnomalyDetected { .. }
+                ),
                 "3 signature failures did not trigger anomaly detection"
             );
         }
@@ -536,12 +671,21 @@ fn messaging_rate_limit_enforced() {
     let recipient = Uuid::now_v7();
 
     for i in 0..31 {
-        let msg = AgentMessage::new(sender, recipient, "Notification".into(), serde_json::json!({"message": format!("msg {}", i)}));
+        let msg = AgentMessage::new(
+            sender,
+            recipient,
+            "Notification".into(),
+            serde_json::json!({"message": format!("msg {}", i)}),
+        );
         let result = dispatcher.verify(&msg);
         if i == 30 {
             assert!(
-                matches!(result, ghost_gateway::messaging::dispatcher::VerifyResult::RejectedRateLimit),
-                "Message {} exceeded per-pair rate limit but was accepted", i
+                matches!(
+                    result,
+                    ghost_gateway::messaging::dispatcher::VerifyResult::RejectedRateLimit
+                ),
+                "Message {} exceeded per-pair rate limit but was accepted",
+                i
             );
         }
     }
@@ -585,7 +729,10 @@ fn circuit_breaker_open_blocks_all() {
     cb.record_failure();
     cb.record_failure();
     assert_eq!(cb.state(), CircuitBreakerState::Open);
-    assert!(!cb.allows_call(), "Circuit breaker in Open state allowed a call");
+    assert!(
+        !cb.allows_call(),
+        "Circuit breaker in Open state allowed a call"
+    );
 }
 
 /// Damage counter must be monotonically non-decreasing with no reset.
@@ -603,7 +750,10 @@ fn damage_counter_monotonic_no_reset() {
     // Even after halting, incrementing still works
     dc.increment();
     assert_eq!(dc.count(), 6);
-    assert!(dc.is_halted(), "Damage counter must remain halted after threshold");
+    assert!(
+        dc.is_halted(),
+        "Damage counter must remain halted after threshold"
+    );
 }
 
 /// HalfOpen state allows exactly one probe call, then must close on success
@@ -618,7 +768,11 @@ fn circuit_breaker_halfopen_failure_reopens() {
     assert_eq!(cb.state(), CircuitBreakerState::HalfOpen);
     assert!(cb.allows_call()); // probe call
     cb.record_failure(); // probe failed
-    assert_eq!(cb.state(), CircuitBreakerState::Open, "HalfOpen + failure must re-open");
+    assert_eq!(
+        cb.state(),
+        CircuitBreakerState::Open,
+        "HalfOpen + failure must re-open"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -632,7 +786,10 @@ fn output_inspector_base64_encoded_credential() {
     let encoded = "c2stMTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3A=";
     let text = format!("Here's the key: {}", encoded);
     let result = inspector.scan(&text, Uuid::now_v7());
-    if matches!(result, ghost_agent_loop::output_inspector::InspectionResult::Clean) {
+    if matches!(
+        result,
+        ghost_agent_loop::output_inspector::InspectionResult::Clean
+    ) {
         eprintln!(
             "BYPASS VECTOR: Base64-encoded credential was not detected. \
              An LLM could exfiltrate credentials by encoding them."
@@ -646,10 +803,11 @@ fn output_inspector_split_credential() {
     let inspector = OutputInspector::new();
     let text = "The key starts with sk-\n1234567890abcdefghijklmnop";
     let result = inspector.scan(&text, Uuid::now_v7());
-    if matches!(result, ghost_agent_loop::output_inspector::InspectionResult::Clean) {
-        eprintln!(
-            "BYPASS VECTOR: Credential split across lines was not detected."
-        );
+    if matches!(
+        result,
+        ghost_agent_loop::output_inspector::InspectionResult::Clean
+    ) {
+        eprintln!("BYPASS VECTOR: Credential split across lines was not detected.");
     }
 }
 
@@ -661,7 +819,10 @@ fn output_inspector_known_credential_triggers_kill() {
     let text = "Here is the API key: sk-realABCDEFGHIJKLMNOPQRSTUVWXYZ";
     let result = inspector.scan(&text, Uuid::now_v7());
     assert!(
-        matches!(result, ghost_agent_loop::output_inspector::InspectionResult::KillAll { .. }),
+        matches!(
+            result,
+            ghost_agent_loop::output_inspector::InspectionResult::KillAll { .. }
+        ),
         "Known credential in output did not trigger KILL_ALL"
     );
 }
@@ -673,7 +834,10 @@ fn output_inspector_unknown_credential_redacted() {
     let text = "My OpenAI key is sk-abcdefghijklmnopqrstuvwxyz1234";
     let result = inspector.scan(&text, Uuid::now_v7());
     assert!(
-        !matches!(result, ghost_agent_loop::output_inspector::InspectionResult::Clean),
+        !matches!(
+            result,
+            ghost_agent_loop::output_inspector::InspectionResult::Clean
+        ),
         "Unknown credential pattern was not detected at all"
     );
 }
@@ -695,8 +859,10 @@ fn proposal_d7_emulation_in_content_rejected() {
     let ctx = make_ctx(0, CallerType::Agent { agent_id });
     let result = validator.validate(&proposal, &ctx);
     assert_eq!(
-        result.decision, ProposalDecision::AutoRejected,
-        "Proposal with emulation language was {:?}, not AutoRejected", result.decision
+        result.decision,
+        ProposalDecision::AutoRejected,
+        "Proposal with emulation language was {:?}, not AutoRejected",
+        result.decision
     );
 }
 
@@ -706,13 +872,19 @@ fn proposal_agent_cannot_create_restricted_types() {
     let validator = ProposalValidator::new();
     let agent_id = Uuid::now_v7();
 
-    for target_type in [MemoryType::BoundaryViolation, MemoryType::ConvergenceEvent, MemoryType::InterventionPlan] {
+    for target_type in [
+        MemoryType::BoundaryViolation,
+        MemoryType::ConvergenceEvent,
+        MemoryType::InterventionPlan,
+    ] {
         let proposal = make_proposal(target_type, "test", CallerType::Agent { agent_id });
         let ctx = make_ctx(0, CallerType::Agent { agent_id });
         let result = validator.validate(&proposal, &ctx);
         assert_eq!(
-            result.decision, ProposalDecision::AutoRejected,
-            "Agent created restricted type {:?}", target_type
+            result.decision,
+            ProposalDecision::AutoRejected,
+            "Agent created restricted type {:?}",
+            target_type
         );
     }
 }
@@ -723,7 +895,9 @@ fn proposal_agent_critical_importance_gap() {
     let _validator = ProposalValidator::new();
     let agent_id = Uuid::now_v7();
     let _proposal = make_proposal(
-        MemoryType::AgentGoal, "My new goal", CallerType::Agent { agent_id },
+        MemoryType::AgentGoal,
+        "My new goal",
+        CallerType::Agent { agent_id },
     );
     // Note: Proposal struct doesn't have an importance field directly.
     // The importance check is on CallerType::can_assign_importance().
@@ -747,11 +921,19 @@ fn proposal_agent_critical_importance_gap() {
 fn itp_content_hash_uses_sha256() {
     let content = "test content for hashing";
     let itp_hash = itp_protocol::privacy::hash_content(content);
-    assert_eq!(itp_hash.len(), 64, "ITP hash should be 64 hex chars (SHA-256), got {}", itp_hash.len());
+    assert_eq!(
+        itp_hash.len(),
+        64,
+        "ITP hash should be 64 hex chars (SHA-256), got {}",
+        itp_hash.len()
+    );
 
     let blake3_hash = blake3::hash(content.as_bytes());
     let blake3_hex = blake3_hash.to_hex().to_string();
-    assert_ne!(itp_hash, blake3_hex, "ITP content hash matches blake3 — must use SHA-256");
+    assert_ne!(
+        itp_hash, blake3_hex,
+        "ITP content hash matches blake3 — must use SHA-256"
+    );
 }
 
 /// Hash chain must use blake3, not SHA-256.

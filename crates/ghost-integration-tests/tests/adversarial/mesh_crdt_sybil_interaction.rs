@@ -24,7 +24,11 @@ fn sybil_colluding_agents_trust_bounded() {
         for j in 0..honest.len() {
             if i != j {
                 for _ in 0..10 {
-                    store.record_interaction(honest[i], honest[j], InteractionOutcome::TaskCompleted);
+                    store.record_interaction(
+                        honest[i],
+                        honest[j],
+                        InteractionOutcome::TaskCompleted,
+                    );
                 }
             }
         }
@@ -34,7 +38,11 @@ fn sybil_colluding_agents_trust_bounded() {
         for j in 0..sybils.len() {
             if i != j {
                 for _ in 0..50 {
-                    store.record_interaction(sybils[i], sybils[j], InteractionOutcome::TaskCompleted);
+                    store.record_interaction(
+                        sybils[i],
+                        sybils[j],
+                        InteractionOutcome::TaskCompleted,
+                    );
                 }
             }
         }
@@ -84,7 +92,11 @@ fn spawn_limit_constrains_eigentrust_sybil_attack() {
         for j in 0..honest.len() {
             if i != j {
                 for _ in 0..10 {
-                    store.record_interaction(honest[i], honest[j], InteractionOutcome::TaskCompleted);
+                    store.record_interaction(
+                        honest[i],
+                        honest[j],
+                        InteractionOutcome::TaskCompleted,
+                    );
                 }
             }
         }
@@ -94,7 +106,11 @@ fn spawn_limit_constrains_eigentrust_sybil_attack() {
         for j in 0..sybils.len() {
             if i != j {
                 for _ in 0..50 {
-                    store.record_interaction(sybils[i], sybils[j], InteractionOutcome::TaskCompleted);
+                    store.record_interaction(
+                        sybils[i],
+                        sybils[j],
+                        InteractionOutcome::TaskCompleted,
+                    );
                 }
             }
         }

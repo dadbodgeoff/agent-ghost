@@ -1,8 +1,8 @@
 //! Intervention history queries.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_intervention(
     conn: &Connection,
@@ -23,8 +23,16 @@ pub fn insert_intervention(
          event_hash, previous_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
-            id, agent_id, session_id, intervention_level, previous_level,
-            trigger_score, trigger_signals, action_type, event_hash, previous_hash,
+            id,
+            agent_id,
+            session_id,
+            intervention_level,
+            previous_level,
+            trigger_score,
+            trigger_signals,
+            action_type,
+            event_hash,
+            previous_hash,
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;

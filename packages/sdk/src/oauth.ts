@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface OAuthProvider {
   name: string;
@@ -39,17 +39,25 @@ export class OAuthAPI {
     return this.request<OAuthConnection[]>('GET', '/api/oauth/connections');
   }
 
-  async connect(params: ConnectOAuthProviderParams): Promise<ConnectOAuthProviderResult> {
+  async connect(
+    params: ConnectOAuthProviderParams,
+    options?: GhostRequestOptions,
+  ): Promise<ConnectOAuthProviderResult> {
     return this.request<ConnectOAuthProviderResult>('POST', '/api/oauth/connect', {
       scopes: [],
       ...params,
-    });
+    }, options);
   }
 
-  async disconnect(refId: string): Promise<DisconnectOAuthConnectionResult> {
+  async disconnect(
+    refId: string,
+    options?: GhostRequestOptions,
+  ): Promise<DisconnectOAuthConnectionResult> {
     return this.request<DisconnectOAuthConnectionResult>(
       'DELETE',
       `/api/oauth/connections/${encodeURIComponent(refId)}`,
+      undefined,
+      options,
     );
   }
 }

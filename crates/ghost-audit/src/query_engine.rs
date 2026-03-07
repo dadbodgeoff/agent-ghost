@@ -148,10 +148,16 @@ impl<'a> AuditQueryEngine<'a> {
             param_values.push(Box::new(tool.clone()));
         }
         if let Some(ref search) = filter.search {
-            conditions.push(format!("details LIKE ?{} ESCAPE '\\'", param_values.len() + 1));
+            conditions.push(format!(
+                "details LIKE ?{} ESCAPE '\\'",
+                param_values.len() + 1
+            ));
             // Escape LIKE metacharacters in user input. Backslash must be
             // escaped first to avoid double-escaping the others.
-            let escaped = search.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            let escaped = search
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
             param_values.push(Box::new(format!("%{}%", escaped)));
         }
 

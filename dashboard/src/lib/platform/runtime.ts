@@ -1,3 +1,14 @@
+export interface RuntimeDisposable {
+  dispose(): void;
+}
+
+export interface RuntimeTerminalPty {
+  onData(listener: (data: Uint8Array) => void): RuntimeDisposable;
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  onExit(listener: (event: { exitCode: number }) => void): RuntimeDisposable;
+}
+
 export interface RuntimePlatform {
   readonly kind: 'tauri' | 'web';
   isDesktop(): boolean;
@@ -9,6 +20,14 @@ export interface RuntimePlatform {
   gatewayStatus(): Promise<string>;
   startGateway(): Promise<string>;
   stopGateway(): Promise<string>;
+  requestNotificationPermission(): Promise<boolean>;
+  sendNotification(notification: { title: string; body?: string }): Promise<void>;
+  readKeybindings(): Promise<Array<{ key: string; command: string; when?: string }>>;
+  getDefaultShell(): Promise<string | null>;
+  spawnTerminalPty(
+    shell: string,
+    options: { cols: number; rows: number },
+  ): Promise<RuntimeTerminalPty | null>;
 }
 
 let runtimePromise: Promise<RuntimePlatform> | null = null;

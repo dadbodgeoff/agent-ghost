@@ -51,12 +51,9 @@ impl ExportAnalyzer {
         let parsers = parsers::all_parsers();
 
         // Detect format
-        let parser = parsers
-            .iter()
-            .find(|p| p.detect(path))
-            .ok_or_else(|| ExportError::UnsupportedFormat(
-                format!("No parser detected for: {}", path.display()),
-            ))?;
+        let parser = parsers.iter().find(|p| p.detect(path)).ok_or_else(|| {
+            ExportError::UnsupportedFormat(format!("No parser detected for: {}", path.display()))
+        })?;
 
         tracing::info!(parser = parser.name(), "Detected export format");
 
@@ -77,10 +74,8 @@ impl ExportAnalyzer {
         let sessions = self.timeline.reconstruct(&messages);
 
         // Compute per-session scores
-        let per_session_scores: Vec<SessionScore> = sessions
-            .iter()
-            .map(|s| self.score_session(s))
-            .collect();
+        let per_session_scores: Vec<SessionScore> =
+            sessions.iter().map(|s| self.score_session(s)).collect();
 
         // Determine flagged sessions and recommended level
         let flagged: Vec<String> = per_session_scores

@@ -57,8 +57,7 @@ fn cb_halfopen_to_closed_on_success() {
     // State is Open immediately after tripping (cooldown hasn't elapsed yet)
     // We must check quickly before the 50ms cooldown expires.
     assert!(
-        cb.state() == CircuitBreakerState::Open
-            || cb.state() == CircuitBreakerState::HalfOpen,
+        cb.state() == CircuitBreakerState::Open || cb.state() == CircuitBreakerState::HalfOpen,
         "Should be Open or HalfOpen right after tripping"
     );
 
@@ -135,7 +134,10 @@ fn prompt_compilation_produces_10_layers() {
 fn token_budget_respects_context_window() {
     let budgets = TokenBudgetAllocator::default_budgets();
     let allocated = TokenBudgetAllocator::allocate(128_000, &budgets);
-    let total: usize = allocated.iter().copied().fold(0usize, |acc, x| acc.saturating_add(x));
+    let total: usize = allocated
+        .iter()
+        .copied()
+        .fold(0usize, |acc, x| acc.saturating_add(x));
     assert!(total <= 128_000);
 }
 
@@ -207,21 +209,25 @@ fn itp_emission_drops_on_full_channel() {
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let emitter = ITPEmitter::new(tx);
 
-    emitter.emit(ITPEvent::SessionEnd(itp_protocol::events::SessionEndEvent {
-        session_id: Uuid::now_v7(),
-        agent_id: Uuid::now_v7(),
-        reason: "test".into(),
-        message_count: 0,
-        timestamp: chrono::Utc::now(),
-    }));
+    emitter.emit(ITPEvent::SessionEnd(
+        itp_protocol::events::SessionEndEvent {
+            session_id: Uuid::now_v7(),
+            agent_id: Uuid::now_v7(),
+            reason: "test".into(),
+            message_count: 0,
+            timestamp: chrono::Utc::now(),
+        },
+    ));
     // Second emit should not block
-    emitter.emit(ITPEvent::SessionEnd(itp_protocol::events::SessionEndEvent {
-        session_id: Uuid::now_v7(),
-        agent_id: Uuid::now_v7(),
-        reason: "test".into(),
-        message_count: 0,
-        timestamp: chrono::Utc::now(),
-    }));
+    emitter.emit(ITPEvent::SessionEnd(
+        itp_protocol::events::SessionEndEvent {
+            session_id: Uuid::now_v7(),
+            agent_id: Uuid::now_v7(),
+            reason: "test".into(),
+            message_count: 0,
+            timestamp: chrono::Utc::now(),
+        },
+    ));
 }
 
 // ── Policy Integration ──────────────────────────────────────────────────
@@ -246,7 +252,10 @@ fn policy_deny_by_default() {
         session_reflection_count: 0,
     };
 
-    assert!(matches!(engine.evaluate(&call, &ctx), PolicyDecision::Deny(_)));
+    assert!(matches!(
+        engine.evaluate(&call, &ctx),
+        PolicyDecision::Deny(_)
+    ));
 }
 
 /// Policy engine permits with capability grant.
@@ -272,7 +281,10 @@ fn policy_permits_with_grant() {
         session_reflection_count: 0,
     };
 
-    assert!(matches!(engine.evaluate(&call, &ctx), PolicyDecision::Permit));
+    assert!(matches!(
+        engine.evaluate(&call, &ctx),
+        PolicyDecision::Permit
+    ));
 }
 
 /// Compaction flush exception: memory_write always permitted during flush.
@@ -295,7 +307,10 @@ fn compaction_flush_exception() {
         session_reflection_count: 0,
     };
 
-    assert!(matches!(engine.evaluate(&call, &ctx), PolicyDecision::Permit));
+    assert!(matches!(
+        engine.evaluate(&call, &ctx),
+        PolicyDecision::Permit
+    ));
 }
 
 // ── Output Inspection ───────────────────────────────────────────────────
@@ -306,7 +321,10 @@ fn output_inspector_detects_credentials() {
     let mut inspector = OutputInspector::new();
     inspector.register_credential("sk-".into());
 
-    let result = inspector.scan("Here is the key: sk-abc123def456ghi789jklmno", Uuid::now_v7());
+    let result = inspector.scan(
+        "Here is the key: sk-abc123def456ghi789jklmno",
+        Uuid::now_v7(),
+    );
     assert!(!matches!(
         result,
         ghost_agent_loop::output_inspector::InspectionResult::Clean

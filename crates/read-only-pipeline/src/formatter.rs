@@ -39,7 +39,10 @@ impl SnapshotFormatter {
         if !snapshot.goals().is_empty() {
             output.push_str("[Goals]\n");
             for goal in snapshot.goals() {
-                let line = format!("- {} ({:?}/{:?})\n", goal.goal_text, goal.scope, goal.origin);
+                let line = format!(
+                    "- {} ({:?}/{:?})\n",
+                    goal.goal_text, goal.scope, goal.origin
+                );
                 if output.len() + line.len() > char_budget {
                     break;
                 }

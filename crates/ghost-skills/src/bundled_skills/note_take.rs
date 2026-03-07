@@ -286,7 +286,10 @@ impl Skill for NoteTakeSkill {
 
     fn preview(&self, input: &serde_json::Value) -> Option<String> {
         let action = input.get("action").and_then(|v| v.as_str())?;
-        let title = input.get("title").and_then(|v| v.as_str()).unwrap_or("(untitled)");
+        let title = input
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(untitled)");
         match action {
             "create" => Some(format!("Create note: \"{title}\"")),
             "update" => Some(format!("Update note: \"{title}\"")),
@@ -491,10 +494,7 @@ mod tests {
         let db = test_db();
         let ctx = test_ctx(&db);
 
-        let result = NoteTakeSkill.execute(
-            &ctx,
-            &serde_json::json!({"action": "explode"}),
-        );
+        let result = NoteTakeSkill.execute(&ctx, &serde_json::json!({"action": "explode"}));
         assert!(result.is_err());
     }
 

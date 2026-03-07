@@ -33,22 +33,35 @@ impl ClipboardWriteSkill {
 }
 
 impl Skill for ClipboardWriteSkill {
-    fn name(&self) -> &str { "clipboard_write" }
-    fn description(&self) -> &str { "Write text to the system clipboard" }
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn name(&self) -> &str {
+        "clipboard_write"
+    }
+    fn description(&self) -> &str {
+        "Write text to the system clipboard"
+    }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
-        let text = input.get("text")
+        let text = input
+            .get("text")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidInput("'text' field is required".into()))?;
 
         // Circuit breaker check.
-        { self.circuit_breaker.lock().unwrap().check("clipboard_write")?; }
+        {
+            self.circuit_breaker
+                .lock()
+                .unwrap()
+                .check("clipboard_write")?;
+        }
 
-        let mut clipboard = arboard::Clipboard::new().map_err(|e| {
-            SkillError::Internal(format!("failed to access clipboard: {e}"))
-        })?;
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| SkillError::Internal(format!("failed to access clipboard: {e}")))?;
 
         clipboard.set_text(text.to_string()).map_err(|e| {
             self.circuit_breaker.lock().unwrap().record_failure();
@@ -56,14 +69,23 @@ impl Skill for ClipboardWriteSkill {
         })?;
 
         // Record success.
-        { self.circuit_breaker.lock().unwrap().record_success(); }
+        {
+            self.circuit_breaker.lock().unwrap().record_success();
+        }
 
         let result = serde_json::json!({
             "length": text.len(),
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "clipboard_write", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "clipboard_write",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -82,8 +104,8 @@ impl Skill for ClipboardWriteSkill {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
     use std::time::Duration;
+    use uuid::Uuid;
 
     fn test_db() -> rusqlite::Connection {
         let db = rusqlite::Connection::open_in_memory().unwrap();
@@ -92,11 +114,20 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> ClipboardWriteSkill {
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            Duration::from_secs(30),
+        )));
         ClipboardWriteSkill::new(cb)
     }
 
@@ -127,7 +158,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"text": "hello world"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"text": "hello world"}))
+            .unwrap();
         assert_eq!(result["status"], "ok");
         assert_eq!(result["length"], 11);
     }

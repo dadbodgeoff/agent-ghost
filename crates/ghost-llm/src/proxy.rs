@@ -42,9 +42,7 @@ impl ProxyConfig {
     /// through the proxy, which enforces the agent's egress policy.
     pub fn build_client(&self) -> Result<reqwest::Client, reqwest::Error> {
         let proxy = reqwest::Proxy::all(&self.proxy_url)?;
-        reqwest::Client::builder()
-            .proxy(proxy)
-            .build()
+        reqwest::Client::builder().proxy(proxy).build()
     }
 }
 
@@ -91,7 +89,10 @@ impl ProxyRegistry {
     ///
     /// If a proxy is registered, returns a proxy-configured client.
     /// Otherwise, returns a default client (no proxy).
-    pub fn build_client_for_agent(&self, agent_id: &Uuid) -> Result<reqwest::Client, reqwest::Error> {
+    pub fn build_client_for_agent(
+        &self,
+        agent_id: &Uuid,
+    ) -> Result<reqwest::Client, reqwest::Error> {
         match self.get(agent_id) {
             Some(config) => config.build_client(),
             None => reqwest::Client::builder().build(),

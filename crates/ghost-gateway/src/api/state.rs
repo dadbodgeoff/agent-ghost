@@ -35,7 +35,10 @@ pub async fn get_crdt_state(
     let limit = params.limit.unwrap_or(100).min(500);
     let offset = params.offset.unwrap_or(0);
 
-    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     // Build query based on whether memory_id filter is provided.
     let (query, count_query) = if params.memory_id.is_some() {
@@ -62,15 +65,19 @@ pub async fn get_crdt_state(
 
     // Count total.
     let total: u32 = if let Some(ref mid) = params.memory_id {
-        db.query_row(count_query, rusqlite::params![&agent_id, mid], |row| row.get(0))
-            .map_err(|e| ApiError::db_error("crdt_count", e))?
+        db.query_row(count_query, rusqlite::params![&agent_id, mid], |row| {
+            row.get(0)
+        })
+        .map_err(|e| ApiError::db_error("crdt_count", e))?
     } else {
         db.query_row(count_query, rusqlite::params![&agent_id], |row| row.get(0))
             .map_err(|e| ApiError::db_error("crdt_count", e))?
     };
 
     // Fetch deltas.
-    let mut stmt = db.prepare(query).map_err(|e| ApiError::db_error("crdt_prepare", e))?;
+    let mut stmt = db
+        .prepare(query)
+        .map_err(|e| ApiError::db_error("crdt_prepare", e))?;
 
     let rows = if let Some(ref mid) = params.memory_id {
         stmt.query_map(
@@ -78,10 +85,7 @@ pub async fn get_crdt_state(
             map_delta_row,
         )
     } else {
-        stmt.query_map(
-            rusqlite::params![&agent_id, limit, offset],
-            map_delta_row,
-        )
+        stmt.query_map(rusqlite::params![&agent_id, limit, offset], map_delta_row)
     };
 
     let mut deltas = Vec::new();

@@ -8,9 +8,7 @@ use std::path::PathBuf;
 // ═══════════════════════════════════════════════════════════════════════
 
 mod registry {
-    use ghost_skills::registry::{
-        SkillManifest, SkillRegistry, SkillSource, SkillState,
-    };
+    use ghost_skills::registry::{SkillManifest, SkillRegistry, SkillSource, SkillState};
     use std::path::PathBuf;
 
     fn make_manifest(name: &str, signed: bool) -> SkillManifest {
@@ -20,7 +18,11 @@ mod registry {
             description: "test skill".into(),
             capabilities: vec!["memory_read".into()],
             timeout_seconds: 30,
-            signature: if signed { Some("valid_sig".into()) } else { None },
+            signature: if signed {
+                Some("valid_sig".into())
+            } else {
+                None
+            },
         }
     }
 
@@ -59,7 +61,11 @@ mod registry {
             timeout_seconds: 30,
             signature: None,
         };
-        reg.register(manifest, SkillSource::User, PathBuf::from("/skills/unsigned.wasm"));
+        reg.register(
+            manifest,
+            SkillSource::User,
+            PathBuf::from("/skills/unsigned.wasm"),
+        );
         let skill = reg.lookup("unsigned").unwrap();
         assert_eq!(skill.state, SkillState::Quarantined);
     }
@@ -173,8 +179,8 @@ mod wasm_sandbox {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod native_sandbox {
-    use std::collections::HashSet;
     use ghost_skills::sandbox::native_sandbox::NativeSandbox;
+    use std::collections::HashSet;
 
     #[test]
     fn capability_granted() {
@@ -195,8 +201,12 @@ mod native_sandbox {
         let mut caps = HashSet::new();
         caps.insert("shell_execute".into());
         let sandbox = NativeSandbox::new(caps);
-        assert!(sandbox.validate_tool_call("run_command", "shell_execute").is_ok());
-        assert!(sandbox.validate_tool_call("write_file", "filesystem_write").is_err());
+        assert!(sandbox
+            .validate_tool_call("run_command", "shell_execute")
+            .is_ok());
+        assert!(sandbox
+            .validate_tool_call("write_file", "filesystem_write")
+            .is_err());
     }
 }
 
@@ -205,8 +215,8 @@ mod native_sandbox {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod credential_broker {
-    use ghost_skills::credential::broker::{CredentialBroker, CredentialError};
     use chrono::Utc;
+    use ghost_skills::credential::broker::{CredentialBroker, CredentialError};
 
     #[test]
     fn register_and_reify() {
@@ -252,13 +262,7 @@ mod credential_broker {
     #[test]
     fn revoke_credential() {
         let mut broker = CredentialBroker::new();
-        let handle = broker.register(
-            "openai".into(),
-            "api".into(),
-            "sk-key".into(),
-            10,
-            None,
-        );
+        let handle = broker.register("openai".into(), "api".into(), "sk-key".into(), 10, None);
         assert!(broker.revoke(handle.id));
         assert!(broker.reify(handle.id).is_err());
     }

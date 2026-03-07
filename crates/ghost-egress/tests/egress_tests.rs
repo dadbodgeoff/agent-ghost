@@ -159,7 +159,11 @@ fn proxy_url_correct_format() {
 
     let url = policy.proxy_url(&agent).unwrap();
     assert!(url.starts_with("http://127.0.0.1:"));
-    let port: u16 = url.strip_prefix("http://127.0.0.1:").unwrap().parse().unwrap();
+    let port: u16 = url
+        .strip_prefix("http://127.0.0.1:")
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(port > 0);
 }
 
@@ -298,10 +302,7 @@ fn cargo_toml_has_cortex_core_dependency() {
 fn cargo_toml_package_name_correct() {
     let cargo_toml = include_str!("../Cargo.toml");
     let parsed: toml::Value = toml::from_str(cargo_toml).unwrap();
-    assert_eq!(
-        parsed["package"]["name"].as_str().unwrap(),
-        "ghost-egress"
-    );
+    assert_eq!(parsed["package"]["name"].as_str().unwrap(), "ghost-egress");
 }
 
 // ── Adversarial tests ───────────────────────────────────────────────────
@@ -453,8 +454,12 @@ fn adversarial_malformed_connect_request() {
     assert!(!policy.check_domain(&agent, "").unwrap_or(false));
     assert!(!policy.check_domain(&agent, "   ").unwrap_or(false));
     assert!(!policy.check_domain(&agent, "\r\n").unwrap_or(false));
-    assert!(!policy.check_domain(&agent, "http://api.openai.com").unwrap_or(false));
-    assert!(!policy.check_domain(&agent, "CONNECT api.openai.com:443 HTTP/1.1").unwrap_or(false));
+    assert!(!policy
+        .check_domain(&agent, "http://api.openai.com")
+        .unwrap_or(false));
+    assert!(!policy
+        .check_domain(&agent, "CONNECT api.openai.com:443 HTTP/1.1")
+        .unwrap_or(false));
     assert!(!policy.check_domain(&agent, "\0\0\0").unwrap_or(false));
 }
 
@@ -518,7 +523,9 @@ fn json_schema_validates_egress_config() {
     // Verify enum values for egress_policy.
     let policy_enum = &props["egress_policy"]["enum"];
     assert!(policy_enum.is_array());
-    let values: Vec<&str> = policy_enum.as_array().unwrap()
+    let values: Vec<&str> = policy_enum
+        .as_array()
+        .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();

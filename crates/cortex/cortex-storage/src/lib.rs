@@ -6,8 +6,8 @@
 pub mod migrations;
 pub mod queries;
 
-use rusqlite::Connection;
 use cortex_core::models::error::{CortexError, CortexResult};
+use rusqlite::Connection;
 
 /// Convert a storage error string into a CortexError.
 pub fn to_storage_err(msg: String) -> CortexError {

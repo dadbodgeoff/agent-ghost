@@ -39,12 +39,11 @@ impl NativeSandbox {
         tool_name: &str,
         required_capability: &str,
     ) -> Result<(), NativeSandboxError> {
-        self.check_capability(required_capability).map_err(|_| {
-            NativeSandboxError::ToolDenied {
+        self.check_capability(required_capability)
+            .map_err(|_| NativeSandboxError::ToolDenied {
                 tool: tool_name.into(),
                 required_capability: required_capability.into(),
-            }
-        })
+            })
     }
 
     pub fn granted_capabilities(&self) -> &HashSet<String> {

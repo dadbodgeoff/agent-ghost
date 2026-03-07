@@ -36,7 +36,10 @@ mod migration_atomicity_tests {
         let count: u32 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert!(count >= 4, "Should have at least 4 migration records, got {count}");
+        assert!(
+            count >= 4,
+            "Should have at least 4 migration records, got {count}"
+        );
     }
 
     /// Schema version table tracks all applied migrations.
@@ -135,8 +138,7 @@ agents:
   - name: "alice"
     spending_cap: 10.0
 "#;
-        let config: Result<ghost_gateway::config::GhostConfig, _> =
-            serde_yaml::from_str(yaml);
+        let config: Result<ghost_gateway::config::GhostConfig, _> = serde_yaml::from_str(yaml);
         match config {
             Ok(c) => {
                 // Deserialization succeeds, but validation should fail.
@@ -161,8 +163,7 @@ agents:
   - name: ""
     spending_cap: 5.0
 "#;
-        let config: ghost_gateway::config::GhostConfig =
-            serde_yaml::from_str(yaml).unwrap();
+        let config: ghost_gateway::config::GhostConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.agents[0].name.is_empty());
     }
 
@@ -176,8 +177,7 @@ agents:
   - name: "bad-agent"
     spending_cap: -1.0
 "#;
-        let config: ghost_gateway::config::GhostConfig =
-            serde_yaml::from_str(yaml).unwrap();
+        let config: ghost_gateway::config::GhostConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.agents[0].spending_cap < 0.0);
     }
 
@@ -191,8 +191,7 @@ agents:
   - name: "frugal-agent"
     spending_cap: 0.0
 "#;
-        let config: ghost_gateway::config::GhostConfig =
-            serde_yaml::from_str(yaml).unwrap();
+        let config: ghost_gateway::config::GhostConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.agents[0].spending_cap, 0.0);
     }
 
@@ -497,8 +496,7 @@ mod appstate_field_tests {
         use ghost_gateway::state::AppState;
         use std::sync::{Arc, RwLock};
 
-        let db = ghost_gateway::db_pool::create_pool(":memory:".into())
-            .expect("in-memory pool");
+        let db = ghost_gateway::db_pool::create_pool(":memory:".into()).expect("in-memory pool");
         {
             let writer = db.write().await;
             cortex_storage::migrations::run_migrations(&writer).unwrap();
@@ -507,17 +505,15 @@ mod appstate_field_tests {
         let (event_tx, _) = tokio::sync::broadcast::channel(16);
         let kill_switch = Arc::new(ghost_gateway::safety::kill_switch::KillSwitch::new());
 
-        let token_store = ghost_oauth::TokenStore::with_default_dir(
-            Box::new(ghost_secrets::EnvProvider),
-        );
+        let token_store =
+            ghost_oauth::TokenStore::with_default_dir(Box::new(ghost_secrets::EnvProvider));
         let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(
             std::collections::BTreeMap::new(),
             token_store,
         ));
 
-        let embedding_engine = cortex_embeddings::EmbeddingEngine::new(
-            cortex_embeddings::EmbeddingConfig::default(),
-        );
+        let embedding_engine =
+            cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
 
         let safety_skills: std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>> =
             ghost_skills::safety_skills::all_safety_skills()
@@ -527,9 +523,13 @@ mod appstate_field_tests {
 
         let _state = AppState {
             gateway: Arc::new(ghost_gateway::gateway::GatewaySharedState::new()),
-            agents: Arc::new(RwLock::new(ghost_gateway::agents::registry::AgentRegistry::new())),
+            agents: Arc::new(RwLock::new(
+                ghost_gateway::agents::registry::AgentRegistry::new(),
+            )),
             kill_switch,
-            quarantine: Arc::new(RwLock::new(ghost_gateway::safety::quarantine::QuarantineManager::new())),
+            quarantine: Arc::new(RwLock::new(
+                ghost_gateway::safety::quarantine::QuarantineManager::new(),
+            )),
             db,
             event_tx,
             replay_buffer: Arc::new(ghost_gateway::api::websocket::EventReplayBuffer::new(100)),
@@ -547,7 +547,10 @@ mod appstate_field_tests {
             safety_cooldown: Arc::new(ghost_gateway::api::rate_limit::SafetyCooldown::new()),
             monitor_address: "127.0.0.1:18790".into(),
             monitor_enabled: false,
+            monitor_block_on_degraded: false,
+            convergence_state_stale_after: std::time::Duration::from_secs(300),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             safety_skills: Arc::new(safety_skills),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),

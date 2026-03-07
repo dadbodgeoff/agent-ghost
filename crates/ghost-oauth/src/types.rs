@@ -92,7 +92,8 @@ impl PkceChallenge {
 
     /// Generate a cryptographically random URL-safe verifier of `len` characters.
     fn random_verifier(len: usize) -> SecretString {
-        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+        const CHARSET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
         let mut rng = rand::thread_rng();
         let verifier: String = (0..len)
             .map(|_| {
@@ -141,7 +142,10 @@ impl fmt::Debug for TokenSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TokenSet")
             .field("access_token", &"[REDACTED]")
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("expires_at", &self.expires_at)
             .field("scopes", &self.scopes)
             .finish()
@@ -161,7 +165,10 @@ impl From<&TokenSet> for TokenSetSerde {
     fn from(ts: &TokenSet) -> Self {
         Self {
             access_token: ts.access_token.expose_secret().to_string(),
-            refresh_token: ts.refresh_token.as_ref().map(|r| r.expose_secret().to_string()),
+            refresh_token: ts
+                .refresh_token
+                .as_ref()
+                .map(|r| r.expose_secret().to_string()),
             expires_at: ts.expires_at,
             scopes: ts.scopes.clone(),
         }

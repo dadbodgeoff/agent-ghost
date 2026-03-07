@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 /// Gateway and platform status.
 #[derive(Debug, Serialize)]

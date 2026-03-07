@@ -80,11 +80,7 @@ impl SessionManager {
     pub fn agent_sessions(&self, agent_id: Uuid) -> Vec<&SessionContext> {
         self.agent_sessions
             .get(&agent_id)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.sessions.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.sessions.get(id)).collect())
             .unwrap_or_default()
     }
 

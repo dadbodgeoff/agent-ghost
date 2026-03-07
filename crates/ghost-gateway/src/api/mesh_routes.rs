@@ -58,9 +58,7 @@ pub fn mesh_router_with_db(
 }
 
 /// GET /.well-known/agent.json — serve this agent's signed card.
-async fn handle_agent_card(
-    State(state): State<MeshRouteState>,
-) -> impl IntoResponse {
+async fn handle_agent_card(State(state): State<MeshRouteState>) -> impl IntoResponse {
     match state.dispatcher.agent_card() {
         Some(card) => (StatusCode::OK, Json(card)).into_response(),
         None => {
@@ -146,10 +144,7 @@ async fn handle_a2a(
 }
 
 /// Persist delegation state transitions based on the incoming A2A message.
-async fn persist_delegation_from_message(
-    msg: &MeshMessage,
-    db: &Arc<crate::db_pool::DbPool>,
-) {
+async fn persist_delegation_from_message(msg: &MeshMessage, db: &Arc<crate::db_pool::DbPool>) {
     let conn = db.write().await;
     let params = match &msg.params {
         Some(p) => p,
@@ -160,24 +155,34 @@ async fn persist_delegation_from_message(
         "tasks/send" | "tasks/sendSubscribe" => {
             // New task = new delegation offer.
             let id = uuid::Uuid::now_v7().to_string();
-            let delegation_id = params.get("task_id")
+            let delegation_id = params
+                .get("task_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or(&id);
-            let sender = params.get("sender_id")
+            let sender = params
+                .get("sender_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            let recipient = params.get("recipient_id")
+            let recipient = params
+                .get("recipient_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("self");
-            let task = params.get("task")
+            let task = params
+                .get("task")
                 .or_else(|| params.get("message"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("a2a_task");
             let event_hash = blake3::hash(id.as_bytes());
             if let Err(e) = cortex_storage::queries::delegation_state_queries::insert_delegation(
-                &conn, &id, delegation_id, sender, recipient, task,
+                &conn,
+                &id,
+                delegation_id,
+                sender,
+                recipient,
+                task,
                 &msg.id.as_ref().map(|v| v.to_string()).unwrap_or_default(),
-                event_hash.as_bytes(), &[0u8; 32],
+                event_hash.as_bytes(),
+                &[0u8; 32],
             ) {
                 tracing::warn!(error = %e, "failed to persist delegation offer from A2A");
             }
@@ -186,9 +191,17 @@ async fn persist_delegation_from_message(
             // Cancel = transition to Rejected (lookup by delegation_id since task_id
             // from A2A params corresponds to delegation_id, not the internal row id).
             if let Some(task_id) = params.get("task_id").and_then(|v| v.as_str()) {
-                if let Err(e) = cortex_storage::queries::delegation_state_queries::transition_by_delegation_id(
-                    &conn, task_id, "Rejected", None, None, None, Some("canceled via A2A"),
-                ) {
+                if let Err(e) =
+                    cortex_storage::queries::delegation_state_queries::transition_by_delegation_id(
+                        &conn,
+                        task_id,
+                        "Rejected",
+                        None,
+                        None,
+                        None,
+                        Some("canceled via A2A"),
+                    )
+                {
                     tracing::warn!(error = %e, task_id = %task_id, "failed to persist delegation cancel");
                 }
             }

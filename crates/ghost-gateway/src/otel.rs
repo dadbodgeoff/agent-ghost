@@ -38,9 +38,10 @@ pub fn init_otel_tracing(config: &OtelConfig) -> Result<OtelGuard, Box<dyn std::
 
     // opentelemetry_sdk 0.27: Resource::new() with KeyValue vec,
     // with_batch_exporter takes (exporter, runtime).
-    let resource = Resource::new(vec![
-        KeyValue::new("service.name", config.service_name.clone()),
-    ]);
+    let resource = Resource::new(vec![KeyValue::new(
+        "service.name",
+        config.service_name.clone(),
+    )]);
 
     let provider = TracerProvider::builder()
         .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
@@ -50,11 +51,10 @@ pub fn init_otel_tracing(config: &OtelConfig) -> Result<OtelGuard, Box<dyn std::
     let tracer = provider.tracer("ghost-gateway");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_target(true);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(true);
 
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "info".into());
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
 
     tracing_subscriber::registry()
         .with(filter)

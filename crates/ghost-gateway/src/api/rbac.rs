@@ -16,11 +16,7 @@
 //!     .route_layer(axum::middleware::from_fn(rbac::admin));
 //! ```
 
-use axum::{
-    extract::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, middleware::Next, response::Response};
 
 use crate::api::error::ApiError;
 
@@ -55,11 +51,7 @@ impl Role {
 /// Core RBAC enforcement. Reads the `Claims` from request extensions
 /// (set by the auth middleware) and checks that the user's role meets
 /// or exceeds the required minimum.
-async fn require_role(
-    minimum: Role,
-    req: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
+async fn require_role(minimum: Role, req: Request, next: Next) -> Result<Response, ApiError> {
     // Get claims from request extensions (set by auth middleware).
     let claims = req.extensions().get::<crate::api::auth::Claims>();
 

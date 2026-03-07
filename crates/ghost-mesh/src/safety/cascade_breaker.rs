@@ -123,14 +123,20 @@ impl CascadeCircuitBreaker {
 
     /// Record a successful delegation completion.
     pub fn record_success(&mut self, from: Uuid, to: Uuid) {
-        let entry = self.breakers.entry((from, to)).or_insert_with(BreakerEntry::new);
+        let entry = self
+            .breakers
+            .entry((from, to))
+            .or_insert_with(BreakerEntry::new);
         entry.consecutive_failures = 0;
         entry.state = CascadeBreakerState::Closed;
     }
 
     /// Record a delegation failure (task failed or error).
     pub fn record_failure(&mut self, from: Uuid, to: Uuid) {
-        let entry = self.breakers.entry((from, to)).or_insert_with(BreakerEntry::new);
+        let entry = self
+            .breakers
+            .entry((from, to))
+            .or_insert_with(BreakerEntry::new);
         entry.consecutive_failures += 1;
         entry.last_failure = Some(Instant::now());
 

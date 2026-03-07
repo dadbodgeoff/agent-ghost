@@ -127,11 +127,8 @@ impl IMeshProvider for CreditLedger {
             .db
             .lock()
             .map_err(|_| MeshError::NotImplemented("db lock poisoned".into()))?;
-        cortex_storage::queries::marketplace_queries::release_escrow(
-            &conn,
-            &escrow_id.to_string(),
-        )
-        .map_err(|e| MeshError::NotImplemented(e.to_string()))?;
+        cortex_storage::queries::marketplace_queries::release_escrow(&conn, &escrow_id.to_string())
+            .map_err(|e| MeshError::NotImplemented(e.to_string()))?;
 
         Ok(MeshReceipt {
             id: Uuid::new_v4(),
@@ -159,9 +156,10 @@ impl IMeshLedger for CreditLedger {
             .db
             .lock()
             .map_err(|_| MeshError::NotImplemented("db lock poisoned".into()))?;
-        let rows =
-            cortex_storage::queries::marketplace_queries::list_transactions(&conn, agent_id, 100, 0)
-                .map_err(|e| MeshError::NotImplemented(e.to_string()))?;
+        let rows = cortex_storage::queries::marketplace_queries::list_transactions(
+            &conn, agent_id, 100, 0,
+        )
+        .map_err(|e| MeshError::NotImplemented(e.to_string()))?;
 
         Ok(rows
             .into_iter()

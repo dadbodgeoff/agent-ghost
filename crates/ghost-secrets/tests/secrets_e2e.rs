@@ -2,7 +2,7 @@
 //!
 //! Verifies the full secrets pipeline: provider → credential retrieval → round-trip.
 
-use ghost_secrets::{EnvProvider, SecretProvider, ExposeSecret};
+use ghost_secrets::{EnvProvider, ExposeSecret, SecretProvider};
 
 /// EnvProvider retrieves a secret from the environment.
 #[test]
@@ -39,7 +39,10 @@ fn env_provider_has_secret() {
 fn env_provider_set_is_read_only() {
     let provider = EnvProvider;
     let result = provider.set_secret("GHOST_READONLY_E2E", "value");
-    assert!(result.is_err(), "EnvProvider set_secret should fail (read-only)");
+    assert!(
+        result.is_err(),
+        "EnvProvider set_secret should fail (read-only)"
+    );
 }
 
 /// EnvProvider delete_secret returns StorageUnavailable (env vars are read-only).
@@ -47,7 +50,10 @@ fn env_provider_set_is_read_only() {
 fn env_provider_delete_is_read_only() {
     let provider = EnvProvider;
     let result = provider.delete_secret("GHOST_READONLY_E2E");
-    assert!(result.is_err(), "EnvProvider delete_secret should fail (read-only)");
+    assert!(
+        result.is_err(),
+        "EnvProvider delete_secret should fail (read-only)"
+    );
 }
 
 /// EnvProvider rejects empty key.
@@ -84,14 +90,20 @@ fn keychain_provider_roundtrip() {
     let provider = KeychainProvider::new("ghost-test-e2e");
 
     // Set
-    provider.set_secret("test-key", "keychain-test-value").expect("keychain set failed");
+    provider
+        .set_secret("test-key", "keychain-test-value")
+        .expect("keychain set failed");
 
     // Get
-    let retrieved = provider.get_secret("test-key").expect("keychain get failed");
+    let retrieved = provider
+        .get_secret("test-key")
+        .expect("keychain get failed");
     assert_eq!(retrieved.expose_secret(), "keychain-test-value");
 
     // Delete (cleanup)
-    provider.delete_secret("test-key").expect("keychain delete failed");
+    provider
+        .delete_secret("test-key")
+        .expect("keychain delete failed");
 }
 
 /// ghost-secrets crate is a leaf crate with zero ghost-*/cortex-* dependencies.

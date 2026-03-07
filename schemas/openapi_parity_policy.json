@@ -1,0 +1,9 @@
+{
+  "excluded_router_paths": {
+    "/.well-known/agent.json": "Mesh discovery metadata is intentionally outside the OpenAPI application route surface.",
+    "/a2a": "The mesh transport ingress path is intentionally excluded from the application OpenAPI surface.",
+    "/api/openapi.json": "The schema endpoint itself is intentionally not modeled as an application data route.",
+    "/api/ws": "The websocket upgrade endpoint is not represented in the current OpenAPI document."
+  },
+  "excluded_spec_paths": {}
+}

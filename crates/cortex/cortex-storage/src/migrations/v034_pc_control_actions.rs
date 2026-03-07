@@ -4,9 +4,9 @@
 //! here for post-incident analysis and safety auditing. Blocked actions
 //! are also recorded with the denial reason.
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -35,7 +35,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             ON pc_control_actions(skill_name, created_at);
 
         CREATE INDEX IF NOT EXISTS idx_pc_actions_blocked
-            ON pc_control_actions(blocked, created_at);"
+            ON pc_control_actions(blocked, created_at);",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 

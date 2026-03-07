@@ -3,9 +3,7 @@
 //! Tests compaction trigger thresholds, rollback on failure,
 //! CompactionBlock immutability, and per-type compression minimums.
 
-use ghost_gateway::session::compaction::{
-    CompactionConfig, PerTypeMinimums, SessionCompactor,
-};
+use ghost_gateway::session::compaction::{CompactionConfig, PerTypeMinimums, SessionCompactor};
 
 // ── Trigger threshold ───────────────────────────────────────────────────
 
@@ -58,10 +56,7 @@ fn compaction_block_identifies_itself() {
 #[test]
 fn max_three_compaction_passes() {
     let config = CompactionConfig::default();
-    assert_eq!(
-        config.max_passes, 3,
-        "Default max passes should be 3"
-    );
+    assert_eq!(config.max_passes, 3, "Default max passes should be 3");
 }
 
 #[test]
@@ -77,12 +72,27 @@ fn exceeding_max_passes_returns_error() {
 #[test]
 fn per_type_minimums_defaults() {
     let minimums = PerTypeMinimums::default();
-    assert_eq!(minimums.convergence_event, 3, "ConvergenceEvent minimum should be L3");
-    assert_eq!(minimums.boundary_violation, 3, "BoundaryViolation minimum should be L3");
+    assert_eq!(
+        minimums.convergence_event, 3,
+        "ConvergenceEvent minimum should be L3"
+    );
+    assert_eq!(
+        minimums.boundary_violation, 3,
+        "BoundaryViolation minimum should be L3"
+    );
     assert_eq!(minimums.agent_goal, 2, "AgentGoal minimum should be L2");
-    assert_eq!(minimums.intervention_plan, 2, "InterventionPlan minimum should be L2");
-    assert_eq!(minimums.agent_reflection, 1, "AgentReflection minimum should be L1");
-    assert_eq!(minimums.proposal_record, 1, "ProposalRecord minimum should be L1");
+    assert_eq!(
+        minimums.intervention_plan, 2,
+        "InterventionPlan minimum should be L2"
+    );
+    assert_eq!(
+        minimums.agent_reflection, 1,
+        "AgentReflection minimum should be L1"
+    );
+    assert_eq!(
+        minimums.proposal_record, 1,
+        "ProposalRecord minimum should be L1"
+    );
     assert_eq!(minimums.other, 0, "Other minimum should be L0");
 }
 
@@ -127,6 +137,9 @@ fn prune_removes_tool_results() {
         r#"{"type": "tool_result", "content": "another output"}"#.to_string(),
     ];
     let result = SessionCompactor::prune_tool_results(&mut history);
-    assert_eq!(result.results_pruned, 2, "Should prune 2 tool_result entries");
+    assert_eq!(
+        result.results_pruned, 2,
+        "Should prune 2 tool_result entries"
+    );
     assert_eq!(history.len(), 2, "Should have 2 messages remaining");
 }

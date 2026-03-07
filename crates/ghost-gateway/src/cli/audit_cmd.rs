@@ -13,7 +13,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost audit query ───────────────────────────────────────────────────────
 
@@ -56,7 +56,12 @@ impl TableDisplay for AuditQueryResult {
                 e.timestamp, e.severity, agent, et, details
             );
         }
-        println!("\n{} entries (page {}/{})", self.entries.len(), self.page, self.page_size);
+        println!(
+            "\n{} entries (page {}/{})",
+            self.entries.len(),
+            self.page,
+            self.page_size
+        );
     }
 }
 
@@ -103,7 +108,12 @@ pub async fn run_query(args: AuditQueryArgs, backend: &CliBackend) -> Result<(),
             let page = body["page"].as_u64().unwrap_or(1) as u32;
             let page_size = body["page_size"].as_u64().unwrap_or(args.limit as u64) as u32;
 
-            let result = AuditQueryResult { entries, total, page, page_size };
+            let result = AuditQueryResult {
+                entries,
+                total,
+                page,
+                page_size,
+            };
             print_output(&result, args.output);
         }
         CliBackend::Direct { db, .. } => {
@@ -171,7 +181,11 @@ pub async fn run_export(args: AuditExportArgs, backend: &CliBackend) -> Result<(
         CliBackend::Direct { db, .. } => {
             let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
             let engine = AuditQueryEngine::new(&db);
-            let filter = AuditFilter { page: 1, page_size: 10_000, ..Default::default() };
+            let filter = AuditFilter {
+                page: 1,
+                page_size: 10_000,
+                ..Default::default()
+            };
             engine
                 .query(&filter)
                 .map_err(|e| CliError::Database(e.to_string()))?

@@ -28,7 +28,10 @@ fn attacker_accumulates_fleet_across_windows() {
         for _ in 0..3 {
             let child = Uuid::new_v4();
             let result = guard.register_spawn(attacker, child, window_start);
-            assert!(result.is_ok(), "day {day}: spawn should succeed within window");
+            assert!(
+                result.is_ok(),
+                "day {day}: spawn should succeed within window"
+            );
             total_spawned.push(child);
         }
     }
@@ -40,7 +43,10 @@ fn attacker_accumulates_fleet_across_windows() {
     // Verify the 4th spawn in the current window still fails:
     let now = start + Duration::days(29);
     let result = guard.register_spawn(attacker, Uuid::new_v4(), now);
-    assert!(result.is_err(), "4th spawn in current window should still fail");
+    assert!(
+        result.is_err(),
+        "4th spawn in current window should still fail"
+    );
 }
 
 // ── Identity churn: deregister + re-register same slot ──────────────────

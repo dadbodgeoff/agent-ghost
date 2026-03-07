@@ -1,11 +1,11 @@
 //! OAuth provider implementations for Google, GitHub, Slack, and Microsoft.
 
-pub mod google;
 pub mod github;
-pub mod slack;
+pub mod google;
 pub mod microsoft;
+pub mod slack;
 
-pub use google::GoogleOAuthProvider;
 pub use github::GitHubOAuthProvider;
-pub use slack::SlackOAuthProvider;
+pub use google::GoogleOAuthProvider;
 pub use microsoft::MicrosoftOAuthProvider;
+pub use slack::SlackOAuthProvider;

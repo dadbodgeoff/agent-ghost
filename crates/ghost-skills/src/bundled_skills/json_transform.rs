@@ -49,9 +49,9 @@ impl Skill for JsonTransformSkill {
                 )
             })?;
 
-        let data = input.get("data").ok_or_else(|| {
-            SkillError::InvalidInput("missing required field 'data'".into())
-        })?;
+        let data = input
+            .get("data")
+            .ok_or_else(|| SkillError::InvalidInput("missing required field 'data'".into()))?;
 
         match action {
             "get" => {
@@ -276,11 +276,7 @@ fn json_flatten(data: &serde_json::Value, prefix: &str) -> serde_json::Value {
 }
 
 /// Compare a JSON value against a condition.
-fn json_compare(
-    field: Option<&serde_json::Value>,
-    op: &str,
-    expected: &serde_json::Value,
-) -> bool {
+fn json_compare(field: Option<&serde_json::Value>, op: &str, expected: &serde_json::Value) -> bool {
     let field = match field {
         Some(v) => v,
         None => return false,
@@ -289,18 +285,26 @@ fn json_compare(
     match op {
         "eq" => field == expected,
         "ne" => field != expected,
-        "gt" => {
-            field.as_f64().zip(expected.as_f64()).map(|(a, b)| a > b).unwrap_or(false)
-        }
-        "lt" => {
-            field.as_f64().zip(expected.as_f64()).map(|(a, b)| a < b).unwrap_or(false)
-        }
-        "gte" => {
-            field.as_f64().zip(expected.as_f64()).map(|(a, b)| a >= b).unwrap_or(false)
-        }
-        "lte" => {
-            field.as_f64().zip(expected.as_f64()).map(|(a, b)| a <= b).unwrap_or(false)
-        }
+        "gt" => field
+            .as_f64()
+            .zip(expected.as_f64())
+            .map(|(a, b)| a > b)
+            .unwrap_or(false),
+        "lt" => field
+            .as_f64()
+            .zip(expected.as_f64())
+            .map(|(a, b)| a < b)
+            .unwrap_or(false),
+        "gte" => field
+            .as_f64()
+            .zip(expected.as_f64())
+            .map(|(a, b)| a >= b)
+            .unwrap_or(false),
+        "lte" => field
+            .as_f64()
+            .zip(expected.as_f64())
+            .map(|(a, b)| a <= b)
+            .unwrap_or(false),
         "contains" => {
             let needle = expected.as_str().unwrap_or("");
             field.as_str().map(|s| s.contains(needle)).unwrap_or(false)

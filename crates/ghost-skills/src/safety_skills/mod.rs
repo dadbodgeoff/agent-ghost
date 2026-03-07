@@ -12,11 +12,11 @@
 //! | `reflection_write`             | Agent writes structured self-reflection              |
 //! | `reflection_read`              | Agent reads its own past reflections                 |
 
-pub mod convergence_check;
-pub mod simulation_boundary_check;
 pub mod attachment_monitor;
-pub mod reflection_write;
+pub mod convergence_check;
 pub mod reflection_read;
+pub mod reflection_write;
+pub mod simulation_boundary_check;
 
 use crate::skill::Skill;
 

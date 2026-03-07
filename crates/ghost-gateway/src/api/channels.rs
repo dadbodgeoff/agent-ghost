@@ -19,10 +19,11 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 /// GET /api/channels — list all configured channels with status.
-pub async fn list_channels(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<serde_json::Value> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("list_channels", e))?;
+pub async fn list_channels(State(state): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_channels", e))?;
 
     // Query channels table; fall back to agents as implicit CLI channels if table missing.
     let channels: Vec<serde_json::Value> = match db.prepare(
@@ -81,7 +82,8 @@ pub async fn create_channel(
     Json(body): Json<CreateChannelRequest>,
 ) -> ApiResult<serde_json::Value> {
     let id = Uuid::now_v7().to_string();
-    let config_str = serde_json::to_string(&body.config.unwrap_or(serde_json::json!({}))).unwrap_or_else(|_| "{}".to_string());
+    let config_str = serde_json::to_string(&body.config.unwrap_or(serde_json::json!({})))
+        .unwrap_or_else(|_| "{}".to_string());
 
     let db = state.db.write().await;
     let _ = db.execute_batch(
@@ -96,7 +98,7 @@ pub async fn create_channel(
             message_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )"
+        )",
     );
 
     db.execute(
@@ -117,7 +119,9 @@ pub async fn reconnect_channel(
         "UPDATE channels SET status = 'connected', status_message = NULL, updated_at = datetime('now') WHERE id = ?1",
         [&channel_id],
     ).map_err(|e| ApiError::db_error("reconnect_channel", e))?;
-    Ok(Json(serde_json::json!({ "id": channel_id, "status": "reconnected" })))
+    Ok(Json(
+        serde_json::json!({ "id": channel_id, "status": "reconnected" }),
+    ))
 }
 
 /// DELETE /api/channels/:id
@@ -128,7 +132,9 @@ pub async fn delete_channel(
     let db = state.db.write().await;
     db.execute("DELETE FROM channels WHERE id = ?1", [&channel_id])
         .map_err(|e| ApiError::db_error("delete_channel", e))?;
-    Ok(Json(serde_json::json!({ "id": channel_id, "status": "deleted" })))
+    Ok(Json(
+        serde_json::json!({ "id": channel_id, "status": "deleted" }),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,10 +205,13 @@ pub async fn inject_message(
     let message_id = Uuid::now_v7();
 
     // 2. Broadcast the injection event via WebSocket for observability.
-    crate::api::websocket::broadcast_event(&state, crate::api::websocket::WsEvent::AgentStateChange {
-        agent_id: agent_id.to_string(),
-        new_state: format!("channel_inject:{channel_type}"),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        crate::api::websocket::WsEvent::AgentStateChange {
+            agent_id: agent_id.to_string(),
+            new_state: format!("channel_inject:{channel_type}"),
+        },
+    );
 
     // 3. Write audit entry for the injection.
     {

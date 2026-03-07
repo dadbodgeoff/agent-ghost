@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost skill list ────────────────────────────────────────────────────────
 
@@ -60,10 +60,7 @@ impl TableDisplay for SkillListResponse {
                 println!();
             }
             println!("Available Skills ({}):", self.available.len());
-            println!(
-                "  {:<20}  {:<10}  {}",
-                "NAME", "VERSION", "DESCRIPTION"
-            );
+            println!("  {:<20}  {:<10}  {}", "NAME", "VERSION", "DESCRIPTION");
             println!("  {}", "─".repeat(60));
             for s in &self.available {
                 let desc = &s.description[..s.description.len().min(40)];
@@ -137,7 +134,13 @@ pub async fn run_list(args: SkillListArgs, backend: &CliBackend) -> Result<(), C
         }
     };
 
-    print_output(&SkillListResponse { installed, available }, args.output);
+    print_output(
+        &SkillListResponse {
+            installed,
+            available,
+        },
+        args.output,
+    );
     Ok(())
 }
 
@@ -157,7 +160,10 @@ struct InstallResult {
 
 impl TableDisplay for InstallResult {
     fn print_table(&self) {
-        println!("Installed skill '{}' v{}: {}", self.name, self.version, self.status);
+        println!(
+            "Installed skill '{}' v{}: {}",
+            self.name, self.version, self.status
+        );
     }
 }
 
@@ -175,14 +181,8 @@ pub async fn run_install(args: SkillInstallArgs, backend: &CliBackend) -> Result
         .map_err(|e| CliError::Internal(format!("parse install response: {e}")))?;
 
     let result = InstallResult {
-        name: body["name"]
-            .as_str()
-            .unwrap_or(&args.path)
-            .to_string(),
-        version: body["version"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string(),
+        name: body["name"].as_str().unwrap_or(&args.path).to_string(),
+        version: body["version"].as_str().unwrap_or("unknown").to_string(),
         status: "installed".to_string(),
     };
 
@@ -267,7 +267,10 @@ pub async fn run_inspect(args: SkillInspectArgs, backend: &CliBackend) -> Result
                 args.name
             );
             let data = std::fs::read_to_string(&manifest_path).map_err(|_| {
-                CliError::NotFound(format!("skill '{}' not found in ~/.ghost/skills/", args.name))
+                CliError::NotFound(format!(
+                    "skill '{}' not found in ~/.ghost/skills/",
+                    args.name
+                ))
             })?;
             let v: serde_json::Value = serde_json::from_str(&data)
                 .map_err(|e| CliError::Internal(format!("parse manifest: {e}")))?;

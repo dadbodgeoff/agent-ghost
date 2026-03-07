@@ -8,9 +8,7 @@
  * the matching context is active.
  */
 
-import { isTauriEnvironment } from '$lib/platform/runtime';
-
-const isTauri = isTauriEnvironment();
+import { getRuntime } from '$lib/platform/runtime';
 
 export interface ShortcutBinding {
   key: string;          // e.g., "cmd+shift+k"
@@ -104,10 +102,9 @@ class ShortcutManager {
   }
 
   private async loadCustomBindings(): Promise<void> {
-    if (!isTauri) return;
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const custom = await invoke<ShortcutBinding[]>('read_keybindings');
+      const runtime = await getRuntime();
+      const custom = await runtime.readKeybindings() as ShortcutBinding[];
       for (const binding of custom) {
         const idx = this.bindings.findIndex(b => b.command === binding.command);
         if (idx >= 0) this.bindings[idx] = binding;

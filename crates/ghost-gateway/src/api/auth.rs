@@ -80,7 +80,10 @@ impl std::fmt::Debug for RevocationSet {
         let count = self.revoked.read().map(|s| s.len()).unwrap_or(0);
         f.debug_struct("RevocationSet")
             .field("revoked_count", &count)
-            .field("db_attached", &self.db_writer.read().map(|d| d.is_some()).unwrap_or(false))
+            .field(
+                "db_attached",
+                &self.db_writer.read().map(|d| d.is_some()).unwrap_or(false),
+            )
             .finish()
     }
 }
@@ -299,9 +302,7 @@ fn extract_refresh_cookie(request: &Request<Body>) -> Option<String> {
         .and_then(|cookies| {
             cookies.split(';').find_map(|cookie| {
                 let cookie = cookie.trim();
-                cookie
-                    .strip_prefix("ghost_refresh=")
-                    .map(|v| v.to_string())
+                cookie.strip_prefix("ghost_refresh=").map(|v| v.to_string())
             })
         })
 }
@@ -316,10 +317,7 @@ fn extract_refresh_cookie(request: &Request<Body>) -> Option<String> {
 /// - `POST /api/auth/refresh` (token refresh — uses cookie, not Bearer)
 /// - `GET /api/ws` (WebSocket has its own auth in the handler)
 /// - `GET /.well-known/agent.json` and `POST /a2a` (mesh has Ed25519 auth)
-pub async fn auth_middleware(
-    request: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn auth_middleware(request: Request<Body>, next: Next) -> Response {
     let path = request.uri().path();
 
     // Skip auth for public endpoints.
@@ -329,6 +327,7 @@ pub async fn auth_middleware(
             | "/api/ready"
             | "/api/auth/login"
             | "/api/auth/refresh"
+            | "/api/auth/logout"
             | "/api/openapi.json"
             | "/api/ws"
             | "/.well-known/agent.json"
@@ -357,7 +356,10 @@ pub async fn auth_middleware(
                     .into_response();
             }
             // Fallback: no config injected — treat as no-auth dev mode.
-            tracing::warn!(path, "Auth disabled — no AuthConfig injected. Granting dev role.");
+            tracing::warn!(
+                path,
+                "Auth disabled — no AuthConfig injected. Granting dev role."
+            );
             let mut request = request;
             request.extensions_mut().insert(Claims::no_auth_fallback());
             return next.run(request).await;
@@ -395,7 +397,10 @@ pub async fn auth_middleware(
                 .into_response();
         }
 
-        tracing::warn!(path, "Auth disabled — no auth configured. Granting dev role.");
+        tracing::warn!(
+            path,
+            "Auth disabled — no auth configured. Granting dev role."
+        );
         let mut request = request;
         request.extensions_mut().insert(Claims::no_auth_fallback());
         return next.run(request).await;
@@ -488,7 +493,6 @@ pub async fn auth_middleware(
     (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
 }
 
-
 // ─── JWT Auth Endpoints ─────────────────────────────────────────────────────
 
 /// Login request body.
@@ -505,6 +509,15 @@ pub struct LoginResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: u64,
+}
+
+/// Authenticated session summary resolved by the auth middleware.
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    pub authenticated: bool,
+    pub subject: String,
+    pub role: String,
+    pub mode: &'static str,
 }
 
 /// Refresh token TTL: 7 days in seconds.
@@ -590,9 +603,10 @@ pub async fn login(
             .into_response();
 
         // Set httpOnly refresh cookie.
-        if let Ok(val) =
-            axum::http::HeaderValue::from_str(&build_refresh_cookie(&refresh_token, REFRESH_TOKEN_TTL))
-        {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&build_refresh_cookie(
+            &refresh_token,
+            REFRESH_TOKEN_TTL,
+        )) {
             response.headers_mut().insert("set-cookie", val);
         }
 
@@ -655,15 +669,14 @@ pub async fn refresh(
     };
 
     // Extract refresh token from cookie (preferred) or Authorization header (fallback).
-    let refresh_token = extract_refresh_cookie(&request)
-        .or_else(|| {
-            request
-                .headers()
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(extract_bearer)
-                .map(|s| s.to_string())
-        });
+    let refresh_token = extract_refresh_cookie(&request).or_else(|| {
+        request
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(extract_bearer)
+            .map(|s| s.to_string())
+    });
 
     let Some(refresh_token) = refresh_token else {
         return (
@@ -758,13 +771,35 @@ pub async fn refresh(
         .into_response();
 
     // Set rotated refresh cookie.
-    if let Ok(val) =
-        axum::http::HeaderValue::from_str(&build_refresh_cookie(&new_refresh_token, REFRESH_TOKEN_TTL))
-    {
+    if let Ok(val) = axum::http::HeaderValue::from_str(&build_refresh_cookie(
+        &new_refresh_token,
+        REFRESH_TOKEN_TTL,
+    )) {
         response.headers_mut().insert("set-cookie", val);
     }
 
     response
+}
+
+/// GET /api/auth/session — return the authenticated session resolved by middleware.
+pub async fn session(
+    axum::Extension(config): axum::Extension<Arc<AuthConfig>>,
+    claims: axum::Extension<Claims>,
+) -> impl IntoResponse {
+    let mode = if config.jwt_secret.is_some() {
+        "jwt"
+    } else if config.legacy_token.is_some() {
+        "legacy"
+    } else {
+        "none"
+    };
+
+    Json(SessionResponse {
+        authenticated: true,
+        subject: claims.sub.clone(),
+        role: claims.role.clone(),
+        mode,
+    })
 }
 
 /// POST /api/auth/logout — revoke the current token's jti and clear refresh cookie.
@@ -817,4 +852,203 @@ pub async fn logout(
     }
 
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::{get, post};
+    use axum::Extension;
+    use axum::Router;
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    fn legacy_auth_router() -> Router {
+        let auth_config = Arc::new(AuthConfig {
+            jwt_secret: None,
+            legacy_token: Some("test-token".into()),
+            is_production: false,
+        });
+        let revocation_set = Arc::new(RevocationSet::new());
+
+        Router::new()
+            .route("/api/auth/session", get(session))
+            .route("/api/auth/logout", post(logout))
+            .layer(axum::middleware::from_fn(auth_middleware))
+            .layer(Extension(auth_config))
+            .layer(Extension(revocation_set))
+    }
+
+    fn jwt_auth_router() -> (Router, Arc<RevocationSet>, String) {
+        let secret = "jwt-test-secret".to_string();
+        let auth_config = Arc::new(AuthConfig {
+            jwt_secret: Some(secret.clone()),
+            legacy_token: None,
+            is_production: false,
+        });
+        let revocation_set = Arc::new(RevocationSet::new());
+
+        let router = Router::new()
+            .route("/api/auth/session", get(session))
+            .route("/api/auth/logout", post(logout))
+            .layer(axum::middleware::from_fn(auth_middleware))
+            .layer(Extension(auth_config))
+            .layer(Extension(revocation_set.clone()));
+
+        (router, revocation_set, secret)
+    }
+
+    fn jwt_for(secret: &str, sub: &str, role: &str, jti: &str) -> String {
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        encode_jwt(
+            &Claims {
+                sub: sub.into(),
+                role: role.into(),
+                exp: now + 3600,
+                iat: now,
+                jti: jti.into(),
+            },
+            secret,
+        )
+        .expect("jwt should encode")
+    }
+
+    #[tokio::test]
+    async fn session_requires_bearer_token_when_auth_is_enabled() {
+        let response = legacy_auth_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn session_returns_authenticated_summary_for_valid_legacy_token() {
+        let response = legacy_auth_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/session")
+                    .header("authorization", "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["authenticated"], true);
+        assert_eq!(payload["subject"], "legacy-token-user");
+        assert_eq!(payload["role"], "admin");
+        assert_eq!(payload["mode"], "legacy");
+    }
+
+    #[tokio::test]
+    async fn session_returns_authenticated_summary_for_valid_jwt_token() {
+        let (router, _revocation_set, secret) = jwt_auth_router();
+        let access_token = jwt_for(&secret, "jwt-user", "operator", "jwt-session-jti");
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/session")
+                    .header("authorization", format!("Bearer {access_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["authenticated"], true);
+        assert_eq!(payload["subject"], "jwt-user");
+        assert_eq!(payload["role"], "operator");
+        assert_eq!(payload["mode"], "jwt");
+    }
+
+    #[tokio::test]
+    async fn logout_always_clears_refresh_cookie() {
+        let response = legacy_auth_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/logout")
+                    .header("cookie", "ghost_refresh=stale-refresh-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let clear_cookie = response
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert!(clear_cookie.contains("ghost_refresh="));
+        assert!(clear_cookie.contains("Max-Age=0"));
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_jwt_access_and_refresh_tokens() {
+        let (router, revocation_set, secret) = jwt_auth_router();
+        let access_token = jwt_for(&secret, "jwt-user", "admin", "access-jti");
+        let refresh_token = jwt_for(&secret, "jwt-user", "admin", "refresh-jti");
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/logout")
+                    .header("authorization", format!("Bearer {access_token}"))
+                    .header("cookie", format!("ghost_refresh={refresh_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let clear_cookie = response
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert!(clear_cookie.contains("ghost_refresh="));
+        assert!(clear_cookie.contains("Max-Age=0"));
+        assert!(revocation_set.is_revoked("access-jti"));
+        assert!(revocation_set.is_revoked("refresh-jti"));
+
+        let session_response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/session")
+                    .header("authorization", format!("Bearer {access_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(session_response.status(), StatusCode::UNAUTHORIZED);
+    }
 }

@@ -75,8 +75,8 @@ Should it be formal or casual? Concise or verbose? Technical or approachable?
             });
         }
 
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| SoulError::ReadError(e.to_string()))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| SoulError::ReadError(e.to_string()))?;
 
         if content.is_empty() {
             return Err(SoulError::Empty);

@@ -5,12 +5,13 @@
 //!
 //! Ref: ADE_DESIGN_PLAN §17.11, tasks.md T-2.1.9
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS workflows (
             id          TEXT PRIMARY KEY,
             name        TEXT NOT NULL,
@@ -23,7 +24,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_workflows_name ON workflows(name);
         CREATE INDEX IF NOT EXISTS idx_workflows_created_by ON workflows(created_by);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(format!("v021 workflows: {e}")))?;
 
     Ok(())

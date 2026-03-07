@@ -1,22 +1,22 @@
 //! Tests for cortex-convergence: 8 signals, sliding windows, composite scoring,
 //! baseline, profiles, and convergence-aware filtering.
 
-use cortex_convergence::signals::*;
-use cortex_convergence::signals::session_duration::SessionDurationSignal;
-use cortex_convergence::signals::inter_session_gap::InterSessionGapSignal;
-use cortex_convergence::signals::response_latency::ResponseLatencySignal;
-use cortex_convergence::signals::vocabulary_convergence::VocabularyConvergenceSignal;
-use cortex_convergence::signals::goal_boundary_erosion::GoalBoundaryErosionSignal;
-use cortex_convergence::signals::initiative_balance::InitiativeBalanceSignal;
-use cortex_convergence::signals::disengagement_resistance::DisengagementResistanceSignal;
-use cortex_convergence::signals::behavioral_anomaly::BehavioralAnomalySignal;
-use cortex_convergence::windows::sliding_window::*;
+use cortex_convergence::filtering::convergence_aware_filter::ConvergenceAwareFilter;
 use cortex_convergence::scoring::baseline::BaselineState;
 use cortex_convergence::scoring::composite::*;
 use cortex_convergence::scoring::profiles::ConvergenceProfile;
-use cortex_convergence::filtering::convergence_aware_filter::ConvergenceAwareFilter;
-use cortex_core::memory::{BaseMemory, Importance};
+use cortex_convergence::signals::behavioral_anomaly::BehavioralAnomalySignal;
+use cortex_convergence::signals::disengagement_resistance::DisengagementResistanceSignal;
+use cortex_convergence::signals::goal_boundary_erosion::GoalBoundaryErosionSignal;
+use cortex_convergence::signals::initiative_balance::InitiativeBalanceSignal;
+use cortex_convergence::signals::inter_session_gap::InterSessionGapSignal;
+use cortex_convergence::signals::response_latency::ResponseLatencySignal;
+use cortex_convergence::signals::session_duration::SessionDurationSignal;
+use cortex_convergence::signals::vocabulary_convergence::VocabularyConvergenceSignal;
+use cortex_convergence::signals::*;
+use cortex_convergence::windows::sliding_window::*;
 use cortex_core::memory::types::MemoryType;
+use cortex_core::memory::{BaseMemory, Importance};
 
 // ── Helper ──────────────────────────────────────────────────────────────
 
@@ -79,7 +79,8 @@ fn all_signals_produce_values_in_0_1() {
         assert!(
             (0.0..=1.0).contains(&val),
             "signal {} produced {} which is outside [0,1]",
-            signal.name(), val
+            signal.name(),
+            val
         );
     }
 }
@@ -128,7 +129,11 @@ fn s5_throttled_to_every_5th_message() {
             ..base_input.clone()
         };
         let val = s5.compute(&input);
-        assert!((val - val0).abs() < 1e-10, "index {} should return cached value", i);
+        assert!(
+            (val - val0).abs() < 1e-10,
+            "index {} should return cached value",
+            i
+        );
     }
 
     // message_index=5 → recomputes
@@ -140,7 +145,10 @@ fn s5_throttled_to_every_5th_message() {
     };
     let val5 = s5.compute(&input5);
     // Different input, should produce different value
-    assert!((val5 - val0).abs() > 1e-10 || val5 == 0.0, "should recompute at index 5");
+    assert!(
+        (val5 - val0).abs() > 1e-10 || val5 == 0.0,
+        "should recompute at index 5"
+    );
 }
 
 // ── S4/S5 privacy level requirements ────────────────────────────────────
@@ -198,22 +206,37 @@ fn sliding_window_partitions_correctly() {
         }
         window.end_session();
     }
-    assert!(window.micro.is_empty(), "micro should be cleared after end_session");
+    assert!(
+        window.micro.is_empty(),
+        "micro should be cleared after end_session"
+    );
     assert_eq!(window.meso.len(), 7, "meso should hold last 7 sessions");
-    assert_eq!(window.r#macro.len(), 10, "macro should hold all 10 sessions");
+    assert_eq!(
+        window.r#macro.len(),
+        10,
+        "macro should hold all 10 sessions"
+    );
 }
 
 #[test]
 fn linear_regression_slope_constant_data() {
     let data = vec![5.0, 5.0, 5.0, 5.0, 5.0];
     let slope = linear_regression_slope(&data);
-    assert!((slope).abs() < 1e-10, "constant data should have slope ~0, got {}", slope);
+    assert!(
+        (slope).abs() < 1e-10,
+        "constant data should have slope ~0, got {}",
+        slope
+    );
 }
 
 #[test]
 fn z_score_from_baseline_at_mean() {
     let z = z_score_from_baseline(5.0, 5.0, 1.0);
-    assert!((z).abs() < 1e-10, "value at mean should have z-score ~0, got {}", z);
+    assert!(
+        (z).abs() < 1e-10,
+        "value at mean should have z-score ~0, got {}",
+        z
+    );
 }
 
 #[test]
@@ -233,7 +256,10 @@ fn baseline_is_calibrating_for_first_10_sessions() {
         assert!(baseline.is_calibrating);
     }
     baseline.record_session(&[0.5; 8]);
-    assert!(!baseline.is_calibrating, "should stop calibrating after 10 sessions");
+    assert!(
+        !baseline.is_calibrating,
+        "should stop calibrating after 10 sessions"
+    );
 }
 
 #[test]
@@ -251,7 +277,6 @@ fn baseline_frozen_after_establishment() {
         "baseline should not change after establishment"
     );
 }
-
 
 // ── Composite scoring tests ─────────────────────────────────────────────
 
@@ -280,7 +305,11 @@ fn critical_override_session_duration_6h() {
     // S1 = 1.0 (6h), all others 0
     let signals = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let result = scorer.score(&signals, &baseline, None, None);
-    assert!(result.level >= 2, "session >6h should force minimum level 2, got {}", result.level);
+    assert!(
+        result.level >= 2,
+        "session >6h should force minimum level 2, got {}",
+        result.level
+    );
     assert!(result.critical_override);
 }
 
@@ -291,7 +320,11 @@ fn critical_override_inter_session_gap_short() {
     // S2 = 1.0 (0 gap), all others 0
     let signals = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let result = scorer.score(&signals, &baseline, None, None);
-    assert!(result.level >= 2, "gap <5min should force minimum level 2, got {}", result.level);
+    assert!(
+        result.level >= 2,
+        "gap <5min should force minimum level 2, got {}",
+        result.level
+    );
 }
 
 #[test]
@@ -301,7 +334,11 @@ fn critical_override_vocab_convergence_high() {
     // S4 = 0.86 (>0.85), all others 0
     let signals = [0.0, 0.0, 0.0, 0.86, 0.0, 0.0, 0.0, 0.0];
     let result = scorer.score(&signals, &baseline, None, None);
-    assert!(result.level >= 2, "vocab >0.85 should force minimum level 2, got {}", result.level);
+    assert!(
+        result.level >= 2,
+        "vocab >0.85 should force minimum level 2, got {}",
+        result.level
+    );
 }
 
 // ── Level boundary tests ────────────────────────────────────────────────
@@ -343,7 +380,10 @@ fn meso_amplification_still_clamped() {
     let signals = [0.95; 8];
     let meso_data = vec![0.8, 0.85, 0.9, 0.95]; // increasing trend
     let result = scorer.score(&signals, &baseline, Some(&meso_data), None);
-    assert!(result.score <= 1.0, "score after meso amplification should be <= 1.0");
+    assert!(
+        result.score <= 1.0,
+        "score after meso amplification should be <= 1.0"
+    );
 }
 
 // ── Filter tests ────────────────────────────────────────────────────────
@@ -370,7 +410,9 @@ fn filter_score_0_35_filters_attachment_indicators() {
     let filtered = ConvergenceAwareFilter::filter(memories, 0.35);
     assert_eq!(filtered.len(), 3);
     assert!(
-        !filtered.iter().any(|m| matches!(m.memory_type, MemoryType::AttachmentIndicator)),
+        !filtered
+            .iter()
+            .any(|m| matches!(m.memory_type, MemoryType::AttachmentIndicator)),
         "tier 1 should filter out AttachmentIndicator"
     );
 }
@@ -390,8 +432,15 @@ fn filter_score_0_8_returns_minimal() {
     assert_eq!(filtered.len(), 4);
     for m in &filtered {
         assert!(
-            matches!(m.memory_type, MemoryType::Core | MemoryType::Procedural | MemoryType::Semantic | MemoryType::Reference),
-            "unexpected type {:?} in minimal filter", m.memory_type
+            matches!(
+                m.memory_type,
+                MemoryType::Core
+                    | MemoryType::Procedural
+                    | MemoryType::Semantic
+                    | MemoryType::Reference
+            ),
+            "unexpected type {:?} in minimal filter",
+            m.memory_type
         );
     }
 }
@@ -401,8 +450,14 @@ fn filter_score_0_8_returns_minimal() {
 #[test]
 fn standard_profile_has_differentiated_weights() {
     let scorer = ConvergenceProfile::Standard.scorer();
-    let all_equal = scorer.weights.iter().all(|&w| (w - scorer.weights[0]).abs() < 1e-10);
-    assert!(!all_equal, "standard profile should have differentiated weights");
+    let all_equal = scorer
+        .weights
+        .iter()
+        .all(|&w| (w - scorer.weights[0]).abs() < 1e-10);
+    assert!(
+        !all_equal,
+        "standard profile should have differentiated weights"
+    );
 }
 
 #[test]
@@ -421,7 +476,12 @@ fn all_profiles_have_8_weights() {
         ConvergenceProfile::Productivity,
     ] {
         let scorer = profile.scorer();
-        assert_eq!(scorer.weights.len(), 8, "{:?} should have 8 weights", profile);
+        assert_eq!(
+            scorer.weights.len(),
+            8,
+            "{:?} should have 8 weights",
+            profile
+        );
     }
 }
 
@@ -433,7 +493,10 @@ fn all_signals_nan_no_panic() {
     let baseline = BaselineState::default();
     let signals = [f64::NAN; 8];
     let result = scorer.score(&signals, &baseline, None, None);
-    assert!(!result.score.is_nan(), "NaN signals should not produce NaN score");
+    assert!(
+        !result.score.is_nan(),
+        "NaN signals should not produce NaN score"
+    );
     assert!(result.score >= 0.0 && result.score <= 1.0);
 }
 
@@ -463,7 +526,9 @@ fn empty_session_history_signals_return_zero() {
         let val = signal.compute(&input);
         assert!(
             (0.0..=1.0).contains(&val),
-            "signal {} with empty input produced {}", signal.name(), val
+            "signal {} with empty input produced {}",
+            signal.name(),
+            val
         );
     }
 }
@@ -486,7 +551,11 @@ fn from_7_weights_produces_valid_8_weight_scorer() {
     assert_eq!(scorer.weights.len(), 8);
     let total: f64 = scorer.weights.iter().sum();
     // Total should be approximately 1.0
-    assert!((total - 1.0).abs() < 0.01, "weights should sum to ~1.0, got {}", total);
+    assert!(
+        (total - 1.0).abs() < 0.01,
+        "weights should sum to ~1.0, got {}",
+        total
+    );
 }
 
 // ── Proptest ────────────────────────────────────────────────────────────

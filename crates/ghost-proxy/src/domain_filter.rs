@@ -37,7 +37,9 @@ impl DomainFilter {
     /// Returns true if the domain should be intercepted for ITP emission.
     pub fn should_intercept(&self, domain: &str) -> bool {
         let normalized = domain.to_lowercase();
-        self.domains.iter().any(|d| normalized == *d || normalized.ends_with(&format!(".{}", d)))
+        self.domains
+            .iter()
+            .any(|d| normalized == *d || normalized.ends_with(&format!(".{}", d)))
     }
 
     /// Returns the list of allowed domains.

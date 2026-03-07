@@ -1,0 +1,19 @@
+{
+  "dashboard_runtime_boundary": {
+    "forbidden_module_tokens": [
+      "@tauri-apps/",
+      "tauri-pty"
+    ],
+    "allowed_path_prefixes": [
+      "dashboard/src/lib/platform/"
+    ]
+  },
+  "dashboard_transport_boundary": {
+    "allowed_fetch_paths": [
+      "dashboard/src/service-worker.ts"
+    ],
+    "allowed_websocket_paths": [
+      "dashboard/src/lib/stores/websocket.svelte.ts"
+    ]
+  }
+}

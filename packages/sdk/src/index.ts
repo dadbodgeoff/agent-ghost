@@ -73,7 +73,7 @@ export type { HealthStatus, ReadyStatus } from './health.js';
 
 // ── Auth ──
 export { AuthAPI } from './auth.js';
-export type { LoginParams, AuthTokenResponse, LogoutResponse } from './auth.js';
+export type { LoginParams, AuthTokenResponse, LogoutResponse, SessionResponse } from './auth.js';
 
 // ── Audit ──
 export { AuditAPI } from './audit.js';
@@ -244,19 +244,6 @@ export type {
   StudioRunResult,
 } from './studio.js';
 
-// ── Approvals ──
-export { ApprovalsAPI } from './approvals.js';
-export type {
-  Approval,
-  ApprovalDetails,
-  ApprovalRiskLevel,
-  ApprovalStatus,
-  ApprovalType,
-  ListApprovalsParams,
-  ListApprovalsResult,
-  ApproveApprovalParams,
-} from './approvals.js';
-
 // ── PC Control ──
 export { PcControlAPI } from './pc-control.js';
 export type {
@@ -289,5 +276,6 @@ export type {
 export { GhostWebSocket } from './websocket.js';
 export type { WsEvent, GhostWebSocketOptions } from './websocket.js';
 
-// ── Generated OpenAPI Types ──
-export type { paths, components, operations } from './generated-types.js';
+// Generated OpenAPI types are intentionally not exported from the public SDK
+// surface until the schema/codegen loop is treated as a separately governed
+// artifact with its own compatibility guarantees.

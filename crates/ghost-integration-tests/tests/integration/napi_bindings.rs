@@ -3,8 +3,7 @@
 //! Validates cortex-napi types serialize correctly for TypeScript consumers.
 
 use cortex_napi::{
-    ConvergenceStateBinding, SignalArrayBinding, InterventionBinding,
-    ProposalBinding, level_name,
+    level_name, ConvergenceStateBinding, InterventionBinding, ProposalBinding, SignalArrayBinding,
 };
 
 /// ConvergenceStateBinding round-trip serialization.

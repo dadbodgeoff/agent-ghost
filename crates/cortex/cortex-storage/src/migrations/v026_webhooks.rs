@@ -1,8 +1,8 @@
 //! Migration v026: webhooks table for webhook configuration (T-4.3.1).
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -17,7 +17,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_webhooks_active ON webhooks(active);"
+        CREATE INDEX IF NOT EXISTS idx_webhooks_active ON webhooks(active);",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 

@@ -31,18 +31,30 @@ use crate::audit;
 pub struct ListProcessesSkill;
 
 impl ListProcessesSkill {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for ListProcessesSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Skill for ListProcessesSkill {
-    fn name(&self) -> &str { "list_processes" }
-    fn description(&self) -> &str { "List running processes" }
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn name(&self) -> &str {
+        "list_processes"
+    }
+    fn description(&self) -> &str {
+        "List running processes"
+    }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let filter = input.get("app").and_then(|v| v.as_str());
@@ -51,27 +63,35 @@ impl Skill for ListProcessesSkill {
         let mut sys = System::new();
         sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
-        let mut processes: Vec<serde_json::Value> = sys.processes()
+        let mut processes: Vec<serde_json::Value> = sys
+            .processes()
             .values()
             .filter(|p| {
                 if let Some(f) = filter {
-                    p.name().to_string_lossy().to_lowercase().contains(&f.to_lowercase())
+                    p.name()
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .contains(&f.to_lowercase())
                 } else {
                     true
                 }
             })
             .take(limit)
-            .map(|p| serde_json::json!({
-                "pid": p.pid().as_u32(),
-                "name": p.name().to_string_lossy(),
-                "cpu_usage": p.cpu_usage(),
-                "memory_kb": p.memory() / 1024,
-            }))
+            .map(|p| {
+                serde_json::json!({
+                    "pid": p.pid().as_u32(),
+                    "name": p.name().to_string_lossy(),
+                    "cpu_usage": p.cpu_usage(),
+                    "memory_kb": p.memory() / 1024,
+                })
+            })
             .collect();
 
         // Sort by memory descending for usability.
         processes.sort_by(|a, b| {
-            b["memory_kb"].as_u64().unwrap_or(0)
+            b["memory_kb"]
+                .as_u64()
+                .unwrap_or(0)
                 .cmp(&a["memory_kb"].as_u64().unwrap_or(0))
         });
 
@@ -82,7 +102,14 @@ impl Skill for ListProcessesSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "list_processes", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "list_processes",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -107,7 +134,12 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     #[test]
@@ -127,7 +159,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = ListProcessesSkill::new();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"limit": 3})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"limit": 3}))
+            .unwrap();
         assert!(result["processes"].as_array().unwrap().len() <= 3);
     }
 
@@ -137,7 +171,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = ListProcessesSkill::new();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"limit": 1})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"limit": 1}))
+            .unwrap();
         let procs = result["processes"].as_array().unwrap();
         if let Some(p) = procs.first() {
             assert!(p.get("pid").is_some());

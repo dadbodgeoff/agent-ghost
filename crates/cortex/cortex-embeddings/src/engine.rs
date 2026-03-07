@@ -109,7 +109,7 @@ impl EmbeddingEngine {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use cortex_core::memory::{Importance, types::MemoryType};
+    use cortex_core::memory::{types::MemoryType, Importance};
 
     fn default_engine() -> EmbeddingEngine {
         EmbeddingEngine::new(EmbeddingConfig {

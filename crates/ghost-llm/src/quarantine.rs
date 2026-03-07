@@ -325,12 +325,17 @@ impl ContentQuarantine {
                 if self.config.compress_all_tool_outputs {
                     true
                 } else {
-                    self.config.content_types.iter().any(|ct| ct == content_type)
+                    self.config
+                        .content_types
+                        .iter()
+                        .any(|ct| ct == content_type)
                 }
             }
-            CompressionMode::SecurityOnly => {
-                self.config.content_types.iter().any(|ct| ct == content_type)
-            }
+            CompressionMode::SecurityOnly => self
+                .config
+                .content_types
+                .iter()
+                .any(|ct| ct == content_type),
         }
     }
 
@@ -368,7 +373,10 @@ impl ContentQuarantine {
             }
         }
 
-        let compressed = self.quarantined_llm.extract(content, extraction_prompt).await?;
+        let compressed = self
+            .quarantined_llm
+            .extract(content, extraction_prompt)
+            .await?;
         let compressed_tokens = self.counter.count(&compressed);
 
         // If compression made it larger, return original
@@ -596,10 +604,7 @@ mod tests {
         };
         let cq = ContentQuarantine::new(provider, config);
         let small_input = "hello world";
-        let (result, stats) = cq
-            .quarantine_content(small_input, "Extract")
-            .await
-            .unwrap();
+        let (result, stats) = cq.quarantine_content(small_input, "Extract").await.unwrap();
         assert_eq!(result, small_input);
         assert_eq!(stats.original_tokens, stats.compressed_tokens);
     }
@@ -681,10 +686,7 @@ mod tests {
         };
         let cq = ContentQuarantine::new(provider, config);
         let short_input = "hi";
-        let (result, stats) = cq
-            .quarantine_content(short_input, "Extract")
-            .await
-            .unwrap();
+        let (result, stats) = cq.quarantine_content(short_input, "Extract").await.unwrap();
         // Should return original since compression made it larger
         assert_eq!(result, short_input);
         assert_eq!(stats.original_tokens, stats.compressed_tokens);

@@ -4,8 +4,7 @@
 
 use chrono::{Duration, Utc};
 use ghost_oauth::types::{
-    ApiRequest, ApiResponse, ConnectionInfo, ConnectionStatus, OAuthRefId, ProviderConfig,
-    TokenSet,
+    ApiRequest, ApiResponse, ConnectionInfo, ConnectionStatus, OAuthRefId, ProviderConfig, TokenSet,
 };
 use secrecy::SecretString;
 use std::collections::BTreeMap;
@@ -67,8 +66,14 @@ fn token_set_debug_redacts_secrets() {
         scopes: vec!["read".into()],
     };
     let debug = format!("{ts:?}");
-    assert!(!debug.contains("super-secret-token"), "access_token leaked in Debug");
-    assert!(!debug.contains("super-secret-refresh"), "refresh_token leaked in Debug");
+    assert!(
+        !debug.contains("super-secret-token"),
+        "access_token leaked in Debug"
+    );
+    assert!(
+        !debug.contains("super-secret-refresh"),
+        "refresh_token leaked in Debug"
+    );
     assert!(debug.contains("[REDACTED]"), "Debug should show [REDACTED]");
 }
 
@@ -88,7 +93,10 @@ fn api_request_deterministic_headers() {
 
     let json1 = serde_json::to_string(&req).expect("serialize 1");
     let json2 = serde_json::to_string(&req).expect("serialize 2");
-    assert_eq!(json1, json2, "BTreeMap headers should produce deterministic JSON");
+    assert_eq!(
+        json1, json2,
+        "BTreeMap headers should produce deterministic JSON"
+    );
 }
 
 /// ApiResponse round-trip.

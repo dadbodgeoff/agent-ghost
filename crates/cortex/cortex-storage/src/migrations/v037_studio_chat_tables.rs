@@ -5,9 +5,9 @@
 //! - studio_chat_messages: per-session message history
 //! - studio_chat_safety_audit: safety pipeline audit trail per message
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
@@ -20,7 +20,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             max_tokens  INTEGER NOT NULL DEFAULT 4096,
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-        );"
+        );",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
@@ -34,7 +34,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             safety_status TEXT NOT NULL DEFAULT 'clean',
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX idx_studio_msg_session ON studio_chat_messages(session_id, created_at);"
+        CREATE INDEX idx_studio_msg_session ON studio_chat_messages(session_id, created_at);",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 
@@ -48,7 +48,7 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
             detail      TEXT,
             created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX idx_studio_safety_session ON studio_chat_safety_audit(session_id);"
+        CREATE INDEX idx_studio_safety_session ON studio_chat_safety_audit(session_id);",
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
 

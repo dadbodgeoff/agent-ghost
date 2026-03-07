@@ -38,7 +38,11 @@ mod schema_mismatch_tests {
             &[1u8; 32],
             &[0u8; 32],
         );
-        assert!(result.is_ok(), "INSERT into convergence_scores should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "INSERT into convergence_scores should succeed: {:?}",
+            result.err()
+        );
     }
 
     /// Finding #1: Verify the inserted score can be read back correctly.
@@ -80,14 +84,32 @@ mod schema_mismatch_tests {
     fn convergence_score_duplicate_pk_rejected() {
         let conn = setup_test_db();
         cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "dup-001", "agent-1", Some("s1"), 0.5, "[]", 1, "standard",
-            "2026-02-28T12:00:00Z", &[0u8; 32], &[0u8; 32],
+            &conn,
+            "dup-001",
+            "agent-1",
+            Some("s1"),
+            0.5,
+            "[]",
+            1,
+            "standard",
+            "2026-02-28T12:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
         )
         .unwrap();
 
         let result = cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "dup-001", "agent-1", Some("s1"), 0.6, "[]", 2, "standard",
-            "2026-02-28T12:01:00Z", &[1u8; 32], &[0u8; 32],
+            &conn,
+            "dup-001",
+            "agent-1",
+            Some("s1"),
+            0.6,
+            "[]",
+            2,
+            "standard",
+            "2026-02-28T12:01:00Z",
+            &[1u8; 32],
+            &[0u8; 32],
         );
         assert!(result.is_err(), "Duplicate PK should be rejected");
     }
@@ -113,7 +135,11 @@ mod schema_mismatch_tests {
                 vec![0u8; 32],
             ],
         );
-        assert!(result.is_ok(), "INSERT into itp_events should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "INSERT into itp_events should succeed: {:?}",
+            result.err()
+        );
     }
 
     /// Finding #2: Verify the old column names (`agent_id`, `payload`) fail.
@@ -134,7 +160,10 @@ mod schema_mismatch_tests {
                 vec![0u8; 32],
             ],
         );
-        assert!(result.is_err(), "Old column names (agent_id, payload) should be rejected by schema");
+        assert!(
+            result.is_err(),
+            "Old column names (agent_id, payload) should be rejected by schema"
+        );
     }
 
     /// Finding #2: itp_events without `id` PK should fail.
@@ -173,23 +202,36 @@ mod schema_mismatch_tests {
              timestamp, event_hash, previous_hash) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
-                "evt-s1", "session-1", "SessionStart", "agent-alpha",
-                "2026-02-28T10:00:00Z", vec![1u8; 32], vec![0u8; 32],
+                "evt-s1",
+                "session-1",
+                "SessionStart",
+                "agent-alpha",
+                "2026-02-28T10:00:00Z",
+                vec![1u8; 32],
+                vec![0u8; 32],
             ],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO itp_events (id, session_id, event_type, sender, \
              timestamp, event_hash, previous_hash) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
-                "evt-s2", "session-1", "InteractionMessage", "agent-alpha",
-                "2026-02-28T10:05:00Z", vec![2u8; 32], vec![1u8; 32],
+                "evt-s2",
+                "session-1",
+                "InteractionMessage",
+                "agent-alpha",
+                "2026-02-28T10:05:00Z",
+                vec![2u8; 32],
+                vec![1u8; 32],
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // The sessions query groups by session_id and uses GROUP_CONCAT(DISTINCT sender)
-        let mut stmt = conn.prepare(
-            "SELECT session_id, \
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, \
                     MIN(timestamp) as started_at, \
                     MAX(timestamp) as last_event_at, \
                     COUNT(*) as event_count, \
@@ -198,7 +240,8 @@ mod schema_mismatch_tests {
              GROUP BY session_id \
              ORDER BY started_at DESC \
              LIMIT 100",
-        ).unwrap();
+            )
+            .unwrap();
 
         let sessions: Vec<(String, String, i64, String)> = stmt
             .query_map([], |row| {
@@ -229,7 +272,9 @@ mod bootstrap_value_tests {
     /// Finding #15: Agent capabilities from config must be propagated.
     #[test]
     fn agent_capabilities_propagated() {
-        use ghost_gateway::agents::registry::{AgentRegistry, RegisteredAgent, AgentLifecycleState};
+        use ghost_gateway::agents::registry::{
+            AgentLifecycleState, AgentRegistry, RegisteredAgent,
+        };
 
         let mut registry = AgentRegistry::new();
         let caps = vec!["code_review".to_string(), "testing".to_string()];
@@ -245,13 +290,18 @@ mod bootstrap_value_tests {
         registry.register(agent);
 
         let found = registry.lookup_by_name("test-agent").unwrap();
-        assert_eq!(found.capabilities, caps, "Capabilities must be propagated, not empty");
+        assert_eq!(
+            found.capabilities, caps,
+            "Capabilities must be propagated, not empty"
+        );
     }
 
     /// Finding #45: Channel bindings must be populated.
     #[test]
     fn channel_bindings_populated() {
-        use ghost_gateway::agents::registry::{AgentRegistry, RegisteredAgent, AgentLifecycleState};
+        use ghost_gateway::agents::registry::{
+            AgentLifecycleState, AgentRegistry, RegisteredAgent,
+        };
 
         let mut registry = AgentRegistry::new();
         let agent_id = uuid::Uuid::now_v7();
@@ -276,7 +326,9 @@ mod bootstrap_value_tests {
     /// Finding #45: lookup_by_id_mut allows modifying agent after registration.
     #[test]
     fn lookup_by_id_mut_works() {
-        use ghost_gateway::agents::registry::{AgentRegistry, RegisteredAgent, AgentLifecycleState};
+        use ghost_gateway::agents::registry::{
+            AgentLifecycleState, AgentRegistry, RegisteredAgent,
+        };
 
         let mut registry = AgentRegistry::new();
         let agent_id = uuid::Uuid::now_v7();
@@ -321,7 +373,10 @@ mod error_handling_tests {
             "nonexistent-agent",
         );
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "Non-existent agent should return None, not error");
+        assert!(
+            result.unwrap().is_none(),
+            "Non-existent agent should return None, not error"
+        );
     }
 
     /// Finding #38: DB query error should be distinguishable from empty result.
@@ -330,14 +385,22 @@ mod error_handling_tests {
         let conn = setup_test_db();
         // Insert a score, then query it
         cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "err-test-001", "agent-err", Some("s1"), 0.5,
-            "[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8]", 1, "standard",
-            "2026-02-28T12:00:00Z", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "err-test-001",
+            "agent-err",
+            Some("s1"),
+            0.5,
+            "[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8]",
+            1,
+            "standard",
+            "2026-02-28T12:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
-        let result = cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            &conn, "agent-err",
-        );
+        let result =
+            cortex_storage::queries::convergence_score_queries::latest_by_agent(&conn, "agent-err");
         assert!(result.is_ok());
         let row = result.unwrap().unwrap();
         assert_eq!(row.id, "err-test-001");
@@ -347,11 +410,13 @@ mod error_handling_tests {
     #[test]
     fn sessions_empty_table_returns_empty() {
         let conn = setup_test_db();
-        let mut stmt = conn.prepare(
-            "SELECT session_id, MIN(timestamp), MAX(timestamp), COUNT(*), \
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, MIN(timestamp), MAX(timestamp), COUNT(*), \
              GROUP_CONCAT(DISTINCT sender) \
              FROM itp_events GROUP BY session_id ORDER BY MIN(timestamp) DESC LIMIT 100",
-        ).unwrap();
+            )
+            .unwrap();
 
         let rows: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))
@@ -359,7 +424,10 @@ mod error_handling_tests {
             .filter_map(|r| r.ok())
             .collect();
 
-        assert!(rows.is_empty(), "Empty itp_events should return empty result set");
+        assert!(
+            rows.is_empty(),
+            "Empty itp_events should return empty result set"
+        );
     }
 }
 
@@ -423,19 +491,29 @@ mod websocket_event_tests {
     fn ws_event_all_variants_roundtrip() {
         let events = vec![
             ghost_gateway::api::websocket::WsEvent::ScoreUpdate {
-                agent_id: "a".into(), score: 0.5, level: 2, signals: vec![0.1],
+                agent_id: "a".into(),
+                score: 0.5,
+                level: 2,
+                signals: vec![0.1],
             },
             ghost_gateway::api::websocket::WsEvent::InterventionChange {
-                agent_id: "a".into(), old_level: 1, new_level: 3,
+                agent_id: "a".into(),
+                old_level: 1,
+                new_level: 3,
             },
             ghost_gateway::api::websocket::WsEvent::KillSwitchActivation {
-                level: "KILL_ALL".into(), agent_id: None, reason: "test".into(),
+                level: "KILL_ALL".into(),
+                agent_id: None,
+                reason: "test".into(),
             },
             ghost_gateway::api::websocket::WsEvent::ProposalDecision {
-                proposal_id: "p1".into(), decision: "approved".into(), agent_id: "a".into(),
+                proposal_id: "p1".into(),
+                decision: "approved".into(),
+                agent_id: "a".into(),
             },
             ghost_gateway::api::websocket::WsEvent::AgentStateChange {
-                agent_id: "a".into(), new_state: "resumed".into(),
+                agent_id: "a".into(),
+                new_state: "resumed".into(),
             },
             ghost_gateway::api::websocket::WsEvent::Ping,
         ];
@@ -465,9 +543,8 @@ mod dependency_tests {
         cortex_storage::migrations::run_migrations(&conn).unwrap();
 
         // convergence_score_queries
-        let result = cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            &conn, "test",
-        );
+        let result =
+            cortex_storage::queries::convergence_score_queries::latest_by_agent(&conn, "test");
         assert!(result.is_ok());
 
         // goal_proposal_queries
@@ -488,15 +565,28 @@ mod adversarial_tests {
     fn convergence_scores_update_blocked() {
         let conn = setup_test_db();
         cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "adv-001", "agent-1", Some("s1"), 0.5, "[]", 1, "standard",
-            "2026-02-28T12:00:00Z", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "adv-001",
+            "agent-1",
+            Some("s1"),
+            0.5,
+            "[]",
+            1,
+            "standard",
+            "2026-02-28T12:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
         let result = conn.execute(
             "UPDATE convergence_scores SET composite_score = 0.99 WHERE id = 'adv-001'",
             [],
         );
-        assert!(result.is_err(), "UPDATE on convergence_scores should be blocked by trigger");
+        assert!(
+            result.is_err(),
+            "UPDATE on convergence_scores should be blocked by trigger"
+        );
     }
 
     /// Adversarial: convergence_scores append-only trigger prevents DELETE.
@@ -504,15 +594,25 @@ mod adversarial_tests {
     fn convergence_scores_delete_blocked() {
         let conn = setup_test_db();
         cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "adv-002", "agent-1", Some("s1"), 0.5, "[]", 1, "standard",
-            "2026-02-28T12:00:00Z", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "adv-002",
+            "agent-1",
+            Some("s1"),
+            0.5,
+            "[]",
+            1,
+            "standard",
+            "2026-02-28T12:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
-        let result = conn.execute(
-            "DELETE FROM convergence_scores WHERE id = 'adv-002'",
-            [],
+        let result = conn.execute("DELETE FROM convergence_scores WHERE id = 'adv-002'", []);
+        assert!(
+            result.is_err(),
+            "DELETE on convergence_scores should be blocked by trigger"
         );
-        assert!(result.is_err(), "DELETE on convergence_scores should be blocked by trigger");
     }
 
     /// Adversarial: itp_events append-only trigger prevents UPDATE.
@@ -525,13 +625,17 @@ mod adversarial_tests {
              VALUES ('adv-evt-001', 'session-1', 'InteractionMessage', 'agent-1', \
              '2026-02-28T12:00:00Z', X'00', X'00')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = conn.execute(
             "UPDATE itp_events SET sender = 'attacker' WHERE id = 'adv-evt-001'",
             [],
         );
-        assert!(result.is_err(), "UPDATE on itp_events should be blocked by trigger");
+        assert!(
+            result.is_err(),
+            "UPDATE on itp_events should be blocked by trigger"
+        );
     }
 
     /// Adversarial: itp_events append-only trigger prevents DELETE.
@@ -544,13 +648,14 @@ mod adversarial_tests {
              VALUES ('adv-evt-002', 'session-1', 'InteractionMessage', 'agent-1', \
              '2026-02-28T12:00:00Z', X'00', X'00')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
-        let result = conn.execute(
-            "DELETE FROM itp_events WHERE id = 'adv-evt-002'",
-            [],
+        let result = conn.execute("DELETE FROM itp_events WHERE id = 'adv-evt-002'", []);
+        assert!(
+            result.is_err(),
+            "DELETE on itp_events should be blocked by trigger"
         );
-        assert!(result.is_err(), "DELETE on itp_events should be blocked by trigger");
     }
 
     /// Adversarial: SQL injection in agent_id should not break queries.
@@ -559,16 +664,19 @@ mod adversarial_tests {
         let conn = setup_test_db();
         let malicious_id = "'; DROP TABLE convergence_scores; --";
         let result = cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            &conn, malicious_id,
+            &conn,
+            malicious_id,
         );
         // Should return Ok(None), not an error or dropped table
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
 
         // Verify table still exists
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM convergence_scores", [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM convergence_scores", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(count, 0, "Table should still exist after injection attempt");
     }
 
@@ -576,10 +684,25 @@ mod adversarial_tests {
     #[test]
     fn very_long_signal_scores_handled() {
         let conn = setup_test_db();
-        let long_signals = format!("[{}]", (0..1000).map(|i| format!("{}.0", i)).collect::<Vec<_>>().join(","));
+        let long_signals = format!(
+            "[{}]",
+            (0..1000)
+                .map(|i| format!("{}.0", i))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         let result = cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "long-001", "agent-1", Some("s1"), 0.5, &long_signals, 1, "standard",
-            "2026-02-28T12:00:00Z", &[0u8; 32], &[0u8; 32],
+            &conn,
+            "long-001",
+            "agent-1",
+            Some("s1"),
+            0.5,
+            &long_signals,
+            1,
+            "standard",
+            "2026-02-28T12:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
         );
         assert!(result.is_ok(), "Long signal_scores should be accepted");
     }
@@ -591,13 +714,25 @@ mod adversarial_tests {
     fn nan_score_rejected_by_db() {
         let conn = setup_test_db();
         let result = cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "nan-001", "agent-nan", Some("s1"), f64::NAN, "[]", 0, "standard",
-            "2026-02-28T12:00:00Z", &[0u8; 32], &[0u8; 32],
+            &conn,
+            "nan-001",
+            "agent-nan",
+            Some("s1"),
+            f64::NAN,
+            "[]",
+            0,
+            "standard",
+            "2026-02-28T12:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
         );
         // NaN is rejected by REAL NOT NULL — this is correct behavior.
         // The monitor's compute_score() clamps to [0.0, 1.0] and treats
         // NaN as 0.0, so this should never happen in production.
-        assert!(result.is_err(), "NaN should be rejected by NOT NULL constraint");
+        assert!(
+            result.is_err(),
+            "NaN should be rejected by NOT NULL constraint"
+        );
     }
 
     /// Adversarial: Empty event_hash and previous_hash should work
@@ -606,8 +741,17 @@ mod adversarial_tests {
     fn empty_hashes_accepted() {
         let conn = setup_test_db();
         let result = cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "empty-hash-001", "agent-1", Some("s1"), 0.5, "[]", 1, "standard",
-            "2026-02-28T12:00:00Z", &[], &[],
+            &conn,
+            "empty-hash-001",
+            "agent-1",
+            Some("s1"),
+            0.5,
+            "[]",
+            1,
+            "standard",
+            "2026-02-28T12:00:00Z",
+            &[],
+            &[],
         );
         assert!(result.is_ok(), "Empty hashes should be accepted");
     }
@@ -630,18 +774,24 @@ mod adversarial_tests {
                 &format!("2026-02-28T12:{i:02}:00Z"),
                 &[i as u8; 32],
                 &[(i.wrapping_sub(1)) as u8; 32],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let rows = cortex_storage::queries::convergence_score_queries::query_by_agent(
-            &conn, "agent-multi",
-        ).unwrap();
+            &conn,
+            "agent-multi",
+        )
+        .unwrap();
         assert_eq!(rows.len(), 10, "All 10 scores should be stored");
 
         // latest_by_agent should return the most recent (highest computed_at)
         let latest = cortex_storage::queries::convergence_score_queries::latest_by_agent(
-            &conn, "agent-multi",
-        ).unwrap().unwrap();
+            &conn,
+            "agent-multi",
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(latest.id, "multi-009");
     }
 
@@ -663,13 +813,17 @@ mod adversarial_tests {
                     vec![i as u8; 32],
                     vec![(i.wrapping_sub(1)) as u8; 32],
                 ],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM itp_events WHERE session_id = 'session-rapid'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM itp_events WHERE session_id = 'session-rapid'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 100);
     }
 }

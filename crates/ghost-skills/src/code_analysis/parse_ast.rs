@@ -88,12 +88,7 @@ impl Skill for ParseAstSkill {
 }
 
 /// Extract symbols matching the given regex pattern and add them to the output.
-fn extract_symbols(
-    source: &str,
-    pattern: &str,
-    kind: &str,
-    symbols: &mut Vec<serde_json::Value>,
-) {
+fn extract_symbols(source: &str, pattern: &str, kind: &str, symbols: &mut Vec<serde_json::Value>) {
     let re = match Regex::new(pattern) {
         Ok(re) => re,
         Err(_) => return, // Skip invalid patterns silently.
@@ -112,7 +107,10 @@ fn extract_symbols(
         let line = source[..byte_offset].matches('\n').count() + 1;
 
         // Extract the full line as the signature.
-        let line_start = source[..byte_offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_start = source[..byte_offset]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
         let line_end = source[byte_offset..]
             .find('\n')
             .map(|i| byte_offset + i)
@@ -166,10 +164,7 @@ mod tests {
         let val = result.unwrap();
         let symbols = val["symbols"].as_array().unwrap();
 
-        let functions: Vec<_> = symbols
-            .iter()
-            .filter(|s| s["kind"] == "function")
-            .collect();
+        let functions: Vec<_> = symbols.iter().filter(|s| s["kind"] == "function").collect();
         assert_eq!(functions.len(), 2);
         assert_eq!(functions[0]["name"], "main");
         assert_eq!(functions[1]["name"], "helper");
@@ -272,8 +267,12 @@ mod tests {
         let val = result.unwrap();
         let symbols = val["symbols"].as_array().unwrap();
 
-        assert!(symbols.iter().any(|s| s["name"] == "Config" && s["kind"] == "enum"));
-        assert!(symbols.iter().any(|s| s["name"] == "processData" && s["kind"] == "function"));
+        assert!(symbols
+            .iter()
+            .any(|s| s["name"] == "Config" && s["kind"] == "enum"));
+        assert!(symbols
+            .iter()
+            .any(|s| s["name"] == "processData" && s["kind"] == "function"));
         assert!(symbols.iter().any(|s| s["name"] == "Result"));
     }
 
@@ -298,10 +297,7 @@ mod tests {
         let db = test_db();
         let ctx = test_ctx(&db);
 
-        let result = ParseAstSkill.execute(
-            &ctx,
-            &serde_json::json!({ "language": "rust" }),
-        );
+        let result = ParseAstSkill.execute(&ctx, &serde_json::json!({ "language": "rust" }));
         assert!(result.is_err());
     }
 

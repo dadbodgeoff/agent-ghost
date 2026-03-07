@@ -48,7 +48,9 @@ impl ChannelAdapter for DiscordAdapter {
     }
 
     async fn send(&self, message: OutboundMessage) -> Result<(), String> {
-        let channel_id = self.last_channel_id.as_ref()
+        let channel_id = self
+            .last_channel_id
+            .as_ref()
             .ok_or("no channel_id — receive a message first")?;
 
         let url = format!(
@@ -81,7 +83,13 @@ impl ChannelAdapter for DiscordAdapter {
         Err("Discord Gateway WebSocket not yet connected".into())
     }
 
-    fn supports_streaming(&self) -> bool { false }
-    fn supports_editing(&self) -> bool { true }
-    fn channel_type(&self) -> &str { "discord" }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    fn supports_editing(&self) -> bool {
+        true
+    }
+    fn channel_type(&self) -> &str {
+        "discord"
+    }
 }

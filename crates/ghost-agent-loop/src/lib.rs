@@ -15,13 +15,13 @@
 pub mod runner;
 pub use runner::FlushExecutor;
 pub mod circuit_breaker;
+pub mod context;
 pub mod damage_counter;
 pub mod itp_emitter;
-pub mod response;
-pub mod context;
-pub mod proposal;
-pub mod tools;
 pub mod output_inspector;
+pub mod proposal;
+pub mod response;
+pub mod tools;
 
 /// Initialize the OpenTelemetry tracing pipeline.
 ///

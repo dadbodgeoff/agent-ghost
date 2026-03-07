@@ -83,9 +83,15 @@ pub struct WebSearchConfig {
     pub brave_api_key: String,
 }
 
-fn default_max_results() -> usize { 5 }
-fn default_max_snippet_len() -> usize { 300 }
-fn default_timeout_secs() -> u64 { 10 }
+fn default_max_results() -> usize {
+    5
+}
+fn default_max_snippet_len() -> usize {
+    300
+}
+fn default_timeout_secs() -> u64 {
+    10
+}
 
 impl Default for WebSearchConfig {
     fn default() -> Self {
@@ -125,10 +131,7 @@ pub async fn search(
         .take(config.max_results)
         .map(|mut r| {
             r.title = strip_html_tags(&r.title);
-            r.snippet = truncate_snippet(
-                &strip_html_tags(&r.snippet),
-                config.max_snippet_len,
-            );
+            r.snippet = truncate_snippet(&strip_html_tags(&r.snippet), config.max_snippet_len);
             r
         })
         .collect();
@@ -508,10 +511,7 @@ mod tests {
 
     #[test]
     fn strip_html_tags_basic() {
-        assert_eq!(
-            strip_html_tags("<b>Hello</b> <i>world</i>"),
-            "Hello world"
-        );
+        assert_eq!(strip_html_tags("<b>Hello</b> <i>world</i>"), "Hello world");
     }
 
     #[test]
@@ -634,9 +634,10 @@ mod tests {
         };
         let err = search("test", &config).await.unwrap_err();
         // Should be either Unavailable (connect refused) or RequestFailed (timeout).
-        assert!(
-            matches!(err, WebSearchError::Unavailable(_) | WebSearchError::RequestFailed(_))
-        );
+        assert!(matches!(
+            err,
+            WebSearchError::Unavailable(_) | WebSearchError::RequestFailed(_)
+        ));
     }
 
     // ── SearXNG JSON parsing ────────────────────────────────────────
@@ -660,7 +661,10 @@ mod tests {
         let parsed: SearXNGResponse = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.results.len(), 2);
         assert_eq!(parsed.results[0].title, "Rust Programming");
-        assert_eq!(parsed.results[1].content, "Rust is a <b>multi-paradigm</b> programming language.");
+        assert_eq!(
+            parsed.results[1].content,
+            "Rust is a <b>multi-paradigm</b> programming language."
+        );
     }
 
     #[test]

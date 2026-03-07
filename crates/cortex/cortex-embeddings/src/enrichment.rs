@@ -15,11 +15,7 @@ pub fn enrich_for_embedding(memory: &BaseMemory) -> String {
     let mut parts = Vec::with_capacity(4);
 
     // Metadata prefix: [type|importance]
-    let prefix = format!(
-        "[{:?}|{:?}]",
-        memory.memory_type,
-        memory.importance,
-    );
+    let prefix = format!("[{:?}|{:?}]", memory.memory_type, memory.importance,);
     parts.push(prefix);
 
     // Summary.
@@ -55,7 +51,7 @@ pub fn content_hash(memory: &BaseMemory) -> String {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use cortex_core::memory::{Importance, types::MemoryType};
+    use cortex_core::memory::{types::MemoryType, Importance};
 
     fn make_memory() -> BaseMemory {
         BaseMemory {

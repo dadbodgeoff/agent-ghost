@@ -37,11 +37,15 @@ pub struct TrustEdge {
 }
 
 /// GET /api/mesh/trust-graph — return trust graph from convergence scores.
-pub async fn trust_graph(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<TrustGraphResponse> {
-    let agents = state.agents.read().map_err(|_| ApiError::lock_poisoned("agents"))?;
-    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
+pub async fn trust_graph(State(state): State<Arc<AppState>>) -> ApiResult<TrustGraphResponse> {
+    let agents = state
+        .agents
+        .read()
+        .map_err(|_| ApiError::lock_poisoned("agents"))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     let all = agents.all_agents();
     let mut nodes = Vec::with_capacity(all.len());
@@ -112,10 +116,11 @@ pub struct ConsensusRound {
 }
 
 /// GET /api/mesh/consensus — return N-of-M consensus state.
-pub async fn consensus_state(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<ConsensusResponse> {
-    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
+pub async fn consensus_state(State(state): State<Arc<AppState>>) -> ApiResult<ConsensusResponse> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     // Query recent proposals with vote counts from dimension_scores.
     // dimension_scores is JSON; non-null indicates a proposal that went through consensus.
@@ -132,7 +137,10 @@ pub async fn consensus_state(
 
     // Count total agents for N-of-M threshold.
     let agent_count: u32 = {
-        let agents = state.agents.read().map_err(|_| ApiError::lock_poisoned("agents"))?;
+        let agents = state
+            .agents
+            .read()
+            .map_err(|_| ApiError::lock_poisoned("agents"))?;
         agents.all_agents().len() as u32
     };
     let threshold = (agent_count / 2) + 1; // Simple majority
@@ -179,10 +187,11 @@ pub struct SybilMetrics {
 }
 
 /// GET /api/mesh/delegations — return delegation chains and sybil metrics.
-pub async fn delegations(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<DelegationsResponse> {
-    let db = state.db.read().map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
+pub async fn delegations(State(state): State<Arc<AppState>>) -> ApiResult<DelegationsResponse> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
 
     let mut stmt = db
         .prepare(

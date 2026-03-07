@@ -31,7 +31,11 @@ fn quorum_tracker_deduplicates_by_node_id() {
         tracker.cast_vote(make_vote(node));
     }
 
-    assert_eq!(tracker.vote_count(), 1, "100 votes from same node should count as 1");
+    assert_eq!(
+        tracker.vote_count(),
+        1,
+        "100 votes from same node should count as 1"
+    );
     assert!(!tracker.has_quorum());
 }
 

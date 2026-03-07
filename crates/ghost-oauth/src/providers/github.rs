@@ -34,12 +34,18 @@ impl GitHubOAuthProvider {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| OAuthError::ProviderError(format!("HTTP client init: {e}")))?;
-        Ok(Self { client_id, client_secret, http })
+        Ok(Self {
+            client_id,
+            client_secret,
+            http,
+        })
     }
 }
 
 impl OAuthProvider for GitHubOAuthProvider {
-    fn name(&self) -> &str { "github" }
+    fn name(&self) -> &str {
+        "github"
+    }
 
     fn authorization_url(
         &self,
@@ -78,7 +84,8 @@ impl OAuthProvider for GitHubOAuthProvider {
             ("code_verifier", pkce_verifier),
         ];
 
-        let resp = self.http
+        let resp = self
+            .http
             .post(TOKEN_URL)
             .header("Accept", "application/json")
             .form(&params)
@@ -86,7 +93,9 @@ impl OAuthProvider for GitHubOAuthProvider {
             .map_err(|e| OAuthError::FlowFailed(format!("token exchange: {e}")))?;
 
         let status = resp.status();
-        let body = resp.text().map_err(|e| OAuthError::FlowFailed(format!("failed to read response body: {e}")))?;
+        let body = resp
+            .text()
+            .map_err(|e| OAuthError::FlowFailed(format!("failed to read response body: {e}")))?;
 
         if !status.is_success() {
             return Err(OAuthError::FlowFailed(format!("HTTP {status}: {body}")));
@@ -97,7 +106,10 @@ impl OAuthProvider for GitHubOAuthProvider {
 
         // GitHub may return error in JSON body even with 200
         if let Some(err) = json.get("error").and_then(|v| v.as_str()) {
-            let desc = json.get("error_description").and_then(|v| v.as_str()).unwrap_or("");
+            let desc = json
+                .get("error_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             return Err(OAuthError::FlowFailed(format!("{err}: {desc}")));
         }
 
@@ -137,7 +149,8 @@ impl OAuthProvider for GitHubOAuthProvider {
 
         let body = serde_json::json!({ "access_token": token });
 
-        let resp = self.http
+        let resp = self
+            .http
             .delete(&url)
             .basic_auth(&self.client_id, Some(self.client_secret.expose_secret()))
             .json(&body)

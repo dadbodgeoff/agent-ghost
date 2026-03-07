@@ -65,8 +65,7 @@ mod vault {
     fn vault_provider_network_timeout_returns_storage_unavailable() {
         // Connect to a non-routable address to trigger timeout
         let token = SecretString::from("test-token".to_string());
-        let provider =
-            VaultProvider::new("http://192.0.2.1:1", "secret", token).unwrap(); // RFC 5737 TEST-NET
+        let provider = VaultProvider::new("http://192.0.2.1:1", "secret", token).unwrap(); // RFC 5737 TEST-NET
         let result = provider.get_secret("test-key");
         assert!(
             matches!(result, Err(SecretsError::StorageUnavailable(_))),
@@ -106,7 +105,10 @@ mod vault {
         let result = VaultProvider::parse_kv2_response(json);
         assert!(matches!(result, Err(SecretsError::ProviderError(_))));
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("missing .data.data.value"), "got: {err_msg}");
+        assert!(
+            err_msg.contains("missing .data.data.value"),
+            "got: {err_msg}"
+        );
     }
 
     #[test]

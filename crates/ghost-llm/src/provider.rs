@@ -51,7 +51,10 @@ pub enum LLMResponse {
     /// One or more tool calls.
     ToolCalls(Vec<LLMToolCall>),
     /// Mixed: text followed by tool calls.
-    Mixed { text: String, tool_calls: Vec<LLMToolCall> },
+    Mixed {
+        text: String,
+        tool_calls: Vec<LLMToolCall>,
+    },
     /// Empty response — treated as NO_REPLY.
     Empty,
 }
@@ -153,7 +156,11 @@ fn build_client(timeout: Duration) -> Result<reqwest::Client, LLMError> {
 }
 
 /// Map HTTP status codes to LLMError.
-fn map_http_error(status: reqwest::StatusCode, body: &str, headers: &reqwest::header::HeaderMap) -> LLMError {
+fn map_http_error(
+    status: reqwest::StatusCode,
+    body: &str,
+    headers: &reqwest::header::HeaderMap,
+) -> LLMError {
     match status.as_u16() {
         401 | 403 => LLMError::AuthFailed(format!("{status}: {body}")),
         429 => {
@@ -162,7 +169,9 @@ fn map_http_error(status: reqwest::StatusCode, body: &str, headers: &reqwest::he
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(30);
-            LLMError::RateLimited { retry_after_secs: retry_after }
+            LLMError::RateLimited {
+                retry_after_secs: retry_after,
+            }
         }
         529 => LLMError::Unavailable(format!("overloaded: {body}")),
         500..=599 => LLMError::Unavailable(format!("{status}: {body}")),
@@ -175,57 +184,69 @@ fn map_http_error(status: reqwest::StatusCode, body: &str, headers: &reqwest::he
 
 /// Build OpenAI-format messages array from ChatMessage slice.
 fn openai_format_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
-    messages.iter().map(|m| {
-        let role = match m.role {
-            MessageRole::System => "system",
-            MessageRole::User => "user",
-            MessageRole::Assistant => "assistant",
-            MessageRole::Tool => "tool",
-        };
-        let mut msg = serde_json::json!({
-            "role": role,
-            "content": m.content,
-        });
-        if let Some(ref tc) = m.tool_calls {
-            let calls: Vec<serde_json::Value> = tc.iter().map(|c| {
-                serde_json::json!({
-                    "id": c.id,
-                    "type": "function",
-                    "function": {
-                        "name": c.name,
-                        "arguments": if c.arguments.is_string() {
-                            c.arguments.clone()
-                        } else {
-                            serde_json::Value::String(c.arguments.to_string())
-                        },
-                    }
-                })
-            }).collect();
-            msg["tool_calls"] = serde_json::Value::Array(calls);
-        }
-        if let Some(ref id) = m.tool_call_id {
-            msg["tool_call_id"] = serde_json::Value::String(id.clone());
-        }
-        msg
-    }).collect()
+    messages
+        .iter()
+        .map(|m| {
+            let role = match m.role {
+                MessageRole::System => "system",
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::Tool => "tool",
+            };
+            let mut msg = serde_json::json!({
+                "role": role,
+                "content": m.content,
+            });
+            if let Some(ref tc) = m.tool_calls {
+                let calls: Vec<serde_json::Value> = tc
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id,
+                            "type": "function",
+                            "function": {
+                                "name": c.name,
+                                "arguments": if c.arguments.is_string() {
+                                    c.arguments.clone()
+                                } else {
+                                    serde_json::Value::String(c.arguments.to_string())
+                                },
+                            }
+                        })
+                    })
+                    .collect();
+                msg["tool_calls"] = serde_json::Value::Array(calls);
+            }
+            if let Some(ref id) = m.tool_call_id {
+                msg["tool_call_id"] = serde_json::Value::String(id.clone());
+            }
+            msg
+        })
+        .collect()
 }
 
 /// Build OpenAI-format tools array from ToolSchema slice.
 fn openai_format_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-    tools.iter().map(|t| {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-            }
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                }
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Parse an OpenAI-format response body into CompletionResult.
-fn parse_openai_response(body: &serde_json::Value, model_fallback: &str) -> Result<CompletionResult, LLMError> {
+fn parse_openai_response(
+    body: &serde_json::Value,
+    model_fallback: &str,
+) -> Result<CompletionResult, LLMError> {
     let model = body["model"].as_str().unwrap_or(model_fallback).to_string();
 
     let usage = if let Some(u) = body.get("usage") {
@@ -251,13 +272,19 @@ fn parse_openai_response(body: &serde_json::Value, model_fallback: &str) -> Resu
 
     let tool_calls: Vec<LLMToolCall> = tool_calls_raw
         .map(|arr| {
-            arr.iter().filter_map(|tc| {
-                let id = tc["id"].as_str()?.to_string();
-                let name = tc["function"]["name"].as_str()?.to_string();
-                let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                let arguments = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                Some(LLMToolCall { id, name, arguments })
-            }).collect()
+            arr.iter()
+                .filter_map(|tc| {
+                    let id = tc["id"].as_str()?.to_string();
+                    let name = tc["function"]["name"].as_str()?.to_string();
+                    let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                    let arguments = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                    Some(LLMToolCall {
+                        id,
+                        name,
+                        arguments,
+                    })
+                })
+                .collect()
         })
         .unwrap_or_default();
 
@@ -267,11 +294,18 @@ fn parse_openai_response(body: &serde_json::Value, model_fallback: &str) -> Resu
     let response = match (has_text, has_tool_calls) {
         (true, false) => LLMResponse::Text(content.unwrap()),
         (false, true) => LLMResponse::ToolCalls(tool_calls),
-        (true, true) => LLMResponse::Mixed { text: content.unwrap(), tool_calls },
+        (true, true) => LLMResponse::Mixed {
+            text: content.unwrap(),
+            tool_calls,
+        },
         (false, false) => LLMResponse::Empty,
     };
 
-    Ok(CompletionResult { response, usage, model })
+    Ok(CompletionResult {
+        response,
+        usage,
+        model,
+    })
 }
 
 /// Shared OpenAI-format completion call.
@@ -308,7 +342,9 @@ async fn openai_format_complete(
 
     let status = resp.status();
     let headers = resp.headers().clone();
-    let resp_body: serde_json::Value = resp.json().await
+    let resp_body: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
 
     if !status.is_success() {
@@ -403,13 +439,16 @@ impl AnthropicProvider {
 
     /// Build Anthropic tools array from ToolSchema slice.
     fn build_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-        tools.iter().map(|t| {
-            serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters,
+        tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters,
+                })
             })
-        }).collect()
+            .collect()
     }
 
     /// Parse Anthropic response content blocks into LLMResponse.
@@ -444,7 +483,11 @@ impl AnthropicProvider {
                     let id = block["id"].as_str().unwrap_or("").to_string();
                     let name = block["name"].as_str().unwrap_or("").to_string();
                     let arguments = block.get("input").cloned().unwrap_or(serde_json::json!({}));
-                    tool_calls.push(LLMToolCall { id, name, arguments });
+                    tool_calls.push(LLMToolCall {
+                        id,
+                        name,
+                        arguments,
+                    });
                 }
                 _ => {} // Skip unknown block types.
             }
@@ -464,14 +507,18 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl LLMProvider for AnthropicProvider {
-    fn name(&self) -> &str { "anthropic" }
+    fn name(&self) -> &str {
+        "anthropic"
+    }
 
     async fn complete(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        let api_key = self.api_key.read()
+        let api_key = self
+            .api_key
+            .read()
             .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
             .clone();
 
@@ -508,7 +555,9 @@ impl LLMProvider for AnthropicProvider {
 
         let status = resp.status();
         let headers = resp.headers().clone();
-        let resp_body: serde_json::Value = resp.json().await
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
 
         if !status.is_success() {
@@ -520,26 +569,44 @@ impl LLMProvider for AnthropicProvider {
         }
 
         let (response, usage) = Self::parse_response(&resp_body)?;
-        let model = resp_body["model"].as_str().unwrap_or(&self.model).to_string();
+        let model = resp_body["model"]
+            .as_str()
+            .unwrap_or(&self.model)
+            .to_string();
 
-        Ok(CompletionResult { response, usage, model })
+        Ok(CompletionResult {
+            response,
+            usage,
+            model,
+        })
     }
 
-    fn supports_streaming(&self) -> bool { true }
-    fn context_window(&self) -> usize { 200_000 }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn context_window(&self) -> usize {
+        200_000
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.003, output_per_1k: 0.015 }
+        TokenPricing {
+            input_per_1k: 0.003,
+            output_per_1k: 0.015,
+        }
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
         match self.api_key.write() {
             Ok(mut key) => *key = api_key.to_string(),
-            Err(e) => tracing::error!(provider = "anthropic", error = %e, "Failed to update API key — RwLock poisoned"),
+            Err(e) => {
+                tracing::error!(provider = "anthropic", error = %e, "Failed to update API key — RwLock poisoned")
+            }
         }
     }
 
     async fn health_check(&self) -> Result<(), LLMError> {
-        let api_key = self.api_key.read()
+        let api_key = self
+            .api_key
+            .read()
             .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
             .clone();
         let client = build_client(Duration::from_secs(10))?;
@@ -578,14 +645,18 @@ pub struct OpenAIProvider {
 
 #[async_trait]
 impl LLMProvider for OpenAIProvider {
-    fn name(&self) -> &str { "openai" }
+    fn name(&self) -> &str {
+        "openai"
+    }
 
     async fn complete(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        let api_key = self.api_key.read()
+        let api_key = self
+            .api_key
+            .read()
             .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
             .clone();
 
@@ -596,24 +667,36 @@ impl LLMProvider for OpenAIProvider {
             messages,
             tools,
             DEFAULT_TIMEOUT,
-        ).await
+        )
+        .await
     }
 
-    fn supports_streaming(&self) -> bool { true }
-    fn context_window(&self) -> usize { 128_000 }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn context_window(&self) -> usize {
+        128_000
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.005, output_per_1k: 0.015 }
+        TokenPricing {
+            input_per_1k: 0.005,
+            output_per_1k: 0.015,
+        }
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
         match self.api_key.write() {
             Ok(mut key) => *key = api_key.to_string(),
-            Err(e) => tracing::error!(provider = "openai", error = %e, "Failed to update API key — RwLock poisoned"),
+            Err(e) => {
+                tracing::error!(provider = "openai", error = %e, "Failed to update API key — RwLock poisoned")
+            }
         }
     }
 
     async fn health_check(&self) -> Result<(), LLMError> {
-        let api_key = self.api_key.read()
+        let api_key = self
+            .api_key
+            .read()
             .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
             .clone();
         let client = build_client(Duration::from_secs(10))?;
@@ -645,7 +728,9 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     /// Build Gemini contents array from ChatMessage slice.
     /// System messages use the `systemInstruction` field.
-    fn build_contents(messages: &[ChatMessage]) -> (Option<serde_json::Value>, Vec<serde_json::Value>) {
+    fn build_contents(
+        messages: &[ChatMessage],
+    ) -> (Option<serde_json::Value>, Vec<serde_json::Value>) {
         let mut system_parts: Vec<String> = Vec::new();
         let mut contents: Vec<serde_json::Value> = Vec::new();
 
@@ -709,13 +794,16 @@ impl GeminiProvider {
 
     /// Build Gemini tools array from ToolSchema slice.
     fn build_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-        let declarations: Vec<serde_json::Value> = tools.iter().map(|t| {
-            serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
+        let declarations: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                })
             })
-        }).collect();
+            .collect();
         vec![serde_json::json!({"functionDeclarations": declarations})]
     }
 
@@ -754,7 +842,11 @@ impl GeminiProvider {
                 let name = fc["name"].as_str().unwrap_or("").to_string();
                 let arguments = fc.get("args").cloned().unwrap_or(serde_json::json!({}));
                 let id = format!("gemini-{}", uuid::Uuid::now_v7());
-                tool_calls.push(LLMToolCall { id, name, arguments });
+                tool_calls.push(LLMToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
             }
         }
 
@@ -772,14 +864,18 @@ impl GeminiProvider {
 
 #[async_trait]
 impl LLMProvider for GeminiProvider {
-    fn name(&self) -> &str { "gemini" }
+    fn name(&self) -> &str {
+        "gemini"
+    }
 
     async fn complete(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        let api_key = self.api_key.read()
+        let api_key = self
+            .api_key
+            .read()
             .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
             .clone();
 
@@ -817,7 +913,9 @@ impl LLMProvider for GeminiProvider {
 
         let status = resp.status();
         let headers = resp.headers().clone();
-        let resp_body: serde_json::Value = resp.json().await
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
 
         if !status.is_success() {
@@ -829,31 +927,47 @@ impl LLMProvider for GeminiProvider {
         }
 
         let (response, usage) = Self::parse_response(&resp_body)?;
-        Ok(CompletionResult { response, usage, model: self.model.clone() })
+        Ok(CompletionResult {
+            response,
+            usage,
+            model: self.model.clone(),
+        })
     }
 
-    fn supports_streaming(&self) -> bool { true }
-    fn context_window(&self) -> usize { 1_000_000 }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn context_window(&self) -> usize {
+        1_000_000
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.00025, output_per_1k: 0.0005 }
+        TokenPricing {
+            input_per_1k: 0.00025,
+            output_per_1k: 0.0005,
+        }
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
         match self.api_key.write() {
             Ok(mut key) => *key = api_key.to_string(),
-            Err(e) => tracing::error!(provider = "gemini", error = %e, "Failed to update API key — RwLock poisoned"),
+            Err(e) => {
+                tracing::error!(provider = "gemini", error = %e, "Failed to update API key — RwLock poisoned")
+            }
         }
     }
 
     async fn health_check(&self) -> Result<(), LLMError> {
-        let api_key = self.api_key.read()
+        let api_key = self
+            .api_key
+            .read()
             .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
             .clone();
         let client = build_client(Duration::from_secs(10))?;
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-        );
-        let resp = client.get(&url).send().await
+        let url = format!("https://generativelanguage.googleapis.com/v1beta/models?key={api_key}");
+        let resp = client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| LLMError::Other(format!("health check request failed: {e}")))?;
         if resp.status().is_success() {
             Ok(())
@@ -878,7 +992,9 @@ pub struct OllamaProvider {
 
 #[async_trait]
 impl LLMProvider for OllamaProvider {
-    fn name(&self) -> &str { "ollama" }
+    fn name(&self) -> &str {
+        "ollama"
+    }
 
     async fn complete(
         &self,
@@ -892,9 +1008,8 @@ impl LLMProvider for OllamaProvider {
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
         let client = build_client(LOCAL_TIMEOUT)?;
 
-        let ollama_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
-            ollama_format_message(m)
-        }).collect();
+        let ollama_messages: Vec<serde_json::Value> =
+            messages.iter().map(|m| ollama_format_message(m)).collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -915,7 +1030,9 @@ impl LLMProvider for OllamaProvider {
         })?;
 
         let status = resp.status();
-        let resp_body: serde_json::Value = resp.json().await
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| LLMError::InvalidResponse(format!("JSON parse error: {e}")))?;
 
         if !status.is_success() {
@@ -929,16 +1046,26 @@ impl LLMProvider for OllamaProvider {
         parse_ollama_response(&resp_body, &self.model)
     }
 
-    fn supports_streaming(&self) -> bool { true }
-    fn context_window(&self) -> usize { 262_144 }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn context_window(&self) -> usize {
+        262_144
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.0, output_per_1k: 0.0 } // local
+        TokenPricing {
+            input_per_1k: 0.0,
+            output_per_1k: 0.0,
+        } // local
     }
 
     async fn health_check(&self) -> Result<(), LLMError> {
         let client = build_client(Duration::from_secs(5))?;
         let url = format!("{}/api/tags", self.base_url);
-        let resp = client.get(&url).send().await
+        let resp = client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| LLMError::Other(format!("Ollama health check failed: {e}")))?;
         if resp.status().is_success() {
             Ok(())
@@ -965,9 +1092,8 @@ impl OllamaProvider {
         use futures::StreamExt;
 
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
-        let ollama_messages: Vec<serde_json::Value> = messages.iter().map(|m| {
-            ollama_format_message(m)
-        }).collect();
+        let ollama_messages: Vec<serde_json::Value> =
+            messages.iter().map(|m| ollama_format_message(m)).collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -1107,14 +1233,17 @@ fn ollama_format_message(m: &ChatMessage) -> serde_json::Value {
 
     // Attach tool_calls to assistant messages so Ollama knows a tool was invoked.
     if let Some(ref calls) = m.tool_calls {
-        let tc: Vec<serde_json::Value> = calls.iter().map(|c| {
-            serde_json::json!({
-                "function": {
-                    "name": c.name,
-                    "arguments": c.arguments,
-                }
+        let tc: Vec<serde_json::Value> = calls
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "function": {
+                        "name": c.name,
+                        "arguments": c.arguments,
+                    }
+                })
             })
-        }).collect();
+            .collect();
         if !tc.is_empty() {
             msg["tool_calls"] = serde_json::Value::Array(tc);
         }
@@ -1125,20 +1254,26 @@ fn ollama_format_message(m: &ChatMessage) -> serde_json::Value {
 
 /// Format tools for Ollama's native /api/chat endpoint.
 fn ollama_format_tools(tools: &[ToolSchema]) -> Vec<serde_json::Value> {
-    tools.iter().map(|t| {
-        serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-            }
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                }
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Parse Ollama native /api/chat response into CompletionResult.
-fn parse_ollama_response(body: &serde_json::Value, model_fallback: &str) -> Result<CompletionResult, LLMError> {
+fn parse_ollama_response(
+    body: &serde_json::Value,
+    model_fallback: &str,
+) -> Result<CompletionResult, LLMError> {
     let model = body["model"].as_str().unwrap_or(model_fallback).to_string();
 
     let message = &body["message"];
@@ -1148,16 +1283,30 @@ fn parse_ollama_response(body: &serde_json::Value, model_fallback: &str) -> Resu
     let tool_calls_raw = message.get("tool_calls").and_then(|v| v.as_array());
     let tool_calls: Vec<LLMToolCall> = tool_calls_raw
         .map(|arr| {
-            arr.iter().filter_map(|tc| {
-                let func = &tc["function"];
-                let name = func["name"].as_str()?.to_string();
-                let arguments = func.get("arguments")
-                    .cloned()
-                    .unwrap_or(serde_json::json!({}));
-                // Ollama native format doesn't include a call ID; generate one.
-                let id = format!("ollama_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("0"));
-                Some(LLMToolCall { id, name, arguments })
-            }).collect()
+            arr.iter()
+                .filter_map(|tc| {
+                    let func = &tc["function"];
+                    let name = func["name"].as_str()?.to_string();
+                    let arguments = func
+                        .get("arguments")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({}));
+                    // Ollama native format doesn't include a call ID; generate one.
+                    let id = format!(
+                        "ollama_{}",
+                        uuid::Uuid::new_v4()
+                            .to_string()
+                            .split('-')
+                            .next()
+                            .unwrap_or("0")
+                    );
+                    Some(LLMToolCall {
+                        id,
+                        name,
+                        arguments,
+                    })
+                })
+                .collect()
         })
         .unwrap_or_default();
 
@@ -1176,11 +1325,18 @@ fn parse_ollama_response(body: &serde_json::Value, model_fallback: &str) -> Resu
     let response = match (has_text, has_tool_calls) {
         (true, false) => LLMResponse::Text(content.unwrap()),
         (false, true) => LLMResponse::ToolCalls(tool_calls),
-        (true, true) => LLMResponse::Mixed { text: content.unwrap(), tool_calls },
+        (true, true) => LLMResponse::Mixed {
+            text: content.unwrap(),
+            tool_calls,
+        },
         (false, false) => LLMResponse::Empty,
     };
 
-    Ok(CompletionResult { response, usage, model })
+    Ok(CompletionResult {
+        response,
+        usage,
+        model,
+    })
 }
 
 // ── OpenAI-compatible provider ──────────────────────────────────────────
@@ -1195,31 +1351,55 @@ pub struct OpenAICompatProvider {
 
 #[async_trait]
 impl LLMProvider for OpenAICompatProvider {
-    fn name(&self) -> &str { "openai_compat" }
+    fn name(&self) -> &str {
+        "openai_compat"
+    }
 
     async fn complete(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolSchema],
     ) -> Result<CompletionResult, LLMError> {
-        let api_key = self.api_key.read()
+        let api_key = self
+            .api_key
+            .read()
             .map_err(|e| LLMError::Other(format!("lock poisoned: {e}")))?
             .clone();
 
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
-        openai_format_complete(&url, &self.model, Some(&api_key), messages, tools, DEFAULT_TIMEOUT).await
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
+        openai_format_complete(
+            &url,
+            &self.model,
+            Some(&api_key),
+            messages,
+            tools,
+            DEFAULT_TIMEOUT,
+        )
+        .await
     }
 
-    fn supports_streaming(&self) -> bool { true }
-    fn context_window(&self) -> usize { self.context_window_size }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn context_window(&self) -> usize {
+        self.context_window_size
+    }
     fn token_pricing(&self) -> TokenPricing {
-        TokenPricing { input_per_1k: 0.001, output_per_1k: 0.002 }
+        TokenPricing {
+            input_per_1k: 0.001,
+            output_per_1k: 0.002,
+        }
     }
 
     fn update_auth(&self, api_key: &str, _org_id: Option<&str>) {
         match self.api_key.write() {
             Ok(mut key) => *key = api_key.to_string(),
-            Err(e) => tracing::error!(provider = "openai_compat", error = %e, "Failed to update API key — RwLock poisoned"),
+            Err(e) => {
+                tracing::error!(provider = "openai_compat", error = %e, "Failed to update API key — RwLock poisoned")
+            }
         }
     }
 }
@@ -1242,10 +1422,11 @@ impl OpenAICompatProvider {
         use crate::streaming::StreamChunk;
         use futures::StreamExt;
 
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
-        let api_key = self.api_key.read()
-            .map(|k| k.clone())
-            .unwrap_or_default();
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
+        let api_key = self.api_key.read().map(|k| k.clone()).unwrap_or_default();
 
         let mut body = serde_json::json!({
             "model": self.model,

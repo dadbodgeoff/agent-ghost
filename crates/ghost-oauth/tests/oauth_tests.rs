@@ -476,10 +476,7 @@ mod storage_tests {
 
         for entry in &entries {
             let name = entry.file_name().to_string_lossy().to_string();
-            assert!(
-                !name.ends_with(".tmp"),
-                "temp file left behind: {name}"
-            );
+            assert!(!name.ends_with(".tmp"), "temp file left behind: {name}");
         }
     }
 
@@ -627,7 +624,11 @@ mod provider_tests {
 
         let scopes = vec!["gmail.readonly".into(), "calendar".into()];
         let (url, pkce) = provider
-            .authorization_url(&scopes, "test-state", "http://localhost:18789/api/oauth/callback")
+            .authorization_url(
+                &scopes,
+                "test-state",
+                "http://localhost:18789/api/oauth/callback",
+            )
             .unwrap();
 
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth"));
@@ -702,11 +703,8 @@ mod provider_tests {
         // Verify the method signature accepts code + pkce_verifier + redirect_uri
         // and returns Result<TokenSet, OAuthError>. Without a mock HTTP server,
         // we verify the provider is constructable and the method exists.
-        let provider = GoogleOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GoogleOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         // Calling with a fake URL will fail at the HTTP level — that's expected.
         let result = provider.exchange_code("fake-code", "fake-verifier", "http://localhost/cb");
@@ -718,11 +716,8 @@ mod provider_tests {
     fn github_exchange_code_uses_accept_json_header() {
         // GitHub's exchange_code sets Accept: application/json.
         // We verify the method exists and fails gracefully on network error.
-        let provider = GitHubOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GitHubOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         let result = provider.exchange_code("fake-code", "fake-verifier", "http://localhost/cb");
         assert!(matches!(result, Err(OAuthError::FlowFailed(_))));
@@ -730,11 +725,8 @@ mod provider_tests {
 
     #[test]
     fn slack_exchange_code_constructs_request() {
-        let provider = SlackOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            SlackOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         let result = provider.exchange_code("fake-code", "fake-verifier", "http://localhost/cb");
         assert!(matches!(result, Err(OAuthError::FlowFailed(_))));
@@ -757,11 +749,8 @@ mod provider_tests {
 
     #[test]
     fn google_refresh_constructs_request() {
-        let provider = GoogleOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GoogleOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         let result = provider.refresh_token("fake-refresh-token");
         // Should fail at HTTP level — either RefreshFailed or FlowFailed
@@ -770,26 +759,23 @@ mod provider_tests {
 
     #[test]
     fn github_refresh_returns_unsupported_error() {
-        let provider = GitHubOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GitHubOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         let result = provider.refresh_token("some-token");
         assert!(matches!(result, Err(OAuthError::RefreshFailed(_))));
         if let Err(OAuthError::RefreshFailed(msg)) = &result {
-            assert!(msg.contains("long-lived"), "should mention long-lived tokens");
+            assert!(
+                msg.contains("long-lived"),
+                "should mention long-lived tokens"
+            );
         }
     }
 
     #[test]
     fn slack_refresh_constructs_request() {
-        let provider = SlackOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            SlackOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         let result = provider.refresh_token("fake-refresh-token");
         assert!(matches!(result, Err(OAuthError::RefreshFailed(_))));
@@ -813,11 +799,8 @@ mod provider_tests {
 
     #[test]
     fn google_revoke_constructs_request() {
-        let provider = GoogleOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GoogleOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         // Google revoke hits a real endpoint — will fail at HTTP level
         let result = provider.revoke_token("fake-token");
@@ -828,11 +811,8 @@ mod provider_tests {
 
     #[test]
     fn github_revoke_constructs_request_with_basic_auth() {
-        let provider = GitHubOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GitHubOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         // GitHub revoke uses DELETE with basic auth
         let result = provider.revoke_token("fake-token");
@@ -842,11 +822,8 @@ mod provider_tests {
 
     #[test]
     fn slack_revoke_is_noop() {
-        let provider = SlackOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            SlackOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         // Slack doesn't have programmatic single-token revoke
         let result = provider.revoke_token("xoxb-fake-token");
@@ -871,13 +848,14 @@ mod provider_tests {
 
     #[test]
     fn google_scopes_space_separated_in_url() {
-        let provider = GoogleOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GoogleOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
-        let scopes = vec!["gmail.readonly".into(), "calendar".into(), "drive.readonly".into()];
+        let scopes = vec![
+            "gmail.readonly".into(),
+            "calendar".into(),
+            "drive.readonly".into(),
+        ];
         let (url, _) = provider
             .authorization_url(&scopes, "state", "http://localhost/cb")
             .unwrap();
@@ -893,11 +871,8 @@ mod provider_tests {
 
     #[test]
     fn google_empty_scopes_defaults_to_openid() {
-        let provider = GoogleOAuthProvider::new(
-            "cid".into(),
-            SecretString::from("cs".to_string()),
-        )
-        .unwrap();
+        let provider =
+            GoogleOAuthProvider::new("cid".into(), SecretString::from("cs".to_string())).unwrap();
 
         let (url, _) = provider
             .authorization_url(&[], "state", "http://localhost/cb")
@@ -1119,9 +1094,7 @@ mod broker_tests {
         (broker, dir)
     }
 
-    fn test_broker_with_provider(
-        provider: MockOAuthProvider,
-    ) -> (OAuthBroker, tempfile::TempDir) {
+    fn test_broker_with_provider(provider: MockOAuthProvider) -> (OAuthBroker, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = TokenStore::new(
             dir.path().to_path_buf(),
@@ -1245,7 +1218,9 @@ mod broker_tests {
         let response = broker.execute(&ref_id, &request).unwrap();
         assert_eq!(response.status, 200);
         assert!(response.body.contains(r#""method":"POST""#));
-        assert!(response.body.contains(r#""url":"https://api.example.com/resource""#));
+        assert!(response
+            .body
+            .contains(r#""url":"https://api.example.com/resource""#));
     }
 
     // ─── Spec: "Unit: execute with expired token → auto-refresh → API call succeeds" ──
@@ -1457,7 +1432,10 @@ mod broker_tests {
                 Err(_) => {} // Some may fail due to race, but none should panic
             }
         }
-        assert!(successes > 0, "at least some concurrent executes should succeed");
+        assert!(
+            successes > 0,
+            "at least some concurrent executes should succeed"
+        );
     }
 
     // ─── Disconnect nonexistent ──────────────────────────────────────
@@ -1595,9 +1573,20 @@ fn cargo_toml_has_required_dependencies() {
         .expect("table");
 
     let required = [
-        "ghost-secrets", "serde", "serde_json", "chrono", "uuid",
-        "thiserror", "secrecy", "zeroize", "sha2", "rand", "base64",
-        "reqwest", "tokio", "tracing",
+        "ghost-secrets",
+        "serde",
+        "serde_json",
+        "chrono",
+        "uuid",
+        "thiserror",
+        "secrecy",
+        "zeroize",
+        "sha2",
+        "rand",
+        "base64",
+        "reqwest",
+        "tokio",
+        "tracing",
     ];
 
     for dep in &required {

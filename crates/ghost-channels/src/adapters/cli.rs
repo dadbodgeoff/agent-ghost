@@ -44,7 +44,13 @@ impl ChannelAdapter for CliAdapter {
         Ok(InboundMessage::new("cli", "user", input.trim()))
     }
 
-    fn supports_streaming(&self) -> bool { false }
-    fn supports_editing(&self) -> bool { false }
-    fn channel_type(&self) -> &str { "cli" }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+    fn supports_editing(&self) -> bool {
+        false
+    }
+    fn channel_type(&self) -> &str {
+        "cli"
+    }
 }

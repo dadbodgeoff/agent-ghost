@@ -9,10 +9,10 @@ use std::time::Duration;
 mod adapter_trait {
     use ghost_channels::adapter::ChannelAdapter;
     use ghost_channels::adapters::cli::CliAdapter;
-    use ghost_channels::adapters::websocket::WebSocketAdapter;
-    use ghost_channels::adapters::telegram::TelegramAdapter;
     use ghost_channels::adapters::discord::DiscordAdapter;
     use ghost_channels::adapters::slack::SlackAdapter;
+    use ghost_channels::adapters::telegram::TelegramAdapter;
+    use ghost_channels::adapters::websocket::WebSocketAdapter;
     use ghost_channels::adapters::whatsapp::WhatsAppAdapter;
 
     /// ChannelAdapter trait is object-safe (can be used as Box<dyn>).
@@ -147,8 +147,8 @@ mod message_types {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod streaming {
-    use std::time::Duration;
     use ghost_channels::streaming::StreamingFormatter;
+    use std::time::Duration;
 
     #[test]
     fn buffers_chunks() {

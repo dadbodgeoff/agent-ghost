@@ -191,7 +191,10 @@ mod tests {
         tracker.record_decision("test".into());
         tracker.add_blocker("test".into());
         tracker.reset();
-        assert_eq!(tracker.compile_summary(), "CURRENT STATE: No active objectives.");
+        assert_eq!(
+            tracker.compile_summary(),
+            "CURRENT STATE: No active objectives."
+        );
     }
 
     #[test]

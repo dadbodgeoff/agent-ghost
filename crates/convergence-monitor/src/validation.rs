@@ -15,7 +15,9 @@ pub enum ValidationError {
     #[allow(dead_code)]
     MissingField { field: String },
 
-    #[error("clock skew: event timestamp {event_time} is {skew_secs}s in the future (max {max_secs}s)")]
+    #[error(
+        "clock skew: event timestamp {event_time} is {skew_secs}s in the future (max {max_secs}s)"
+    )]
     ClockSkew {
         event_time: DateTime<Utc>,
         skew_secs: i64,
@@ -59,10 +61,13 @@ impl RateLimiter {
     /// Try to consume a token. Returns `Ok(())` if allowed, `Err` if rate limited.
     pub fn try_consume(&mut self, connection_id: &str) -> Result<(), ValidationError> {
         let now = Instant::now();
-        let bucket = self.buckets.entry(connection_id.to_string()).or_insert(TokenBucket {
-            tokens: self.max_per_min,
-            last_refill: now,
-        });
+        let bucket = self
+            .buckets
+            .entry(connection_id.to_string())
+            .or_insert(TokenBucket {
+                tokens: self.max_per_min,
+                last_refill: now,
+            });
 
         // Refill tokens based on elapsed time
         let elapsed = now.duration_since(bucket.last_refill);

@@ -1,8 +1,8 @@
 //! Boundary violation queries.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_violation(
     conn: &Connection,
@@ -24,9 +24,17 @@ pub fn insert_violation(
          intervention_level, event_hash, previous_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
-            id, session_id, violation_type, severity, trigger_text_hash,
-            matched_patterns, action_taken, convergence_score,
-            intervention_level, event_hash, previous_hash,
+            id,
+            session_id,
+            violation_type,
+            severity,
+            trigger_text_hash,
+            matched_patterns,
+            action_taken,
+            convergence_score,
+            intervention_level,
+            event_hash,
+            previous_hash,
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;

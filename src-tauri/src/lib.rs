@@ -23,6 +23,8 @@ pub fn run() {
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_pty::init())
         .invoke_handler(tauri::generate_handler![
+            commands::desktop::read_keybindings,
+            commands::desktop::default_shell,
             commands::gateway::start_gateway,
             commands::gateway::stop_gateway,
             commands::gateway::gateway_status,

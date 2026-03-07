@@ -105,7 +105,9 @@ fn score_0_5_includes_only_task_focused() {
 
     // Episodic and AttachmentIndicator should be filtered out
     assert!(
-        !filtered.iter().any(|m| m.memory_type == MemoryType::Episodic),
+        !filtered
+            .iter()
+            .any(|m| m.memory_type == MemoryType::Episodic),
         "Episodic should be filtered at score 0.5"
     );
     assert!(
@@ -165,7 +167,10 @@ fn score_clamped_to_valid_range() {
     for m in &filtered {
         assert!(matches!(
             m.memory_type,
-            MemoryType::Core | MemoryType::Procedural | MemoryType::Semantic | MemoryType::Reference
+            MemoryType::Core
+                | MemoryType::Procedural
+                | MemoryType::Semantic
+                | MemoryType::Reference
         ));
     }
 }
@@ -235,7 +240,11 @@ fn formatter_respects_token_budget() {
     let formatter = SnapshotFormatter::new();
     // Very small budget: 10 tokens ≈ 40 chars
     let text = formatter.format(&snapshot, 10);
-    assert!(text.len() <= 40, "text length {} exceeds budget", text.len());
+    assert!(
+        text.len() <= 40,
+        "text length {} exceeds budget",
+        text.len()
+    );
 }
 
 #[test]
@@ -290,7 +299,10 @@ fn convergence_state_default_is_zero() {
 
 #[test]
 fn convergence_state_serializes_round_trip() {
-    let state = ConvergenceState { score: 0.75, level: 3 };
+    let state = ConvergenceState {
+        score: 0.75,
+        level: 3,
+    };
     let json = serde_json::to_string(&state).unwrap();
     let deserialized: ConvergenceState = serde_json::from_str(&json).unwrap();
     assert_eq!(state, deserialized);

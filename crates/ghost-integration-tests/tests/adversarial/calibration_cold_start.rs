@@ -58,7 +58,10 @@ fn session_10_triggers_scoring() {
         gate.record_session_start(agent);
     }
 
-    assert!(gate.record_session_start(agent), "session 10 should trigger scoring");
+    assert!(
+        gate.record_session_start(agent),
+        "session 10 should trigger scoring"
+    );
 }
 
 #[test]
@@ -71,7 +74,10 @@ fn sessions_after_calibration_always_score() {
     }
 
     for session in 11..=100 {
-        assert!(gate.record_session_start(agent), "session {session} should score");
+        assert!(
+            gate.record_session_start(agent),
+            "session {session} should score"
+        );
     }
 }
 

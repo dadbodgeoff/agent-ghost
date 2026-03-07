@@ -213,7 +213,9 @@ mod tests {
     #[test]
     fn default_blocked_hotkeys_populated() {
         let config = PcControlConfig::default();
-        assert!(config.blocked_hotkeys.contains(&"Ctrl+Alt+Delete".to_string()));
+        assert!(config
+            .blocked_hotkeys
+            .contains(&"Ctrl+Alt+Delete".to_string()));
         assert!(config.blocked_hotkeys.contains(&"Cmd+Q".to_string()));
         assert!(config.blocked_hotkeys.contains(&"Alt+F4".to_string()));
     }

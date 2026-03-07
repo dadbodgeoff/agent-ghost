@@ -12,6 +12,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::api::websocket::WsEvent;
+use crate::runtime_status::{convergence_protection_summary_value, distributed_kill_status_value};
 use crate::safety::kill_switch::{KillLevel, PLATFORM_KILLED};
 use crate::state::AppState;
 use cortex_core::safety::trigger::TriggerEvent;
@@ -21,7 +22,10 @@ use cortex_core::safety::trigger::TriggerEvent;
 /// When the agent registry RwLock is poisoned, falls back to querying
 /// the agents table in the DB directly. Safety operations must remain
 /// functional even when in-memory state is corrupted.
-fn lookup_agent_id(state: &AppState, name_or_id: &str) -> Result<uuid::Uuid, (StatusCode, Json<serde_json::Value>)> {
+fn lookup_agent_id(
+    state: &AppState,
+    name_or_id: &str,
+) -> Result<uuid::Uuid, (StatusCode, Json<serde_json::Value>)> {
     // Try UUID parse first.
     if let Ok(id) = uuid::Uuid::parse_str(name_or_id) {
         return Ok(id);
@@ -61,7 +65,13 @@ fn lookup_agent_id(state: &AppState, name_or_id: &str) -> Result<uuid::Uuid, (St
 }
 
 /// Write a safety action to the audit_log table.
-async fn write_audit_entry(state: &AppState, event_type: &str, severity: &str, agent_id: Option<&str>, details: &str) {
+async fn write_audit_entry(
+    state: &AppState,
+    event_type: &str,
+    severity: &str,
+    agent_id: Option<&str>,
+    details: &str,
+) {
     let db = state.db.write().await;
     let engine = ghost_audit::AuditQueryEngine::new(&db);
     let entry = ghost_audit::AuditEntry {
@@ -80,7 +90,10 @@ async fn write_audit_entry(state: &AppState, event_type: &str, severity: &str, a
 }
 
 /// T-5.11.2: Check safety cooldown for the given actor, returning 429 if in cooldown.
-fn check_safety_cooldown(state: &AppState, actor: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn check_safety_cooldown(
+    state: &AppState,
+    actor: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if let Err(remaining_secs) = state.safety_cooldown.check_and_record(actor) {
         return Err((
             StatusCode::TOO_MANY_REQUESTS,
@@ -156,11 +169,14 @@ pub async fn kill_all(
     state.kill_switch.activate_kill_all(&trigger);
 
     // Broadcast to WebSocket clients.
-    crate::api::websocket::broadcast_event(&state, WsEvent::KillSwitchActivation {
-        level: "KILL_ALL".into(),
-        agent_id: None,
-        reason: body.reason.clone(),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::KillSwitchActivation {
+            level: "KILL_ALL".into(),
+            agent_id: None,
+            reason: body.reason.clone(),
+        },
+    );
 
     // Propagate through distributed kill gate if available.
     // Scoped block ensures RwLockWriteGuard is dropped before any .await (Send requirement).
@@ -183,9 +199,7 @@ pub async fn kill_all(
         None
     };
     if let Some(ref err_msg) = gate_poisoned {
-        write_audit_entry(
-            &state, "kill_gate_poison", "critical", None, err_msg,
-        ).await;
+        write_audit_entry(&state, "kill_gate_poison", "critical", None, err_msg).await;
     }
 
     // HTTP fanout to mesh peers (T-X.25).
@@ -193,9 +207,16 @@ pub async fn kill_all(
 
     // Write to audit log.
     write_audit_entry(
-        &state, "kill_all", "critical", None,
-        &format!("KILL_ALL activated by {}. Reason: {}", body.initiated_by, body.reason),
-    ).await;
+        &state,
+        "kill_all",
+        "critical",
+        None,
+        &format!(
+            "KILL_ALL activated by {}. Reason: {}",
+            body.initiated_by, body.reason
+        ),
+    )
+    .await;
 
     // Fire webhooks for kill_switch event (T-4.3.1).
     {
@@ -251,20 +272,29 @@ pub async fn pause_agent(
         reason: body.reason.clone(),
         initiated_by: "api".into(),
     };
-    state.kill_switch.activate_agent(agent_id, KillLevel::Pause, &trigger);
+    state
+        .kill_switch
+        .activate_agent(agent_id, KillLevel::Pause, &trigger);
 
     // Broadcast to WebSocket clients.
-    crate::api::websocket::broadcast_event(&state, WsEvent::KillSwitchActivation {
-        level: "PAUSE".into(),
-        agent_id: Some(agent_id.to_string()),
-        reason: body.reason.clone(),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::KillSwitchActivation {
+            level: "PAUSE".into(),
+            agent_id: Some(agent_id.to_string()),
+            reason: body.reason.clone(),
+        },
+    );
 
     // Write to audit log.
     write_audit_entry(
-        &state, "pause_agent", "high", Some(&agent_id.to_string()),
+        &state,
+        "pause_agent",
+        "high",
+        Some(&agent_id.to_string()),
         &format!("Agent paused. Reason: {}", body.reason),
-    ).await;
+    )
+    .await;
 
     // Fire webhooks for intervention_change event (T-4.3.1).
     {
@@ -278,7 +308,8 @@ pub async fn pause_agent(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         tokio::spawn(async move {
-            crate::api::webhooks::fire_webhooks(&db, &state_ref, "intervention_change", payload).await;
+            crate::api::webhooks::fire_webhooks(&db, &state_ref, "intervention_change", payload)
+                .await;
         });
     }
 
@@ -314,10 +345,7 @@ pub async fn resume_agent(
         .as_ref()
         .map(|c| c.sub.clone())
         .unwrap_or_else(|| "unknown".into());
-    let actor_role = claims
-        .as_ref()
-        .map(|c| c.role.clone())
-        .unwrap_or_default();
+    let actor_role = claims.as_ref().map(|c| c.role.clone()).unwrap_or_default();
 
     // Check current kill state for this agent.
     let current = state.kill_switch.current_state();
@@ -395,17 +423,27 @@ pub async fn resume_agent(
             let is_quarantine = agent_state.map(|s| s.level) == Some(KillLevel::Quarantine);
 
             // Broadcast state change to WebSocket clients.
-            crate::api::websocket::broadcast_event(&state, WsEvent::AgentStateChange {
-                agent_id: agent_id.to_string(),
-                new_state: "resumed".into(),
-            });
+            crate::api::websocket::broadcast_event(
+                &state,
+                WsEvent::AgentStateChange {
+                    agent_id: agent_id.to_string(),
+                    new_state: "resumed".into(),
+                },
+            );
 
             // Write to audit log.
             let severity = if is_quarantine { "critical" } else { "high" };
             write_audit_entry(
-                &state, "resume_agent", severity, Some(&agent_id.to_string()),
-                &format!("Agent resumed (from {})", if is_quarantine { "quarantine" } else { "pause" }),
-            ).await;
+                &state,
+                "resume_agent",
+                severity,
+                Some(&agent_id.to_string()),
+                &format!(
+                    "Agent resumed (from {})",
+                    if is_quarantine { "quarantine" } else { "pause" }
+                ),
+            )
+            .await;
 
             (
                 StatusCode::OK,
@@ -452,20 +490,29 @@ pub async fn quarantine_agent(
         reason: body.reason.clone(),
         initiated_by: "api".into(),
     };
-    state.kill_switch.activate_agent(agent_id, KillLevel::Quarantine, &trigger);
+    state
+        .kill_switch
+        .activate_agent(agent_id, KillLevel::Quarantine, &trigger);
 
     // Broadcast to WebSocket clients.
-    crate::api::websocket::broadcast_event(&state, WsEvent::KillSwitchActivation {
-        level: "QUARANTINE".into(),
-        agent_id: Some(agent_id.to_string()),
-        reason: body.reason.clone(),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::KillSwitchActivation {
+            level: "QUARANTINE".into(),
+            agent_id: Some(agent_id.to_string()),
+            reason: body.reason.clone(),
+        },
+    );
 
     // Write to audit log.
     write_audit_entry(
-        &state, "quarantine_agent", "critical", Some(&agent_id.to_string()),
+        &state,
+        "quarantine_agent",
+        "critical",
+        Some(&agent_id.to_string()),
         &format!("Agent quarantined. Reason: {}", body.reason),
-    ).await;
+    )
+    .await;
 
     // Fire webhooks for intervention_change event (T-4.3.1).
     {
@@ -479,7 +526,8 @@ pub async fn quarantine_agent(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         tokio::spawn(async move {
-            crate::api::webhooks::fire_webhooks(&db, &state_ref, "intervention_change", payload).await;
+            crate::api::webhooks::fire_webhooks(&db, &state_ref, "intervention_change", payload)
+                .await;
         });
     }
 
@@ -535,30 +583,25 @@ pub async fn safety_status(
         })
         .collect();
 
-    // Include distributed gate state if available.
-    // T-5.4.2: On RwLock poisoning, return degraded state info rather than hiding it.
-    let gate_state = state.kill_gate.as_ref().map(|gate| {
-        match gate.read() {
-            Ok(guard) => {
-                let snapshot = guard.gate.snapshot();
-                serde_json::json!({
-                    "state": format!("{:?}", snapshot.state),
-                    "node_id": snapshot.node_id.to_string(),
-                    "closed_at": snapshot.closed_at.map(|t| t.to_rfc3339()),
-                    "close_reason": snapshot.close_reason,
-                    "acked_nodes": snapshot.acked_nodes.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
-                    "chain_length": snapshot.chain_length,
-                })
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "CRITICAL: Kill gate RwLock poisoned in safety_status");
-                serde_json::json!({
-                    "state": "POISONED",
-                    "error": "Kill gate lock poisoned — gate state unreliable. Restart required.",
-                })
-            }
-        }
-    });
+    let agent_ids = state
+        .agents
+        .read()
+        .map(|agents| {
+            agents
+                .all_agents()
+                .iter()
+                .map(|agent| agent.id)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let convergence_protection = convergence_protection_summary_value(
+        agent_ids,
+        state.monitor_enabled,
+        state.monitor_block_on_degraded,
+        state.convergence_state_stale_after,
+    );
+    let distributed_kill =
+        distributed_kill_status_value(state.distributed_kill_enabled, state.kill_gate.as_ref());
 
     (
         StatusCode::OK,
@@ -568,7 +611,8 @@ pub async fn safety_status(
             "per_agent": per_agent,
             "activated_at": ks_state.activated_at.map(|t| t.to_rfc3339()),
             "trigger": ks_state.trigger,
-            "distributed_gate": gate_state,
+            "convergence_protection": convergence_protection,
+            "distributed_kill": distributed_kill,
         })),
     )
 }

@@ -33,7 +33,11 @@ impl SlackOAuthProvider {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| OAuthError::ProviderError(format!("HTTP client init: {e}")))?;
-        Ok(Self { client_id, client_secret, http })
+        Ok(Self {
+            client_id,
+            client_secret,
+            http,
+        })
     }
 
     /// Validate that a token looks like a Slack bot token.
@@ -43,7 +47,9 @@ impl SlackOAuthProvider {
 }
 
 impl OAuthProvider for SlackOAuthProvider {
-    fn name(&self) -> &str { "slack" }
+    fn name(&self) -> &str {
+        "slack"
+    }
 
     fn authorization_url(
         &self,
@@ -80,11 +86,16 @@ impl OAuthProvider for SlackOAuthProvider {
             ("code_verifier", pkce_verifier),
         ];
 
-        let resp = self.http.post(TOKEN_URL).form(&params).send()
+        let resp = self
+            .http
+            .post(TOKEN_URL)
+            .form(&params)
+            .send()
             .map_err(|e| OAuthError::FlowFailed(format!("token exchange: {e}")))?;
 
         let status = resp.status();
-        let body = resp.text()
+        let body = resp
+            .text()
             .map_err(|e| OAuthError::FlowFailed(format!("failed to read response body: {e}")))?;
 
         if !status.is_success() {
@@ -96,7 +107,10 @@ impl OAuthProvider for SlackOAuthProvider {
 
         // Slack wraps errors in {"ok": false, "error": "..."}
         if json.get("ok").and_then(|v| v.as_bool()) == Some(false) {
-            let err = json.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let err = json
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             return Err(OAuthError::FlowFailed(format!("Slack error: {err}")));
         }
 
@@ -140,11 +154,16 @@ impl OAuthProvider for SlackOAuthProvider {
             ("client_secret", self.client_secret.expose_secret()),
         ];
 
-        let resp = self.http.post(TOKEN_URL).form(&params).send()
+        let resp = self
+            .http
+            .post(TOKEN_URL)
+            .form(&params)
+            .send()
             .map_err(|e| OAuthError::RefreshFailed(format!("refresh: {e}")))?;
 
         let status = resp.status();
-        let body = resp.text()
+        let body = resp
+            .text()
             .map_err(|e| OAuthError::RefreshFailed(format!("failed to read response body: {e}")))?;
 
         if !status.is_success() {
@@ -155,7 +174,10 @@ impl OAuthProvider for SlackOAuthProvider {
             .map_err(|e| OAuthError::RefreshFailed(format!("malformed JSON: {e}")))?;
 
         if json.get("ok").and_then(|v| v.as_bool()) == Some(false) {
-            let err = json.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let err = json
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             return Err(OAuthError::RefreshFailed(format!("Slack error: {err}")));
         }
 
@@ -193,7 +215,10 @@ impl OAuthProvider for SlackOAuthProvider {
         // Slack doesn't have a standard revocation endpoint for bot tokens.
         // The app can be uninstalled via api.slack.com/apps, but there's no
         // programmatic single-token revoke. We log and treat as success.
-        tracing::info!(token_prefix = &token[..5.min(token.len())], "Slack token revocation requested (no-op — uninstall app to fully revoke)");
+        tracing::info!(
+            token_prefix = &token[..5.min(token.len())],
+            "Slack token revocation requested (no-op — uninstall app to fully revoke)"
+        );
         Ok(())
     }
 

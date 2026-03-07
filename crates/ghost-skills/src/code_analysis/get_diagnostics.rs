@@ -108,12 +108,18 @@ impl Skill for GetDiagnosticsSkill {
         }
 
         // Count by severity.
-        let error_count = diagnostics.iter().filter(|d| d["severity"] == "error").count();
+        let error_count = diagnostics
+            .iter()
+            .filter(|d| d["severity"] == "error")
+            .count();
         let warning_count = diagnostics
             .iter()
             .filter(|d| d["severity"] == "warning")
             .count();
-        let info_count = diagnostics.iter().filter(|d| d["severity"] == "info").count();
+        let info_count = diagnostics
+            .iter()
+            .filter(|d| d["severity"] == "info")
+            .count();
 
         // Sort by line, then severity (errors first).
         diagnostics.sort_by(|a, b| {
@@ -149,11 +155,7 @@ fn severity_order(severity: &str) -> u8 {
 /// Tracks state to skip brackets inside string literals, character literals,
 /// and single-line comments. Multi-line comments and raw strings are
 /// handled on a best-effort basis.
-fn check_brackets(
-    source: &str,
-    language: &str,
-    diagnostics: &mut Vec<serde_json::Value>,
-) {
+fn check_brackets(source: &str, language: &str, diagnostics: &mut Vec<serde_json::Value>) {
     let single_line_comment = match language {
         "python" => "#",
         _ => "//",

@@ -67,9 +67,7 @@ impl MtlsAuth {
                 // In production, parse the DER certificate, verify against
                 // the CA trust store, check expiration, and extract subject.
                 if cert_der.is_empty() {
-                    return MtlsVerifyResult::InvalidCertificate(
-                        "empty certificate".into(),
-                    );
+                    return MtlsVerifyResult::InvalidCertificate("empty certificate".into());
                 }
                 // Placeholder: accept non-empty certs when CA path is configured
                 if self.config.ca_cert_path.is_some() {
@@ -77,9 +75,7 @@ impl MtlsAuth {
                         subject: "CN=client".into(),
                     }
                 } else {
-                    MtlsVerifyResult::InvalidCertificate(
-                        "no CA trust store configured".into(),
-                    )
+                    MtlsVerifyResult::InvalidCertificate("no CA trust store configured".into())
                 }
             }
         }

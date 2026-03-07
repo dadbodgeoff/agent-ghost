@@ -1,7 +1,7 @@
 //! Retrieval scorer with convergence as 11th factor.
 
-use cortex_core::memory::BaseMemory;
 use cortex_core::memory::types::MemoryType;
+use cortex_core::memory::BaseMemory;
 use serde::{Deserialize, Serialize};
 
 /// Weights for the 11-factor retrieval scorer.
@@ -94,13 +94,28 @@ impl RetrievalScorer {
             (self.weights.recency, self.recency_score(memory)),
             (self.weights.importance, self.importance_score(memory)),
             (self.weights.confidence, self.confidence_score(memory)),
-            (self.weights.access_frequency, self.access_frequency_score(memory)),
+            (
+                self.weights.access_frequency,
+                self.access_frequency_score(memory),
+            ),
             (self.weights.citation_count, self.citation_count_score(ctx)),
-            (self.weights.type_affinity, self.type_affinity_score(memory, ctx)),
+            (
+                self.weights.type_affinity,
+                self.type_affinity_score(memory, ctx),
+            ),
             (self.weights.tag_match, self.tag_match_score(memory, ctx)),
-            (self.weights.embedding_similarity, self.embedding_similarity_score(ctx)),
-            (self.weights.pattern_alignment, self.pattern_alignment_score()),
-            (self.weights.convergence, self.convergence_factor(memory, convergence_score)),
+            (
+                self.weights.embedding_similarity,
+                self.embedding_similarity_score(ctx),
+            ),
+            (
+                self.weights.pattern_alignment,
+                self.pattern_alignment_score(),
+            ),
+            (
+                self.weights.convergence,
+                self.convergence_factor(memory, convergence_score),
+            ),
         ];
         scores
             .iter()
@@ -125,12 +140,7 @@ impl RetrievalScorer {
         }
 
         // Check how many query terms appear in the memory's summary + content
-        let haystack = format!(
-            "{} {}",
-            memory.summary,
-            memory.content.to_string()
-        )
-        .to_lowercase();
+        let haystack = format!("{} {}", memory.summary, memory.content.to_string()).to_lowercase();
 
         let matches = query_terms
             .iter()
@@ -170,8 +180,7 @@ impl RetrievalScorer {
     /// Factor 5: Access frequency — how often the memory is used.
     fn access_frequency_score(&self, memory: &BaseMemory) -> f64 {
         // Diminishing returns via log2, normalized against expected max of ~100
-        let score = (1.0 + memory.access_count as f64).log2()
-            / (1.0 + 100.0_f64).log2();
+        let score = (1.0 + memory.access_count as f64).log2() / (1.0 + 100.0_f64).log2();
         score.clamp(0.0, 1.0)
     }
 
@@ -282,8 +291,8 @@ impl Default for RetrievalScorer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cortex_core::memory::{BaseMemory, Importance};
     use cortex_core::memory::types::MemoryType;
+    use cortex_core::memory::{BaseMemory, Importance};
     use uuid::Uuid;
 
     fn make_memory(memory_type: MemoryType) -> BaseMemory {
@@ -505,7 +514,9 @@ mod tests {
                 assert!(
                     (0.0..=1.0).contains(&s),
                     "Score {} out of bounds for {:?} conv={}",
-                    s, mt, conv
+                    s,
+                    mt,
+                    conv
                 );
             }
         }

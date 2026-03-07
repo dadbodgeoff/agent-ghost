@@ -7,7 +7,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 /// Resolve the CORP_POLICY.md path: `~/.ghost/config/CORP_POLICY.md`.
 fn policy_path() -> PathBuf {
@@ -52,10 +52,7 @@ pub fn run_show(args: PolicyShowArgs) -> Result<(), CliError> {
     let path = policy_path();
 
     if !path.exists() {
-        eprintln!(
-            "CORP_POLICY.md not found at {}",
-            path.display()
-        );
+        eprintln!("CORP_POLICY.md not found at {}", path.display());
         eprintln!("Create one with a `## Denied Tools` section listing tools to block.");
         return Err(CliError::Config("CORP_POLICY.md not found".into()));
     }
@@ -242,12 +239,10 @@ pub fn run_lint(_args: PolicyLintArgs) -> Result<(), CliError> {
 
     // Check 3: Contains a ## Denied Tools heading.
     checks += 1;
-    let has_denied_heading = content
-        .lines()
-        .any(|l| {
-            let t = l.trim();
-            t.eq_ignore_ascii_case("## denied tools") || t.eq_ignore_ascii_case("## denied-tools")
-        });
+    let has_denied_heading = content.lines().any(|l| {
+        let t = l.trim();
+        t.eq_ignore_ascii_case("## denied tools") || t.eq_ignore_ascii_case("## denied-tools")
+    });
     if has_denied_heading {
         println!("✓ Contains `## Denied Tools` heading.");
     } else {
@@ -265,7 +260,9 @@ pub fn run_lint(_args: PolicyLintArgs) -> Result<(), CliError> {
                 if count > 0 {
                     println!("✓ {count} denied tool(s) parsed successfully.");
                 } else {
-                    println!("✗ `## Denied Tools` section has no entries. Add lines starting with `- `.");
+                    println!(
+                        "✗ `## Denied Tools` section has no entries. Add lines starting with `- `."
+                    );
                     errors += 1;
                 }
             }

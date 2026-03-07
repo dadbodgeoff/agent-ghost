@@ -92,14 +92,22 @@ impl AccessibilityBackend for MockAccessibilityBackend {
             max_depth,
         });
 
-        let filtered: Vec<AccessibilityNode> = self.nodes.iter()
+        let filtered: Vec<AccessibilityNode> = self
+            .nodes
+            .iter()
             .filter(|n| {
                 role.map_or(true, |r| n.role.to_lowercase() == r.to_lowercase())
                     && query.map_or(true, |q| {
                         let q_lower = q.to_lowercase();
-                        n.name.as_ref().map_or(false, |name| name.to_lowercase().contains(&q_lower))
-                            || n.title.as_ref().map_or(false, |t| t.to_lowercase().contains(&q_lower))
-                            || n.value.as_ref().map_or(false, |v| v.to_lowercase().contains(&q_lower))
+                        n.name
+                            .as_ref()
+                            .map_or(false, |name| name.to_lowercase().contains(&q_lower))
+                            || n.title
+                                .as_ref()
+                                .map_or(false, |t| t.to_lowercase().contains(&q_lower))
+                            || n.value
+                                .as_ref()
+                                .map_or(false, |v| v.to_lowercase().contains(&q_lower))
                     })
             })
             .cloned()

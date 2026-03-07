@@ -3,9 +3,7 @@
 //! These traits define the interface boundary for the mesh payment system.
 //! No implementations are provided — Phase 9 deferred.
 
-use crate::types::{
-    MeshEscrow, MeshInvoice, MeshReceipt, MeshTransaction, MeshWallet,
-};
+use crate::types::{MeshEscrow, MeshInvoice, MeshReceipt, MeshTransaction, MeshWallet};
 use uuid::Uuid;
 
 /// Errors that can occur during mesh operations.

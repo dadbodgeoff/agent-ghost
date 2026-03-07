@@ -41,8 +41,8 @@ impl IdentityManager {
             });
         }
 
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| IdentityError::ReadError(e.to_string()))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| IdentityError::ReadError(e.to_string()))?;
 
         // Parse YAML frontmatter if present, otherwise use defaults
         let identity = if content.starts_with("---") {
@@ -50,10 +50,10 @@ impl IdentityManager {
             let parts: Vec<&str> = content.splitn(3, "---").collect();
             if parts.len() >= 3 {
                 let frontmatter = parts[1].trim();
-                let name = extract_field(frontmatter, "name")
-                    .unwrap_or_else(|| "Agent".to_string());
-                let voice = extract_field(frontmatter, "voice")
-                    .unwrap_or_else(|| "neutral".to_string());
+                let name =
+                    extract_field(frontmatter, "name").unwrap_or_else(|| "Agent".to_string());
+                let voice =
+                    extract_field(frontmatter, "voice").unwrap_or_else(|| "neutral".to_string());
                 let emoji = extract_field(frontmatter, "emoji");
                 AgentIdentity {
                     name,

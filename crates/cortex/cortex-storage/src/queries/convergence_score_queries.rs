@@ -1,8 +1,8 @@
 //! Convergence score queries.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_score(
     conn: &Connection,
@@ -22,8 +22,16 @@ pub fn insert_score(
          signal_scores, level, profile, computed_at, event_hash, previous_hash)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
-            id, agent_id, session_id, composite_score, signal_scores,
-            level, profile, computed_at, event_hash, previous_hash,
+            id,
+            agent_id,
+            session_id,
+            composite_score,
+            signal_scores,
+            level,
+            profile,
+            computed_at,
+            event_hash,
+            previous_hash,
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;

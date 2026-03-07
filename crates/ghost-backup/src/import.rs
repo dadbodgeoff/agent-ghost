@@ -19,7 +19,11 @@ impl BackupImporter {
     }
 
     /// Import from a backup archive, verifying integrity.
-    pub fn import(&self, archive_path: &std::path::Path, passphrase: &str) -> BackupResult<BackupManifest> {
+    pub fn import(
+        &self,
+        archive_path: &std::path::Path,
+        passphrase: &str,
+    ) -> BackupResult<BackupManifest> {
         let encrypted = fs::read(archive_path)?;
 
         // Decrypt
@@ -27,12 +31,9 @@ impl BackupImporter {
 
         // Parse manifest length
         if raw.len() < 4 {
-            return Err(BackupError::IntegrityError(
-                "archive too small".to_string(),
-            ));
+            return Err(BackupError::IntegrityError("archive too small".to_string()));
         }
-        let manifest_len =
-            u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        let manifest_len = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
 
         if raw.len() < 4 + manifest_len {
             return Err(BackupError::IntegrityError(
@@ -40,21 +41,17 @@ impl BackupImporter {
             ));
         }
 
-        let manifest: BackupManifest =
-            serde_json::from_slice(&raw[4..4 + manifest_len])
-                .map_err(|e| BackupError::IntegrityError(format!("manifest parse: {}", e)))?;
+        let manifest: BackupManifest = serde_json::from_slice(&raw[4..4 + manifest_len])
+            .map_err(|e| BackupError::IntegrityError(format!("manifest parse: {}", e)))?;
 
-        let data: BTreeMap<String, Vec<u8>> =
-            serde_json::from_slice(&raw[4 + manifest_len..])
-                .map_err(|e| BackupError::IntegrityError(format!("data parse: {}", e)))?;
+        let data: BTreeMap<String, Vec<u8>> = serde_json::from_slice(&raw[4 + manifest_len..])
+            .map_err(|e| BackupError::IntegrityError(format!("data parse: {}", e)))?;
 
         // Verify integrity of each entry
         for entry in &manifest.entries {
-            let file_data = data
-                .get(&entry.path)
-                .ok_or_else(|| {
-                    BackupError::IntegrityError(format!("missing file: {}", entry.path))
-                })?;
+            let file_data = data.get(&entry.path).ok_or_else(|| {
+                BackupError::IntegrityError(format!("missing file: {}", entry.path))
+            })?;
             let hash = blake3::hash(file_data).to_hex().to_string();
             if hash != entry.blake3_hash {
                 return Err(BackupError::IntegrityError(format!(

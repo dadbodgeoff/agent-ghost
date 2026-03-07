@@ -20,10 +20,7 @@ pub enum PrefixValidation {
     /// L0-L5 content is identical to cached — KV cache hit expected.
     CacheHit,
     /// L0-L5 content differs from cached at the specified layer.
-    CacheMiss {
-        layer: u8,
-        reason: String,
-    },
+    CacheMiss { layer: u8, reason: String },
 }
 
 /// Per-session cache of the stable prefix (L0-L5) content and hash.
@@ -70,7 +67,10 @@ impl StablePrefixCache {
                     PrefixValidation::CacheHit
                 } else {
                     // Find which layer changed
-                    let cached = inner.cached_layers.as_ref().expect("cached_layers set with hash");
+                    let cached = inner
+                        .cached_layers
+                        .as_ref()
+                        .expect("cached_layers set with hash");
                     for i in 0..STABLE_LAYER_COUNT {
                         if cached[i] != current_layers[i] {
                             let diff_preview = Self::diff_preview(&cached[i], &current_layers[i]);
@@ -232,8 +232,12 @@ mod tests {
     #[test]
     fn hash_is_deterministic() {
         let layers: [String; 6] = [
-            "a".into(), "b".into(), "c".into(),
-            "d".into(), "e".into(), "f".into(),
+            "a".into(),
+            "b".into(),
+            "c".into(),
+            "d".into(),
+            "e".into(),
+            "f".into(),
         ];
         let h1 = StablePrefixCache::compute_hash(&layers);
         let h2 = StablePrefixCache::compute_hash(&layers);

@@ -8,9 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
-  import { isTauriEnvironment } from '$lib/platform/runtime';
-
-  const isTauri = isTauriEnvironment();
+  import { getRuntime } from '$lib/platform/runtime';
 
   export interface AppNotification {
     id: string;
@@ -61,7 +59,7 @@
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).level ?? 'unknown'}`,
+          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
           actionHref: '/convergence',
           agentId: (msg as any).agent_id as string,
         });
@@ -97,10 +95,11 @@
   }
 
   async function pushNativeNotification(n: AppNotification) {
-    if (n.severity !== 'critical' || !isTauri) return;
+    if (n.severity !== 'critical') return;
     try {
-      const { sendNotification } = await import('@tauri-apps/plugin-notification');
-      sendNotification({
+      const runtime = await getRuntime();
+      if (!runtime.isDesktop()) return;
+      await runtime.sendNotification({
         title: n.title,
         body: n.message,
       });

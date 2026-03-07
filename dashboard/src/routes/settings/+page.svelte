@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { clearToken } from '$lib/auth';
   import { goto } from '$app/navigation';
+  import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime } from '$lib/platform/runtime';
+  import { invalidateAuthClientState, isAuthResetError, notifyAuthBoundary } from '$lib/auth-boundary';
 
   type ThemeChoice = 'dark' | 'light' | 'system';
 
@@ -34,7 +36,30 @@
   }
 
   async function logout() {
-    await clearToken();
+    let remoteSucceeded = false;
+    let reason: string | undefined;
+
+    try {
+      const client = await getGhostClient();
+      await client.auth.logout();
+      remoteSucceeded = true;
+    } catch (error) {
+      if (isAuthResetError(error)) {
+        remoteSucceeded = true;
+      } else {
+        reason = error instanceof Error ? error.message : 'Failed to contact logout endpoint';
+      }
+    }
+
+    const runtime = await getRuntime();
+    await runtime.clearToken();
+    invalidateAuthClientState();
+    await notifyAuthBoundary('ghost-auth-cleared');
+
+    const result = { remoteSucceeded, reason };
+    if (!result.remoteSucceeded && result.reason) {
+      alert(`Signed out locally, but the server logout endpoint did not confirm revocation: ${result.reason}`);
+    }
     goto('/login');
   }
 </script>

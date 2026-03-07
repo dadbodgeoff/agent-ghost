@@ -114,20 +114,13 @@ impl AgentRegistry {
         }
     }
 
-    pub fn transition_state(
-        &mut self,
-        id: Uuid,
-        to: AgentLifecycleState,
-    ) -> Result<(), String> {
+    pub fn transition_state(&mut self, id: Uuid, to: AgentLifecycleState) -> Result<(), String> {
         let agent = self
             .agents_by_id
             .get_mut(&id)
             .ok_or_else(|| format!("Agent {id} not found"))?;
         if !agent.state.can_transition_to(to) {
-            return Err(format!(
-                "Invalid transition: {:?} -> {:?}",
-                agent.state, to
-            ));
+            return Err(format!("Invalid transition: {:?} -> {:?}", agent.state, to));
         }
         agent.state = to;
         Ok(())

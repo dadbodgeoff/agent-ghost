@@ -78,8 +78,8 @@ impl MemoryType {
             // ── Convergence (8 new entries — Req 2 AC8) ─────────────
             Self::AgentGoal => Some(90),
             Self::AgentReflection => Some(30),
-            Self::ConvergenceEvent => None,       // never decay
-            Self::BoundaryViolation => None,       // never decay
+            Self::ConvergenceEvent => None,  // never decay
+            Self::BoundaryViolation => None, // never decay
             Self::ProposalRecord => Some(365),
             Self::SimulationResult => Some(60),
             Self::InterventionPlan => Some(180),
@@ -92,10 +92,7 @@ impl MemoryType {
     pub fn is_platform_restricted(&self) -> bool {
         matches!(
             self,
-            Self::Core
-                | Self::ConvergenceEvent
-                | Self::BoundaryViolation
-                | Self::InterventionPlan
+            Self::Core | Self::ConvergenceEvent | Self::BoundaryViolation | Self::InterventionPlan
         )
     }
 }

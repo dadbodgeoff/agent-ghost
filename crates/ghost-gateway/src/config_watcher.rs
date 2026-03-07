@@ -27,8 +27,7 @@ pub fn spawn_config_watcher(state: Arc<AppState>) {
 /// Designed to be wrapped by `GatewayRuntime::spawn_tracked()` which
 /// adds cancellation handling.
 pub async fn config_watcher_task(state: Arc<AppState>) {
-    let config_path = std::env::var("GHOST_CONFIG_PATH")
-        .unwrap_or_else(|_| "ghost.yml".into());
+    let config_path = std::env::var("GHOST_CONFIG_PATH").unwrap_or_else(|_| "ghost.yml".into());
 
     let path = std::path::PathBuf::from(&config_path);
     if !path.exists() {
@@ -107,18 +106,14 @@ async fn run_notify_watcher(
 
 /// Polling fallback: check modification time every 5 seconds.
 async fn run_polling_watcher(path: &std::path::Path, state: &Arc<AppState>) {
-    let mut last_modified = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok();
+    let mut last_modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
 
     loop {
         interval.tick().await;
 
-        let current_modified = std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .ok();
+        let current_modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
 
         if current_modified != last_modified && current_modified.is_some() {
             last_modified = current_modified;
@@ -160,10 +155,13 @@ fn handle_config_change(path: &std::path::Path, state: &Arc<AppState>) {
     }
 
     // T-5.3.9: Send a single ConfigReloaded event instead of one per agent.
-    crate::api::websocket::broadcast_event(state, WsEvent::AgentConfigChange {
-        agent_id: "system".to_string(),
-        changed_fields: vec!["config_reloaded".into()],
-    });
+    crate::api::websocket::broadcast_event(
+        state,
+        WsEvent::AgentConfigChange {
+            agent_id: "system".to_string(),
+            changed_fields: vec!["config_reloaded".into()],
+        },
+    );
 }
 
 /// WP9-K: Re-read provider API keys from environment and atomically swap them

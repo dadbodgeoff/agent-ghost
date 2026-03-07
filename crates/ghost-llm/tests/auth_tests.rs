@@ -62,10 +62,14 @@ impl SecretProvider for FailingSecretProvider {
         Err(SecretsError::ProviderError("backend unavailable".into()))
     }
     fn set_secret(&self, _key: &str, _value: &str) -> Result<(), SecretsError> {
-        Err(SecretsError::StorageUnavailable("backend unavailable".into()))
+        Err(SecretsError::StorageUnavailable(
+            "backend unavailable".into(),
+        ))
     }
     fn delete_secret(&self, _key: &str) -> Result<(), SecretsError> {
-        Err(SecretsError::StorageUnavailable("backend unavailable".into()))
+        Err(SecretsError::StorageUnavailable(
+            "backend unavailable".into(),
+        ))
     }
     fn has_secret(&self, _key: &str) -> bool {
         false

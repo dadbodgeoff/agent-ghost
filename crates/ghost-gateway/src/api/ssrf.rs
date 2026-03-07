@@ -17,13 +17,13 @@ fn is_private_ip(ip: &IpAddr) -> bool {
                 || v4.is_private()        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
                 || v4.is_link_local()     // 169.254.0.0/16
                 || v4.is_unspecified()    // 0.0.0.0
-                || is_v4_shared(v4)       // 100.64.0.0/10 (CGNAT)
+                || is_v4_shared(v4) // 100.64.0.0/10 (CGNAT)
         }
         IpAddr::V6(v6) => {
             v6.is_loopback()              // ::1
                 || v6.is_unspecified()    // ::
                 || is_v6_unique_local(v6) // fc00::/7
-                || is_v6_link_local(v6)   // fe80::/10
+                || is_v6_link_local(v6) // fe80::/10
         }
     }
 }
@@ -58,13 +58,16 @@ fn is_v6_link_local(ip: &Ipv6Addr) -> bool {
 /// 4. DNS rebinding protection: ALL resolved IPs are checked
 pub fn validate_url(url_str: &str) -> Result<(), String> {
     // 1. Parse URL.
-    let parsed = url::Url::parse(url_str)
-        .map_err(|e| format!("Invalid URL: {e}"))?;
+    let parsed = url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {e}"))?;
 
     // 2. Only allow http/https schemes.
     match parsed.scheme() {
         "http" | "https" => {}
-        scheme => return Err(format!("URL scheme '{scheme}' not allowed — only http and https")),
+        scheme => {
+            return Err(format!(
+                "URL scheme '{scheme}' not allowed — only http and https"
+            ))
+        }
     }
 
     // 3. Must have a host.

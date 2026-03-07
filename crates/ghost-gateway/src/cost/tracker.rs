@@ -73,13 +73,19 @@ impl CostTracker {
     /// Call this *before* acquiring the DB writer lock.
     pub fn snapshot(&self) -> CostSnapshot {
         CostSnapshot {
-            daily: self.agent_daily.iter()
+            daily: self
+                .agent_daily
+                .iter()
                 .map(|e| (e.key().to_string(), *e.value()))
                 .collect(),
-            sessions: self.session_totals.iter()
+            sessions: self
+                .session_totals
+                .iter()
                 .map(|e| (e.key().to_string(), *e.value()))
                 .collect(),
-            compaction: self.compaction_cost.iter()
+            compaction: self
+                .compaction_cost
+                .iter()
                 .map(|e| (e.key().to_string(), *e.value()))
                 .collect(),
         }
@@ -99,27 +105,40 @@ impl CostTracker {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-        conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
 
-        let upsert_sql = "INSERT INTO cost_snapshots (scope, entity_id, amount, snapshot_date, updated_at)
+        let upsert_sql =
+            "INSERT INTO cost_snapshots (scope, entity_id, amount, snapshot_date, updated_at)
                           VALUES (?1, ?2, ?3, ?4, ?5)
                           ON CONFLICT(scope, entity_id, snapshot_date)
                           DO UPDATE SET amount = ?3, updated_at = ?5";
 
-        let mut stmt = conn.prepare(upsert_sql)
-            .map_err(|e| { let _ = conn.execute_batch("ROLLBACK"); e.to_string() })?;
+        let mut stmt = conn.prepare(upsert_sql).map_err(|e| {
+            let _ = conn.execute_batch("ROLLBACK");
+            e.to_string()
+        })?;
 
         for (id, amount) in &snapshot.daily {
             stmt.execute(rusqlite::params!["agent_daily", id, amount, today, now])
-                .map_err(|e| { let _ = conn.execute_batch("ROLLBACK"); e.to_string() })?;
+                .map_err(|e| {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    e.to_string()
+                })?;
         }
         for (id, amount) in &snapshot.sessions {
             stmt.execute(rusqlite::params!["session", id, amount, today, now])
-                .map_err(|e| { let _ = conn.execute_batch("ROLLBACK"); e.to_string() })?;
+                .map_err(|e| {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    e.to_string()
+                })?;
         }
         for (id, amount) in &snapshot.compaction {
             stmt.execute(rusqlite::params!["compaction", id, amount, today, now])
-                .map_err(|e| { let _ = conn.execute_batch("ROLLBACK"); e.to_string() })?;
+                .map_err(|e| {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    e.to_string()
+                })?;
         }
 
         drop(stmt);
@@ -140,25 +159,33 @@ impl CostTracker {
     pub fn restore(&self, conn: &Connection) -> Result<(), String> {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
-        let mut stmt = conn.prepare(
-            "SELECT scope, entity_id, amount FROM cost_snapshots WHERE snapshot_date = ?1"
-        ).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT scope, entity_id, amount FROM cost_snapshots WHERE snapshot_date = ?1")
+            .map_err(|e| e.to_string())?;
 
-        let rows = stmt.query_map(rusqlite::params![today], |row| {
-            let scope: String = row.get(0)?;
-            let entity_id: String = row.get(1)?;
-            let amount: f64 = row.get(2)?;
-            Ok((scope, entity_id, amount))
-        }).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![today], |row| {
+                let scope: String = row.get(0)?;
+                let entity_id: String = row.get(1)?;
+                let amount: f64 = row.get(2)?;
+                Ok((scope, entity_id, amount))
+            })
+            .map_err(|e| e.to_string())?;
 
         let mut restored = 0usize;
         for row_result in rows {
             let (scope, entity_id, amount) = row_result.map_err(|e| e.to_string())?;
             let uuid = Uuid::parse_str(&entity_id).map_err(|e| e.to_string())?;
             match scope.as_str() {
-                "agent_daily" => { self.agent_daily.insert(uuid, amount); }
-                "session" => { self.session_totals.insert(uuid, amount); }
-                "compaction" => { self.compaction_cost.insert(uuid, amount); }
+                "agent_daily" => {
+                    self.agent_daily.insert(uuid, amount);
+                }
+                "session" => {
+                    self.session_totals.insert(uuid, amount);
+                }
+                "compaction" => {
+                    self.compaction_cost.insert(uuid, amount);
+                }
                 _ => {}
             }
             restored += 1;

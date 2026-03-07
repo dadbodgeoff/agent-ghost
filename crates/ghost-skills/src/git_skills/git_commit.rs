@@ -50,9 +50,7 @@ impl Skill for GitCommitSkill {
             .get("message")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                SkillError::InvalidInput(
-                    "missing required field 'message' (string)".into(),
-                )
+                SkillError::InvalidInput("missing required field 'message' (string)".into())
             })?;
 
         if message.trim().is_empty() {
@@ -61,47 +59,40 @@ impl Skill for GitCommitSkill {
             ));
         }
 
-        let stage_all = input
-            .get("all")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let stage_all = input.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Stage files if requested.
-        let mut index = repo.index().map_err(|e| {
-            SkillError::Internal(format!("failed to open index: {e}"))
-        })?;
+        let mut index = repo
+            .index()
+            .map_err(|e| SkillError::Internal(format!("failed to open index: {e}")))?;
 
         if let Some(paths) = input.get("paths").and_then(|v| v.as_array()) {
             for path_val in paths {
                 if let Some(p) = path_val.as_str() {
                     index.add_path(Path::new(p)).map_err(|e| {
-                        SkillError::InvalidInput(format!(
-                            "failed to stage '{p}': {e}"
-                        ))
+                        SkillError::InvalidInput(format!("failed to stage '{p}': {e}"))
                     })?;
                 }
             }
-            index.write().map_err(|e| {
-                SkillError::Internal(format!("failed to write index: {e}"))
-            })?;
+            index
+                .write()
+                .map_err(|e| SkillError::Internal(format!("failed to write index: {e}")))?;
         } else if stage_all {
             index
                 .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-                .map_err(|e| {
-                    SkillError::Internal(format!("failed to stage all files: {e}"))
-                })?;
-            index.write().map_err(|e| {
-                SkillError::Internal(format!("failed to write index: {e}"))
-            })?;
+                .map_err(|e| SkillError::Internal(format!("failed to stage all files: {e}")))?;
+            index
+                .write()
+                .map_err(|e| SkillError::Internal(format!("failed to write index: {e}")))?;
         }
 
         // Write the index to a tree.
-        let tree_oid = index.write_tree().map_err(|e| {
-            SkillError::Internal(format!("failed to write tree: {e}"))
-        })?;
-        let tree = repo.find_tree(tree_oid).map_err(|e| {
-            SkillError::Internal(format!("failed to find tree: {e}"))
-        })?;
+        let tree_oid = index
+            .write_tree()
+            .map_err(|e| SkillError::Internal(format!("failed to write tree: {e}")))?;
+        let tree = repo
+            .find_tree(tree_oid)
+            .map_err(|e| SkillError::Internal(format!("failed to find tree: {e}")))?;
 
         // Resolve parent commits (empty for initial commit).
         let parents: Vec<git2::Commit<'_>> = match repo.head() {
@@ -113,9 +104,7 @@ impl Skill for GitCommitSkill {
             }
             Err(e) if e.code() == git2::ErrorCode::UnbornBranch => vec![],
             Err(e) => {
-                return Err(SkillError::Internal(format!(
-                    "failed to read HEAD: {e}"
-                )));
+                return Err(SkillError::Internal(format!("failed to read HEAD: {e}")));
             }
         };
         let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
@@ -130,9 +119,7 @@ impl Skill for GitCommitSkill {
         // Create the commit.
         let commit_oid = repo
             .commit(Some("HEAD"), &sig, &sig, message, &tree, &parent_refs)
-            .map_err(|e| {
-                SkillError::Internal(format!("failed to create commit: {e}"))
-            })?;
+            .map_err(|e| SkillError::Internal(format!("failed to create commit: {e}")))?;
 
         let commit_id = commit_oid.to_string();
         let short_id = &commit_id[..std::cmp::min(7, commit_id.len())];
@@ -192,8 +179,7 @@ mod tests {
 
     impl TestRepo {
         fn new() -> (Self, git2::Repository) {
-            let path =
-                std::env::temp_dir().join(format!("ghost-git-commit-{}", Uuid::now_v7()));
+            let path = std::env::temp_dir().join(format!("ghost-git-commit-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&path).unwrap();
             let repo = git2::Repository::init(&path).unwrap();
 

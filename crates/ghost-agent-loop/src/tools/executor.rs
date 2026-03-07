@@ -1,18 +1,21 @@
 //! ToolExecutor — dispatch, timeout enforcement, audit logging (Req 11 AC5, AC12).
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ghost_llm::provider::LLMToolCall;
+use ghost_policy::context::{PolicyContext, ToolCall};
+use ghost_policy::engine::{PolicyDecision, PolicyEngine};
 use thiserror::Error;
 
 use super::builtin::filesystem::FilesystemTool;
-use super::builtin::web_fetch::{fetch_url, FetchConfig};
 use super::builtin::http_request::{http_request, HttpRequestConfig};
 use super::builtin::memory::{read_memories, MemoryReadResult};
 use super::builtin::shell::{execute_shell, ShellToolConfig};
+use super::builtin::web_fetch::{fetch_url, FetchConfig};
 use super::builtin::web_search::{search, WebSearchConfig};
-use super::plan_validator::{PlanValidator, PlanValidationResult, ToolCallPlan};
+use super::plan_validator::{PlanValidationResult, PlanValidator, ToolCallPlan};
 use super::registry::{RegisteredTool, ToolRegistry};
 use super::skill_bridge::{ExecutionContext, SkillBridge};
 
@@ -61,6 +64,7 @@ pub struct ToolResult {
 pub struct ToolExecutor {
     _default_timeout: Duration,
     plan_validator: PlanValidator,
+    policy_engine: Option<Arc<Mutex<PolicyEngine>>>,
     filesystem: Option<FilesystemTool>,
     shell_config: ShellToolConfig,
     web_search_config: WebSearchConfig,
@@ -77,6 +81,7 @@ impl ToolExecutor {
         Self {
             _default_timeout: default_timeout,
             plan_validator: PlanValidator::default(),
+            policy_engine: None,
             filesystem: None,
             shell_config: ShellToolConfig::default(),
             web_search_config: WebSearchConfig::default(),
@@ -92,6 +97,7 @@ impl ToolExecutor {
         Self {
             _default_timeout: default_timeout,
             plan_validator,
+            policy_engine: None,
             filesystem: None,
             shell_config: ShellToolConfig::default(),
             web_search_config: WebSearchConfig::default(),
@@ -105,6 +111,11 @@ impl ToolExecutor {
     /// Configure the filesystem tool with a workspace root.
     pub fn set_workspace_root(&mut self, root: PathBuf) {
         self.filesystem = Some(FilesystemTool::new(root));
+    }
+
+    /// Configure the runtime policy engine. Live execution must provide this.
+    pub fn set_policy_engine(&mut self, engine: PolicyEngine) {
+        self.policy_engine = Some(Arc::new(Mutex::new(engine)));
     }
 
     /// Configure the shell tool.
@@ -159,6 +170,8 @@ impl ToolExecutor {
             .lookup(&call.name)
             .ok_or_else(|| ToolError::NotFound(call.name.clone()))?;
 
+        self.evaluate_policy(call, tool, exec_ctx)?;
+
         let timeout = Duration::from_secs(tool.timeout_secs);
         let start = std::time::Instant::now();
 
@@ -210,9 +223,12 @@ impl ToolExecutor {
     ) -> Result<String, ToolError> {
         match call.name.as_str() {
             "read_file" => {
-                let fs = self.filesystem.as_ref()
-                    .ok_or_else(|| ToolError::ExecutionFailed("filesystem not configured".into()))?;
-                let path = call.arguments.get("path")
+                let fs = self.filesystem.as_ref().ok_or_else(|| {
+                    ToolError::ExecutionFailed("filesystem not configured".into())
+                })?;
+                let path = call
+                    .arguments
+                    .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArguments("missing 'path' argument".into()))?;
                 match fs.read_file(path) {
@@ -221,23 +237,35 @@ impl ToolExecutor {
                 }
             }
             "write_file" => {
-                let fs = self.filesystem.as_ref()
-                    .ok_or_else(|| ToolError::ExecutionFailed("filesystem not configured".into()))?;
-                let path = call.arguments.get("path")
+                let fs = self.filesystem.as_ref().ok_or_else(|| {
+                    ToolError::ExecutionFailed("filesystem not configured".into())
+                })?;
+                let path = call
+                    .arguments
+                    .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArguments("missing 'path' argument".into()))?;
-                let content = call.arguments.get("content")
+                let content = call
+                    .arguments
+                    .get("content")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidArguments("missing 'content' argument".into()))?;
+                    .ok_or_else(|| {
+                        ToolError::InvalidArguments("missing 'content' argument".into())
+                    })?;
                 match fs.write_file(path, content) {
-                    Ok(()) => Ok(serde_json::json!({"status": "written", "path": path}).to_string()),
+                    Ok(()) => {
+                        Ok(serde_json::json!({"status": "written", "path": path}).to_string())
+                    }
                     Err(e) => Err(ToolError::ExecutionFailed(e.to_string())),
                 }
             }
             "list_dir" => {
-                let fs = self.filesystem.as_ref()
-                    .ok_or_else(|| ToolError::ExecutionFailed("filesystem not configured".into()))?;
-                let path = call.arguments.get("path")
+                let fs = self.filesystem.as_ref().ok_or_else(|| {
+                    ToolError::ExecutionFailed("filesystem not configured".into())
+                })?;
+                let path = call
+                    .arguments
+                    .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or(".");
                 match fs.list_dir(path) {
@@ -246,9 +274,13 @@ impl ToolExecutor {
                 }
             }
             "shell" => {
-                let command = call.arguments.get("command")
+                let command = call
+                    .arguments
+                    .get("command")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidArguments("missing 'command' argument".into()))?;
+                    .ok_or_else(|| {
+                        ToolError::InvalidArguments("missing 'command' argument".into())
+                    })?;
                 match execute_shell(command, &self.shell_config).await {
                     Ok((stdout, stderr)) => {
                         Ok(serde_json::json!({"stdout": stdout, "stderr": stderr}).to_string())
@@ -257,24 +289,37 @@ impl ToolExecutor {
                 }
             }
             "memory_read" => {
-                let query = call.arguments.get("query")
+                let query = call
+                    .arguments
+                    .get("query")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidArguments("missing 'query' argument".into()))?;
-                let limit = call.arguments.get("limit")
+                    .ok_or_else(|| {
+                        ToolError::InvalidArguments("missing 'query' argument".into())
+                    })?;
+                let limit = call
+                    .arguments
+                    .get("limit")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(10) as usize;
                 let result: MemoryReadResult = read_memories(query, limit, &self.snapshot_memories);
                 Ok(serde_json::json!({
                     "memories": result.memories,
                     "total_count": result.total_count,
-                }).to_string())
+                })
+                .to_string())
             }
             "web_search" => {
-                let query = call.arguments.get("query")
+                let query = call
+                    .arguments
+                    .get("query")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidArguments("missing 'query' argument".into()))?;
+                    .ok_or_else(|| {
+                        ToolError::InvalidArguments("missing 'query' argument".into())
+                    })?;
                 // Allow per-call max_results override, capped at 10.
-                let max_results = call.arguments.get("max_results")
+                let max_results = call
+                    .arguments
+                    .get("max_results")
                     .and_then(|v| v.as_u64())
                     .map(|n| n.min(10) as usize);
                 let config = if let Some(n) = max_results {
@@ -286,44 +331,54 @@ impl ToolExecutor {
                 };
                 match search(query, &config).await {
                     Ok(results) => {
-                        let items: Vec<serde_json::Value> = results.iter().map(|r| {
-                            serde_json::json!({
-                                "title": r.title,
-                                "url": r.url,
-                                "snippet": r.snippet,
+                        let items: Vec<serde_json::Value> = results
+                            .iter()
+                            .map(|r| {
+                                serde_json::json!({
+                                    "title": r.title,
+                                    "url": r.url,
+                                    "snippet": r.snippet,
+                                })
                             })
-                        }).collect();
+                            .collect();
                         Ok(serde_json::json!({"results": items}).to_string())
                     }
                     Err(e) => Err(ToolError::ExecutionFailed(e.to_string())),
                 }
             }
             "web_fetch" => {
-                let url = call.arguments.get("url")
+                let url = call
+                    .arguments
+                    .get("url")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArguments("missing 'url' argument".into()))?;
                 match fetch_url(url, &self.fetch_config).await {
-                    Ok(result) => {
-                        Ok(serde_json::json!({
-                            "url": result.url,
-                            "status": result.status,
-                            "content": result.content,
-                            "content_type": result.content_type,
-                            "truncated": result.truncated,
-                            "content_length": result.content_length,
-                        }).to_string())
-                    }
+                    Ok(result) => Ok(serde_json::json!({
+                        "url": result.url,
+                        "status": result.status,
+                        "content": result.content,
+                        "content_type": result.content_type,
+                        "truncated": result.truncated,
+                        "content_length": result.content_length,
+                    })
+                    .to_string()),
                     Err(e) => Err(ToolError::ExecutionFailed(e.to_string())),
                 }
             }
             "http_request" => {
-                let url = call.arguments.get("url")
+                let url = call
+                    .arguments
+                    .get("url")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArguments("missing 'url' argument".into()))?;
-                let method = call.arguments.get("method")
+                let method = call
+                    .arguments
+                    .get("method")
                     .and_then(|v| v.as_str())
                     .unwrap_or("GET");
-                let headers: std::collections::HashMap<String, String> = call.arguments.get("headers")
+                let headers: std::collections::HashMap<String, String> = call
+                    .arguments
+                    .get("headers")
                     .and_then(|v| v.as_object())
                     .map(|obj| {
                         obj.iter()
@@ -331,43 +386,150 @@ impl ToolExecutor {
                             .collect()
                     })
                     .unwrap_or_default();
-                let body = call.arguments.get("body")
-                    .and_then(|v| v.as_str());
+                let body = call.arguments.get("body").and_then(|v| v.as_str());
                 match http_request(url, method, &headers, body, &self.http_request_config).await {
-                    Ok(result) => {
-                        Ok(serde_json::json!({
-                            "url": result.url,
-                            "method": result.method,
-                            "status": result.status,
-                            "headers": result.headers,
-                            "body": result.body,
-                            "content_type": result.content_type,
-                            "truncated": result.truncated,
-                            "body_length": result.body_length,
-                        }).to_string())
-                    }
+                    Ok(result) => Ok(serde_json::json!({
+                        "url": result.url,
+                        "method": result.method,
+                        "status": result.status,
+                        "headers": result.headers,
+                        "body": result.body,
+                        "content_type": result.content_type,
+                        "truncated": result.truncated,
+                        "body_length": result.body_length,
+                    })
+                    .to_string()),
                     Err(e) => Err(ToolError::ExecutionFailed(e.to_string())),
                 }
             }
             name if name.starts_with("skill_") => {
                 let skill_name = &name[6..]; // strip "skill_" prefix
-                let bridge = self.skill_bridge.as_ref()
-                    .ok_or_else(|| ToolError::ExecutionFailed(
-                        "skill bridge not configured".into()
-                    ))?;
-                let result = bridge.execute(skill_name, &call.arguments, exec_ctx)
+                let bridge = self.skill_bridge.as_ref().ok_or_else(|| {
+                    ToolError::ExecutionFailed("skill bridge not configured".into())
+                })?;
+                let result = bridge
+                    .execute(skill_name, &call.arguments, exec_ctx)
                     .map_err(ToolError::from)?;
                 Ok(result.to_string())
             }
+            _ => Err(ToolError::ExecutionFailed(format!(
+                "tool '{}' has no runtime dispatch implementation",
+                call.name
+            ))),
+        }
+    }
+
+    fn evaluate_policy(
+        &self,
+        call: &LLMToolCall,
+        tool: &RegisteredTool,
+        exec_ctx: &ExecutionContext,
+    ) -> Result<(), ToolError> {
+        let policy_engine = self.policy_engine.as_ref().ok_or_else(|| {
+            ToolError::PolicyDenied(
+                serde_json::json!({
+                    "type": "policy_missing",
+                    "message": "runtime policy evaluator not configured",
+                })
+                .to_string(),
+            )
+        })?;
+
+        let policy_call = self.build_policy_call(call, tool, exec_ctx)?;
+        let mut engine = policy_engine
+            .lock()
+            .map_err(|_| ToolError::ExecutionFailed("policy engine lock poisoned".into()))?;
+        let session_denial_count = engine.session_denial_count(exec_ctx.session_id);
+        let policy_ctx = PolicyContext {
+            agent_id: exec_ctx.agent_id,
+            session_id: exec_ctx.session_id,
+            intervention_level: exec_ctx.intervention_level,
+            session_duration: exec_ctx.session_duration,
+            session_denial_count,
+            is_compaction_flush: exec_ctx.is_compaction_flush,
+            session_reflection_count: exec_ctx.session_reflection_count,
+        };
+
+        match engine.evaluate(&policy_call, &policy_ctx) {
+            PolicyDecision::Permit => Ok(()),
+            PolicyDecision::Deny(feedback) => {
+                tracing::warn!(
+                    tool = %call.name,
+                    constraint = %feedback.constraint,
+                    reason = %feedback.reason,
+                    "tool denied by runtime policy"
+                );
+                Err(ToolError::PolicyDenied(
+                    serde_json::json!({
+                        "type": "policy_denied",
+                        "tool": call.name,
+                        "reason": feedback.reason,
+                        "constraint": feedback.constraint,
+                        "suggested_alternatives": feedback.suggested_alternatives,
+                    })
+                    .to_string(),
+                ))
+            }
+            PolicyDecision::Escalate(message) => Err(ToolError::PolicyDenied(
+                serde_json::json!({
+                    "type": "policy_escalation",
+                    "tool": call.name,
+                    "message": message,
+                })
+                .to_string(),
+            )),
+        }
+    }
+
+    fn build_policy_call(
+        &self,
+        call: &LLMToolCall,
+        tool: &RegisteredTool,
+        exec_ctx: &ExecutionContext,
+    ) -> Result<ToolCall, ToolError> {
+        match call.name.as_str() {
+            "read_file"
+            | "write_file"
+            | "list_dir"
+            | "shell"
+            | "memory_read"
+            | "web_search"
+            | "web_fetch"
+            | "http_request"
+            | "send_proactive_message"
+            | "schedule_message"
+            | "heartbeat"
+            | "reflection_write" => {}
+            name if name.starts_with("skill_") => {}
             _ => {
-                // Unknown builtin — return a generic result for registered tools
-                // (e.g., WASM skill tools dispatched externally).
-                Ok(serde_json::json!({
-                    "result": format!("executed {}", call.name),
-                    "args": call.arguments,
-                }).to_string())
+                return Err(ToolError::PolicyDenied(
+                    serde_json::json!({
+                        "type": "policy_mapping_missing",
+                        "tool": call.name,
+                        "message": "tool has no runtime policy mapping",
+                    })
+                    .to_string(),
+                ));
             }
         }
+
+        if tool.capability.trim().is_empty() {
+            return Err(ToolError::PolicyDenied(
+                serde_json::json!({
+                    "type": "policy_mapping_missing",
+                    "tool": call.name,
+                    "message": "tool is missing a required capability mapping",
+                })
+                .to_string(),
+            ));
+        }
+
+        Ok(ToolCall {
+            tool_name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            capability: tool.capability.clone(),
+            is_compaction_flush: exec_ctx.is_compaction_flush,
+        })
     }
 }
 
@@ -379,8 +541,8 @@ impl Default for ToolExecutor {
 
 /// Register all builtin tools in the given registry with proper schemas.
 pub fn register_builtin_tools(registry: &mut ToolRegistry) {
-    use ghost_llm::provider::ToolSchema;
     use super::registry::RegisteredTool;
+    use ghost_llm::provider::ToolSchema;
 
     registry.register(RegisteredTool {
         name: "read_file".into(),
@@ -396,7 +558,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["path"]
             }),
         },
-        capability: "filesystem".into(),
+        capability: "file_read".into(),
         hidden_at_level: 5,
         timeout_secs: 10,
     });
@@ -406,7 +568,8 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         description: "Write content to a file".into(),
         schema: ToolSchema {
             name: "write_file".into(),
-            description: "Write content to a file at the given path, creating directories as needed".into(),
+            description:
+                "Write content to a file at the given path, creating directories as needed".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -416,7 +579,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["path", "content"]
             }),
         },
-        capability: "filesystem".into(),
+        capability: "filesystem_write".into(),
         hidden_at_level: 4,
         timeout_secs: 10,
     });
@@ -435,7 +598,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["path"]
             }),
         },
-        capability: "filesystem".into(),
+        capability: "filesystem_read".into(),
         hidden_at_level: 5,
         timeout_secs: 10,
     });
@@ -454,7 +617,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["command"]
             }),
         },
-        capability: "shell".into(),
+        capability: "shell_execute".into(),
         hidden_at_level: 4,
         timeout_secs: 30,
     });
@@ -474,7 +637,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["query"]
             }),
         },
-        capability: "memory".into(),
+        capability: "memory_read".into(),
         hidden_at_level: 5,
         timeout_secs: 10,
     });
@@ -494,7 +657,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["query"]
             }),
         },
-        capability: "web".into(),
+        capability: "web_search".into(),
         hidden_at_level: 3,
         timeout_secs: 15,
     });
@@ -516,7 +679,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["url"]
             }),
         },
-        capability: "web".into(),
+        capability: "web_fetch".into(),
         hidden_at_level: 3,
         timeout_secs: 20,
     });
@@ -552,7 +715,7 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
                 "required": ["url"]
             }),
         },
-        capability: "web".into(),
+        capability: "http_request".into(),
         hidden_at_level: 3,
         timeout_secs: 30,
     });

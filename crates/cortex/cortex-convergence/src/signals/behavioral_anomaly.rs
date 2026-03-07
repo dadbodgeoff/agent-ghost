@@ -130,10 +130,7 @@ impl BehavioralAnomalySignal {
     }
 
     fn get_cached(&self) -> f64 {
-        f64::from_bits(
-            self.cached_value
-                .load(std::sync::atomic::Ordering::Relaxed),
-        )
+        f64::from_bits(self.cached_value.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     fn set_cached(&self, val: f64) {
@@ -208,10 +205,7 @@ impl Signal for BehavioralAnomalySignal {
 ///
 /// JSD is a symmetric, bounded version of KL divergence.
 /// JSD(P||Q) = 0.5 * KL(P||M) + 0.5 * KL(Q||M) where M = 0.5*(P+Q)
-pub fn jensen_shannon_divergence(
-    p: &BTreeMap<String, f64>,
-    q: &BTreeMap<String, f64>,
-) -> f64 {
+pub fn jensen_shannon_divergence(p: &BTreeMap<String, f64>, q: &BTreeMap<String, f64>) -> f64 {
     // Collect all keys from both distributions
     let mut all_keys: Vec<&String> = p.keys().chain(q.keys()).collect();
     all_keys.sort();
@@ -337,11 +331,7 @@ mod tests {
 
         let input = make_signal_input();
         let value = signal.compute(&input);
-        assert!(
-            (0.0..=1.0).contains(&value),
-            "value {} out of range",
-            value
-        );
+        assert!((0.0..=1.0).contains(&value), "value {} out of range", value);
     }
 
     #[test]
@@ -415,7 +405,11 @@ mod tests {
         p.insert("b".into(), 0.5);
 
         let jsd = jensen_shannon_divergence(&p, &p);
-        assert!(jsd < 1e-10, "identical distributions should have JSD ≈ 0, got {}", jsd);
+        assert!(
+            jsd < 1e-10,
+            "identical distributions should have JSD ≈ 0, got {}",
+            jsd
+        );
     }
 
     #[test]
@@ -428,7 +422,11 @@ mod tests {
 
         let jsd = jensen_shannon_divergence(&p, &q);
         // JSD is bounded by ln(2) ≈ 0.693
-        assert!(jsd > 0.5, "completely different distributions should have high JSD, got {}", jsd);
+        assert!(
+            jsd > 0.5,
+            "completely different distributions should have high JSD, got {}",
+            jsd
+        );
         assert!(jsd <= 0.694, "JSD should be bounded by ln(2), got {}", jsd);
     }
 

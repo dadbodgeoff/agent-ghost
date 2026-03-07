@@ -46,7 +46,10 @@ impl VaultProvider {
     /// Construct the KV v2 data URL for a given key.
     fn data_url(&self, key: &str) -> String {
         let sanitized = Self::sanitize_key(key);
-        format!("{}/v1/{}/data/ghost/{}", self.endpoint, self.mount, sanitized)
+        format!(
+            "{}/v1/{}/data/ghost/{}",
+            self.endpoint, self.mount, sanitized
+        )
     }
 
     /// Construct the KV v2 metadata URL for deletion.
@@ -60,9 +63,7 @@ impl VaultProvider {
 
     /// Sanitize key to prevent path traversal.
     fn sanitize_key(key: &str) -> String {
-        key.replace("..", "")
-            .replace('/', "")
-            .replace('\\', "")
+        key.replace("..", "").replace('/', "").replace('\\', "")
     }
 
     /// Validate key before use.
@@ -90,9 +91,7 @@ impl VaultProvider {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| {
-                SecretsError::ProviderError(
-                    "Vault response missing .data.data.value field".into(),
-                )
+                SecretsError::ProviderError("Vault response missing .data.data.value field".into())
             })
     }
 
@@ -110,7 +109,9 @@ impl VaultProvider {
             .send()
             .map_err(|e: reqwest::Error| {
                 if e.is_timeout() {
-                    SecretsError::StorageUnavailable(format!("Vault timeout during token renewal: {e}"))
+                    SecretsError::StorageUnavailable(format!(
+                        "Vault timeout during token renewal: {e}"
+                    ))
                 } else {
                     SecretsError::StorageUnavailable(format!("Vault token renewal failed: {e}"))
                 }

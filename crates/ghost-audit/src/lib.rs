@@ -3,10 +3,10 @@
 //! Provides paginated queries, aggregation summaries, and multi-format export
 //! over the append-only audit tables managed by cortex-storage.
 
-pub mod query_engine;
 pub mod aggregation;
 pub mod export;
+pub mod query_engine;
 
-pub use query_engine::{AuditFilter, AuditQueryEngine, AuditEntry};
-pub use aggregation::{AuditAggregation, AggregationResult};
-pub use export::{ExportFormat, AuditExporter};
+pub use aggregation::{AggregationResult, AuditAggregation};
+pub use export::{AuditExporter, ExportFormat};
+pub use query_engine::{AuditEntry, AuditFilter, AuditQueryEngine};

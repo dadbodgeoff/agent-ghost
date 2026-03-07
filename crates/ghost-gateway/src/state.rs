@@ -85,9 +85,18 @@ pub struct AppState {
     /// Whether convergence monitor health checking is enabled.
     pub monitor_enabled: bool,
 
+    /// Whether degraded convergence protection blocks execution.
+    pub monitor_block_on_degraded: bool,
+
+    /// Maximum acceptable age of convergence state before it is stale.
+    pub convergence_state_stale_after: std::time::Duration,
+
     /// Convergence monitor liveness flag — updated every 30s by MonitorHealthChecker.
     /// O(1) read, no lock, no disk I/O. Safe for high-frequency health probes.
     pub monitor_healthy: Arc<std::sync::atomic::AtomicBool>,
+
+    /// Distributed kill remains feature-gated unless explicitly enabled.
+    pub distributed_kill_enabled: bool,
 
     /// Embedding engine for memory vector search.
     pub embedding_engine: Arc<tokio::sync::Mutex<cortex_embeddings::EmbeddingEngine>>,

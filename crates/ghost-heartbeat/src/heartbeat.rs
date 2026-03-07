@@ -154,7 +154,9 @@ impl HeartbeatEngine {
         // A delta of 0.0 with consecutive_stable < 3 → Active (30s).
         // A delta of 0.0 with consecutive_stable >= 3 → Stable (120s).
         // convergence_level >= 2 overrides to Escalated (15s) or Critical (5s).
-        let score_delta = self.tiered_state.last_score
+        let score_delta = self
+            .tiered_state
+            .last_score
             .and_then(|_last| {
                 // Use the stored consecutive_stable to infer recent delta behavior.
                 // If consecutive_stable > 0, last deltas were < 0.01.
@@ -177,10 +179,7 @@ impl HeartbeatEngine {
             None => true,
             Some(last) => {
                 let elapsed = Utc::now() - last;
-                elapsed
-                    .to_std()
-                    .map(|d| d >= interval)
-                    .unwrap_or(true)
+                elapsed.to_std().map(|d| d >= interval).unwrap_or(true)
             }
         }
     }

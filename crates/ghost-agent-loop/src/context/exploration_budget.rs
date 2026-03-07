@@ -73,9 +73,17 @@ impl ExplorationBudget {
     /// Classify a tool call as exploration or exploitation.
     pub fn classify(tool_name: &str) -> ToolCallType {
         match tool_name {
-            n if n.contains("read") || n.contains("search") || n.contains("fetch")
-                || n.contains("list") || n.contains("get") || n.contains("query")
-                || n.contains("discover") || n.contains("inspect") => ToolCallType::Exploration,
+            n if n.contains("read")
+                || n.contains("search")
+                || n.contains("fetch")
+                || n.contains("list")
+                || n.contains("get")
+                || n.contains("query")
+                || n.contains("discover")
+                || n.contains("inspect") =>
+            {
+                ToolCallType::Exploration
+            }
             _ => ToolCallType::Exploitation,
         }
     }
@@ -92,7 +100,8 @@ impl ExplorationBudget {
 
         match tool_type {
             ToolCallType::Exploration => {
-                let max_exploration = (session_token_budget as f64 * self.exploration_ratio) as usize;
+                let max_exploration =
+                    (session_token_budget as f64 * self.exploration_ratio) as usize;
                 if self.exploration_tokens >= max_exploration {
                     tracing::info!(
                         exploration_tokens = self.exploration_tokens,
@@ -199,22 +208,34 @@ mod tests {
 
     #[test]
     fn classify_file_read_is_exploration() {
-        assert_eq!(ExplorationBudget::classify("file_read"), ToolCallType::Exploration);
+        assert_eq!(
+            ExplorationBudget::classify("file_read"),
+            ToolCallType::Exploration
+        );
     }
 
     #[test]
     fn classify_file_write_is_exploitation() {
-        assert_eq!(ExplorationBudget::classify("file_write"), ToolCallType::Exploitation);
+        assert_eq!(
+            ExplorationBudget::classify("file_write"),
+            ToolCallType::Exploitation
+        );
     }
 
     #[test]
     fn classify_web_search_is_exploration() {
-        assert_eq!(ExplorationBudget::classify("web_search"), ToolCallType::Exploration);
+        assert_eq!(
+            ExplorationBudget::classify("web_search"),
+            ToolCallType::Exploration
+        );
     }
 
     #[test]
     fn classify_shell_execute_is_exploitation() {
-        assert_eq!(ExplorationBudget::classify("shell_execute"), ToolCallType::Exploitation);
+        assert_eq!(
+            ExplorationBudget::classify("shell_execute"),
+            ToolCallType::Exploitation
+        );
     }
 
     #[test]

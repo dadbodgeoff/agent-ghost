@@ -100,7 +100,11 @@ impl ConsensusShield {
             None => return ConsensusResult::Rejected,
         };
 
-        let approvals = round.votes.values().filter(|v| **v == Vote::Approve).count();
+        let approvals = round
+            .votes
+            .values()
+            .filter(|v| **v == Vote::Approve)
+            .count();
         let rejections = round.votes.values().filter(|v| **v == Vote::Reject).count();
 
         if approvals >= round.config.required_approvals {

@@ -3,9 +3,9 @@
 //! Provides write-through revocation persistence and startup loading
 //! so JWT revocations survive gateway restarts.
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 /// Insert a revoked token JTI with its expiration time.
 pub fn revoke_token(conn: &Connection, jti: &str, expires_at: &str) -> CortexResult<()> {
@@ -32,9 +32,7 @@ pub fn is_revoked(conn: &Connection, jti: &str) -> CortexResult<bool> {
 /// Load all non-expired revoked JTIs (for startup hydration).
 pub fn load_active_revocations(conn: &Connection) -> CortexResult<Vec<String>> {
     let mut stmt = conn
-        .prepare(
-            "SELECT jti FROM revoked_tokens WHERE expires_at > datetime('now')"
-        )
+        .prepare("SELECT jti FROM revoked_tokens WHERE expires_at > datetime('now')")
         .map_err(|e| to_storage_err(format!("load_active_revocations: {e}")))?;
 
     let jtis: Vec<String> = stmt

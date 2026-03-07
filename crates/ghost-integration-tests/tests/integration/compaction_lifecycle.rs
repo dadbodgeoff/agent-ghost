@@ -27,7 +27,11 @@ fn full_compaction_lifecycle() {
 
     // Execute compaction pass 1
     let result = compactor.compact(&mut history, 1, None);
-    assert!(result.is_ok(), "Compaction pass 1 should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Compaction pass 1 should succeed: {:?}",
+        result.err()
+    );
 
     let block = result.unwrap();
     assert_eq!(block.pass_number, 1);
@@ -44,7 +48,10 @@ fn full_compaction_lifecycle() {
 
     // Verify CompactionBlock is in history
     let has_block = history.iter().any(|m| m.contains("\"pass_number\""));
-    assert!(has_block, "CompactionBlock must be in history after compaction");
+    assert!(
+        has_block,
+        "CompactionBlock must be in history after compaction"
+    );
 }
 
 /// Compaction rollback on max passes exceeded.
@@ -74,7 +81,12 @@ fn compaction_block_preserved_across_passes() {
 
     // First pass
     let mut history: Vec<String> = (0..10)
-        .map(|i| format!("Original message {} with sufficient content for meaningful compaction testing", i))
+        .map(|i| {
+            format!(
+                "Original message {} with sufficient content for meaningful compaction testing",
+                i
+            )
+        })
         .collect();
 
     let result1 = compactor.compact(&mut history, 1, None);
@@ -88,7 +100,10 @@ fn compaction_block_preserved_across_passes() {
 
     // Add new messages
     for i in 0..5 {
-        history.push(format!("New message {} after first compaction with enough content to trigger another pass", i));
+        history.push(format!(
+            "New message {} after first compaction with enough content to trigger another pass",
+            i
+        ));
     }
 
     // Second pass — original CompactionBlock must be preserved
@@ -119,7 +134,10 @@ fn compaction_aborts_on_shutdown() {
     let snapshot = history.clone();
 
     let result = compactor.compact(&mut history, 1, Some(&shutdown));
-    assert!(result.is_err(), "Compaction should abort on shutdown signal");
+    assert!(
+        result.is_err(),
+        "Compaction should abort on shutdown signal"
+    );
 
     // History should be unchanged
     assert_eq!(history, snapshot);

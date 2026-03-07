@@ -52,4 +52,28 @@ export const webRuntime: RuntimePlatform = {
   async stopGateway() {
     throw new Error('Gateway lifecycle control is only available in the desktop app');
   },
+  async requestNotificationPermission() {
+    if (typeof Notification === 'undefined') {
+      return false;
+    }
+    if (Notification.permission === 'granted') {
+      return true;
+    }
+    return (await Notification.requestPermission()) === 'granted';
+  },
+  async sendNotification(notification) {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+      return;
+    }
+    new Notification(notification.title, notification.body ? { body: notification.body } : undefined);
+  },
+  async readKeybindings() {
+    return [];
+  },
+  async getDefaultShell() {
+    return null;
+  },
+  async spawnTerminalPty() {
+    return null;
+  },
 };

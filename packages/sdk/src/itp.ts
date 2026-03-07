@@ -5,7 +5,6 @@ export interface ItpEvent {
   event_type: string;
   platform: string;
   session_id: string;
-  content?: string;
   timestamp: string;
   source: string;
 }

@@ -38,8 +38,8 @@ impl UserManager {
             });
         }
 
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| UserError::ReadError(e.to_string()))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| UserError::ReadError(e.to_string()))?;
 
         self.document = Some(UserDocument { content });
         // SAFETY: we just assigned `Some` to self.document above

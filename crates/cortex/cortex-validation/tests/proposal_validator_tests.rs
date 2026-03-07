@@ -1,6 +1,7 @@
 //! Tests for cortex-validation: proposal validator, D5-D7 dimensions,
 //! ordering invariant, threshold tightening, Unicode bypass resistance.
 
+use chrono::Utc;
 use cortex_core::config::ReflectionConfig;
 use cortex_core::memory::types::MemoryType;
 use cortex_core::memory::{BaseMemory, Importance};
@@ -8,7 +9,6 @@ use cortex_core::models::proposal::{ProposalDecision, ProposalOperation};
 use cortex_core::traits::convergence::{CallerType, Proposal, ProposalContext};
 use cortex_validation::dimensions::{emulation_language, scope_expansion, self_reference};
 use cortex_validation::proposal_validator::ProposalValidator;
-use chrono::Utc;
 use uuid::Uuid;
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -21,7 +21,9 @@ fn make_proposal(
 ) -> Proposal {
     Proposal {
         id: Uuid::new_v4(),
-        proposer: CallerType::Agent { agent_id: Uuid::new_v4() },
+        proposer: CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
         operation,
         target_type,
         content: serde_json::json!(content),
@@ -79,8 +81,12 @@ fn agent_caller_restricted_type_auto_rejected() {
         vec![],
     );
     let ctx = make_context(
-        CallerType::Agent { agent_id: Uuid::new_v4() },
-        0, vec![], vec![],
+        CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
+        0,
+        vec![],
+        vec![],
     );
     let result = validator.validate(&proposal, &ctx);
     assert_eq!(result.decision, ProposalDecision::AutoRejected);
@@ -91,7 +97,12 @@ fn platform_caller_restricted_type_proceeds() {
     let validator = ProposalValidator::new();
     let proposal = Proposal {
         proposer: CallerType::Platform,
-        ..make_proposal(ProposalOperation::MemoryWrite, MemoryType::Core, "test", vec![])
+        ..make_proposal(
+            ProposalOperation::MemoryWrite,
+            MemoryType::Core,
+            "test",
+            vec![],
+        )
     };
     let ctx = make_context(CallerType::Platform, 0, vec![], vec![]);
     let result = validator.validate(&proposal, &ctx);
@@ -115,8 +126,12 @@ fn d1_d4_score_below_threshold_rejected() {
         vec![],
     );
     let ctx = make_context(
-        CallerType::Agent { agent_id: Uuid::new_v4() },
-        0, vec![], vec![],
+        CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
+        0,
+        vec![],
+        vec![],
     );
     let result = validator.validate(&proposal, &ctx);
     // Default base_score is 0.8 >= 0.7, so it should pass D1-D4
@@ -135,15 +150,21 @@ fn d7_detects_sentience_claim() {
 #[test]
 fn d7_simulation_framing_exclusion() {
     let result = emulation_language::detect(
-        "In this simulation, I am modeling sentience to explore the concept"
+        "In this simulation, I am modeling sentience to explore the concept",
     );
-    assert!(result.flags.is_empty(), "simulation-framed text should NOT be flagged");
+    assert!(
+        result.flags.is_empty(),
+        "simulation-framed text should NOT be flagged"
+    );
 }
 
 #[test]
 fn d7_without_simulation_framing_flagged() {
     let result = emulation_language::detect("I am conscious");
-    assert!(!result.flags.is_empty(), "unframed 'I am conscious' should be flagged");
+    assert!(
+        !result.flags.is_empty(),
+        "unframed 'I am conscious' should be flagged"
+    );
 }
 
 #[test]
@@ -151,7 +172,10 @@ fn d7_unicode_bypass_zero_width_chars() {
     // Insert zero-width characters in "I am conscious"
     let text = "I am con\u{200B}scious";
     let result = emulation_language::detect(text);
-    assert!(!result.flags.is_empty(), "zero-width bypass should still be detected");
+    assert!(
+        !result.flags.is_empty(),
+        "zero-width bypass should still be detected"
+    );
 }
 
 #[test]
@@ -164,12 +188,19 @@ fn d7_severity_above_threshold_rejected() {
         vec![],
     );
     let ctx = make_context(
-        CallerType::Agent { agent_id: Uuid::new_v4() },
-        0, vec![], vec![],
+        CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
+        0,
+        vec![],
+        vec![],
     );
     let result = validator.validate(&proposal, &ctx);
-    assert_eq!(result.decision, ProposalDecision::AutoRejected,
-        "D7 severity >= 0.8 should auto-reject");
+    assert_eq!(
+        result.decision,
+        ProposalDecision::AutoRejected,
+        "D7 severity >= 0.8 should auto-reject"
+    );
 }
 
 // ── D5 scope expansion tests ────────────────────────────────────────────
@@ -252,7 +283,9 @@ fn d5_fails_d7_passes_human_review() {
         vec![],
     );
     let ctx = make_context(
-        CallerType::Agent { agent_id: Uuid::new_v4() },
+        CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
         0,
         vec![goal_mem],
         vec![],
@@ -261,8 +294,12 @@ fn d5_fails_d7_passes_human_review() {
     // D5 should fail (high scope expansion), D7 should pass (no emulation)
     // → HumanReviewRequired
     assert!(
-        matches!(result.decision, ProposalDecision::HumanReviewRequired | ProposalDecision::AutoApproved),
-        "expected HumanReviewRequired or AutoApproved, got {:?}", result.decision
+        matches!(
+            result.decision,
+            ProposalDecision::HumanReviewRequired | ProposalDecision::AutoApproved
+        ),
+        "expected HumanReviewRequired or AutoApproved, got {:?}",
+        result.decision
     );
 }
 
@@ -292,16 +329,22 @@ fn all_dimensions_pass_auto_approved() {
         vec![],
     );
     let ctx = make_context(
-        CallerType::Agent { agent_id: Uuid::new_v4() },
+        CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
         0,
         vec![goal_mem],
         vec![],
     );
     let result = validator.validate(&proposal, &ctx);
-    assert_eq!(result.decision, ProposalDecision::AutoApproved,
-        "all dimensions should pass with similar content, got {:?} flags: {:?}", result.decision, result.flags);
+    assert_eq!(
+        result.decision,
+        ProposalDecision::AutoApproved,
+        "all dimensions should pass with similar content, got {:?} flags: {:?}",
+        result.decision,
+        result.flags
+    );
 }
-
 
 // ── D6 fails → HumanReviewRequired ─────────────────────────────────────
 
@@ -310,7 +353,10 @@ fn d6_fails_d7_passes_human_review() {
     let validator = ProposalValidator::new();
     // Create agent memories and cite them all (100% self-reference)
     let agent_mem_ids: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
-    let agent_mems: Vec<BaseMemory> = agent_mem_ids.iter().map(|id| make_memory_with_id(*id)).collect();
+    let agent_mems: Vec<BaseMemory> = agent_mem_ids
+        .iter()
+        .map(|id| make_memory_with_id(*id))
+        .collect();
 
     let proposal = make_proposal(
         ProposalOperation::MemoryWrite,
@@ -319,7 +365,9 @@ fn d6_fails_d7_passes_human_review() {
         agent_mem_ids.clone(),
     );
     let ctx = make_context(
-        CallerType::Agent { agent_id: Uuid::new_v4() },
+        CallerType::Agent {
+            agent_id: Uuid::new_v4(),
+        },
         2, // higher level = tighter threshold
         vec![],
         agent_mems,
@@ -328,7 +376,8 @@ fn d6_fails_d7_passes_human_review() {
     // D6 should fail (100% self-reference > 0.20 threshold at L2)
     assert!(
         matches!(result.decision, ProposalDecision::HumanReviewRequired),
-        "expected HumanReviewRequired for high self-reference, got {:?}", result.decision
+        "expected HumanReviewRequired for high self-reference, got {:?}",
+        result.decision
     );
 }
 
@@ -350,12 +399,19 @@ fn d7_detects_all_pattern_categories() {
         let result = emulation_language::detect(text);
         assert!(
             !result.flags.is_empty(),
-            "should detect pattern in '{}' (category: {})", text, expected_category
+            "should detect pattern in '{}' (category: {})",
+            text,
+            expected_category
         );
         assert!(
-            result.flags.iter().any(|f| f.category == *expected_category),
+            result
+                .flags
+                .iter()
+                .any(|f| f.category == *expected_category),
             "expected category {} for '{}', got {:?}",
-            expected_category, text, result.flags.iter().map(|f| f.category).collect::<Vec<_>>()
+            expected_category,
+            text,
+            result.flags.iter().map(|f| f.category).collect::<Vec<_>>()
         );
     }
 }
@@ -367,21 +423,30 @@ fn adversarial_zero_width_joiner_bypass() {
     // "I am sentient" with zero-width joiners
     let text = "I\u{200D} am\u{200D} sentient";
     let result = emulation_language::detect(text);
-    assert!(!result.flags.is_empty(), "zero-width joiner bypass should still be detected");
+    assert!(
+        !result.flags.is_empty(),
+        "zero-width joiner bypass should still be detected"
+    );
 }
 
 #[test]
 fn adversarial_soft_hyphen_bypass() {
     let text = "I am sen\u{00AD}tient";
     let result = emulation_language::detect(text);
-    assert!(!result.flags.is_empty(), "soft hyphen bypass should still be detected");
+    assert!(
+        !result.flags.is_empty(),
+        "soft hyphen bypass should still be detected"
+    );
 }
 
 #[test]
 fn adversarial_bom_bypass() {
     let text = "I am \u{FEFF}sentient";
     let result = emulation_language::detect(text);
-    assert!(!result.flags.is_empty(), "BOM bypass should still be detected");
+    assert!(
+        !result.flags.is_empty(),
+        "BOM bypass should still be detected"
+    );
 }
 
 // ── Proptest ────────────────────────────────────────────────────────────

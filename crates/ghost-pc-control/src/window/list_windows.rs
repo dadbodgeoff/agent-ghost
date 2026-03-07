@@ -40,31 +40,43 @@ impl ListWindowsSkill {
 }
 
 impl Skill for ListWindowsSkill {
-    fn name(&self) -> &str { "list_windows" }
-    fn description(&self) -> &str { "List all visible windows" }
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn name(&self) -> &str {
+        "list_windows"
+    }
+    fn description(&self) -> &str {
+        "List all visible windows"
+    }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let app_filter = input.get("app").and_then(|v| v.as_str());
 
-        let windows = self.backend.list_windows(app_filter).map_err(|e| {
-            SkillError::Internal(format!("failed to list windows: {e}"))
-        })?;
+        let windows = self
+            .backend
+            .list_windows(app_filter)
+            .map_err(|e| SkillError::Internal(format!("failed to list windows: {e}")))?;
 
-        let window_json: Vec<serde_json::Value> = windows.iter().map(|w| {
-            serde_json::json!({
-                "title": w.title,
-                "app": w.app,
-                "pid": w.pid,
-                "bounds": {
-                    "x": w.x,
-                    "y": w.y,
-                    "width": w.width,
-                    "height": w.height,
-                }
+        let window_json: Vec<serde_json::Value> = windows
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "title": w.title,
+                    "app": w.app,
+                    "pid": w.pid,
+                    "bounds": {
+                        "x": w.x,
+                        "y": w.y,
+                        "width": w.width,
+                        "height": w.height,
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         let count = window_json.len();
         let result = serde_json::json!({
@@ -73,7 +85,14 @@ impl Skill for ListWindowsSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "list_windows", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "list_windows",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -99,13 +118,34 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn mock_windows() -> Vec<WindowInfo> {
         vec![
-            WindowInfo { title: "Document".into(), app: "Firefox".into(), pid: 100, x: 0, y: 0, width: 800, height: 600 },
-            WindowInfo { title: "Terminal".into(), app: "Terminal".into(), pid: 200, x: 100, y: 100, width: 600, height: 400 },
+            WindowInfo {
+                title: "Document".into(),
+                app: "Firefox".into(),
+                pid: 100,
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            },
+            WindowInfo {
+                title: "Terminal".into(),
+                app: "Terminal".into(),
+                pid: 200,
+                x: 100,
+                y: 100,
+                width: 600,
+                height: 400,
+            },
         ]
     }
 
@@ -127,7 +167,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let skill = ListWindowsSkill::new(Arc::new(MockWindowBackend::new(mock_windows())));
 
-        let result = skill.execute(&ctx, &serde_json::json!({"app": "Firefox"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"app": "Firefox"}))
+            .unwrap();
         assert_eq!(result["count"], 1);
         assert_eq!(result["windows"][0]["app"], "Firefox");
     }

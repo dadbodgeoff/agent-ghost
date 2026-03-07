@@ -105,12 +105,16 @@ impl MockWindowBackend {
 
 impl WindowBackend for MockWindowBackend {
     fn list_windows(&self, app_filter: Option<&str>) -> Result<Vec<WindowInfo>, String> {
-        self.actions.lock().unwrap().push(MockWindowAction::ListWindows(
-            app_filter.map(|s| s.to_string()),
-        ));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(MockWindowAction::ListWindows(
+                app_filter.map(|s| s.to_string()),
+            ));
         let filtered: Vec<WindowInfo> = if let Some(filter) = app_filter {
             let f = filter.to_lowercase();
-            self.windows.iter()
+            self.windows
+                .iter()
                 .filter(|w| w.app.to_lowercase().contains(&f))
                 .cloned()
                 .collect()
@@ -126,18 +130,22 @@ impl WindowBackend for MockWindowBackend {
         app: Option<&str>,
         pid: Option<u32>,
     ) -> Result<WindowInfo, String> {
-        self.actions.lock().unwrap().push(MockWindowAction::FocusWindow {
-            title: title.map(|s| s.to_string()),
-            app: app.map(|s| s.to_string()),
-            pid,
-        });
+        self.actions
+            .lock()
+            .unwrap()
+            .push(MockWindowAction::FocusWindow {
+                title: title.map(|s| s.to_string()),
+                app: app.map(|s| s.to_string()),
+                pid,
+            });
         // Return the first matching window.
         let win = self.windows.iter().find(|w| {
             title.map_or(true, |t| w.title.contains(t))
                 && app.map_or(true, |a| w.app == a)
                 && pid.map_or(true, |p| w.pid == p)
         });
-        win.cloned().ok_or_else(|| "no matching window found".into())
+        win.cloned()
+            .ok_or_else(|| "no matching window found".into())
     }
 
     fn resize_window(
@@ -149,12 +157,20 @@ impl WindowBackend for MockWindowBackend {
         width: Option<u32>,
         height: Option<u32>,
     ) -> Result<WindowInfo, String> {
-        self.actions.lock().unwrap().push(MockWindowAction::ResizeWindow {
-            title: title.map(|s| s.to_string()),
-            app: app.map(|s| s.to_string()),
-            x, y, width, height,
-        });
-        let win = self.windows.first()
+        self.actions
+            .lock()
+            .unwrap()
+            .push(MockWindowAction::ResizeWindow {
+                title: title.map(|s| s.to_string()),
+                app: app.map(|s| s.to_string()),
+                x,
+                y,
+                width,
+                height,
+            });
+        let win = self
+            .windows
+            .first()
             .ok_or_else(|| "no windows available".to_string())?;
         Ok(WindowInfo {
             title: win.title.clone(),
@@ -168,10 +184,10 @@ impl WindowBackend for MockWindowBackend {
     }
 
     fn launch_app(&self, app: &str, args: &[String]) -> Result<LaunchResult, String> {
-        self.actions.lock().unwrap().push(MockWindowAction::LaunchApp(
-            app.to_string(),
-            args.to_vec(),
-        ));
+        self.actions
+            .lock()
+            .unwrap()
+            .push(MockWindowAction::LaunchApp(app.to_string(), args.to_vec()));
         Ok(LaunchResult {
             pid: 99999,
             app: app.to_string(),

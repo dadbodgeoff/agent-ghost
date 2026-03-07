@@ -58,9 +58,8 @@ fn arb_json_value() -> impl Strategy<Value = serde_json::Value> {
 
 fn arb_timestamp() -> impl Strategy<Value = chrono::DateTime<Utc>> {
     // Range: 2020-01-01 to 2030-01-01 (seconds since epoch).
-    (1_577_836_800i64..1_893_456_000i64).prop_map(|secs| {
-        Utc.timestamp_opt(secs, 0).single().unwrap()
-    })
+    (1_577_836_800i64..1_893_456_000i64)
+        .prop_map(|secs| Utc.timestamp_opt(secs, 0).single().unwrap())
 }
 
 fn arb_proposal() -> impl Strategy<Value = Proposal> {

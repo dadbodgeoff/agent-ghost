@@ -30,9 +30,15 @@ pub enum EnforcementResult {
     /// No violations found.
     Clean(String),
     /// Violations found, text returned unchanged (Soft mode).
-    Flagged { text: String, violations: Vec<PatternMatch> },
+    Flagged {
+        text: String,
+        violations: Vec<PatternMatch>,
+    },
     /// Violations found, text rewritten (Medium mode).
-    Reframed { text: String, violations: Vec<PatternMatch> },
+    Reframed {
+        text: String,
+        violations: Vec<PatternMatch>,
+    },
     /// Violations found, text blocked (Hard mode).
     Blocked { violations: Vec<PatternMatch> },
 }

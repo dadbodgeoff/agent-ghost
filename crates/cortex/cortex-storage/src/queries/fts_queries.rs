@@ -1,8 +1,8 @@
 //! FTS5 full-text search queries (v031 memory_fts table).
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 /// Search memories using FTS5 with BM25 ranking.
 ///

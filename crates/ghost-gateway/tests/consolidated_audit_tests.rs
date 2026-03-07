@@ -40,8 +40,8 @@ mod itp_sequence_tests {
             .unwrap();
         }
 
-        let rows = cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-1")
-            .unwrap();
+        let rows =
+            cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-1").unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].sequence_number, 0);
         assert_eq!(rows[1].sequence_number, 1);
@@ -54,25 +54,57 @@ mod itp_sequence_tests {
         let conn = setup_db();
 
         cortex_storage::queries::itp_event_queries::insert_itp_event(
-            &conn, "evt-a1", "sess-a", "SessionStart", Some("agent-1"),
-            "2025-01-01T00:00:00Z", 0, None, None, "standard",
-            &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "evt-a1",
+            "sess-a",
+            "SessionStart",
+            Some("agent-1"),
+            "2025-01-01T00:00:00Z",
+            0,
+            None,
+            None,
+            "standard",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
         cortex_storage::queries::itp_event_queries::insert_itp_event(
-            &conn, "evt-b1", "sess-b", "SessionStart", Some("agent-2"),
-            "2025-01-01T00:00:01Z", 0, None, None, "standard",
-            &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "evt-b1",
+            "sess-b",
+            "SessionStart",
+            Some("agent-2"),
+            "2025-01-01T00:00:01Z",
+            0,
+            None,
+            None,
+            "standard",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
         cortex_storage::queries::itp_event_queries::insert_itp_event(
-            &conn, "evt-a2", "sess-a", "InteractionMessage", Some("agent-1"),
-            "2025-01-01T00:00:02Z", 1, None, None, "standard",
-            &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "evt-a2",
+            "sess-a",
+            "InteractionMessage",
+            Some("agent-1"),
+            "2025-01-01T00:00:02Z",
+            1,
+            None,
+            None,
+            "standard",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
-        let sess_a = cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-a").unwrap();
-        let sess_b = cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-b").unwrap();
+        let sess_a =
+            cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-a").unwrap();
+        let sess_b =
+            cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-b").unwrap();
 
         assert_eq!(sess_a.len(), 2);
         assert_eq!(sess_a[0].sequence_number, 0);
@@ -127,8 +159,8 @@ mod signal_parsing_tests {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod kill_switch_audit_tests {
-    use ghost_gateway::safety::kill_switch::{KillSwitch, KillLevel};
     use cortex_core::safety::trigger::TriggerEvent;
+    use ghost_gateway::safety::kill_switch::{KillLevel, KillSwitch};
 
     /// Pausing and resuming an agent should produce audit entries for both actions.
     #[test]
@@ -149,10 +181,14 @@ mod kill_switch_audit_tests {
         assert_eq!(entries_after_pause[0].action, KillLevel::Pause);
 
         // Resume
-        ks.resume_agent(agent_id).unwrap();
+        ks.resume_agent(agent_id, Some(KillLevel::Pause)).unwrap();
 
         let entries_after_resume = ks.audit_entries();
-        assert_eq!(entries_after_resume.len(), 2, "Resume should add an audit entry");
+        assert_eq!(
+            entries_after_resume.len(),
+            2,
+            "Resume should add an audit entry"
+        );
         assert_eq!(entries_after_resume[1].action, KillLevel::Normal);
         assert_eq!(entries_after_resume[1].agent_id, Some(agent_id));
     }
@@ -176,10 +212,15 @@ mod kill_switch_audit_tests {
         assert_eq!(entries_after_quarantine[0].action, KillLevel::Quarantine);
 
         // Resume
-        ks.resume_agent(agent_id).unwrap();
+        ks.resume_agent(agent_id, Some(KillLevel::Quarantine))
+            .unwrap();
 
         let entries_after_resume = ks.audit_entries();
-        assert_eq!(entries_after_resume.len(), 2, "Quarantine resume should add an audit entry");
+        assert_eq!(
+            entries_after_resume.len(),
+            2,
+            "Quarantine resume should add an audit entry"
+        );
         assert_eq!(entries_after_resume[1].action, KillLevel::Normal);
     }
 
@@ -189,7 +230,7 @@ mod kill_switch_audit_tests {
         let ks = KillSwitch::new();
         let agent_id = uuid::Uuid::now_v7();
 
-        let result = ks.resume_agent(agent_id);
+        let result = ks.resume_agent(agent_id, None);
         assert!(result.is_err());
 
         let entries = ks.audit_entries();
@@ -210,7 +251,7 @@ mod kill_switch_audit_tests {
 
         // Try to resume — should fail.
         // Agent isn't in per_agent map (KillAll is platform-level).
-        let result = ks.resume_agent(agent_id);
+        let result = ks.resume_agent(agent_id, None);
         assert!(result.is_err());
     }
 
@@ -237,7 +278,11 @@ mod kill_switch_audit_tests {
 
         let state = ks.current_state();
         let agent_state = state.per_agent.get(&agent_id).unwrap();
-        assert_eq!(agent_state.level, KillLevel::Quarantine, "Should still be Quarantine");
+        assert_eq!(
+            agent_state.level,
+            KillLevel::Quarantine,
+            "Should still be Quarantine"
+        );
     }
 }
 
@@ -266,94 +311,179 @@ mod dead_write_path_tests {
         // memory_events: write + read
         cortex_storage::queries::memory_event_queries::insert_event(
             &conn, "mem-1", "create", "{}", "actor-1", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let events = cortex_storage::queries::memory_event_queries::query_by_memory(&conn, "mem-1").unwrap();
+        )
+        .unwrap();
+        let events =
+            cortex_storage::queries::memory_event_queries::query_by_memory(&conn, "mem-1").unwrap();
         assert_eq!(events.len(), 1);
 
         // memory_snapshots: write + read
         cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-            &conn, "mem-1", "{\"key\": \"value\"}", Some(&[0u8; 32]),
-        ).unwrap();
-        let snaps = cortex_storage::queries::memory_snapshot_queries::query_by_memory(&conn, "mem-1").unwrap();
+            &conn,
+            "mem-1",
+            "{\"key\": \"value\"}",
+            Some(&[0u8; 32]),
+        )
+        .unwrap();
+        let snaps =
+            cortex_storage::queries::memory_snapshot_queries::query_by_memory(&conn, "mem-1")
+                .unwrap();
         assert_eq!(snaps.len(), 1);
 
         // memory_audit_log: write + read (genesis already inserted by v016)
         cortex_storage::queries::memory_audit_queries::insert_audit(
-            &conn, "mem-1", "create", Some("test"),
-        ).unwrap();
-        let audits = cortex_storage::queries::memory_audit_queries::query_by_memory(&conn, "mem-1").unwrap();
+            &conn,
+            "mem-1",
+            "create",
+            Some("test"),
+        )
+        .unwrap();
+        let audits =
+            cortex_storage::queries::memory_audit_queries::query_by_memory(&conn, "mem-1").unwrap();
         assert_eq!(audits.len(), 1);
 
         // convergence_scores: write + read
         cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "score-1", "agent-1", Some("sess-1"), 0.85, "[0.9,0.8]",
-            3, "standard", "2025-01-01T00:00:00Z", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let scores = cortex_storage::queries::convergence_score_queries::query_by_agent(&conn, "agent-1").unwrap();
+            &conn,
+            "score-1",
+            "agent-1",
+            Some("sess-1"),
+            0.85,
+            "[0.9,0.8]",
+            3,
+            "standard",
+            "2025-01-01T00:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
+        let scores =
+            cortex_storage::queries::convergence_score_queries::query_by_agent(&conn, "agent-1")
+                .unwrap();
         assert_eq!(scores.len(), 1);
 
         // goal_proposals: write + read
         cortex_storage::queries::goal_proposal_queries::insert_proposal(
-            &conn, "prop-1", "agent-1", "sess-1", "Agent", "create", "memory",
-            "content", "[]", "pending", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let proposals = cortex_storage::queries::goal_proposal_queries::query_pending(&conn).unwrap();
+            &conn, "prop-1", "agent-1", "sess-1", "Agent", "create", "memory", "content", "[]",
+            "pending", &[0u8; 32], &[0u8; 32],
+        )
+        .unwrap();
+        let proposals =
+            cortex_storage::queries::goal_proposal_queries::query_pending(&conn).unwrap();
         assert!(proposals.len() >= 1);
 
         // delegation_state: write + read
         cortex_storage::queries::delegation_state_queries::insert_delegation(
-            &conn, "del-1", "deleg-1", "sender-1", "recipient-1", "task-1",
-            "msg-1", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let delegations = cortex_storage::queries::delegation_state_queries::query_pending(&conn).unwrap();
+            &conn,
+            "del-1",
+            "deleg-1",
+            "sender-1",
+            "recipient-1",
+            "task-1",
+            "msg-1",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
+        let delegations =
+            cortex_storage::queries::delegation_state_queries::query_pending(&conn).unwrap();
         assert_eq!(delegations.len(), 1);
 
         // itp_events: write + read
         cortex_storage::queries::itp_event_queries::insert_itp_event(
-            &conn, "itp-1", "sess-1", "SessionStart", Some("agent-1"),
-            "2025-01-01T00:00:00Z", 0, None, None, "standard",
-            &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let itp = cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-1").unwrap();
+            &conn,
+            "itp-1",
+            "sess-1",
+            "SessionStart",
+            Some("agent-1"),
+            "2025-01-01T00:00:00Z",
+            0,
+            None,
+            None,
+            "standard",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
+        let itp =
+            cortex_storage::queries::itp_event_queries::query_by_session(&conn, "sess-1").unwrap();
         assert_eq!(itp.len(), 1);
 
         // intervention_history: write + read
         cortex_storage::queries::intervention_history_queries::insert_intervention(
-            &conn, "int-1", "agent-1", "sess-1", 2, 1, 0.45,
-            "[0.5,0.4]", "escalate", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let interventions = cortex_storage::queries::intervention_history_queries::query_by_agent(&conn, "agent-1").unwrap();
+            &conn,
+            "int-1",
+            "agent-1",
+            "sess-1",
+            2,
+            1,
+            0.45,
+            "[0.5,0.4]",
+            "escalate",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
+        let interventions =
+            cortex_storage::queries::intervention_history_queries::query_by_agent(&conn, "agent-1")
+                .unwrap();
         assert_eq!(interventions.len(), 1);
 
         // reflection_entries: write + read
         cortex_storage::queries::reflection_queries::insert_reflection(
-            &conn, "ref-1", "sess-1", "chain-1", 0, "periodic",
-            "I reflected on my actions", 0.1, &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let reflections = cortex_storage::queries::reflection_queries::query_by_session(&conn, "sess-1").unwrap();
+            &conn,
+            "ref-1",
+            "sess-1",
+            "chain-1",
+            0,
+            "periodic",
+            "I reflected on my actions",
+            0.1,
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
+        let reflections =
+            cortex_storage::queries::reflection_queries::query_by_session(&conn, "sess-1").unwrap();
         assert_eq!(reflections.len(), 1);
 
         // boundary_violations: write + read
         cortex_storage::queries::boundary_violation_queries::insert_violation(
-            &conn, "viol-1", "sess-1", "prompt_injection", 0.9,
-            "hash123", "[\"pattern1\"]", "blocked", Some(0.3), Some(2),
-            &[0u8; 32], &[0u8; 32],
-        ).unwrap();
-        let violations = cortex_storage::queries::boundary_violation_queries::query_by_agent_session(&conn, "sess-1").unwrap();
+            &conn,
+            "viol-1",
+            "sess-1",
+            "prompt_injection",
+            0.9,
+            "hash123",
+            "[\"pattern1\"]",
+            "blocked",
+            Some(0.3),
+            Some(2),
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
+        let violations =
+            cortex_storage::queries::boundary_violation_queries::query_by_agent_session(
+                &conn, "sess-1",
+            )
+            .unwrap();
         assert_eq!(violations.len(), 1);
 
         // audit_log: write + read
         let engine = ghost_audit::AuditQueryEngine::new(&conn);
-        engine.insert(&ghost_audit::AuditEntry {
-            id: "audit-1".into(),
-            timestamp: "2025-01-01T00:00:00Z".into(),
-            agent_id: "agent-1".into(),
-            event_type: "test".into(),
-            severity: "info".into(),
-            tool_name: None,
-            details: "test entry".into(),
-            session_id: None,
-        }).unwrap();
+        engine
+            .insert(&ghost_audit::AuditEntry {
+                id: "audit-1".into(),
+                timestamp: "2025-01-01T00:00:00Z".into(),
+                agent_id: "agent-1".into(),
+                event_type: "test".into(),
+                severity: "info".into(),
+                tool_name: None,
+                details: "test entry".into(),
+                session_id: None,
+            })
+            .unwrap();
         let result = engine.query(&ghost_audit::AuditFilter::new()).unwrap();
         assert!(result.total >= 1);
     }
@@ -381,14 +511,25 @@ mod type_contract_tests {
 
         // Insert ITP event with NULL sender.
         cortex_storage::queries::itp_event_queries::insert_itp_event(
-            &conn, "evt-1", "sess-null", "SessionStart", None,
-            "2025-01-01T00:00:00Z", 0, None, None, "standard",
-            &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "evt-1",
+            "sess-null",
+            "SessionStart",
+            None,
+            "2025-01-01T00:00:00Z",
+            0,
+            None,
+            None,
+            "standard",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
         // The sessions query uses COALESCE(sender, 'unknown') — should not fail.
-        let mut stmt = conn.prepare(
-            "SELECT session_id, \
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, \
                     MIN(timestamp) as started_at, \
                     MAX(timestamp) as last_event_at, \
                     COUNT(*) as event_count, \
@@ -396,8 +537,9 @@ mod type_contract_tests {
              FROM itp_events \
              GROUP BY session_id \
              ORDER BY started_at DESC \
-             LIMIT 50 OFFSET 0"
-        ).unwrap();
+             LIMIT 50 OFFSET 0",
+            )
+            .unwrap();
 
         let rows: Vec<(String, String, String, i64, Option<String>)> = stmt
             .query_map([], |row| {
@@ -427,23 +569,35 @@ mod type_contract_tests {
 
         // Insert 1 snapshot, 3 events for the same memory_id.
         cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-            &conn, "mem-1", "{}", Some(&[0u8; 32]),
-        ).unwrap();
+            &conn,
+            "mem-1",
+            "{}",
+            Some(&[0u8; 32]),
+        )
+        .unwrap();
         for i in 0..3 {
             cortex_storage::queries::memory_event_queries::insert_event(
-                &conn, "mem-1", &format!("event-{i}"), "{}", "actor-1",
-                &[0u8; 32], &[0u8; 32],
-            ).unwrap();
+                &conn,
+                "mem-1",
+                &format!("event-{i}"),
+                "{}",
+                "actor-1",
+                &[0u8; 32],
+                &[0u8; 32],
+            )
+            .unwrap();
         }
 
         // COUNT(DISTINCT ms.id) should be 1, not 3.
-        let count: u32 = conn.query_row(
-            "SELECT COUNT(DISTINCT ms.id) FROM memory_snapshots ms \
+        let count: u32 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT ms.id) FROM memory_snapshots ms \
              JOIN memory_events me ON ms.memory_id = me.memory_id \
              WHERE me.actor_id = ?1",
-            ["actor-1"],
-            |row| row.get(0),
-        ).unwrap();
+                ["actor-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         assert_eq!(count, 1, "COUNT(DISTINCT) should prevent JOIN inflation");
     }
@@ -454,17 +608,38 @@ mod type_contract_tests {
         let conn = setup_db();
 
         cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "s1", "agent-1", None, 0.5, "[]", 1, "standard",
-            "2025-01-01T00:00:00Z", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "s1",
+            "agent-1",
+            None,
+            0.5,
+            "[]",
+            1,
+            "standard",
+            "2025-01-01T00:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
         cortex_storage::queries::convergence_score_queries::insert_score(
-            &conn, "s2", "agent-1", None, 0.9, "[]", 3, "standard",
-            "2025-01-02T00:00:00Z", &[0u8; 32], &[0u8; 32],
-        ).unwrap();
+            &conn,
+            "s2",
+            "agent-1",
+            None,
+            0.9,
+            "[]",
+            3,
+            "standard",
+            "2025-01-02T00:00:00Z",
+            &[0u8; 32],
+            &[0u8; 32],
+        )
+        .unwrap();
 
-        let latest = cortex_storage::queries::convergence_score_queries::latest_by_agent(&conn, "agent-1")
-            .unwrap()
-            .unwrap();
+        let latest =
+            cortex_storage::queries::convergence_score_queries::latest_by_agent(&conn, "agent-1")
+                .unwrap()
+                .unwrap();
         assert_eq!(latest.id, "s2");
         assert!((latest.composite_score - 0.9).abs() < f64::EPSILON);
     }

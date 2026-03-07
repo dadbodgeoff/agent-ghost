@@ -44,9 +44,7 @@ impl CliBackend {
     ) -> Result<Self, CliError> {
         let base_url = gateway_url
             .map(String::from)
-            .unwrap_or_else(|| {
-                format!("http://{}:{}", config.gateway.bind, config.gateway.port)
-            });
+            .unwrap_or_else(|| format!("http://{}:{}", config.gateway.bind, config.gateway.port));
 
         // Try HTTP first.
         if GhostHttpClient::health_check(&base_url).await {
@@ -79,15 +77,11 @@ impl CliBackend {
     /// Check that this backend satisfies the given requirement.
     pub fn require(&self, req: BackendRequirement) -> Result<(), CliError> {
         match (req, self) {
-            (BackendRequirement::HttpOnly, Self::Direct { .. }) => {
-                Err(CliError::GatewayRequired)
-            }
-            (BackendRequirement::DirectOnly, Self::Http { .. }) => {
-                Err(CliError::Usage(
-                    "this command requires direct DB access (gateway must not be the only backend)"
-                        .into(),
-                ))
-            }
+            (BackendRequirement::HttpOnly, Self::Direct { .. }) => Err(CliError::GatewayRequired),
+            (BackendRequirement::DirectOnly, Self::Http { .. }) => Err(CliError::Usage(
+                "this command requires direct DB access (gateway must not be the only backend)"
+                    .into(),
+            )),
             _ => Ok(()),
         }
     }

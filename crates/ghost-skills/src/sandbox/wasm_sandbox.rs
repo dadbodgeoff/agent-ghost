@@ -61,11 +61,17 @@ pub enum EscapeType {
 #[derive(Debug, Clone)]
 pub enum ExecutionResult {
     /// Skill completed successfully.
-    Success { output: serde_json::Value, elapsed: Duration },
+    Success {
+        output: serde_json::Value,
+        elapsed: Duration,
+    },
     /// Skill timed out.
     Timeout { elapsed: Duration },
     /// Skill exceeded memory limit.
-    MemoryExceeded { used_bytes: usize, limit_bytes: usize },
+    MemoryExceeded {
+        used_bytes: usize,
+        limit_bytes: usize,
+    },
     /// Sandbox escape detected — instance terminated.
     EscapeDetected(EscapeAttempt),
     /// Skill returned an error.

@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 // ── Types ──
 
@@ -69,37 +69,56 @@ export class SafetyAPI {
   }
 
   /** Activate platform-wide kill switch. */
-  async killAll(reason: string, initiatedBy: string): Promise<KillAllResult> {
+  async killAll(
+    reason: string,
+    initiatedBy: string,
+    options?: GhostRequestOptions,
+  ): Promise<KillAllResult> {
     return this.request<KillAllResult>('POST', '/api/safety/kill-all', {
       reason,
       initiated_by: initiatedBy,
-    });
+    }, options);
   }
 
   /** Pause a specific agent. */
-  async pause(agentId: string, reason: string): Promise<PauseResult> {
+  async pause(
+    agentId: string,
+    reason: string,
+    options?: GhostRequestOptions,
+  ): Promise<PauseResult> {
     return this.request<PauseResult>(
       'POST',
       `/api/safety/pause/${encodeURIComponent(agentId)}`,
       { reason },
+      options,
     );
   }
 
   /** Resume a paused or quarantined agent. */
-  async resume(agentId: string, params?: ResumeParams): Promise<ResumeResult> {
+  async resume(
+    agentId: string,
+    params?: ResumeParams,
+    options?: GhostRequestOptions,
+  ): Promise<ResumeResult> {
     return this.request<ResumeResult>(
       'POST',
       `/api/safety/resume/${encodeURIComponent(agentId)}`,
       params ?? {},
+      options,
     );
   }
 
   /** Quarantine an agent (requires forensic review to resume). */
-  async quarantine(agentId: string, reason: string): Promise<QuarantineResult> {
+  async quarantine(
+    agentId: string,
+    reason: string,
+    options?: GhostRequestOptions,
+  ): Promise<QuarantineResult> {
     return this.request<QuarantineResult>(
       'POST',
       `/api/safety/quarantine/${encodeURIComponent(agentId)}`,
       { reason },
+      options,
     );
   }
 }

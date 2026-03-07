@@ -29,23 +29,17 @@ const FANOUT_TIMEOUT_SECS: u64 = 30;
 /// On DB mutex poisoning, the process exits with a non-zero code rather than
 /// silently failing. Per §11.2, kill switch activation is irreversible — forged
 /// or missing kills cause permanent inconsistency.
-pub fn propagate_kill(
-    state: &Arc<AppState>,
-    level: &str,
-    reason: &str,
-    agent_id: Option<&str>,
-) {
+pub fn propagate_kill(state: &Arc<AppState>, level: &str, reason: &str, agent_id: Option<&str>) {
     // T-5.4.1: Handle pool exhaustion with fail-safe.
     // Kill signal MUST reach all reachable peers OR the process MUST crash.
     let peers: Vec<String> = match state.db.read() {
-        Ok(db) => {
-            db.prepare("SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL")
-                .and_then(|mut stmt| {
-                    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-                    Ok(rows.filter_map(|r| r.ok()).collect())
-                })
-                .unwrap_or_default()
-        }
+        Ok(db) => db
+            .prepare("SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            })
+            .unwrap_or_default(),
         Err(e) => {
             // T-5.4.1: DB pool error — cannot query peers. This is fatal for kill propagation.
             // Attempt to log, then force process exit so orchestrator can restart and re-propagate.
@@ -163,9 +157,7 @@ pub fn propagate_kill(
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_secs(FANOUT_TIMEOUT_SECS);
 
-        while let Ok(Some(result)) =
-            tokio::time::timeout_at(deadline, join_set.join_next()).await
-        {
+        while let Ok(Some(result)) = tokio::time::timeout_at(deadline, join_set.join_next()).await {
             match result {
                 Ok(true) => notified += 1,
                 Ok(false) | Err(_) => failed += 1,

@@ -54,9 +54,7 @@ impl Skill for DocSummarizeSkill {
         let file_path = input
             .get("file_path")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SkillError::InvalidInput("missing required field 'file_path'".into())
-            })?;
+            .ok_or_else(|| SkillError::InvalidInput("missing required field 'file_path'".into()))?;
 
         let max_sentences = input
             .get("max_sentences")
@@ -86,9 +84,8 @@ impl Skill for DocSummarizeSkill {
             )));
         }
 
-        let content = std::fs::read_to_string(file_path).map_err(|e| {
-            SkillError::InvalidInput(format!("cannot read file as text: {e}"))
-        })?;
+        let content = std::fs::read_to_string(file_path)
+            .map_err(|e| SkillError::InvalidInput(format!("cannot read file as text: {e}")))?;
 
         // Detect format.
         let detected_format = match format_hint {
@@ -173,8 +170,13 @@ fn extract_key_sentences(text: &str, max: usize) -> Vec<String> {
     }
 
     let filler_starts = [
-        "in this", "we also", "the rest", "this paper",
-        "the paper", "note that", "it is worth",
+        "in this",
+        "we also",
+        "the rest",
+        "this paper",
+        "the paper",
+        "note that",
+        "it is worth",
     ];
 
     let mut scored: Vec<(f64, &str)> = sentences

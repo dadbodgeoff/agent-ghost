@@ -107,7 +107,8 @@ impl LaneQueueManager {
 
     /// Remove idle session queues.
     pub fn prune_empty(&self) {
-        self.queues.retain(|_, q| !q.is_empty() || q.is_processing());
+        self.queues
+            .retain(|_, q| !q.is_empty() || q.is_processing());
     }
 }
 

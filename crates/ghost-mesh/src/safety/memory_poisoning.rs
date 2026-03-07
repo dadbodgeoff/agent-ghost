@@ -130,10 +130,7 @@ impl MemoryPoisoningDetector {
 
     /// Set a callback to log poisoning events to the audit trail.
     /// The callback receives (agent_id, description).
-    pub fn set_audit_log_callback(
-        &mut self,
-        cb: impl Fn(Uuid, &str) + Send + Sync + 'static,
-    ) {
+    pub fn set_audit_log_callback(&mut self, cb: impl Fn(Uuid, &str) + Send + Sync + 'static) {
         self.audit_log_callback = Some(Box::new(cb));
     }
 
@@ -258,7 +255,9 @@ impl MemoryPoisoningDetector {
         let new_lower = new.to_lowercase();
 
         // Check for direct negation patterns.
-        let negation_prefixes = ["not ", "never ", "no ", "don't ", "doesn't ", "isn't ", "won't "];
+        let negation_prefixes = [
+            "not ", "never ", "no ", "don't ", "doesn't ", "isn't ", "won't ",
+        ];
         for prefix in &negation_prefixes {
             if new_lower.starts_with(prefix) && existing_lower.contains(&new_lower[prefix.len()..])
             {

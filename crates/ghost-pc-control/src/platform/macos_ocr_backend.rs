@@ -16,11 +16,15 @@ use crate::platform::ocr_backend::{OcrBackend, OcrTextRegion};
 pub struct MacOsOcrBackend;
 
 impl MacOsOcrBackend {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for MacOsOcrBackend {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl OcrBackend for MacOsOcrBackend {
@@ -49,8 +53,8 @@ fn write_rgba_as_png(data: &[u8], width: u32, height: u32, path: &str) -> Result
     // Use sips to convert raw data, or write a minimal PPM and convert.
     // Simplest approach: write raw RGBA to a temp file, then use sips.
     let raw_path = format!("{path}.raw");
-    let mut file = std::fs::File::create(&raw_path)
-        .map_err(|e| format!("failed to create temp file: {e}"))?;
+    let mut file =
+        std::fs::File::create(&raw_path).map_err(|e| format!("failed to create temp file: {e}"))?;
     file.write_all(data)
         .map_err(|e| format!("failed to write image data: {e}"))?;
     drop(file);
@@ -99,7 +103,11 @@ with open('{path}', 'wb') as f:
 }
 
 /// Run OCR on a PNG file using macOS Vision framework via Swift.
-fn run_swift_ocr(png_path: &str, img_width: u32, img_height: u32) -> Result<Vec<OcrTextRegion>, String> {
+fn run_swift_ocr(
+    png_path: &str,
+    img_width: u32,
+    img_height: u32,
+) -> Result<Vec<OcrTextRegion>, String> {
     let swift_code = format!(
         r#"
 import Foundation
@@ -163,13 +171,19 @@ if let jsonData = try? JSONSerialization.data(withJSONObject: results),
 
 /// Parse the JSON output from the Swift OCR script.
 fn parse_ocr_json(json_str: &str) -> Result<Vec<OcrTextRegion>, String> {
-    let arr: Vec<serde_json::Value> = serde_json::from_str(json_str)
-        .map_err(|e| format!("failed to parse OCR JSON: {e}"))?;
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(json_str).map_err(|e| format!("failed to parse OCR JSON: {e}"))?;
 
     let mut regions = Vec::new();
     for item in &arr {
-        let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        if text.is_empty() { continue; }
+        let text = item
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if text.is_empty() {
+            continue;
+        }
 
         regions.push(OcrTextRegion {
             text,
@@ -179,7 +193,10 @@ fn parse_ocr_json(json_str: &str) -> Result<Vec<OcrTextRegion>, String> {
                 width: item.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 height: item.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             },
-            confidence: item.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            confidence: item
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
         });
     }
 

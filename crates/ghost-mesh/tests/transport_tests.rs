@@ -55,12 +55,17 @@ fn agent_card_served_from_dispatcher() {
     let (card, _sk) = make_signed_card("test-agent");
     let dispatcher = make_dispatcher(card.clone());
 
-    let served = dispatcher.agent_card().expect("agent_card should return Some in test");
+    let served = dispatcher
+        .agent_card()
+        .expect("agent_card should return Some in test");
     assert_eq!(served.name, card.name);
     assert_eq!(served.endpoint_url, card.endpoint_url);
     assert_eq!(served.public_key, card.public_key);
     assert_eq!(served.signature, card.signature);
-    assert!(served.verify_signature(), "served card must have valid signature");
+    assert!(
+        served.verify_signature(),
+        "served card must have valid signature"
+    );
 }
 
 // ── JSON-RPC dispatcher routes correctly ────────────────────────────────
@@ -78,7 +83,10 @@ fn dispatcher_routes_tasks_send() {
 
     let resp = dispatcher.dispatch(&msg);
     assert!(resp.result.is_some(), "tasks/send should return a result");
-    assert!(resp.error.is_none(), "tasks/send should not return an error");
+    assert!(
+        resp.error.is_none(),
+        "tasks/send should not return an error"
+    );
 
     // Result should be a valid MeshTask.
     let task: ghost_mesh::types::MeshTask =
@@ -148,7 +156,9 @@ fn dispatcher_routes_tasks_cancel() {
 fn agent_card_signature_verified_on_serve() {
     let (card, _sk) = make_signed_card("verified-agent");
     let dispatcher = make_dispatcher(card);
-    let served = dispatcher.agent_card().expect("agent_card should return Some in test");
+    let served = dispatcher
+        .agent_card()
+        .expect("agent_card should return Some in test");
     assert!(
         served.verify_signature(),
         "served AgentCard must pass signature verification"
@@ -260,11 +270,7 @@ fn dispatcher_ghost_extension_unknown_returns_error() {
     let (card, _sk) = make_signed_card("test-agent");
     let dispatcher = make_dispatcher(card);
 
-    let msg = MeshMessage::request(
-        "ghost.unknown",
-        serde_json::json!({}),
-        serde_json::json!(1),
-    );
+    let msg = MeshMessage::request("ghost.unknown", serde_json::json!({}), serde_json::json!(1));
 
     let resp = dispatcher.dispatch(&msg);
     assert!(resp.error.is_some());
@@ -305,7 +311,11 @@ fn concurrent_task_submissions_no_race() {
     // All task IDs should be unique.
     task_ids.sort();
     task_ids.dedup();
-    assert_eq!(task_ids.len(), 10, "all 10 concurrent tasks should have unique IDs");
+    assert_eq!(
+        task_ids.len(),
+        10,
+        "all 10 concurrent tasks should have unique IDs"
+    );
 
     // All tasks should be in the state.
     let state = state.lock().unwrap();
@@ -422,7 +432,10 @@ fn dispatcher_routes_tasks_send_subscribe() {
     );
 
     let resp = dispatcher.dispatch(&msg);
-    assert!(resp.result.is_some(), "tasks/sendSubscribe should return a result");
+    assert!(
+        resp.result.is_some(),
+        "tasks/sendSubscribe should return a result"
+    );
     assert!(resp.error.is_none());
 
     let task: ghost_mesh::types::MeshTask =

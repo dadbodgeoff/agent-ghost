@@ -45,14 +45,20 @@ impl AccessibilityTreeSkill {
 }
 
 impl Skill for AccessibilityTreeSkill {
-    fn name(&self) -> &str { "accessibility_tree" }
+    fn name(&self) -> &str {
+        "accessibility_tree"
+    }
 
     fn description(&self) -> &str {
         "Query the platform accessibility tree for UI elements"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let query = input.get("query").and_then(|v| v.as_str());
@@ -60,32 +66,41 @@ impl Skill for AccessibilityTreeSkill {
         let window = input.get("window").and_then(|v| v.as_str());
         let max_depth = input.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
 
-        let nodes = self.backend.query(window, role, query, max_depth).map_err(|e| {
-            SkillError::Internal(format!("accessibility tree query failed: {e}"))
-        })?;
+        let nodes = self
+            .backend
+            .query(window, role, query, max_depth)
+            .map_err(|e| SkillError::Internal(format!("accessibility tree query failed: {e}")))?;
 
         // Convert to ResolvedElements.
-        let elements: Vec<serde_json::Value> = nodes.iter().map(|n| {
-            let elem = ResolvedElement::from_accessibility(
-                BoundingRect { x: n.x, y: n.y, width: n.width, height: n.height },
-                &n.role,
-                n.name.clone(),
-                n.title.clone().or_else(|| n.value.clone()),
-            );
-            serde_json::json!({
-                "bounds": {
-                    "x": elem.bounds.x,
-                    "y": elem.bounds.y,
-                    "width": elem.bounds.width,
-                    "height": elem.bounds.height,
-                },
-                "role": elem.role,
-                "name": elem.name,
-                "text": elem.text,
-                "confidence": elem.confidence,
-                "layer": "AccessibilityTree",
+        let elements: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|n| {
+                let elem = ResolvedElement::from_accessibility(
+                    BoundingRect {
+                        x: n.x,
+                        y: n.y,
+                        width: n.width,
+                        height: n.height,
+                    },
+                    &n.role,
+                    n.name.clone(),
+                    n.title.clone().or_else(|| n.value.clone()),
+                );
+                serde_json::json!({
+                    "bounds": {
+                        "x": elem.bounds.x,
+                        "y": elem.bounds.y,
+                        "width": elem.bounds.width,
+                        "height": elem.bounds.height,
+                    },
+                    "role": elem.role,
+                    "name": elem.name,
+                    "text": elem.text,
+                    "confidence": elem.confidence,
+                    "layer": "AccessibilityTree",
+                })
             })
-        }).collect();
+            .collect();
 
         let count = elements.len();
         let result = serde_json::json!({
@@ -95,7 +110,14 @@ impl Skill for AccessibilityTreeSkill {
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "accessibility_tree", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "accessibility_tree",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -125,7 +147,12 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn mock_nodes() -> Vec<AccessibilityNode> {
@@ -135,7 +162,10 @@ mod tests {
                 name: Some("Submit".into()),
                 title: None,
                 value: None,
-                x: 100, y: 200, width: 80, height: 30,
+                x: 100,
+                y: 200,
+                width: 80,
+                height: 30,
                 enabled: true,
             },
             AccessibilityNode {
@@ -143,7 +173,10 @@ mod tests {
                 name: Some("Username".into()),
                 title: None,
                 value: Some("admin".into()),
-                x: 100, y: 100, width: 200, height: 25,
+                x: 100,
+                y: 100,
+                width: 200,
+                height: 25,
                 enabled: true,
             },
             AccessibilityNode {
@@ -151,7 +184,10 @@ mod tests {
                 name: Some("Help".into()),
                 title: Some("Help Center".into()),
                 value: None,
-                x: 300, y: 400, width: 50, height: 20,
+                x: 300,
+                y: 400,
+                width: 50,
+                height: 20,
                 enabled: true,
             },
         ]
@@ -177,7 +213,9 @@ mod tests {
         let backend = Arc::new(MockAccessibilityBackend::new(mock_nodes()));
         let skill = AccessibilityTreeSkill::new(backend);
 
-        let result = skill.execute(&ctx, &serde_json::json!({"role": "AXButton"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"role": "AXButton"}))
+            .unwrap();
         assert_eq!(result["count"], 1);
         assert_eq!(result["elements"][0]["name"], "Submit");
     }
@@ -189,7 +227,9 @@ mod tests {
         let backend = Arc::new(MockAccessibilityBackend::new(mock_nodes()));
         let skill = AccessibilityTreeSkill::new(backend);
 
-        let result = skill.execute(&ctx, &serde_json::json!({"query": "Help"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"query": "Help"}))
+            .unwrap();
         assert_eq!(result["count"], 1);
     }
 
@@ -200,7 +240,9 @@ mod tests {
         let backend = Arc::new(MockAccessibilityBackend::new(mock_nodes()));
         let skill = AccessibilityTreeSkill::new(backend);
 
-        let result = skill.execute(&ctx, &serde_json::json!({"role": "AXButton"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"role": "AXButton"}))
+            .unwrap();
         assert_eq!(result["elements"][0]["confidence"], 1.0);
     }
 
@@ -220,7 +262,10 @@ mod tests {
         let backend = Arc::new(MockAccessibilityBackend::new(vec![]));
         let skill = AccessibilityTreeSkill::new(backend);
         let preview = skill.preview(&serde_json::json!({"query": "Submit", "role": "button"}));
-        assert_eq!(preview, Some("Query accessibility tree: button matching \"Submit\"".into()));
+        assert_eq!(
+            preview,
+            Some("Query accessibility tree: button matching \"Submit\"".into())
+        );
     }
 
     #[test]

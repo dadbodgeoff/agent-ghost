@@ -34,12 +34,18 @@ impl GoogleOAuthProvider {
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| OAuthError::ProviderError(format!("HTTP client init: {e}")))?;
-        Ok(Self { client_id, client_secret, http })
+        Ok(Self {
+            client_id,
+            client_secret,
+            http,
+        })
     }
 }
 
 impl OAuthProvider for GoogleOAuthProvider {
-    fn name(&self) -> &str { "google" }
+    fn name(&self) -> &str {
+        "google"
+    }
 
     fn authorization_url(
         &self,
@@ -77,11 +83,18 @@ impl OAuthProvider for GoogleOAuthProvider {
             ("code", code),
             ("redirect_uri", redirect_uri),
             ("client_id", &self.client_id),
-            ("client_secret", secrecy::ExposeSecret::expose_secret(&self.client_secret)),
+            (
+                "client_secret",
+                secrecy::ExposeSecret::expose_secret(&self.client_secret),
+            ),
             ("code_verifier", pkce_verifier),
         ];
 
-        let resp = self.http.post(TOKEN_URL).form(&params).send()
+        let resp = self
+            .http
+            .post(TOKEN_URL)
+            .form(&params)
+            .send()
             .map_err(|e| OAuthError::FlowFailed(format!("token exchange: {e}")))?;
 
         parse_token_response(resp)
@@ -92,17 +105,26 @@ impl OAuthProvider for GoogleOAuthProvider {
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
             ("client_id", &self.client_id),
-            ("client_secret", secrecy::ExposeSecret::expose_secret(&self.client_secret)),
+            (
+                "client_secret",
+                secrecy::ExposeSecret::expose_secret(&self.client_secret),
+            ),
         ];
 
-        let resp = self.http.post(TOKEN_URL).form(&params).send()
+        let resp = self
+            .http
+            .post(TOKEN_URL)
+            .form(&params)
+            .send()
             .map_err(|e| OAuthError::RefreshFailed(format!("refresh: {e}")))?;
 
         parse_token_response(resp)
     }
 
     fn revoke_token(&self, token: &str) -> Result<(), OAuthError> {
-        let resp = self.http.post(REVOKE_URL)
+        let resp = self
+            .http
+            .post(REVOKE_URL)
             .form(&[("token", token)])
             .send()
             .map_err(|e| OAuthError::ProviderError(format!("revoke: {e}")))?;
@@ -147,13 +169,12 @@ pub(crate) fn parse_token_response(
     resp: reqwest::blocking::Response,
 ) -> Result<TokenSet, OAuthError> {
     let status = resp.status();
-    let body = resp.text()
+    let body = resp
+        .text()
         .map_err(|e| OAuthError::FlowFailed(format!("failed to read response body: {e}")))?;
 
     if !status.is_success() {
-        return Err(OAuthError::FlowFailed(format!(
-            "HTTP {status}: {body}"
-        )));
+        return Err(OAuthError::FlowFailed(format!("HTTP {status}: {body}")));
     }
 
     let json: serde_json::Value = serde_json::from_str(&body)
@@ -174,10 +195,7 @@ pub(crate) fn parse_token_response(
         .and_then(|v| v.as_u64())
         .unwrap_or(3600);
 
-    let scope_str = json
-        .get("scope")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let scope_str = json.get("scope").and_then(|v| v.as_str()).unwrap_or("");
     let scopes: Vec<String> = scope_str
         .split_whitespace()
         .map(|s| s.to_string())
@@ -204,7 +222,11 @@ pub(crate) fn execute_bearer_request(
         "PUT" => http.put(&request.url),
         "DELETE" => http.delete(&request.url),
         "PATCH" => http.patch(&request.url),
-        other => return Err(OAuthError::ProviderError(format!("unsupported method: {other}"))),
+        other => {
+            return Err(OAuthError::ProviderError(format!(
+                "unsupported method: {other}"
+            )))
+        }
     };
 
     builder = builder.header("Authorization", format!("Bearer {access_token}"));
@@ -217,19 +239,27 @@ pub(crate) fn execute_bearer_request(
         builder = builder.body(body.clone());
     }
 
-    let resp = builder.send()
+    let resp = builder
+        .send()
         .map_err(|e| OAuthError::ProviderError(format!("API call failed: {e}")))?;
 
     let status = resp.status().as_u16();
     let headers: BTreeMap<String, String> = resp
         .headers()
         .iter()
-        .map(|(k, v): (&reqwest::header::HeaderName, &reqwest::header::HeaderValue)| {
-            (k.to_string(), v.to_str().unwrap_or("").to_string())
-        })
+        .map(
+            |(k, v): (&reqwest::header::HeaderName, &reqwest::header::HeaderValue)| {
+                (k.to_string(), v.to_str().unwrap_or("").to_string())
+            },
+        )
         .collect();
-    let body = resp.text()
+    let body = resp
+        .text()
         .map_err(|e| OAuthError::ProviderError(format!("failed to read API response body: {e}")))?;
 
-    Ok(ApiResponse { status, headers, body })
+    Ok(ApiResponse {
+        status,
+        headers,
+        body,
+    })
 }

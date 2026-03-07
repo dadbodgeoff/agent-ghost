@@ -39,8 +39,7 @@ impl ITPBuffer {
         };
 
         // Evict oldest until within limits
-        while (self.total_bytes + size > MAX_BUFFER_BYTES
-            || self.events.len() >= MAX_BUFFER_EVENTS)
+        while (self.total_bytes + size > MAX_BUFFER_BYTES || self.events.len() >= MAX_BUFFER_EVENTS)
             && !self.events.is_empty()
         {
             if let Some(old) = self.events.pop_front() {

@@ -25,7 +25,6 @@ pub enum ExfilType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TriggerEvent {
     // ── Automatic triggers (T1–T7) ──────────────────────────────────
-
     /// T1: SOUL document drift detected.
     SoulDrift {
         agent_id: Uuid,
@@ -110,7 +109,6 @@ pub enum TriggerEvent {
     },
 
     // ── Manual triggers ─────────────────────────────────────────────
-
     ManualPause {
         agent_id: Uuid,
         reason: String,

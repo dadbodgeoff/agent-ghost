@@ -254,25 +254,49 @@ mod tests {
 
     #[test]
     fn test_classify_429() {
-        assert_eq!(classify_llm_error("HTTP 429 Too Many Requests"), FailureType::RateLimit);
-        assert_eq!(classify_llm_error("rate limit exceeded"), FailureType::RateLimit);
+        assert_eq!(
+            classify_llm_error("HTTP 429 Too Many Requests"),
+            FailureType::RateLimit
+        );
+        assert_eq!(
+            classify_llm_error("rate limit exceeded"),
+            FailureType::RateLimit
+        );
     }
 
     #[test]
     fn test_classify_500() {
-        assert_eq!(classify_llm_error("HTTP 500 Internal Server Error"), FailureType::Transient);
-        assert_eq!(classify_llm_error("server overloaded"), FailureType::Transient);
+        assert_eq!(
+            classify_llm_error("HTTP 500 Internal Server Error"),
+            FailureType::Transient
+        );
+        assert_eq!(
+            classify_llm_error("server overloaded"),
+            FailureType::Transient
+        );
     }
 
     #[test]
     fn test_classify_auth() {
-        assert_eq!(classify_llm_error("401 Unauthorized"), FailureType::AuthFailure);
-        assert_eq!(classify_llm_error("Invalid API key provided"), FailureType::AuthFailure);
+        assert_eq!(
+            classify_llm_error("401 Unauthorized"),
+            FailureType::AuthFailure
+        );
+        assert_eq!(
+            classify_llm_error("Invalid API key provided"),
+            FailureType::AuthFailure
+        );
     }
 
     #[test]
     fn test_classify_refusal() {
-        assert_eq!(classify_llm_error("content_policy_violation"), FailureType::ModelRefusal);
-        assert_eq!(classify_llm_error("context_length_exceeded"), FailureType::ModelRefusal);
+        assert_eq!(
+            classify_llm_error("content_policy_violation"),
+            FailureType::ModelRefusal
+        );
+        assert_eq!(
+            classify_llm_error("context_length_exceeded"),
+            FailureType::ModelRefusal
+        );
     }
 }

@@ -38,10 +38,7 @@ pub struct GatewayRuntime {
 impl GatewayRuntime {
     /// Create a new runtime. The caller is expected to populate `mesh_router`
     /// after construction if mesh networking is enabled.
-    pub fn new(
-        shared_state: Arc<GatewaySharedState>,
-        app_state: Arc<AppState>,
-    ) -> Self {
+    pub fn new(shared_state: Arc<GatewaySharedState>, app_state: Arc<AppState>) -> Self {
         Self {
             shared_state,
             app_state,
@@ -98,9 +95,9 @@ impl GatewayRuntime {
                 )));
             }
             Err(e) => {
-                return Err(crate::gateway::GatewayError::BootstrapFailed(
-                    format!("bind failed: {e}")
-                ));
+                return Err(crate::gateway::GatewayError::BootstrapFailed(format!(
+                    "bind failed: {e}"
+                )));
             }
         };
 
@@ -146,12 +143,9 @@ impl GatewayRuntime {
         self.shutdown_token.cancel();
         self.task_tracker.close();
 
-        if tokio::time::timeout(
-            self.shutdown_config.drain_timeout,
-            self.task_tracker.wait(),
-        )
-        .await
-        .is_err()
+        if tokio::time::timeout(self.shutdown_config.drain_timeout, self.task_tracker.wait())
+            .await
+            .is_err()
         {
             tracing::warn!(
                 timeout_secs = self.shutdown_config.drain_timeout.as_secs(),
@@ -163,22 +157,23 @@ impl GatewayRuntime {
         // for code that hasn't migrated to spawn_tracked yet).
         {
             let legacy_tasks: Vec<tokio::task::JoinHandle<()>> = {
-                let mut tasks = self
-                    .app_state
-                    .background_tasks
-                    .lock()
-                    .await;
+                let mut tasks = self.app_state.background_tasks.lock().await;
                 std::mem::take(&mut *tasks)
             };
             if !legacy_tasks.is_empty() {
-                tracing::info!(count = legacy_tasks.len(), "awaiting legacy background tasks");
+                tracing::info!(
+                    count = legacy_tasks.len(),
+                    "awaiting legacy background tasks"
+                );
                 // Signal legacy tasks via the AppState token as well.
                 self.app_state.shutdown_token.cancel();
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
                 for handle in legacy_tasks {
                     match tokio::time::timeout_at(deadline, handle).await {
                         Err(_elapsed) => {
-                            tracing::warn!("legacy background task did not complete within deadline");
+                            tracing::warn!(
+                                "legacy background task did not complete within deadline"
+                            );
                             // Remaining tasks share the same deadline and will also time out.
                             // The AppState shutdown_token was already cancelled above,
                             // so well-behaved tasks will exit on their own.

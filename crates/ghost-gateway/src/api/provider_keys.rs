@@ -149,7 +149,9 @@ pub async fn set_provider_key(
     .0;
 
     if body.env_name.is_empty() || body.value.is_empty() {
-        return Err(ApiError::bad_request("env_name and value must not be empty"));
+        return Err(ApiError::bad_request(
+            "env_name and value must not be empty",
+        ));
     }
 
     // Validate that env_name matches a configured provider.
@@ -171,7 +173,10 @@ pub async fn set_provider_key(
     }
 
     // 1. Persist via secret_provider (if it supports writes).
-    if let Err(e) = state.secret_provider.set_secret(&body.env_name, &body.value) {
+    if let Err(e) = state
+        .secret_provider
+        .set_secret(&body.env_name, &body.value)
+    {
         tracing::warn!(
             env_name = %body.env_name,
             error = %e,

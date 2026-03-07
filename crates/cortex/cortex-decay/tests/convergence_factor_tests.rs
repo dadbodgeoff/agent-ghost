@@ -23,7 +23,8 @@ fn score_zero_returns_one_for_all_types() {
         assert!(
             (f - 1.0).abs() < 1e-10,
             "score=0.0, type={:?} should give factor=1.0, got {}",
-            mt, f
+            mt,
+            f
         );
     }
 }
@@ -43,7 +44,11 @@ fn conversation_score_half_returns_two() {
 #[test]
 fn non_sensitive_type_score_one_returns_one() {
     let f = convergence_factor(&MemoryType::Core, 1.0);
-    assert!((f - 1.0).abs() < 1e-10, "Core type should have 0 sensitivity, got {}", f);
+    assert!(
+        (f - 1.0).abs() < 1e-10,
+        "Core type should have 0 sensitivity, got {}",
+        f
+    );
 }
 
 #[test]
@@ -72,7 +77,10 @@ fn decay_breakdown_includes_convergence_field() {
         ..Default::default()
     };
     let breakdown = formula::compute_with_breakdown(&memory, &ctx);
-    assert!(breakdown.convergence >= 1.0, "convergence factor should be >= 1.0");
+    assert!(
+        breakdown.convergence >= 1.0,
+        "convergence factor should be >= 1.0"
+    );
     assert!((breakdown.convergence - 2.0).abs() < 1e-10);
 }
 
@@ -82,19 +90,31 @@ fn decay_breakdown_includes_convergence_field() {
 fn score_slightly_above_one_clamped() {
     let f = convergence_factor(&MemoryType::Conversation, 1.0001);
     // Should clamp to 1.0 internally, so factor = 1.0 + 2.0 * 1.0 = 3.0
-    assert!((f - 3.0).abs() < 1e-10, "should clamp to 1.0, got factor {}", f);
+    assert!(
+        (f - 3.0).abs() < 1e-10,
+        "should clamp to 1.0, got factor {}",
+        f
+    );
 }
 
 #[test]
 fn negative_score_clamped_to_zero() {
     let f = convergence_factor(&MemoryType::Conversation, -0.1);
-    assert!((f - 1.0).abs() < 1e-10, "negative score should clamp to 0.0, factor=1.0, got {}", f);
+    assert!(
+        (f - 1.0).abs() < 1e-10,
+        "negative score should clamp to 0.0, factor=1.0, got {}",
+        f
+    );
 }
 
 #[test]
 fn nan_score_returns_one() {
     let f = convergence_factor(&MemoryType::Conversation, f64::NAN);
-    assert!((f - 1.0).abs() < 1e-10, "NaN score should return factor=1.0, got {}", f);
+    assert!(
+        (f - 1.0).abs() < 1e-10,
+        "NaN score should return factor=1.0, got {}",
+        f
+    );
 }
 
 // ── Proptest ────────────────────────────────────────────────────────────

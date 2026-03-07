@@ -74,8 +74,13 @@ pub async fn execute_shutdown(
             tracing::info!(count = bg_tasks.len(), "Awaiting background tasks");
             let drain_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
             for handle in bg_tasks {
-                if tokio::time::timeout_at(drain_deadline, handle).await.is_err() {
-                    tracing::warn!("Background task did not complete within shutdown timeout — aborting");
+                if tokio::time::timeout_at(drain_deadline, handle)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        "Background task did not complete within shutdown timeout — aborting"
+                    );
                 }
             }
         }
@@ -108,7 +113,9 @@ pub async fn execute_shutdown(
     tracing::info!("Shutdown step 5: Notifying monitor");
     if let Some(state) = state {
         // Best-effort notification via gateway state transition.
-        let _ = state.gateway.transition_to(crate::gateway::GatewayState::ShuttingDown);
+        let _ = state
+            .gateway
+            .transition_to(crate::gateway::GatewayState::ShuttingDown);
     }
     steps += 1;
 

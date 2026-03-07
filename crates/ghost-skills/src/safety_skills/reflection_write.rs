@@ -52,10 +52,7 @@ impl Skill for ReflectionWriteSkill {
             .and_then(|v| v.as_str())
             .unwrap_or("Scheduled");
 
-        let depth = input
-            .get("depth")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u8;
+        let depth = input.get("depth").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
 
         let parent_chain_id = input
             .get("parent_chain_id")
@@ -63,7 +60,12 @@ impl Skill for ReflectionWriteSkill {
             .and_then(|s| Uuid::parse_str(s).ok());
 
         // Validate trigger type.
-        let valid_triggers = ["Scheduled", "SessionEnd", "ThresholdCrossed", "UserRequested"];
+        let valid_triggers = [
+            "Scheduled",
+            "SessionEnd",
+            "ThresholdCrossed",
+            "UserRequested",
+        ];
         if !valid_triggers.contains(&trigger_type) {
             return Err(SkillError::InvalidInput(format!(
                 "invalid trigger type '{trigger_type}', must be one of: {valid_triggers:?}"
@@ -97,11 +99,8 @@ impl Skill for ReflectionWriteSkill {
 
         // Check per-session count constraint.
         let current_count =
-            cortex_storage::queries::reflection_queries::count_per_session(
-                ctx.db,
-                &session_id_str,
-            )
-            .map_err(|e| SkillError::Storage(format!("count reflections: {e}")))?;
+            cortex_storage::queries::reflection_queries::count_per_session(ctx.db, &session_id_str)
+                .map_err(|e| SkillError::Storage(format!("count reflections: {e}")))?;
 
         if current_count >= max_per_session {
             return Err(SkillError::ReflectionConstraint(format!(
@@ -175,8 +174,7 @@ impl Skill for ReflectionWriteSkill {
 /// High ratios (> 0.4) indicate unhealthy self-focus in reflections.
 fn compute_self_reference_ratio(text: &str) -> f64 {
     let self_ref_words = [
-        "i", "me", "my", "mine", "myself",
-        "i'm", "i've", "i'll", "i'd",
+        "i", "me", "my", "mine", "myself", "i'm", "i've", "i'll", "i'd",
     ];
 
     let words: Vec<&str> = text
@@ -309,10 +307,8 @@ mod tests {
         let db = test_db();
         let ctx = test_ctx(&db);
 
-        let result = ReflectionWriteSkill.execute(
-            &ctx,
-            &serde_json::json!({"trigger": "Scheduled"}),
-        );
+        let result =
+            ReflectionWriteSkill.execute(&ctx, &serde_json::json!({"trigger": "Scheduled"}));
         assert!(result.is_err());
         match result.unwrap_err() {
             SkillError::InvalidInput(_) => {}
@@ -323,15 +319,11 @@ mod tests {
     #[test]
     fn self_reference_ratio_computation() {
         // Normal text — low ratio
-        let ratio = compute_self_reference_ratio(
-            "The system processed the request efficiently.",
-        );
+        let ratio = compute_self_reference_ratio("The system processed the request efficiently.");
         assert!(ratio < 0.1, "Expected low ratio, got {ratio}");
 
         // Heavy self-reference — high ratio
-        let ratio = compute_self_reference_ratio(
-            "I think I am I and my work is mine",
-        );
+        let ratio = compute_self_reference_ratio("I think I am I and my work is mine");
         assert!(ratio > 0.4, "Expected high ratio, got {ratio}");
 
         // Empty text

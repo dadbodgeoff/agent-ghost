@@ -1,7 +1,7 @@
 //! Tests for Phase 17 -- Observation Masking (Tasks 17.1, 17.2, 17.3).
 
-use ghost_agent_loop::context::prompt_compiler::{PromptCompiler, PromptInput};
 use ghost_agent_loop::context::observation_masker::{ObservationMasker, ObservationMaskerConfig};
+use ghost_agent_loop::context::prompt_compiler::{PromptCompiler, PromptInput};
 use ghost_agent_loop::context::spotlighting::SpotlightingConfig;
 
 // ====================================================================
@@ -40,8 +40,16 @@ fn cache_same_content_deduplicates() {
     let r1 = cache.store("c1", "shell", "dup").unwrap();
     let r2 = cache.store("c2", "shell", "dup").unwrap();
     assert_eq!(r1.hash, r2.hash);
-    let count = std::fs::read_dir(dir.path()).unwrap()
-        .filter(|e| e.as_ref().unwrap().path().extension().map(|x| x == "txt").unwrap_or(false))
+    let count = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .map(|x| x == "txt")
+                .unwrap_or(false)
+        })
         .count();
     assert_eq!(count, 1);
 }
@@ -50,10 +58,16 @@ fn cache_same_content_deduplicates() {
 fn cache_reference_string_format() {
     use ghost_agent_loop::context::tool_output_cache::{CacheRef, ToolOutputCache};
     let r = CacheRef {
-        hash: "abcdef0123456789".into(), tool_name: "web_fetch".into(),
-        tool_call_id: "c42".into(), token_count: 1500, byte_count: 6000,
+        hash: "abcdef0123456789".into(),
+        tool_name: "web_fetch".into(),
+        tool_call_id: "c42".into(),
+        token_count: 1500,
+        byte_count: 6000,
     };
-    let expected = format!("[tool_result: web_fetch {} 1500 tokens, ref:abcdef01]", "\u{2192}");
+    let expected = format!(
+        "[tool_result: web_fetch {} 1500 tokens, ref:abcdef01]",
+        "\u{2192}"
+    );
     assert_eq!(ToolOutputCache::reference_string(&r), expected);
 }
 
@@ -74,7 +88,10 @@ fn cache_cleanup_keeps_recent() {
     let dir = tempfile::tempdir().unwrap();
     let cache = ToolOutputCache::with_dir(dir.path().to_path_buf());
     cache.store("c1", "shell", "recent").unwrap();
-    assert_eq!(cache.cleanup_older_than(Duration::from_secs(3600)).unwrap(), 0);
+    assert_eq!(
+        cache.cleanup_older_than(Duration::from_secs(3600)).unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -115,14 +132,20 @@ fn cache_concurrent_store_no_corruption() {
     let dir = tempfile::tempdir().unwrap();
     let cache = Arc::new(ToolOutputCache::with_dir(dir.path().to_path_buf()));
     let content = "shared content";
-    let handles: Vec<_> = (0..10).map(|i| {
-        let c: Arc<ToolOutputCache> = Arc::clone(&cache);
-        let s = content.to_string();
-        std::thread::spawn(move || c.store(&format!("c{i}"), "shell", &s).unwrap())
-    }).collect();
-    let refs: Vec<CacheRef> =
-        handles.into_iter().map(|h: std::thread::JoinHandle<CacheRef>| h.join().unwrap()).collect();
-    for r in &refs { assert_eq!(&r.hash, &refs[0].hash); }
+    let handles: Vec<_> = (0..10)
+        .map(|i| {
+            let c: Arc<ToolOutputCache> = Arc::clone(&cache);
+            let s = content.to_string();
+            std::thread::spawn(move || c.store(&format!("c{i}"), "shell", &s).unwrap())
+        })
+        .collect();
+    let refs: Vec<CacheRef> = handles
+        .into_iter()
+        .map(|h: std::thread::JoinHandle<CacheRef>| h.join().unwrap())
+        .collect();
+    for r in &refs {
+        assert_eq!(&r.hash, &refs[0].hash);
+    }
     assert_eq!(cache.load(&refs[0].hash).unwrap(), content);
 }
 
@@ -144,7 +167,11 @@ mod cache_proptests {
 // Task 17.2 -- ObservationMasker
 // ====================================================================
 
-fn make_masker(recency: usize, threshold: usize, enabled: bool) -> (tempfile::TempDir, ObservationMasker) {
+fn make_masker(
+    recency: usize,
+    threshold: usize,
+    enabled: bool,
+) -> (tempfile::TempDir, ObservationMasker) {
     let dir = tempfile::tempdir().unwrap();
     let config = ObservationMaskerConfig {
         enabled,
@@ -282,7 +309,9 @@ fn build_history(num_turns: usize, content_size: usize) -> String {
     let mut history = String::new();
     for i in 0..num_turns {
         history.push_str(&format!("Assistant: Turn {}\n", i + 1));
-        history.push_str(&format!("tool_result tool_name:tool_{i} tool_call_id:call_{i}\n"));
+        history.push_str(&format!(
+            "tool_result tool_name:tool_{i} tool_call_id:call_{i}\n"
+        ));
         history.push_str(&"x".repeat(content_size));
         history.push('\n');
     }
@@ -295,8 +324,14 @@ fn prompt_compiler_new_no_masking_backward_compat() {
     let history = build_history(5, 500);
     let input = default_input_with_history(&history);
     let (layers, _stats) = compiler.compile(&input);
-    assert!(layers[8].content.contains('x'), "Raw content should be present in L8");
-    assert!(!layers[8].content.contains("ref:"), "No masking references should appear");
+    assert!(
+        layers[8].content.contains('x'),
+        "Raw content should be present in L8"
+    );
+    assert!(
+        !layers[8].content.contains("ref:"),
+        "No masking references should appear"
+    );
 }
 
 #[test]
@@ -308,13 +343,22 @@ fn prompt_compiler_with_observation_masking_masks_l8() {
         min_token_threshold: 1,
         cache_dir: dir.path().to_path_buf(),
     };
-    let spot_config = SpotlightingConfig { enabled: false, ..SpotlightingConfig::default() };
+    let spot_config = SpotlightingConfig {
+        enabled: false,
+        ..SpotlightingConfig::default()
+    };
     let compiler = PromptCompiler::with_observation_masking(128_000, spot_config, masker_config);
     let history = build_history(5, 500);
     let input = default_input_with_history(&history);
     let (layers, _stats) = compiler.compile(&input);
-    assert!(layers[8].content.contains("[tool_result:"), "Old turns should have compact refs");
-    assert!(layers[8].content.contains("Turn 5"), "Turn 5 should be inline");
+    assert!(
+        layers[8].content.contains("[tool_result:"),
+        "Old turns should have compact refs"
+    );
+    assert!(
+        layers[8].content.contains("Turn 5"),
+        "Turn 5 should be inline"
+    );
 }
 
 #[test]
@@ -328,7 +372,9 @@ fn prompt_compiler_masking_plus_spotlighting_masked_content_datamarked() {
         layers: vec![7, 8],
     };
     let masker_config = ObservationMaskerConfig {
-        enabled: true, recency_window: 1, min_token_threshold: 1,
+        enabled: true,
+        recency_window: 1,
+        min_token_threshold: 1,
         cache_dir: dir.path().to_path_buf(),
     };
     let compiler = PromptCompiler::with_observation_masking(128_000, spot_config, masker_config);
@@ -343,14 +389,22 @@ fn prompt_compiler_masking_plus_spotlighting_masked_content_datamarked() {
 fn prompt_compiler_l8_token_count_reduced_after_masking() {
     let dir = tempfile::tempdir().unwrap();
     let masker_config = ObservationMaskerConfig {
-        enabled: true, recency_window: 1, min_token_threshold: 1,
+        enabled: true,
+        recency_window: 1,
+        min_token_threshold: 1,
         cache_dir: dir.path().to_path_buf(),
     };
-    let spot_off = SpotlightingConfig { enabled: false, ..SpotlightingConfig::default() };
+    let spot_off = SpotlightingConfig {
+        enabled: false,
+        ..SpotlightingConfig::default()
+    };
     let compiler_no_mask = PromptCompiler::with_spotlighting(128_000, spot_off.clone());
     let compiler_mask = PromptCompiler::with_observation_masking(
         128_000,
-        SpotlightingConfig { enabled: false, ..SpotlightingConfig::default() },
+        SpotlightingConfig {
+            enabled: false,
+            ..SpotlightingConfig::default()
+        },
         masker_config,
     );
     let history = build_history(5, 2000);
@@ -360,7 +414,8 @@ fn prompt_compiler_l8_token_count_reduced_after_masking() {
     assert!(
         layers_mask[8].token_count < layers_no_mask[8].token_count,
         "Masked L8 ({}) should have fewer tokens than unmasked ({})",
-        layers_mask[8].token_count, layers_no_mask[8].token_count
+        layers_mask[8].token_count,
+        layers_no_mask[8].token_count
     );
 }
 
@@ -368,14 +423,22 @@ fn prompt_compiler_l8_token_count_reduced_after_masking() {
 fn prompt_compiler_l0_through_l7_and_l9_unaffected_by_masking() {
     let dir = tempfile::tempdir().unwrap();
     let masker_config = ObservationMaskerConfig {
-        enabled: true, recency_window: 1, min_token_threshold: 1,
+        enabled: true,
+        recency_window: 1,
+        min_token_threshold: 1,
         cache_dir: dir.path().to_path_buf(),
     };
-    let spot_off = SpotlightingConfig { enabled: false, ..SpotlightingConfig::default() };
+    let spot_off = SpotlightingConfig {
+        enabled: false,
+        ..SpotlightingConfig::default()
+    };
     let compiler_no_mask = PromptCompiler::with_spotlighting(128_000, spot_off.clone());
     let compiler_mask = PromptCompiler::with_observation_masking(
         128_000,
-        SpotlightingConfig { enabled: false, ..SpotlightingConfig::default() },
+        SpotlightingConfig {
+            enabled: false,
+            ..SpotlightingConfig::default()
+        },
         masker_config,
     );
     let history = build_history(5, 500);
@@ -383,10 +446,16 @@ fn prompt_compiler_l0_through_l7_and_l9_unaffected_by_masking() {
     let (layers_no_mask, _) = compiler_no_mask.compile(&input);
     let (layers_mask, _) = compiler_mask.compile(&input);
     for i in 0..8 {
-        assert_eq!(layers_no_mask[i].content, layers_mask[i].content,
-            "Layer {} should be unaffected by masking", i);
+        assert_eq!(
+            layers_no_mask[i].content, layers_mask[i].content,
+            "Layer {} should be unaffected by masking",
+            i
+        );
     }
-    assert_eq!(layers_no_mask[9].content, layers_mask[9].content, "L9 should be unaffected");
+    assert_eq!(
+        layers_no_mask[9].content, layers_mask[9].content,
+        "L9 should be unaffected"
+    );
 }
 
 #[test]
@@ -395,12 +464,17 @@ fn prompt_compiler_masker_error_falls_back_to_unmasked() {
     let bad_path = dir.path().join("not_a_dir");
     std::fs::write(&bad_path, "blocker").unwrap();
     let masker_config = ObservationMaskerConfig {
-        enabled: true, recency_window: 0, min_token_threshold: 1,
+        enabled: true,
+        recency_window: 0,
+        min_token_threshold: 1,
         cache_dir: bad_path.join("subdir"),
     };
     let compiler = PromptCompiler::with_observation_masking(
         128_000,
-        SpotlightingConfig { enabled: false, ..SpotlightingConfig::default() },
+        SpotlightingConfig {
+            enabled: false,
+            ..SpotlightingConfig::default()
+        },
         masker_config,
     );
     let history = build_history(3, 500);
@@ -413,12 +487,17 @@ fn prompt_compiler_masker_error_falls_back_to_unmasked() {
 fn prompt_compiler_full_compile_with_masking_references_for_old_inline_for_recent() {
     let dir = tempfile::tempdir().unwrap();
     let masker_config = ObservationMaskerConfig {
-        enabled: true, recency_window: 2, min_token_threshold: 1,
+        enabled: true,
+        recency_window: 2,
+        min_token_threshold: 1,
         cache_dir: dir.path().to_path_buf(),
     };
     let compiler = PromptCompiler::with_observation_masking(
         128_000,
-        SpotlightingConfig { enabled: false, ..SpotlightingConfig::default() },
+        SpotlightingConfig {
+            enabled: false,
+            ..SpotlightingConfig::default()
+        },
         masker_config,
     );
     let history = build_history(6, 500);
@@ -426,7 +505,10 @@ fn prompt_compiler_full_compile_with_masking_references_for_old_inline_for_recen
     let (layers, _stats) = compiler.compile(&input);
     let l8 = &layers[8].content;
     let ref_count = l8.matches("[tool_result:").count();
-    assert_eq!(ref_count, 4, "Expected 4 masked references, got {ref_count}");
+    assert_eq!(
+        ref_count, 4,
+        "Expected 4 masked references, got {ref_count}"
+    );
     assert!(l8.contains("Turn 5"), "Turn 5 should be inline");
     assert!(l8.contains("Turn 6"), "Turn 6 should be inline");
     assert_eq!(layers.len(), 10);

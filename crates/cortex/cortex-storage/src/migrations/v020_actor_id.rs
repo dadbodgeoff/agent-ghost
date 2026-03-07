@@ -6,9 +6,9 @@
 //!
 //! Ref: ADE_DESIGN_PLAN §17.1, §17.2.1, tasks.md T-1.1.7
 
-use rusqlite::Connection;
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::Connection;
 
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     // Ensure audit_log table exists before ALTER. In production the table is
@@ -16,7 +16,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
     // migration-only contexts (tests, fresh DBs where the gateway hasn't
     // called ensure_table() yet) it may not exist. We replicate the canonical
     // schema here with CREATE TABLE IF NOT EXISTS so the ALTER is safe.
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS audit_log (
             id TEXT PRIMARY KEY,
             timestamp TEXT NOT NULL,
@@ -31,7 +32,8 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id);
         CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
         CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log(severity);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(format!("v020 ensure audit_log: {e}")))?;
 
     // Add actor_id column to audit_log. NULL for pre-existing entries
@@ -49,17 +51,21 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
         .unwrap_or(false);
 
     if !has_actor_id {
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             ALTER TABLE audit_log ADD COLUMN actor_id TEXT;
-        ")
+        ",
+        )
         .map_err(|e| to_storage_err(format!("v020 actor_id: {e}")))?;
     }
 
     // Index for querying audit entries by actor.
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE INDEX IF NOT EXISTS idx_audit_log_actor_id
             ON audit_log(actor_id);
-    ")
+    ",
+    )
     .map_err(|e| to_storage_err(format!("v020 actor_id index: {e}")))?;
 
     Ok(())

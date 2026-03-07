@@ -71,8 +71,7 @@ impl TokenStore {
         let tmp = target.with_extension("tmp");
         fs::write(&tmp, &encrypted)
             .map_err(|e| OAuthError::StorageError(format!("write tmp: {e}")))?;
-        fs::rename(&tmp, &target)
-            .map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
+        fs::rename(&tmp, &target).map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
 
         tracing::debug!(
             provider = %provider,
@@ -84,11 +83,7 @@ impl TokenStore {
 
     /// Load and decrypt a token set. Returns `TokenExpired` if the token
     /// has expired (caller should refresh).
-    pub fn load_token(
-        &self,
-        ref_id: &OAuthRefId,
-        provider: &str,
-    ) -> Result<TokenSet, OAuthError> {
+    pub fn load_token(&self, ref_id: &OAuthRefId, provider: &str) -> Result<TokenSet, OAuthError> {
         let ts = self.load_token_raw(ref_id, provider)?;
         if ts.is_expired() {
             return Err(OAuthError::TokenExpired(ref_id.to_string()));
@@ -108,8 +103,8 @@ impl TokenStore {
             return Err(OAuthError::NotConnected(ref_id.to_string()));
         }
 
-        let encrypted = fs::read(&path)
-            .map_err(|e| OAuthError::StorageError(format!("read: {e}")))?;
+        let encrypted =
+            fs::read(&path).map_err(|e| OAuthError::StorageError(format!("read: {e}")))?;
 
         let key = self.get_or_create_vault_key()?;
         let decrypted = Self::decrypt(&encrypted, key.expose_secret())
@@ -122,15 +117,10 @@ impl TokenStore {
     }
 
     /// Delete an encrypted token file.
-    pub fn delete_token(
-        &self,
-        ref_id: &OAuthRefId,
-        provider: &str,
-    ) -> Result<(), OAuthError> {
+    pub fn delete_token(&self, ref_id: &OAuthRefId, provider: &str) -> Result<(), OAuthError> {
         let path = self.token_path(provider, ref_id);
         if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| OAuthError::StorageError(format!("delete: {e}")))?;
+            fs::remove_file(&path).map_err(|e| OAuthError::StorageError(format!("delete: {e}")))?;
         }
         tracing::debug!(provider = %provider, ref_id = %ref_id, "token deleted");
         Ok(())
@@ -144,12 +134,11 @@ impl TokenStore {
         }
 
         let mut refs = Vec::new();
-        let entries = fs::read_dir(&dir)
-            .map_err(|e| OAuthError::StorageError(format!("read dir: {e}")))?;
+        let entries =
+            fs::read_dir(&dir).map_err(|e| OAuthError::StorageError(format!("read dir: {e}")))?;
 
         for entry in entries {
-            let entry = entry
-                .map_err(|e| OAuthError::StorageError(format!("dir entry: {e}")))?;
+            let entry = entry.map_err(|e| OAuthError::StorageError(format!("dir entry: {e}")))?;
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(stem) = name.strip_suffix(".age") {
                 if let Ok(uuid) = stem.parse::<uuid::Uuid>() {
@@ -171,8 +160,7 @@ impl TokenStore {
             .map_err(|e| OAuthError::StorageError(format!("read base dir: {e}")))?;
 
         for entry in entries {
-            let entry = entry
-                .map_err(|e| OAuthError::StorageError(format!("dir entry: {e}")))?;
+            let entry = entry.map_err(|e| OAuthError::StorageError(format!("dir entry: {e}")))?;
             if entry.path().is_dir() {
                 let provider = entry.file_name().to_string_lossy().to_string();
                 for ref_id in self.list_connections(&provider)? {
@@ -204,10 +192,8 @@ impl TokenStore {
                 // Auto-generate a 256-bit random key
                 let mut rng = rand::thread_rng();
                 let key_bytes: [u8; 32] = rng.gen();
-                let key_str = base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    key_bytes,
-                );
+                let key_str =
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_bytes);
                 // Try to store it; if the provider is read-only, that's OK —
                 // we'll use the generated key for this session.
                 if let Err(e) = self.secret_provider.set_secret(VAULT_KEY_NAME, &key_str) {
@@ -278,8 +264,7 @@ impl TokenStore {
 
 /// Sanitize a path component to prevent directory traversal.
 fn sanitize_path_component(s: &str) -> String {
-    s.replace("..", "")
-        .replace(['/', '\\', '\0'], "")
+    s.replace("..", "").replace(['/', '\\', '\0'], "")
 }
 
 fn dirs_home() -> Option<PathBuf> {

@@ -7,12 +7,12 @@
 //! Complexity tiers: Free, Cheap, Standard, Premium.
 //! Convergence downgrade at L3+ (AC6).
 
-pub mod provider;
-pub mod router;
-pub mod fallback;
-pub mod cost;
-pub mod tokens;
-pub mod streaming;
 pub mod auth;
-pub mod quarantine;
+pub mod cost;
+pub mod fallback;
+pub mod provider;
 pub mod proxy;
+pub mod quarantine;
+pub mod router;
+pub mod streaming;
+pub mod tokens;

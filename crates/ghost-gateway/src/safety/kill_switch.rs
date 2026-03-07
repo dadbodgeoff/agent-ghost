@@ -188,7 +188,11 @@ impl KillSwitch {
     /// they checked authorization for, and if the actual level inside the
     /// write lock differs (e.g. escalated from Pause to Quarantine by another
     /// thread), the resume is rejected.
-    pub fn resume_agent(&self, agent_id: Uuid, expected_level: Option<KillLevel>) -> Result<(), String> {
+    pub fn resume_agent(
+        &self,
+        agent_id: Uuid,
+        expected_level: Option<KillLevel>,
+    ) -> Result<(), String> {
         let mut state = match self.state.write() {
             Ok(s) => s,
             Err(_) => return Err("kill switch RwLock poisoned".into()),
@@ -302,7 +306,9 @@ impl KillSwitch {
         let mut log = match self.audit_log.write() {
             Ok(log) => log,
             Err(poisoned) => {
-                tracing::error!("kill switch audit_log RwLock poisoned — recovering to preserve audit trail");
+                tracing::error!(
+                    "kill switch audit_log RwLock poisoned — recovering to preserve audit trail"
+                );
                 poisoned.into_inner()
             }
         };

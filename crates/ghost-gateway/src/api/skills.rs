@@ -37,26 +37,28 @@ pub struct SkillListResponse {
 ///
 /// Returns all registered skills from AppState.safety_skills as "installed",
 /// and an empty "available" list (marketplace not yet implemented).
-pub async fn list_skills(
-    State(state): State<Arc<AppState>>,
-) -> ApiResult<SkillListResponse> {
+pub async fn list_skills(State(state): State<Arc<AppState>>) -> ApiResult<SkillListResponse> {
     // Build installed list from actual registered skills in AppState.
-    let mut installed: Vec<SkillInfo> = state.safety_skills.iter().map(|(name, skill)| {
-        let source = match skill.source() {
-            ghost_skills::registry::SkillSource::Bundled => "bundled",
-            ghost_skills::registry::SkillSource::User => "user",
-            ghost_skills::registry::SkillSource::Workspace => "workspace",
-        };
-        SkillInfo {
-            id: name.clone(),
-            name: name.clone(),
-            version: "1.0.0".into(),
-            description: skill.description().to_string(),
-            capabilities: vec![format!("skill:{name}")],
-            source: source.into(),
-            state: "active".into(),
-        }
-    }).collect();
+    let mut installed: Vec<SkillInfo> = state
+        .safety_skills
+        .iter()
+        .map(|(name, skill)| {
+            let source = match skill.source() {
+                ghost_skills::registry::SkillSource::Bundled => "bundled",
+                ghost_skills::registry::SkillSource::User => "user",
+                ghost_skills::registry::SkillSource::Workspace => "workspace",
+            };
+            SkillInfo {
+                id: name.clone(),
+                name: name.clone(),
+                version: "1.0.0".into(),
+                description: skill.description().to_string(),
+                capabilities: vec![format!("skill:{name}")],
+                source: source.into(),
+                state: "active".into(),
+            }
+        })
+        .collect();
 
     // Sort by name for stable ordering.
     installed.sort_by(|a, b| a.name.cmp(&b.name));
@@ -73,7 +75,9 @@ pub async fn install_skill(
     Path(skill_name): Path<String>,
 ) -> ApiResult<SkillInfo> {
     // Check if the skill exists in registered skills.
-    let skill = state.safety_skills.get(&skill_name)
+    let skill = state
+        .safety_skills
+        .get(&skill_name)
         .ok_or_else(|| ApiError::not_found(format!("Skill '{skill_name}' not found")))?;
 
     let db = state.db.write().await;
@@ -110,10 +114,13 @@ pub async fn install_skill(
     .map_err(|e| ApiError::db_error("install skill", e))?;
 
     // Broadcast event.
-    crate::api::websocket::broadcast_event(&state, WsEvent::SkillChange {
-        skill_name: skill_name.clone(),
-        action: "installed".into(),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::SkillChange {
+            skill_name: skill_name.clone(),
+            action: "installed".into(),
+        },
+    );
 
     Ok(Json(SkillInfo {
         id,
@@ -157,12 +164,13 @@ pub async fn uninstall_skill(
     }
 
     // Broadcast event.
-    crate::api::websocket::broadcast_event(&state, WsEvent::SkillChange {
-        skill_name: skill_name.clone(),
-        action: "uninstalled".into(),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::SkillChange {
+            skill_name: skill_name.clone(),
+            action: "uninstalled".into(),
+        },
+    );
 
-    Ok(Json(
-        serde_json::json!({ "uninstalled": skill_name }),
-    ))
+    Ok(Json(serde_json::json!({ "uninstalled": skill_name })))
 }

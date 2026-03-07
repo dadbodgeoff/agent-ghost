@@ -3,9 +3,9 @@
 //! Supports the Write-Ahead Event Log pattern: events are persisted before
 //! SSE delivery, enabling client-side recovery after disconnect.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 // ── Row types ──────────────────────────────────────────────────────
 
@@ -76,10 +76,7 @@ pub fn recover_events_after(
 }
 
 /// Delete events older than a given timestamp (periodic cleanup).
-pub fn delete_events_before(
-    conn: &Connection,
-    before: &str,
-) -> CortexResult<u64> {
+pub fn delete_events_before(conn: &Connection, before: &str) -> CortexResult<u64> {
     let deleted = conn
         .execute(
             "DELETE FROM stream_event_log WHERE created_at < ?1",
@@ -91,10 +88,7 @@ pub fn delete_events_before(
 }
 
 /// Delete all events for a specific message (cleanup after confirmed delivery).
-pub fn delete_events_for_message(
-    conn: &Connection,
-    message_id: &str,
-) -> CortexResult<u64> {
+pub fn delete_events_for_message(conn: &Connection, message_id: &str) -> CortexResult<u64> {
     let deleted = conn
         .execute(
             "DELETE FROM stream_event_log WHERE message_id = ?1",

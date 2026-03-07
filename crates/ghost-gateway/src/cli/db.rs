@@ -7,7 +7,7 @@ use super::backend::{BackendRequirement, CliBackend};
 use super::confirm::confirm;
 use super::error::CliError;
 use super::http_client::GhostHttpClient;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost db migrate (T-1.7.1) ───────────────────────────────────────────────
 
@@ -197,7 +197,11 @@ pub fn run_verify(args: DbVerifyArgs, backend: &CliBackend) -> Result<(), CliErr
     }
 
     let elapsed = start.elapsed();
-    let mode = if args.full { "full" } else { "spot-check (100)" };
+    let mode = if args.full {
+        "full"
+    } else {
+        "spot-check (100)"
+    };
 
     println!(
         "Hash chain verification ({mode}): {} events checked in {:.1}s",
@@ -280,7 +284,10 @@ pub async fn run_compact(args: DbCompactArgs, backend: &CliBackend) -> Result<()
             if candidates.is_empty() {
                 println!("[dry-run] No memories with >50 uncompacted events.");
             } else {
-                println!("[dry-run] {} memories eligible for compaction:", candidates.len());
+                println!(
+                    "[dry-run] {} memories eligible for compaction:",
+                    candidates.len()
+                );
                 for (memory_id, count) in &candidates {
                     println!("  {memory_id}: {count} uncompacted events");
                 }
@@ -389,7 +396,12 @@ fn run_memory_compaction(conn: &rusqlite::Connection) -> Result<(i64, i64), CliE
 
         // Record compacted range.
         compaction_queries::insert_compaction_range(
-            conn, run_id, memory_id, min_id, max_id, Some(snapshot_id),
+            conn,
+            run_id,
+            memory_id,
+            min_id,
+            max_id,
+            Some(snapshot_id),
         )
         .map_err(|e| CliError::Database(e.to_string()))?;
 
@@ -409,18 +421,21 @@ fn build_compaction_summary(
     events: &[cortex_storage::queries::compaction_queries::CompactableEvent],
 ) -> String {
     let event_count = events.len();
-    let first_at = events.first().map(|e| e.recorded_at.as_str()).unwrap_or("unknown");
-    let last_at = events.last().map(|e| e.recorded_at.as_str()).unwrap_or("unknown");
+    let first_at = events
+        .first()
+        .map(|e| e.recorded_at.as_str())
+        .unwrap_or("unknown");
+    let last_at = events
+        .last()
+        .map(|e| e.recorded_at.as_str())
+        .unwrap_or("unknown");
 
     // Collect unique event types.
     let event_types: std::collections::BTreeSet<&str> =
         events.iter().map(|e| e.event_type.as_str()).collect();
 
     // Try to merge deltas (take the last one as the most recent state).
-    let latest_delta = events
-        .last()
-        .map(|e| e.delta.as_str())
-        .unwrap_or("{}");
+    let latest_delta = events.last().map(|e| e.delta.as_str()).unwrap_or("{}");
 
     serde_json::json!({
         "memory_id": memory_id,

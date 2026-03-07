@@ -1,8 +1,8 @@
 //! Timer queries for the `timer_set` skill.
 
-use rusqlite::{params, Connection};
-use cortex_core::models::error::CortexResult;
 use crate::to_storage_err;
+use cortex_core::models::error::CortexResult;
+use rusqlite::{params, Connection};
 
 pub fn insert_timer(
     conn: &Connection,
@@ -64,7 +64,9 @@ pub fn list_timers(
         ),
     };
 
-    let mut stmt = conn.prepare(sql).map_err(|e| to_storage_err(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| to_storage_err(e.to_string()))?;
 
     let rows = if let Some(ref status) = filter_param {
         stmt.query_map(params![agent_id, status, limit], map_timer_row)

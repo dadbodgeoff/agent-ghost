@@ -37,19 +37,29 @@ impl KeyboardHotkeySkill {
         circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
         backend: Arc<Mutex<dyn InputBackend>>,
     ) -> Self {
-        Self { validator, circuit_breaker, backend }
+        Self {
+            validator,
+            circuit_breaker,
+            backend,
+        }
     }
 }
 
 impl Skill for KeyboardHotkeySkill {
-    fn name(&self) -> &str { "keyboard_hotkey" }
+    fn name(&self) -> &str {
+        "keyboard_hotkey"
+    }
 
     fn description(&self) -> &str {
         "Send a hotkey combination (e.g. Ctrl+C, Cmd+V)"
     }
 
-    fn removable(&self) -> bool { true }
-    fn source(&self) -> SkillSource { SkillSource::Bundled }
+    fn removable(&self) -> bool {
+        true
+    }
+    fn source(&self) -> SkillSource {
+        SkillSource::Bundled
+    }
 
     fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
         let keys = input.get("keys").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -63,20 +73,39 @@ impl Skill for KeyboardHotkeySkill {
 
         // Safety: validate hotkey against blocklist.
         if let ValidationResult::Denied(reason) = self.validator.validate_hotkey(keys) {
-            audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "keyboard_hotkey", input, &reason);
+            audit::log_blocked_action(
+                ctx.db,
+                ctx.agent_id,
+                ctx.session_id,
+                "keyboard_hotkey",
+                input,
+                &reason,
+            );
             return Err(SkillError::PcControlBlocked(reason));
         }
 
         // Safety: validate app if specified.
         if let Some(app) = target_app {
             if let ValidationResult::Denied(reason) = self.validator.validate_app(app) {
-                audit::log_blocked_action(ctx.db, ctx.agent_id, ctx.session_id, "keyboard_hotkey", input, &reason);
+                audit::log_blocked_action(
+                    ctx.db,
+                    ctx.agent_id,
+                    ctx.session_id,
+                    "keyboard_hotkey",
+                    input,
+                    &reason,
+                );
                 return Err(SkillError::PcControlBlocked(reason));
             }
         }
 
         // Safety: circuit breaker.
-        { self.circuit_breaker.lock().unwrap().check("keyboard_hotkey")?; }
+        {
+            self.circuit_breaker
+                .lock()
+                .unwrap()
+                .check("keyboard_hotkey")?;
+        }
 
         // Parse and execute the hotkey.
         let parsed_keys = parse_hotkey(keys)?;
@@ -92,14 +121,23 @@ impl Skill for KeyboardHotkeySkill {
         }
 
         // Record success.
-        { self.circuit_breaker.lock().unwrap().record_success(); }
+        {
+            self.circuit_breaker.lock().unwrap().record_success();
+        }
 
         let result = serde_json::json!({
             "keys": keys,
             "status": "ok",
         });
 
-        audit::log_pc_action(ctx.db, ctx.agent_id, ctx.session_id, "keyboard_hotkey", input, &result);
+        audit::log_pc_action(
+            ctx.db,
+            ctx.agent_id,
+            ctx.session_id,
+            "keyboard_hotkey",
+            input,
+            &result,
+        );
 
         Ok(result)
     }
@@ -170,7 +208,12 @@ mod tests {
     }
 
     fn test_ctx(db: &rusqlite::Connection) -> SkillContext<'_> {
-        SkillContext { db, agent_id: Uuid::nil(), session_id: Uuid::nil(), convergence_profile: "standard" }
+        SkillContext {
+            db,
+            agent_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            convergence_profile: "standard",
+        }
     }
 
     fn test_skill() -> (KeyboardHotkeySkill, MockInputBackend) {
@@ -180,7 +223,11 @@ mod tests {
             None,
             vec!["Ctrl+Alt+Delete".into(), "Cmd+Q".into(), "Alt+F4".into()],
         ));
-        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(100, 10, std::time::Duration::from_secs(30))));
+        let cb = Arc::new(Mutex::new(PcControlCircuitBreaker::new(
+            100,
+            10,
+            std::time::Duration::from_secs(30),
+        )));
         let backend: Arc<Mutex<dyn InputBackend>> = Arc::new(Mutex::new(mock.clone()));
         (KeyboardHotkeySkill::new(validator, cb, backend), mock)
     }
@@ -191,7 +238,9 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"keys": "Ctrl+C"})).unwrap();
+        let result = skill
+            .execute(&ctx, &serde_json::json!({"keys": "Ctrl+C"}))
+            .unwrap();
         assert_eq!(result["status"], "ok");
         assert_eq!(result["keys"], "Ctrl+C");
 
@@ -277,7 +326,10 @@ mod tests {
         let ctx = test_ctx(&db);
         let (skill, mock) = test_skill();
 
-        let result = skill.execute(&ctx, &serde_json::json!({"keys": "Ctrl+C", "target_app": "Terminal"}));
+        let result = skill.execute(
+            &ctx,
+            &serde_json::json!({"keys": "Ctrl+C", "target_app": "Terminal"}),
+        );
         assert!(matches!(result, Err(SkillError::PcControlBlocked(_))));
         assert!(mock.actions().is_empty());
     }

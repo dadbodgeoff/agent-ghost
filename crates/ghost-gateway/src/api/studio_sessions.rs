@@ -13,6 +13,7 @@
 //!   GET    /api/studio/sessions/:id/stream/recover — recover missed stream events
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -25,8 +26,8 @@ use ghost_agent_loop::runner::AgentStreamEvent;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::websocket::WsEvent;
 use crate::runtime_safety::{
-    parse_or_stable_uuid, RuntimeSafetyBuilder, RuntimeSafetyContext, RuntimeSafetyError,
-    RunnerBuildOptions, STUDIO_SYNTHETIC_AGENT_NAME,
+    parse_or_stable_uuid, RunnerBuildOptions, RuntimeSafetyBuilder, RuntimeSafetyContext,
+    RuntimeSafetyError, STUDIO_SYNTHETIC_AGENT_NAME,
 };
 use crate::state::AppState;
 
@@ -131,8 +132,7 @@ pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionRequest>,
 ) -> ApiResult<SessionResponse> {
-    let builder = RuntimeSafetyBuilder::new(&state);
-    let agent = builder
+    let agent = RuntimeSafetyBuilder::new(&state)
         .resolve_agent(req.agent_id.as_deref(), STUDIO_SYNTHETIC_AGENT_NAME)
         .map_err(map_runtime_safety_error)?;
     let id = Uuid::now_v7().to_string();
@@ -181,7 +181,10 @@ pub async fn list_sessions(
     let offset = params.offset.unwrap_or(0);
 
     let sessions = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("list_sessions", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("list_sessions", e))?;
         if let Some(ref since) = params.active_since {
             cortex_storage::queries::studio_chat_queries::list_sessions_active_since(
                 &db, since, limit, offset,
@@ -203,7 +206,10 @@ pub async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<SessionWithMessagesResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("get_session", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_session", e))?;
 
     let session = cortex_storage::queries::studio_chat_queries::get_session(&db, &id)
         .map_err(|e| ApiError::db_error("get_session", e))?
@@ -245,7 +251,10 @@ pub async fn recover_stream(
     Path(session_id): Path<String>,
     Query(params): Query<RecoverStreamQuery>,
 ) -> ApiResult<RecoverStreamResponse> {
-    let db = state.db.read().map_err(|e| ApiError::db_error("recover_stream", e))?;
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("recover_stream", e))?;
 
     let events = cortex_storage::queries::stream_event_queries::recover_events_after(
         &db,
@@ -289,14 +298,16 @@ pub async fn send_message(
 
     // 0. Verify session exists and load settings.
     let session = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("get_session", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("get_session", e))?;
         cortex_storage::queries::studio_chat_queries::get_session(&db, &session_id)
             .map_err(|e| ApiError::db_error("get_session", e))?
             .ok_or_else(|| ApiError::not_found(format!("session {session_id} not found")))?
     };
 
-    let builder = RuntimeSafetyBuilder::new(&state);
-    let agent = builder
+    let agent = RuntimeSafetyBuilder::new(&state)
         .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
         .map_err(map_runtime_safety_error)?;
     let runtime_session_id = parse_or_stable_uuid(&session_id, "studio-session");
@@ -325,11 +336,23 @@ pub async fn send_message(
         };
 
         let result = cortex_storage::queries::studio_chat_queries::insert_message(
-            &db, &user_msg_id, &session_id, "user", &req.content, 0, "clean",
+            &db,
+            &user_msg_id,
+            &session_id,
+            "user",
+            &req.content,
+            0,
+            "clean",
         )
         .and_then(|_| {
             cortex_storage::queries::studio_chat_queries::insert_safety_audit(
-                &db, &audit_id, &session_id, &user_msg_id, "input_scan", user_safety_status, detail,
+                &db,
+                &audit_id,
+                &session_id,
+                &user_msg_id,
+                "input_scan",
+                user_safety_status,
+                detail,
             )
         });
 
@@ -354,7 +377,10 @@ pub async fn send_message(
 
     // 3. Load session messages as conversation history for multi-turn.
     let history = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("list_messages", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("list_messages", e))?;
         cortex_storage::queries::studio_chat_queries::list_messages(&db, &session_id)
             .map_err(|e| ApiError::db_error("list_messages", e))?
     };
@@ -367,14 +393,16 @@ pub async fn send_message(
 
     // 4. Build AgentRunner with the canonical runtime safety builder.
     // Exclude the just-inserted user message (last in history) — it's sent as the user_message param.
-    let history_cutoff: Vec<_> = if !history.is_empty() && history.last().map(|m| m.id.as_str()) == Some(&user_msg_id) {
-        history[..history.len() - 1].to_vec()
-    } else {
-        history
-    };
+    let history_cutoff: Vec<_> =
+        if !history.is_empty() && history.last().map(|m| m.id.as_str()) == Some(&user_msg_id) {
+            history[..history.len() - 1].to_vec()
+        } else {
+            history
+        };
 
-    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
-    let mut runner = builder
+    let runtime_ctx =
+        RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
+    let mut runner = RuntimeSafetyBuilder::new(&state)
         .build_live_runner(
             &runtime_ctx,
             RunnerBuildOptions {
@@ -386,17 +414,23 @@ pub async fn send_message(
         .map_err(map_runtime_safety_error)?;
 
     // 5. Build LLM fallback chain and run the agent turn.
-    let mut fallback_chain = super::agent_chat::build_fallback_chain_from_providers(&state.model_providers);
+    let mut fallback_chain =
+        super::agent_chat::build_fallback_chain_from_providers(&state.model_providers);
 
     let mut ctx = runner
-        .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "studio", &req.content)
+        .pre_loop(
+            runtime_ctx.agent.id,
+            runtime_ctx.session_id,
+            "studio",
+            &req.content,
+        )
         .await
-        .map_err(|e| ApiError::internal(format!("agent pre-loop failed: {e}")))?;
+        .map_err(map_runner_error)?;
 
     let result = runner
         .run_turn(&mut ctx, &mut fallback_chain, &req.content)
         .await
-        .map_err(|e| ApiError::internal(format!("agent run failed: {e}")))?;
+        .map_err(map_runner_error)?;
 
     let response_content = result.output.unwrap_or_default();
     let token_count = result.total_tokens as i64;
@@ -456,18 +490,23 @@ pub async fn send_message(
         let title = truncate_for_title(&req.content);
         let db = state.db.write().await;
         let _ = cortex_storage::queries::studio_chat_queries::update_session_title(
-            &db, &session_id, &title,
+            &db,
+            &session_id,
+            &title,
         );
     }
 
     // 10. Broadcast WsEvent.
-    crate::api::websocket::broadcast_event(&state, WsEvent::ChatMessage {
-        session_id: session_id.clone(),
-        message_id: assistant_msg_id.clone(),
-        role: "assistant".into(),
-        content: truncate_preview(&response_content, 200),
-        safety_status: output_safety_status.into(),
-    });
+    crate::api::websocket::broadcast_event(
+        &state,
+        WsEvent::ChatMessage {
+            session_id: session_id.clone(),
+            message_id: assistant_msg_id.clone(),
+            role: "assistant".into(),
+            content: truncate_preview(&response_content, 200),
+            safety_status: output_safety_status.into(),
+        },
+    );
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -508,14 +547,16 @@ pub async fn send_message_stream(
 
     // 0. Verify session exists and load settings.
     let session = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("get_session", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("get_session", e))?;
         cortex_storage::queries::studio_chat_queries::get_session(&db, &session_id)
             .map_err(|e| ApiError::db_error("get_session", e))?
             .ok_or_else(|| ApiError::not_found(format!("session {session_id} not found")))?
     };
 
-    let builder = RuntimeSafetyBuilder::new(&state);
-    let agent = builder
+    let agent = RuntimeSafetyBuilder::new(&state)
         .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
         .map_err(map_runtime_safety_error)?;
     let runtime_session_id = parse_or_stable_uuid(&session_id, "studio-session");
@@ -545,11 +586,23 @@ pub async fn send_message_stream(
         };
 
         let result = cortex_storage::queries::studio_chat_queries::insert_message(
-            &db, &user_msg_id, &session_id, "user", &req.content, 0, "clean",
+            &db,
+            &user_msg_id,
+            &session_id,
+            "user",
+            &req.content,
+            0,
+            "clean",
         )
         .and_then(|_| {
             cortex_storage::queries::studio_chat_queries::insert_safety_audit(
-                &db, &audit_id, &session_id, &user_msg_id, "input_scan", user_safety_status, detail,
+                &db,
+                &audit_id,
+                &session_id,
+                &user_msg_id,
+                "input_scan",
+                user_safety_status,
+                detail,
             )
         });
 
@@ -574,7 +627,10 @@ pub async fn send_message_stream(
 
     // 3. Load session messages as conversation history for multi-turn.
     let history = {
-        let db = state.db.read().map_err(|e| ApiError::db_error("list_messages", e))?;
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("list_messages", e))?;
         cortex_storage::queries::studio_chat_queries::list_messages(&db, &session_id)
             .map_err(|e| ApiError::db_error("list_messages", e))?
     };
@@ -586,14 +642,16 @@ pub async fn send_message_stream(
     }
 
     // 4. Build AgentRunner with the canonical runtime safety builder.
-    let history_cutoff: Vec<_> = if !history.is_empty() && history.last().map(|m| m.id.as_str()) == Some(&user_msg_id) {
-        history[..history.len() - 1].to_vec()
-    } else {
-        history
-    };
+    let history_cutoff: Vec<_> =
+        if !history.is_empty() && history.last().map(|m| m.id.as_str()) == Some(&user_msg_id) {
+            history[..history.len() - 1].to_vec()
+        } else {
+            history
+        };
 
-    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
-    let mut runner = builder
+    let runtime_ctx =
+        RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
+    let mut runner = RuntimeSafetyBuilder::new(&state)
         .build_live_runner(
             &runtime_ctx,
             RunnerBuildOptions {
@@ -621,153 +679,179 @@ pub async fn send_message_stream(
     tokio::spawn(async move {
         let tx_timeout = tx.clone();
         let turn_result = tokio::time::timeout(std::time::Duration::from_secs(300), async move {
-        let mut ctx = match runner
-            .pre_loop(runtime_ctx.agent.id, runtime_ctx.session_id, "studio", &user_content)
-            .await
-        {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                let _ = tx.send(AgentStreamEvent::Error {
-                    message: format!("agent pre-loop failed: {e}"),
-                }).await;
-                return;
-            }
-        };
-
-        // WP2-A: Provider fallback — try each provider until one succeeds.
-        // If a provider fails before producing a first token, try the next.
-        let mut _last_error: Option<String> = None;
-        let mut result = Err(ghost_agent_loop::runner::RunError::LLMError(
-            "no providers configured".into(),
-        ));
-
-        for (provider_idx, provider_config) in all_providers.iter().enumerate() {
-            let pc = provider_config.clone();
-            let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>, tools: Vec<ghost_llm::provider::ToolSchema>| -> ghost_llm::streaming::StreamChunkStream {
-                build_provider_stream(&pc, messages, tools)
-            };
-
-            tracing::info!(
-                provider = %provider_config.name,
-                index = provider_idx,
-                "attempting streaming with provider"
-            );
-
-            match runner
-                .run_turn_streaming(&mut ctx, &user_content, tx.clone(), get_stream)
+            let mut ctx = match runner
+                .pre_loop(
+                    runtime_ctx.agent.id,
+                    runtime_ctx.session_id,
+                    "studio",
+                    &user_content,
+                )
                 .await
             {
-                Ok(r) => {
-                    if provider_idx > 0 {
-                        tracing::info!(
-                            provider = %provider_config.name,
-                            index = provider_idx,
-                            "streaming succeeded via fallback provider"
-                        );
-                    }
-                    result = Ok(r);
-                    break;
-                }
+                Ok(ctx) => ctx,
                 Err(e) => {
-                    let err_str = e.to_string();
-                    tracing::warn!(
-                        provider = %provider_config.name,
-                        index = provider_idx,
-                        error = %err_str,
-                        "provider failed, trying next"
-                    );
-                    _last_error = Some(err_str);
-                    // Reset context for retry with next provider.
-                    ctx.recursion_depth = 0;
-                    result = Err(e);
-                    continue;
+                    let _ = tx
+                        .send(AgentStreamEvent::Error {
+                            message: format!("agent pre-loop failed: {e}"),
+                        })
+                        .await;
+                    return;
                 }
-            }
-        }
+            };
 
-        let result = result;
+            // WP2-A: Provider fallback — try each provider until one succeeds.
+            // If a provider fails before producing a first token, try the next.
+            let mut _last_error: Option<String> = None;
+            let mut result = Err(ghost_agent_loop::runner::RunError::LLMError(
+                "no providers configured".into(),
+            ));
 
-        match result {
-            Ok(run_result) => {
-                let response_content = run_result.output.unwrap_or_default();
-                let token_count = run_result.total_tokens as i64;
-
-                // Determine output safety status.
-                let inspector = OutputInspector::new();
-                let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
-                let output_safety_status = match &output_inspection {
-                    InspectionResult::Clean => "clean",
-                    InspectionResult::Warning { .. } => "warning",
-                    InspectionResult::KillAll { .. } => "blocked",
+            for (provider_idx, provider_config) in all_providers.iter().enumerate() {
+                let pc = provider_config.clone();
+                let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
+                                       tools: Vec<ghost_llm::provider::ToolSchema>|
+                      -> ghost_llm::streaming::StreamChunkStream {
+                    build_provider_stream(&pc, messages, tools)
                 };
 
-                // Insert assistant message into DB.
+                tracing::info!(
+                    provider = %provider_config.name,
+                    index = provider_idx,
+                    "attempting streaming with provider"
+                );
+
+                match runner
+                    .run_turn_streaming(&mut ctx, &user_content, tx.clone(), get_stream)
+                    .await
                 {
-                    let db = db_clone.write().await;
-                    let _ = cortex_storage::queries::studio_chat_queries::insert_message(
-                        &db,
-                        &assistant_msg_id_clone,
-                        &session_id_clone,
-                        "assistant",
-                        &response_content,
-                        token_count,
-                        output_safety_status,
-                    );
-
-                    // Log safety audit for output.
-                    let audit_id = Uuid::now_v7().to_string();
-                    let detail = match &output_inspection {
-                        InspectionResult::Warning { pattern_name, .. } => Some(pattern_name.as_str()),
-                        InspectionResult::KillAll { pattern_name, .. } => Some(pattern_name.as_str()),
-                        InspectionResult::Clean => None,
-                    };
-                    let _ = cortex_storage::queries::studio_chat_queries::insert_safety_audit(
-                        &db,
-                        &audit_id,
-                        &session_id_clone,
-                        &assistant_msg_id_clone,
-                        "output_scan",
-                        output_safety_status,
-                        detail,
-                    );
-
-                    // Auto-title from first user message.
-                    if session_title == "New Chat" {
-                        let title = truncate_for_title(&user_content);
-                        let _ = cortex_storage::queries::studio_chat_queries::update_session_title(
-                            &db, &session_id_clone, &title,
+                    Ok(r) => {
+                        if provider_idx > 0 {
+                            tracing::info!(
+                                provider = %provider_config.name,
+                                index = provider_idx,
+                                "streaming succeeded via fallback provider"
+                            );
+                        }
+                        result = Ok(r);
+                        break;
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        tracing::warn!(
+                            provider = %provider_config.name,
+                            index = provider_idx,
+                            error = %err_str,
+                            "provider failed, trying next"
                         );
+                        _last_error = Some(err_str);
+                        // Reset context for retry with next provider.
+                        ctx.recursion_depth = 0;
+                        result = Err(e);
+                        continue;
                     }
                 }
-
-                // Broadcast WsEvent.
-                crate::api::websocket::broadcast_event(&state_clone, WsEvent::ChatMessage {
-                    session_id: session_id_clone.clone(),
-                    message_id: assistant_msg_id_clone.clone(),
-                    role: "assistant".into(),
-                    content: truncate_preview(&response_content, 200),
-                    safety_status: output_safety_status.into(),
-                });
-
-                // Send TurnComplete event.
-                let _ = tx.send(AgentStreamEvent::TurnComplete {
-                    token_count: run_result.total_tokens,
-                    safety_status: output_safety_status.to_string(),
-                }).await;
             }
-            Err(e) => {
-                let _ = tx.send(AgentStreamEvent::Error {
-                    message: format!("agent run failed: {e}"),
-                }).await;
+
+            let result = result;
+
+            match result {
+                Ok(run_result) => {
+                    let response_content = run_result.output.unwrap_or_default();
+                    let token_count = run_result.total_tokens as i64;
+
+                    // Determine output safety status.
+                    let inspector = OutputInspector::new();
+                    let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
+                    let output_safety_status = match &output_inspection {
+                        InspectionResult::Clean => "clean",
+                        InspectionResult::Warning { .. } => "warning",
+                        InspectionResult::KillAll { .. } => "blocked",
+                    };
+
+                    // Insert assistant message into DB.
+                    {
+                        let db = db_clone.write().await;
+                        let _ = cortex_storage::queries::studio_chat_queries::insert_message(
+                            &db,
+                            &assistant_msg_id_clone,
+                            &session_id_clone,
+                            "assistant",
+                            &response_content,
+                            token_count,
+                            output_safety_status,
+                        );
+
+                        // Log safety audit for output.
+                        let audit_id = Uuid::now_v7().to_string();
+                        let detail = match &output_inspection {
+                            InspectionResult::Warning { pattern_name, .. } => {
+                                Some(pattern_name.as_str())
+                            }
+                            InspectionResult::KillAll { pattern_name, .. } => {
+                                Some(pattern_name.as_str())
+                            }
+                            InspectionResult::Clean => None,
+                        };
+                        let _ = cortex_storage::queries::studio_chat_queries::insert_safety_audit(
+                            &db,
+                            &audit_id,
+                            &session_id_clone,
+                            &assistant_msg_id_clone,
+                            "output_scan",
+                            output_safety_status,
+                            detail,
+                        );
+
+                        // Auto-title from first user message.
+                        if session_title == "New Chat" {
+                            let title = truncate_for_title(&user_content);
+                            let _ =
+                                cortex_storage::queries::studio_chat_queries::update_session_title(
+                                    &db,
+                                    &session_id_clone,
+                                    &title,
+                                );
+                        }
+                    }
+
+                    // Broadcast WsEvent.
+                    crate::api::websocket::broadcast_event(
+                        &state_clone,
+                        WsEvent::ChatMessage {
+                            session_id: session_id_clone.clone(),
+                            message_id: assistant_msg_id_clone.clone(),
+                            role: "assistant".into(),
+                            content: truncate_preview(&response_content, 200),
+                            safety_status: output_safety_status.into(),
+                        },
+                    );
+
+                    // Send TurnComplete event.
+                    let _ = tx
+                        .send(AgentStreamEvent::TurnComplete {
+                            token_count: run_result.total_tokens,
+                            safety_status: output_safety_status.to_string(),
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(AgentStreamEvent::Error {
+                            message: format!("agent run failed: {e}"),
+                        })
+                        .await;
+                }
             }
-        }
-        }).await; // end timeout
+        })
+        .await; // end timeout
 
         if turn_result.is_err() {
             tracing::warn!("Agent turn timed out after 5 minutes");
-            let _ = tx_timeout.send(AgentStreamEvent::Error {
-                message: "Agent turn timed out after 5 minutes".into(),
-            }).await;
+            let _ = tx_timeout
+                .send(AgentStreamEvent::Error {
+                    message: "Agent turn timed out after 5 minutes".into(),
+                })
+                .await;
         }
     });
 
@@ -1115,6 +1199,33 @@ fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
     }
 }
 
+fn map_runner_error(error: ghost_agent_loop::runner::RunError) -> ApiError {
+    match error {
+        ghost_agent_loop::runner::RunError::AgentPaused => {
+            ApiError::custom(StatusCode::LOCKED, "AGENT_PAUSED", "Agent is paused")
+        }
+        ghost_agent_loop::runner::RunError::AgentQuarantined => ApiError::custom(
+            StatusCode::LOCKED,
+            "AGENT_QUARANTINED",
+            "Agent is quarantined",
+        ),
+        ghost_agent_loop::runner::RunError::PlatformKilled => ApiError::KillSwitchActive,
+        ghost_agent_loop::runner::RunError::KillGateClosed => ApiError::custom(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "DISTRIBUTED_KILL_GATE_CLOSED",
+            "Distributed kill gate is closed",
+        ),
+        ghost_agent_loop::runner::RunError::ConvergenceProtectionDegraded(status) => {
+            ApiError::custom(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CONVERGENCE_PROTECTION_DEGRADED",
+                format!("Convergence protection is {status}"),
+            )
+        }
+        other => ApiError::internal(format!("agent run failed: {other}")),
+    }
+}
+
 /// Truncate user message to create a session title (max 60 chars).
 fn truncate_for_title(s: &str) -> String {
     let trimmed = s.trim();
@@ -1139,56 +1250,90 @@ fn build_provider_stream(
 ) -> ghost_llm::streaming::StreamChunkStream {
     let provider: Arc<dyn ghost_llm::provider::LLMProvider> = match provider_config.name.as_str() {
         "ollama" => {
-            let base_url = provider_config.base_url.clone()
+            let base_url = provider_config
+                .base_url
+                .clone()
                 .unwrap_or_else(|| "http://localhost:11434".into());
-            let model = provider_config.model.clone()
+            let model = provider_config
+                .model
+                .clone()
                 .unwrap_or_else(|| "llama3.1".into());
             let ollama = ghost_llm::provider::OllamaProvider { model, base_url };
             return ollama.stream_chat(&messages, &tools);
         }
         "anthropic" => {
-            let key_env = provider_config.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY");
+            let key_env = provider_config
+                .api_key_env
+                .as_deref()
+                .unwrap_or("ANTHROPIC_API_KEY");
             let key = crate::state::get_api_key(key_env).unwrap_or_default();
             Arc::new(ghost_llm::provider::AnthropicProvider {
-                model: provider_config.model.clone().unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
+                model: provider_config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
                 api_key: std::sync::RwLock::new(key),
             })
         }
         "openai" => {
-            let key_env = provider_config.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
+            let key_env = provider_config
+                .api_key_env
+                .as_deref()
+                .unwrap_or("OPENAI_API_KEY");
             let key = crate::state::get_api_key(key_env).unwrap_or_default();
             Arc::new(ghost_llm::provider::OpenAIProvider {
-                model: provider_config.model.clone().unwrap_or_else(|| "gpt-4o".into()),
+                model: provider_config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "gpt-4o".into()),
                 api_key: std::sync::RwLock::new(key),
             })
         }
         "gemini" => {
-            let key_env = provider_config.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY");
+            let key_env = provider_config
+                .api_key_env
+                .as_deref()
+                .unwrap_or("GEMINI_API_KEY");
             let key = crate::state::get_api_key(key_env).unwrap_or_default();
             Arc::new(ghost_llm::provider::GeminiProvider {
-                model: provider_config.model.clone().unwrap_or_else(|| "gemini-2.0-flash".into()),
+                model: provider_config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "gemini-2.0-flash".into()),
                 api_key: std::sync::RwLock::new(key),
             })
         }
         "openai_compat" => {
-            let key_env = provider_config.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
+            let key_env = provider_config
+                .api_key_env
+                .as_deref()
+                .unwrap_or("OPENAI_API_KEY");
             let key = crate::state::get_api_key(key_env).unwrap_or_default();
-            let base_url = provider_config.base_url.clone()
+            let base_url = provider_config
+                .base_url
+                .clone()
                 .unwrap_or_else(|| "http://localhost:8080".into());
             let compat = ghost_llm::provider::OpenAICompatProvider {
-                model: provider_config.model.clone().unwrap_or_else(|| "default".into()),
+                model: provider_config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "default".into()),
                 api_key: std::sync::RwLock::new(key),
                 base_url,
                 context_window_size: 128_000,
             };
             return compat.stream_chat(&messages, &tools);
         }
-        _ => {
-            Arc::new(ghost_llm::provider::OllamaProvider {
-                model: provider_config.model.clone().unwrap_or_else(|| "llama3.1".into()),
-                base_url: provider_config.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into()),
-            })
-        }
+        _ => Arc::new(ghost_llm::provider::OllamaProvider {
+            model: provider_config
+                .model
+                .clone()
+                .unwrap_or_else(|| "llama3.1".into()),
+            base_url: provider_config
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434".into()),
+        }),
     };
     ghost_llm::provider::complete_stream_shim(provider, messages, tools)
 }

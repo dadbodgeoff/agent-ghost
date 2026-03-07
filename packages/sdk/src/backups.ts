@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface Backup {
   backup_id: string;
@@ -20,7 +20,7 @@ export class BackupsAPI {
     return this.request<ListBackupsResult>('GET', '/api/admin/backups');
   }
 
-  async create(): Promise<Backup> {
-    return this.request<Backup>('POST', '/api/admin/backup', {});
+  async create(options?: GhostRequestOptions): Promise<Backup> {
+    return this.request<Backup>('POST', '/api/admin/backup', {}, options);
   }
 }

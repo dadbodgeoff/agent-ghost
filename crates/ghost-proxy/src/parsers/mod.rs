@@ -1,8 +1,8 @@
 //! Per-platform payload parsers (Req 36 AC3).
 
+pub mod character_ai_ws;
 pub mod chatgpt_sse;
 pub mod claude_sse;
-pub mod character_ai_ws;
 pub mod gemini_stream;
 
 use serde::{Deserialize, Serialize};

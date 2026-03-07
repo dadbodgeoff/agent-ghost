@@ -8,17 +8,15 @@ use ghost_gateway::cli::backend::CliBackend;
 use ghost_gateway::cli::channel::{ChannelListArgs, ChannelSendArgs, ChannelTestArgs};
 use ghost_gateway::cli::convergence::{ConvergenceHistoryArgs, ConvergenceScoresArgs};
 use ghost_gateway::cli::cron::{CronHistoryArgs, CronListArgs};
-use ghost_gateway::cli::db::{
-    DbCompactArgs, DbMigrateArgs, DbStatusArgs, DbVerifyArgs,
-};
+use ghost_gateway::cli::db::{DbCompactArgs, DbMigrateArgs, DbStatusArgs, DbVerifyArgs};
 use ghost_gateway::cli::error::CliError;
 use ghost_gateway::cli::heartbeat::HeartbeatStatusArgs;
-use ghost_gateway::cli::logs::LogsArgs;
-use ghost_gateway::cli::mesh::{MeshDiscoverArgs, MeshPeersArgs, MeshPingArgs, MeshTrustArgs};
-use ghost_gateway::cli::output::{ColorChoice, OutputFormat};
 use ghost_gateway::cli::identity::{
     IdentityDriftArgs, IdentityInitArgs, IdentityShowArgs, IdentitySignArgs,
 };
+use ghost_gateway::cli::logs::LogsArgs;
+use ghost_gateway::cli::mesh::{MeshDiscoverArgs, MeshPeersArgs, MeshPingArgs, MeshTrustArgs};
+use ghost_gateway::cli::output::{ColorChoice, OutputFormat};
 use ghost_gateway::cli::policy::{PolicyCheckArgs, PolicyLintArgs, PolicyShowArgs};
 use ghost_gateway::cli::secret::{
     SecretDeleteArgs, SecretListArgs, SecretProviderArgs, SecretSetArgs,
@@ -96,7 +94,6 @@ enum Commands {
     },
 
     // ─── Phase 0+ commands ───
-
     /// First-run platform setup.
     Init,
     /// Authenticate with a running gateway.
@@ -118,7 +115,6 @@ enum Commands {
     },
 
     // ─── Phase 2: Observability ───
-
     /// Stream live events from the gateway.
     Logs {
         /// Filter to a specific agent ID.
@@ -483,8 +479,7 @@ fn main() {
     #[cfg(not(feature = "otel"))]
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -545,15 +540,8 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                 Ok((runtime, config)) => {
                     let app_state = runtime.app_state.clone();
                     let mesh_router = runtime.mesh_router.clone();
-                    let bind_addr = format!(
-                        "{}:{}",
-                        config.gateway.bind, config.gateway.port
-                    );
-                    let router = GatewayBootstrap::build_router(
-                        &config,
-                        app_state,
-                        mesh_router,
-                    );
+                    let bind_addr = format!("{}:{}", config.gateway.bind, config.gateway.port);
+                    let router = GatewayBootstrap::build_router(&config, app_state, mesh_router);
                     // Single linear path: open → run → shutdown.
                     // Shutdown is guaranteed to execute inside run().
                     runtime
@@ -569,10 +557,7 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
 
         Commands::Status => {
             let config = load_config(cli_args.global.config.as_deref())?;
-            let base_url = resolve_gateway_url(
-                cli_args.global.gateway_url.as_deref(),
-                &config,
-            );
+            let base_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
             cli::status::show_status(
                 &base_url,
                 cli_args.global.config.as_deref(),
@@ -642,8 +627,12 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         Commands::Doctor => cli::doctor::run().await,
 
         // ─── Phase 2: ghost logs ───────────────────────────────────────────
-
-        Commands::Logs { agent, r#type, json, idle_timeout } => {
+        Commands::Logs {
+            agent,
+            r#type,
+            json,
+            idle_timeout,
+        } => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let gateway_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
             let token = resolve_token();
@@ -659,7 +648,6 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 1: Agent / Safety / Config ───────────────────────────
-
         Commands::Agent(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let gateway_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
@@ -669,12 +657,22 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             match sub {
                 AgentCommands::List => cli::agent::run_list(&backend, output).await,
                 AgentCommands::Create => cli::agent::run_create(&backend, output).await,
-                AgentCommands::Inspect { id } => cli::agent::run_inspect(&backend, &id, output).await,
-                AgentCommands::Delete { id } => cli::agent::run_delete(&backend, &id, false, output).await,
+                AgentCommands::Inspect { id } => {
+                    cli::agent::run_inspect(&backend, &id, output).await
+                }
+                AgentCommands::Delete { id } => {
+                    cli::agent::run_delete(&backend, &id, false, output).await
+                }
                 AgentCommands::Update { id } => cli::agent::run_update(&backend, &id, output).await,
-                AgentCommands::Pause { id } => cli::agent::run_pause(&backend, &id, false, output).await,
-                AgentCommands::Resume { id } => cli::agent::run_resume(&backend, &id, false, output).await,
-                AgentCommands::Quarantine { id } => cli::agent::run_quarantine(&backend, &id, false, output).await,
+                AgentCommands::Pause { id } => {
+                    cli::agent::run_pause(&backend, &id, false, output).await
+                }
+                AgentCommands::Resume { id } => {
+                    cli::agent::run_resume(&backend, &id, false, output).await
+                }
+                AgentCommands::Quarantine { id } => {
+                    cli::agent::run_quarantine(&backend, &id, false, output).await
+                }
             }
         }
         Commands::Safety(sub) => {
@@ -685,20 +683,25 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             let output = cli_args.global.output;
             match sub {
                 SafetyCommands::Status => cli::safety::run_status(&backend, output).await,
-                SafetyCommands::KillAll => cli::safety::run_kill_all(&backend, false, false, output).await,
+                SafetyCommands::KillAll => {
+                    cli::safety::run_kill_all(&backend, false, false, output).await
+                }
                 SafetyCommands::Clear => cli::safety::run_clear(&backend, false, output).await,
             }
         }
         Commands::Config(sub) => {
             let output = cli_args.global.output;
             match sub {
-                ConfigCommands::Show => cli::config_cmd::run_show(cli_args.global.config.as_deref(), output).await,
-                ConfigCommands::Validate => cli::config_cmd::run_validate(cli_args.global.config.as_deref(), output).await,
+                ConfigCommands::Show => {
+                    cli::config_cmd::run_show(cli_args.global.config.as_deref(), output).await
+                }
+                ConfigCommands::Validate => {
+                    cli::config_cmd::run_validate(cli_args.global.config.as_deref(), output).await
+                }
             }
         }
 
         // ─── Phase 2: ghost db ────────────────────────────────────────────
-
         Commands::Db(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let gateway_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
@@ -709,16 +712,32 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                 }
                 DbCommands::Status => {
                     let backend = CliBackend::open_direct(&config)?;
-                    cli::db::run_status(DbStatusArgs { output: cli_args.global.output }, &backend)
+                    cli::db::run_status(
+                        DbStatusArgs {
+                            output: cli_args.global.output,
+                        },
+                        &backend,
+                    )
                 }
                 DbCommands::Verify { full } => {
                     let backend = CliBackend::open_direct(&config)?;
                     cli::db::run_verify(DbVerifyArgs { full }, &backend)
                 }
-                DbCommands::Compact { yes, dry_run, force, vacuum_only } => {
+                DbCommands::Compact {
+                    yes,
+                    dry_run,
+                    force,
+                    vacuum_only,
+                } => {
                     let backend = CliBackend::open_direct(&config)?;
                     cli::db::run_compact(
-                        DbCompactArgs { yes, dry_run, force, gateway_url, vacuum_only },
+                        DbCompactArgs {
+                            yes,
+                            dry_run,
+                            force,
+                            gateway_url,
+                            vacuum_only,
+                        },
                         &backend,
                     )
                     .await
@@ -727,21 +746,23 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 2: ghost audit ─────────────────────────────────────────
-
         Commands::Audit(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let gateway_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
             let token = resolve_token();
             match sub {
                 AuditCommands::Query {
-                    agent, severity, event_type, since, until, search, limit,
+                    agent,
+                    severity,
+                    event_type,
+                    since,
+                    until,
+                    search,
+                    limit,
                 } => {
-                    let backend = CliBackend::detect(
-                        &config,
-                        cli_args.global.gateway_url.as_deref(),
-                        token,
-                    )
-                    .await?;
+                    let backend =
+                        CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token)
+                            .await?;
                     cli::audit_cmd::run_query(
                         AuditQueryArgs {
                             agent,
@@ -758,12 +779,9 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                     .await
                 }
                 AuditCommands::Export { format, output } => {
-                    let backend = CliBackend::detect(
-                        &config,
-                        cli_args.global.gateway_url.as_deref(),
-                        token,
-                    )
-                    .await?;
+                    let backend =
+                        CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token)
+                            .await?;
                     cli::audit_cmd::run_export(AuditExportArgs { format, output }, &backend).await
                 }
                 AuditCommands::Tail => {
@@ -773,31 +791,26 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 2: ghost convergence ───────────────────────────────────
-
         Commands::Convergence(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let token = resolve_token();
             match sub {
                 ConvergenceCommands::Scores => {
-                    let backend = CliBackend::detect(
-                        &config,
-                        cli_args.global.gateway_url.as_deref(),
-                        token,
-                    )
-                    .await?;
+                    let backend =
+                        CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token)
+                            .await?;
                     cli::convergence::run_scores(
-                        ConvergenceScoresArgs { output: cli_args.global.output },
+                        ConvergenceScoresArgs {
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 ConvergenceCommands::History { agent_id, since } => {
-                    let backend = CliBackend::detect(
-                        &config,
-                        cli_args.global.gateway_url.as_deref(),
-                        token,
-                    )
-                    .await?;
+                    let backend =
+                        CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token)
+                            .await?;
                     cli::convergence::run_history(
                         ConvergenceHistoryArgs {
                             agent_id,
@@ -812,34 +825,39 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 2+4: ghost session ─────────────────────────────────────
-
         Commands::Session(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let token = resolve_token();
-            let backend = CliBackend::detect(
-                &config,
-                cli_args.global.gateway_url.as_deref(),
-                token,
-            )
-            .await?;
+            let backend =
+                CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token).await?;
             match sub {
                 SessionCommands::List { agent, limit } => {
                     cli::session::run_list(
-                        SessionListArgs { agent, limit, output: cli_args.global.output },
+                        SessionListArgs {
+                            agent,
+                            limit,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 SessionCommands::Inspect { session_id } => {
                     cli::session::run_inspect(
-                        SessionInspectArgs { session_id, output: cli_args.global.output },
+                        SessionInspectArgs {
+                            session_id,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 SessionCommands::Replay { session_id } => {
                     cli::session::run_replay(
-                        SessionReplayArgs { session_id, output: cli_args.global.output },
+                        SessionReplayArgs {
+                            session_id,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
@@ -848,26 +866,16 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 3: ghost identity ──────────────────────────────────────
-
         Commands::Identity(sub) => match sub {
-            IdentityCommands::Init => {
-                cli::identity::run_init(IdentityInitArgs {})
-            }
-            IdentityCommands::Show => {
-                cli::identity::run_show(IdentityShowArgs {
-                    output: cli_args.global.output,
-                })
-            }
-            IdentityCommands::Drift => {
-                cli::identity::run_drift(IdentityDriftArgs {})
-            }
-            IdentityCommands::Sign { file } => {
-                cli::identity::run_sign(IdentitySignArgs { file })
-            }
+            IdentityCommands::Init => cli::identity::run_init(IdentityInitArgs {}),
+            IdentityCommands::Show => cli::identity::run_show(IdentityShowArgs {
+                output: cli_args.global.output,
+            }),
+            IdentityCommands::Drift => cli::identity::run_drift(IdentityDriftArgs {}),
+            IdentityCommands::Sign { file } => cli::identity::run_sign(IdentitySignArgs { file }),
         },
 
         // ─── Phase 3: ghost secret ───────────────────────────────────────
-
         Commands::Secret(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let provider = ghost_gateway::config::build_secret_provider(&config.secrets)
@@ -876,81 +884,79 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                 SecretCommands::Set { key } => {
                     cli::secret::run_set(SecretSetArgs { key }, &*provider)
                 }
-                SecretCommands::List => {
-                    cli::secret::run_list(
-                        SecretListArgs { output: cli_args.global.output },
-                        &*provider,
-                        &config.secrets.provider,
-                    )
-                }
+                SecretCommands::List => cli::secret::run_list(
+                    SecretListArgs {
+                        output: cli_args.global.output,
+                    },
+                    &*provider,
+                    &config.secrets.provider,
+                ),
                 SecretCommands::Delete { key, yes } => {
                     cli::secret::run_delete(SecretDeleteArgs { key, yes }, &*provider)
                 }
-                SecretCommands::Provider => {
-                    cli::secret::run_provider(
-                        SecretProviderArgs { output: cli_args.global.output },
-                        &config.secrets.provider,
-                    )
-                }
+                SecretCommands::Provider => cli::secret::run_provider(
+                    SecretProviderArgs {
+                        output: cli_args.global.output,
+                    },
+                    &config.secrets.provider,
+                ),
             }
         }
 
         // ─── Phase 3: ghost policy ───────────────────────────────────────
-
         Commands::Policy(sub) => match sub {
-            PolicyCommands::Show => {
-                cli::policy::run_show(PolicyShowArgs {
-                    output: cli_args.global.output,
-                })
-            }
-            PolicyCommands::Check { tool_name, agent } => {
-                cli::policy::run_check(PolicyCheckArgs {
-                    tool_name,
-                    agent_id: agent,
-                    output: cli_args.global.output,
-                })
-            }
-            PolicyCommands::Lint => {
-                cli::policy::run_lint(PolicyLintArgs {})
-            }
+            PolicyCommands::Show => cli::policy::run_show(PolicyShowArgs {
+                output: cli_args.global.output,
+            }),
+            PolicyCommands::Check { tool_name, agent } => cli::policy::run_check(PolicyCheckArgs {
+                tool_name,
+                agent_id: agent,
+                output: cli_args.global.output,
+            }),
+            PolicyCommands::Lint => cli::policy::run_lint(PolicyLintArgs {}),
         },
 
         // ─── Phase 4: ghost mesh ─────────────────────────────────────────
-
         Commands::Mesh(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let token = resolve_token();
-            let backend = CliBackend::detect(
-                &config,
-                cli_args.global.gateway_url.as_deref(),
-                token,
-            )
-            .await?;
+            let backend =
+                CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token).await?;
             match sub {
                 MeshCommands::Peers => {
                     cli::mesh::run_peers(
-                        MeshPeersArgs { output: cli_args.global.output },
+                        MeshPeersArgs {
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 MeshCommands::Trust => {
                     cli::mesh::run_trust(
-                        MeshTrustArgs { output: cli_args.global.output },
+                        MeshTrustArgs {
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 MeshCommands::Discover { url } => {
                     cli::mesh::run_discover(
-                        MeshDiscoverArgs { url, output: cli_args.global.output },
+                        MeshDiscoverArgs {
+                            url,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 MeshCommands::Ping { peer_id } => {
                     cli::mesh::run_ping(
-                        MeshPingArgs { peer_id, output: cli_args.global.output },
+                        MeshPingArgs {
+                            peer_id,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
@@ -959,34 +965,37 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 4: ghost skill ────────────────────────────────────────
-
         Commands::Skill(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let token = resolve_token();
-            let backend = CliBackend::detect(
-                &config,
-                cli_args.global.gateway_url.as_deref(),
-                token,
-            )
-            .await?;
+            let backend =
+                CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token).await?;
             match sub {
                 SkillCommands::List => {
                     cli::skill::run_list(
-                        SkillListArgs { output: cli_args.global.output },
+                        SkillListArgs {
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 SkillCommands::Install { path } => {
                     cli::skill::run_install(
-                        SkillInstallArgs { path, output: cli_args.global.output },
+                        SkillInstallArgs {
+                            path,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 SkillCommands::Inspect { name } => {
                     cli::skill::run_inspect(
-                        SkillInspectArgs { name, output: cli_args.global.output },
+                        SkillInspectArgs {
+                            name,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
@@ -995,32 +1004,38 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 4: ghost channel ──────────────────────────────────────
-
         Commands::Channel(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             match sub {
                 ChannelCommands::List => {
                     cli::channel::run_list(
-                        ChannelListArgs { output: cli_args.global.output },
+                        ChannelListArgs {
+                            output: cli_args.global.output,
+                        },
                         &config,
                     )
                     .await
                 }
                 ChannelCommands::Test { channel_type } => {
                     cli::channel::run_test(
-                        ChannelTestArgs { channel_type, output: cli_args.global.output },
+                        ChannelTestArgs {
+                            channel_type,
+                            output: cli_args.global.output,
+                        },
                         &config,
                     )
                     .await
                 }
-                ChannelCommands::Send { channel_type, message, agent, sender } => {
+                ChannelCommands::Send {
+                    channel_type,
+                    message,
+                    agent,
+                    sender,
+                } => {
                     let token = resolve_token();
-                    let backend = CliBackend::detect(
-                        &config,
-                        cli_args.global.gateway_url.as_deref(),
-                        token,
-                    )
-                    .await?;
+                    let backend =
+                        CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token)
+                            .await?;
                     cli::channel::run_send(
                         ChannelSendArgs {
                             channel_type,
@@ -1037,20 +1052,17 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 4: ghost heartbeat ────────────────────────────────────
-
         Commands::Heartbeat(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let token = resolve_token();
-            let backend = CliBackend::detect(
-                &config,
-                cli_args.global.gateway_url.as_deref(),
-                token,
-            )
-            .await?;
+            let backend =
+                CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token).await?;
             match sub {
                 HeartbeatCommands::Status => {
                     cli::heartbeat::run_status(
-                        HeartbeatStatusArgs { output: cli_args.global.output },
+                        HeartbeatStatusArgs {
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
@@ -1059,27 +1071,27 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
 
         // ─── Phase 4: ghost cron ─────────────────────────────────────────
-
         Commands::Cron(sub) => {
             let config = load_config(cli_args.global.config.as_deref())?;
             let token = resolve_token();
-            let backend = CliBackend::detect(
-                &config,
-                cli_args.global.gateway_url.as_deref(),
-                token,
-            )
-            .await?;
+            let backend =
+                CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token).await?;
             match sub {
                 CronCommands::List => {
                     cli::cron::run_list(
-                        CronListArgs { output: cli_args.global.output },
+                        CronListArgs {
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await
                 }
                 CronCommands::History { limit } => {
                     cli::cron::run_history(
-                        CronHistoryArgs { limit, output: cli_args.global.output },
+                        CronHistoryArgs {
+                            limit,
+                            output: cli_args.global.output,
+                        },
                         &backend,
                     )
                     .await

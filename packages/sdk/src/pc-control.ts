@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface SafeZone {
   x: number;
@@ -50,19 +50,30 @@ export class PcControlAPI {
     );
   }
 
-  async updateStatus(enabled: boolean): Promise<PcControlStatus> {
-    return this.request<PcControlStatus>('PUT', '/api/pc-control/status', { enabled });
+  async updateStatus(enabled: boolean, options?: GhostRequestOptions): Promise<PcControlStatus> {
+    return this.request<PcControlStatus>('PUT', '/api/pc-control/status', { enabled }, options);
   }
 
-  async setAllowedApps(apps: string[]): Promise<PcControlStatus> {
-    return this.request<PcControlStatus>('PUT', '/api/pc-control/allowed-apps', { apps });
+  async setAllowedApps(apps: string[], options?: GhostRequestOptions): Promise<PcControlStatus> {
+    return this.request<PcControlStatus>('PUT', '/api/pc-control/allowed-apps', { apps }, options);
   }
 
-  async setBlockedHotkeys(hotkeys: string[]): Promise<PcControlStatus> {
-    return this.request<PcControlStatus>('PUT', '/api/pc-control/blocked-hotkeys', { hotkeys });
+  async setBlockedHotkeys(
+    hotkeys: string[],
+    options?: GhostRequestOptions,
+  ): Promise<PcControlStatus> {
+    return this.request<PcControlStatus>(
+      'PUT',
+      '/api/pc-control/blocked-hotkeys',
+      { hotkeys },
+      options,
+    );
   }
 
-  async setSafeZones(zones: SafeZone[]): Promise<PcControlStatus> {
-    return this.request<PcControlStatus>('PUT', '/api/pc-control/safe-zones', { zones });
+  async setSafeZones(
+    zones: SafeZone[],
+    options?: GhostRequestOptions,
+  ): Promise<PcControlStatus> {
+    return this.request<PcControlStatus>('PUT', '/api/pc-control/safe-zones', { zones }, options);
   }
 }

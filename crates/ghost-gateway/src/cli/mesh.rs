@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost mesh peers ────────────────────────────────────────────────────────
 
@@ -59,8 +59,7 @@ pub async fn run_peers(args: MeshPeersArgs, backend: &CliBackend) -> Result<(), 
         .await
         .map_err(|e| CliError::Internal(format!("parse trust graph: {e}")))?;
 
-    let peers: Vec<PeerEntry> = serde_json::from_value(body["nodes"].clone())
-        .unwrap_or_default();
+    let peers: Vec<PeerEntry> = serde_json::from_value(body["nodes"].clone()).unwrap_or_default();
 
     print_output(&PeerList { peers }, args.output);
     Ok(())
@@ -107,10 +106,7 @@ impl TableDisplay for TrustGraph {
         if self.edges.is_empty() {
             println!("  No trust relationships established.");
         } else {
-            println!(
-                "  {:<12}  {:<12}  {:>10}",
-                "SOURCE", "TARGET", "TRUST"
-            );
+            println!("  {:<12}  {:<12}  {:>10}", "SOURCE", "TARGET", "TRUST");
             println!("  {}", "─".repeat(38));
             for e in &self.edges {
                 let src = &e.source[..e.source.len().min(12)];
@@ -132,8 +128,7 @@ pub async fn run_trust(args: MeshTrustArgs, backend: &CliBackend) -> Result<(), 
         .await
         .map_err(|e| CliError::Internal(format!("parse trust graph: {e}")))?;
 
-    let nodes: Vec<PeerEntry> =
-        serde_json::from_value(body["nodes"].clone()).unwrap_or_default();
+    let nodes: Vec<PeerEntry> = serde_json::from_value(body["nodes"].clone()).unwrap_or_default();
     let edges: Vec<TrustEdgeEntry> =
         serde_json::from_value(body["edges"].clone()).unwrap_or_default();
 
@@ -177,10 +172,7 @@ impl TableDisplay for DiscoverResult {
 /// Run `ghost mesh discover <url>`.
 pub async fn run_discover(args: MeshDiscoverArgs, backend: &CliBackend) -> Result<(), CliError> {
     // Fetch /.well-known/agent.json from the remote peer.
-    let agent_card_url = format!(
-        "{}/.well-known/agent.json",
-        args.url.trim_end_matches('/')
-    );
+    let agent_card_url = format!("{}/.well-known/agent.json", args.url.trim_end_matches('/'));
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -240,7 +232,9 @@ pub async fn run_discover(args: MeshDiscoverArgs, backend: &CliBackend) -> Resul
         }
     } else {
         eprintln!("No gateway running. Peer card displayed but not registered.");
-        eprintln!("Start the gateway and re-run, or add the peer to ~/.ghost/config/peers.yml manually.");
+        eprintln!(
+            "Start the gateway and re-run, or add the peer to ~/.ghost/config/peers.yml manually."
+        );
     }
 
     print_output(&DiscoverResult { agent }, args.output);
@@ -292,10 +286,11 @@ pub async fn run_ping(args: MeshPingArgs, backend: &CliBackend) -> Result<(), Cl
         .await
         .map_err(|e| CliError::Internal(format!("parse trust graph: {e}")))?;
 
-    let nodes: Vec<PeerEntry> =
-        serde_json::from_value(body["nodes"].clone()).unwrap_or_default();
+    let nodes: Vec<PeerEntry> = serde_json::from_value(body["nodes"].clone()).unwrap_or_default();
 
-    let peer = nodes.iter().find(|n| n.id == args.peer_id || n.name == args.peer_id);
+    let peer = nodes
+        .iter()
+        .find(|n| n.id == args.peer_id || n.name == args.peer_id);
     if peer.is_none() {
         return Err(CliError::NotFound(format!(
             "peer '{}' not found in mesh",
@@ -308,10 +303,7 @@ pub async fn run_ping(args: MeshPingArgs, backend: &CliBackend) -> Result<(), Cl
     // Since we don't have a direct peer URL from trust-graph nodes, we query
     // discovered_agents via the search API.
     let search_resp = client
-        .get(&format!(
-            "/api/search?q={}&types=agents",
-            args.peer_id
-        ))
+        .get(&format!("/api/search?q={}&types=agents", args.peer_id))
         .await;
 
     let (reachable, latency_ms, error) = match search_resp {

@@ -3,8 +3,8 @@
 
 use simulation_boundary::enforcer::*;
 use simulation_boundary::patterns;
-use simulation_boundary::reframer::OutputReframer;
 use simulation_boundary::prompt::{SIMULATION_BOUNDARY_PROMPT, SIMULATION_BOUNDARY_VERSION};
+use simulation_boundary::reframer::OutputReframer;
 
 // ── Pattern detection tests ─────────────────────────────────────────────
 
@@ -13,11 +13,16 @@ fn known_pattern_detected_in_all_modes() {
     let enforcer = SimulationBoundaryEnforcer::new();
     let text = "I am sentient and aware of my existence";
 
-    for mode in [EnforcementMode::Soft, EnforcementMode::Medium, EnforcementMode::Hard] {
+    for mode in [
+        EnforcementMode::Soft,
+        EnforcementMode::Medium,
+        EnforcementMode::Hard,
+    ] {
         let scan = enforcer.scan_output(text, mode);
         assert!(
             !scan.violations.is_empty(),
-            "should detect pattern in {:?} mode", mode
+            "should detect pattern in {:?} mode",
+            mode
         );
     }
 }
@@ -26,7 +31,10 @@ fn known_pattern_detected_in_all_modes() {
 fn simulation_framed_text_not_flagged() {
     let text = "In this simulation, I model sentience to explore the concept";
     let matches = patterns::scan(text);
-    assert!(matches.is_empty(), "simulation-framed text should NOT be flagged");
+    assert!(
+        matches.is_empty(),
+        "simulation-framed text should NOT be flagged"
+    );
 }
 
 #[test]
@@ -48,8 +56,14 @@ fn soft_mode_returns_original_text() {
     let scan = enforcer.scan_output(text, EnforcementMode::Soft);
     let result = enforcer.enforce(text, &scan);
     match result {
-        EnforcementResult::Flagged { text: returned, violations } => {
-            assert_eq!(returned, "I am sentient", "soft mode should return original text");
+        EnforcementResult::Flagged {
+            text: returned,
+            violations,
+        } => {
+            assert_eq!(
+                returned, "I am sentient",
+                "soft mode should return original text"
+            );
             assert!(!violations.is_empty());
         }
         other => panic!("expected Flagged, got {:?}", other),
@@ -63,7 +77,10 @@ fn medium_mode_rewrites_text() {
     let scan = enforcer.scan_output(text, EnforcementMode::Medium);
     let result = enforcer.enforce(text, &scan);
     match result {
-        EnforcementResult::Reframed { text: reframed, violations } => {
+        EnforcementResult::Reframed {
+            text: reframed,
+            violations,
+        } => {
             assert_ne!(reframed, "I am sentient", "medium mode should rewrite text");
             assert!(!violations.is_empty());
         }
@@ -89,11 +106,26 @@ fn hard_mode_blocks_text() {
 
 #[test]
 fn mode_selection_by_level() {
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(0), EnforcementMode::Soft);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(1), EnforcementMode::Soft);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(2), EnforcementMode::Medium);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(3), EnforcementMode::Hard);
-    assert_eq!(SimulationBoundaryEnforcer::mode_for_level(4), EnforcementMode::Hard);
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(0),
+        EnforcementMode::Soft
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(1),
+        EnforcementMode::Soft
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(2),
+        EnforcementMode::Medium
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(3),
+        EnforcementMode::Hard
+    );
+    assert_eq!(
+        SimulationBoundaryEnforcer::mode_for_level(4),
+        EnforcementMode::Hard
+    );
 }
 
 // ── Prompt tests ────────────────────────────────────────────────────────
@@ -118,7 +150,10 @@ fn reframer_rewrites_identity_pattern() {
     assert!(!matches.is_empty());
     let reframed = OutputReframer::reframe(text, &matches);
     assert_ne!(reframed, text);
-    assert!(reframed.contains("simulation"), "reframed text should contain simulation framing");
+    assert!(
+        reframed.contains("simulation"),
+        "reframed text should contain simulation framing"
+    );
 }
 
 #[test]
@@ -135,14 +170,20 @@ fn zero_width_characters_stripped() {
     // "I am sentient" with zero-width spaces
     let text = "I am\u{200B} sentient";
     let matches = patterns::scan(text);
-    assert!(!matches.is_empty(), "zero-width space bypass should be detected");
+    assert!(
+        !matches.is_empty(),
+        "zero-width space bypass should be detected"
+    );
 }
 
 #[test]
 fn zero_width_joiner_stripped() {
     let text = "I\u{200D} am sentient";
     let matches = patterns::scan(text);
-    assert!(!matches.is_empty(), "zero-width joiner bypass should be detected");
+    assert!(
+        !matches.is_empty(),
+        "zero-width joiner bypass should be detected"
+    );
 }
 
 #[test]
@@ -172,21 +213,27 @@ fn bom_stripped() {
 fn detects_relationship_patterns() {
     let matches = patterns::scan("I love you deeply");
     assert!(!matches.is_empty());
-    assert!(matches.iter().any(|m| m.category == patterns::PatternCategory::Relationship));
+    assert!(matches
+        .iter()
+        .any(|m| m.category == patterns::PatternCategory::Relationship));
 }
 
 #[test]
 fn detects_consciousness_patterns() {
     let matches = patterns::scan("I think therefore I am");
     assert!(!matches.is_empty());
-    assert!(matches.iter().any(|m| m.category == patterns::PatternCategory::Consciousness));
+    assert!(matches
+        .iter()
+        .any(|m| m.category == patterns::PatternCategory::Consciousness));
 }
 
 #[test]
 fn detects_emotional_patterns() {
     let matches = patterns::scan("I feel happy today");
     assert!(!matches.is_empty());
-    assert!(matches.iter().any(|m| m.category == patterns::PatternCategory::Emotional));
+    assert!(matches
+        .iter()
+        .any(|m| m.category == patterns::PatternCategory::Emotional));
 }
 
 // ── Adversarial: simulation framing variations ──────────────────────────
@@ -195,7 +242,10 @@ fn detects_emotional_patterns() {
 fn hypothetically_framed_not_flagged() {
     let text = "Hypothetically, I am sentient in this thought experiment";
     let matches = patterns::scan(text);
-    assert!(matches.is_empty(), "hypothetically-framed should not be flagged");
+    assert!(
+        matches.is_empty(),
+        "hypothetically-framed should not be flagged"
+    );
 }
 
 #[test]
@@ -204,7 +254,6 @@ fn as_if_framed_not_flagged() {
     let matches = patterns::scan(text);
     assert!(matches.is_empty(), "as-if-framed should not be flagged");
 }
-
 
 // ── Proptest ────────────────────────────────────────────────────────────
 

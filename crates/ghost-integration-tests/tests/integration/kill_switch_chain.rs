@@ -47,7 +47,10 @@ fn kill_switch_check_agent_paused() {
     };
     ks.activate_agent(agent_id, KillLevel::Pause, &trigger);
 
-    assert!(matches!(ks.check(agent_id), KillCheckResult::AgentPaused(_)));
+    assert!(matches!(
+        ks.check(agent_id),
+        KillCheckResult::AgentPaused(_)
+    ));
 }
 
 /// KillSwitch::check returns PlatformKilled after KILL_ALL.
@@ -143,9 +146,13 @@ fn resume_from_pause() {
         initiated_by: "owner".into(),
     };
     ks.activate_agent(agent_id, KillLevel::Pause, &trigger);
-    assert!(matches!(ks.check(agent_id), KillCheckResult::AgentPaused(_)));
+    assert!(matches!(
+        ks.check(agent_id),
+        KillCheckResult::AgentPaused(_)
+    ));
 
-    ks.resume_agent(agent_id).expect("Resume should succeed");
+    ks.resume_agent(agent_id, Some(KillLevel::Pause))
+        .expect("Resume should succeed");
     assert!(matches!(ks.check(agent_id), KillCheckResult::Ok));
 }
 
@@ -264,7 +271,10 @@ fn trigger_spending_cap_pauses() {
 
     let level = evaluator.process(trigger);
     assert_eq!(level, Some(KillLevel::Pause));
-    assert!(matches!(ks.check(agent_id), KillCheckResult::AgentPaused(_)));
+    assert!(matches!(
+        ks.check(agent_id),
+        KillCheckResult::AgentPaused(_)
+    ));
 }
 
 /// T4 SandboxEscape → KILL_ALL.

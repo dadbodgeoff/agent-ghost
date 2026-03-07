@@ -59,7 +59,10 @@ impl ProposalExtractor {
 
         // Fallback: if state-machine found nothing but text contains proposal keys,
         // try to extract JSON objects containing those keys.
-        if proposals.is_empty() && text.contains("\"operation\"") && text.contains("\"target_type\"") {
+        if proposals.is_empty()
+            && text.contains("\"operation\"")
+            && text.contains("\"target_type\"")
+        {
             tracing::debug!("state-machine found no proposals, trying JSON fallback extraction");
             if let Some(raw) = try_extract_json_fallback(text) {
                 let proposal = Proposal {

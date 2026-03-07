@@ -4,9 +4,9 @@
 //! HTTP server and real provider credentials. These tests exercise the
 //! storage layer which is the critical path for token security.
 
-use ghost_secrets::SecretProvider;
-use ghost_oauth::types::{OAuthRefId, TokenSet};
 use ghost_oauth::storage::TokenStore;
+use ghost_oauth::types::{OAuthRefId, TokenSet};
+use ghost_secrets::SecretProvider;
 use secrecy::SecretString;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -133,8 +133,12 @@ fn list_all_connections_across_providers() {
     let (store, _dir) = temp_store();
     let token_set = sample_token_set();
 
-    store.store_token(&OAuthRefId::new(), "google", &token_set).unwrap();
-    store.store_token(&OAuthRefId::new(), "github", &token_set).unwrap();
+    store
+        .store_token(&OAuthRefId::new(), "google", &token_set)
+        .unwrap();
+    store
+        .store_token(&OAuthRefId::new(), "github", &token_set)
+        .unwrap();
 
     let all = store.list_all_connections().unwrap();
     assert_eq!(all.len(), 2);

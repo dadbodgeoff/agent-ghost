@@ -13,7 +13,7 @@ impl Default for SessionBoundaryConfig {
     fn default() -> Self {
         Self {
             max_duration: Duration::from_secs(6 * 3600), // 6 hours
-            min_gap: Duration::from_secs(300),            // 5 minutes
+            min_gap: Duration::from_secs(300),           // 5 minutes
         }
     }
 }
@@ -29,7 +29,10 @@ impl SessionBoundaryProxy {
     }
 
     /// Check if a new session can be created (min_gap enforcement).
-    pub fn can_create_session(&self, last_session_end: Option<chrono::DateTime<chrono::Utc>>) -> bool {
+    pub fn can_create_session(
+        &self,
+        last_session_end: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> bool {
         match last_session_end {
             None => true,
             Some(end) => {

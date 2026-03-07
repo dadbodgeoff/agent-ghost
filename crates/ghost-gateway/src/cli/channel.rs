@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use super::backend::CliBackend;
 use super::error::CliError;
-use super::output::{OutputFormat, TableDisplay, print_output};
+use super::output::{print_output, OutputFormat, TableDisplay};
 
 // ─── ghost channel list ──────────────────────────────────────────────────────
 
@@ -31,7 +31,9 @@ struct ChannelList {
 impl TableDisplay for ChannelList {
     fn print_table(&self) {
         if self.channels.is_empty() {
-            eprintln!("No channels configured. Add a `channels:` block to ghost.yml or run `ghost init`.");
+            eprintln!(
+                "No channels configured. Add a `channels:` block to ghost.yml or run `ghost init`."
+            );
             return;
         }
         println!(
@@ -88,7 +90,10 @@ fn summarize_credentials(options: &BTreeMap<String, serde_json::Value>) -> Strin
 }
 
 /// Run `ghost channel list`.
-pub async fn run_list(args: ChannelListArgs, config: &crate::config::GhostConfig) -> Result<(), CliError> {
+pub async fn run_list(
+    args: ChannelListArgs,
+    config: &crate::config::GhostConfig,
+) -> Result<(), CliError> {
     let channels: Vec<ChannelListEntry> = config
         .channels
         .iter()
@@ -166,7 +171,10 @@ pub async fn probe_channel(
             }
         }
         // Fallback: literal value in options.
-        entry.options.get(key_name).and_then(|v| v.as_str().map(String::from))
+        entry
+            .options
+            .get(key_name)
+            .and_then(|v| v.as_str().map(String::from))
     };
 
     let client = reqwest::Client::builder()
@@ -240,9 +248,7 @@ pub async fn probe_channel(
                     };
                 }
             };
-            let phone_id = entry.options["phone_number_id"]
-                .as_str()
-                .unwrap_or("");
+            let phone_id = entry.options["phone_number_id"].as_str().unwrap_or("");
             let url = format!(
                 "https://graph.facebook.com/v18.0/{phone_id}?fields=display_phone_number,verified_name&access_token={token}"
             );
@@ -258,9 +264,7 @@ pub async fn probe_channel(
                             detail: format!("{phone} ({name})"),
                         }
                     } else {
-                        let msg = body["error"]["message"]
-                            .as_str()
-                            .unwrap_or("unknown error");
+                        let msg = body["error"]["message"].as_str().unwrap_or("unknown error");
                         ProbeResult {
                             channel,
                             agent,
@@ -386,9 +390,16 @@ pub async fn probe_channel(
 }
 
 /// Run `ghost channel test [<type>]`.
-pub async fn run_test(args: ChannelTestArgs, config: &crate::config::GhostConfig) -> Result<(), CliError> {
+pub async fn run_test(
+    args: ChannelTestArgs,
+    config: &crate::config::GhostConfig,
+) -> Result<(), CliError> {
     let targets: Vec<&crate::config::ChannelConfig> = if let Some(ref ct) = args.channel_type {
-        config.channels.iter().filter(|c| c.channel_type == *ct).collect()
+        config
+            .channels
+            .iter()
+            .filter(|c| c.channel_type == *ct)
+            .collect()
     } else {
         config.channels.iter().collect()
     };
@@ -400,7 +411,9 @@ pub async fn run_test(args: ChannelTestArgs, config: &crate::config::GhostConfig
                 args.channel_type.as_deref().unwrap_or("")
             )));
         }
-        eprintln!("No channels configured. Add a `channels:` block to ghost.yml or run `ghost init`.");
+        eprintln!(
+            "No channels configured. Add a `channels:` block to ghost.yml or run `ghost init`."
+        );
         return Ok(());
     }
 
@@ -476,17 +489,17 @@ pub async fn run_send(args: ChannelSendArgs, backend: &CliBackend) -> Result<(),
             .as_str()
             .unwrap_or("unknown")
             .to_string(),
-        agent_id: result["agent_id"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string(),
+        agent_id: result["agent_id"].as_str().unwrap_or("unknown").to_string(),
         routed: result["routed"].as_bool().unwrap_or(false),
     };
 
     print_output(&send_result, args.output);
 
     // Advise operator how to observe the agent's response.
-    eprintln!("Use `ghost logs --agent {}` to monitor agent activity.", send_result.agent_id);
+    eprintln!(
+        "Use `ghost logs --agent {}` to monitor agent activity.",
+        send_result.agent_id
+    );
 
     Ok(())
 }

@@ -76,7 +76,11 @@ impl AgentKeypairManager {
         });
 
         // SAFETY: we just assigned `Some` to self.current above
-        Ok(&self.current.as_ref().expect("current was just set").verifying_key)
+        Ok(&self
+            .current
+            .as_ref()
+            .expect("current was just set")
+            .verifying_key)
     }
 
     /// Load the public key from disk. Signing key must be regenerated
@@ -90,8 +94,8 @@ impl AgentKeypairManager {
             ));
         }
 
-        let pub_bytes = std::fs::read(&pub_path)
-            .map_err(|e| KeypairError::ReadError(e.to_string()))?;
+        let pub_bytes =
+            std::fs::read(&pub_path).map_err(|e| KeypairError::ReadError(e.to_string()))?;
 
         if pub_bytes.len() != 32 {
             return Err(KeypairError::ReadError("invalid public key length".into()));

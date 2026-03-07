@@ -146,7 +146,6 @@ impl Spotlighter {
     }
 }
 
-
 // ── Core functions ──────────────────────────────────────────────────────
 
 /// Interleave marker character between every character of the input.

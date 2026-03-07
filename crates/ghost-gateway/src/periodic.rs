@@ -37,9 +37,7 @@ pub struct PeriodicTask {
     pub name: String,
     pub interval: Duration,
     pub task_fn: Box<
-        dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send>>
-            + Send
-            + Sync,
+        dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send>> + Send + Sync,
     >,
     pub last_run: Option<Instant>,
     pub consecutive_failures: u32,

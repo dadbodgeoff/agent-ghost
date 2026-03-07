@@ -1,5 +1,7 @@
 //! RunContext — per-run immutable context (A21.1).
 
+use std::time::{Duration, Instant};
+
 use read_only_pipeline::snapshot::AgentSnapshot;
 use uuid::Uuid;
 
@@ -10,6 +12,7 @@ use uuid::Uuid;
 pub struct RunContext {
     pub agent_id: Uuid,
     pub session_id: Uuid,
+    pub session_started_at: Instant,
     pub recursion_depth: u32,
     pub max_recursion_depth: u32,
     pub total_tokens: usize,
@@ -35,6 +38,11 @@ pub struct RunContext {
 }
 
 impl RunContext {
+    /// Elapsed duration for the current live run.
+    pub fn session_duration(&self) -> Duration {
+        self.session_started_at.elapsed()
+    }
+
     /// Check if spending cap would be exceeded by an estimated cost.
     pub fn would_exceed_cap(&self, estimated_cost: f64) -> bool {
         (self.daily_spend + self.total_cost + estimated_cost) > self.spending_cap

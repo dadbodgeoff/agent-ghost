@@ -62,10 +62,7 @@ impl Skill for GitLogSkill {
             .and_then(|v| v.as_u64())
             .unwrap_or(20) as usize;
 
-        let skip = input
-            .get("skip")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let skip = input.get("skip").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         // Get HEAD reference. If the repo has no commits, return empty list.
         let head = match repo.head() {
@@ -77,28 +74,24 @@ impl Skill for GitLogSkill {
                 }));
             }
             Err(e) => {
-                return Err(SkillError::Internal(format!(
-                    "failed to read HEAD: {e}"
-                )));
+                return Err(SkillError::Internal(format!("failed to read HEAD: {e}")));
             }
         };
 
-        let head_oid = head.target().ok_or_else(|| {
-            SkillError::Internal("HEAD reference has no target OID".into())
-        })?;
+        let head_oid = head
+            .target()
+            .ok_or_else(|| SkillError::Internal("HEAD reference has no target OID".into()))?;
 
         // Set up the revision walker.
-        let mut revwalk = repo.revwalk().map_err(|e| {
-            SkillError::Internal(format!("failed to create revwalk: {e}"))
-        })?;
-        revwalk.push(head_oid).map_err(|e| {
-            SkillError::Internal(format!("failed to push HEAD to revwalk: {e}"))
-        })?;
+        let mut revwalk = repo
+            .revwalk()
+            .map_err(|e| SkillError::Internal(format!("failed to create revwalk: {e}")))?;
+        revwalk
+            .push(head_oid)
+            .map_err(|e| SkillError::Internal(format!("failed to push HEAD to revwalk: {e}")))?;
         revwalk
             .set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)
-            .map_err(|e| {
-                SkillError::Internal(format!("failed to set sorting: {e}"))
-            })?;
+            .map_err(|e| SkillError::Internal(format!("failed to set sorting: {e}")))?;
 
         // Walk commits with skip and limit.
         let mut commits = Vec::new();
@@ -110,13 +103,12 @@ impl Skill for GitLogSkill {
                 break;
             }
 
-            let oid = oid_result.map_err(|e| {
-                SkillError::Internal(format!("revwalk error: {e}"))
-            })?;
+            let oid =
+                oid_result.map_err(|e| SkillError::Internal(format!("revwalk error: {e}")))?;
 
-            let commit = repo.find_commit(oid).map_err(|e| {
-                SkillError::Internal(format!("failed to find commit {oid}: {e}"))
-            })?;
+            let commit = repo
+                .find_commit(oid)
+                .map_err(|e| SkillError::Internal(format!("failed to find commit {oid}: {e}")))?;
 
             let author = commit.author();
             let time = commit.time();
@@ -177,8 +169,7 @@ mod tests {
 
     impl TestRepo {
         fn new() -> (Self, git2::Repository) {
-            let path =
-                std::env::temp_dir().join(format!("ghost-git-log-{}", Uuid::now_v7()));
+            let path = std::env::temp_dir().join(format!("ghost-git-log-{}", Uuid::now_v7()));
             std::fs::create_dir_all(&path).unwrap();
             let repo = git2::Repository::init(&path).unwrap();
 
@@ -201,7 +192,13 @@ mod tests {
     }
 
     /// Helper: create a commit with a file in the test repo.
-    fn commit_file(repo: &git2::Repository, dir: &std::path::Path, name: &str, content: &str, msg: &str) {
+    fn commit_file(
+        repo: &git2::Repository,
+        dir: &std::path::Path,
+        name: &str,
+        content: &str,
+        msg: &str,
+    ) {
         std::fs::write(dir.join(name), content).unwrap();
         let mut index = repo.index().unwrap();
         index.add_path(std::path::Path::new(name)).unwrap();

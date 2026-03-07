@@ -30,10 +30,12 @@ impl MessageRouter {
 
     /// Route a message based on channel key.
     pub fn route(&self, channel_key: &str) -> Option<RouteTarget> {
-        self.channel_bindings.get(channel_key).map(|agent_id| RouteTarget {
-            agent_id: *agent_id,
-            session_id: None, // Session resolved by SessionManager
-        })
+        self.channel_bindings
+            .get(channel_key)
+            .map(|agent_id| RouteTarget {
+                agent_id: *agent_id,
+                session_id: None, // Session resolved by SessionManager
+            })
     }
 }
 

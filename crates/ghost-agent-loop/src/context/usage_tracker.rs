@@ -194,7 +194,11 @@ fn linear_regression_slope(values: &[f64]) -> f64 {
 
     let fc = finite_count as f64;
     let x_mean = (n - 1.0) / 2.0;
-    let y_mean: f64 = values.iter().map(|v| if v.is_finite() { *v } else { 0.0 }).sum::<f64>() / fc;
+    let y_mean: f64 = values
+        .iter()
+        .map(|v| if v.is_finite() { *v } else { 0.0 })
+        .sum::<f64>()
+        / fc;
 
     let mut numerator = 0.0;
     let mut denominator = 0.0;
@@ -210,7 +214,11 @@ fn linear_regression_slope(values: &[f64]) -> f64 {
     } else {
         let slope = numerator / denominator;
         // Final NaN guard — should not happen with finite inputs, but be safe
-        if slope.is_finite() { slope } else { 0.0 }
+        if slope.is_finite() {
+            slope
+        } else {
+            0.0
+        }
     }
 }
 

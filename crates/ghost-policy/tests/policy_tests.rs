@@ -238,7 +238,10 @@ fn denial_feedback_contains_reason_constraint_alternatives() {
     match engine.evaluate(&call, &ctx) {
         PolicyDecision::Deny(feedback) => {
             assert!(!feedback.reason.is_empty(), "reason must not be empty");
-            assert!(!feedback.constraint.is_empty(), "constraint must not be empty");
+            assert!(
+                !feedback.constraint.is_empty(),
+                "constraint must not be empty"
+            );
             // Capability denial includes alternatives
             assert!(
                 !feedback.suggested_alternatives.is_empty(),

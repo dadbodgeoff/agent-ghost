@@ -3,10 +3,10 @@
 //! Intercepts traffic to AI chat platforms, parses streaming responses,
 //! and emits ITP events to the convergence monitor. Never modifies traffic.
 
-pub mod server;
 pub mod domain_filter;
-pub mod parsers;
 pub mod emitter;
+pub mod parsers;
+pub mod server;
 
 pub use domain_filter::DomainFilter;
 pub use emitter::ProxyITPEmitter;

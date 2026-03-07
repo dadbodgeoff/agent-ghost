@@ -47,7 +47,8 @@ impl ChannelAdapter for TelegramAdapter {
     }
 
     async fn send(&self, message: OutboundMessage) -> Result<(), String> {
-        let chat_id = self.last_chat_id
+        let chat_id = self
+            .last_chat_id
             .ok_or("no chat_id available — receive a message first")?;
 
         let mut body = serde_json::json!({
@@ -86,13 +87,19 @@ impl ChannelAdapter for TelegramAdapter {
             .build()
             .map_err(|e| format!("HTTP client error: {e}"))?;
 
-        let resp = client.get(&url).send().await
+        let resp = client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| format!("Telegram poll failed: {e}"))?;
 
-        let body: serde_json::Value = resp.json().await
+        let body: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| format!("Telegram JSON error: {e}"))?;
 
-        let updates = body["result"].as_array()
+        let updates = body["result"]
+            .as_array()
             .ok_or("invalid Telegram response")?;
 
         for update in updates {
@@ -104,7 +111,8 @@ impl ChannelAdapter for TelegramAdapter {
             if let Some(message) = update.get("message") {
                 let text = message["text"].as_str().unwrap_or("");
                 let chat_id = message["chat"]["id"].as_i64().unwrap_or(0);
-                let sender = message["from"]["username"].as_str()
+                let sender = message["from"]["username"]
+                    .as_str()
                     .or_else(|| message["from"]["first_name"].as_str())
                     .unwrap_or("unknown");
 
@@ -117,7 +125,13 @@ impl ChannelAdapter for TelegramAdapter {
         Err("no new messages".into())
     }
 
-    fn supports_streaming(&self) -> bool { true }
-    fn supports_editing(&self) -> bool { true }
-    fn channel_type(&self) -> &str { "telegram" }
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn supports_editing(&self) -> bool {
+        true
+    }
+    fn channel_type(&self) -> &str {
+        "telegram"
+    }
 }

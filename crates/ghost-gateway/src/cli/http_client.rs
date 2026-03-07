@@ -97,7 +97,9 @@ impl GhostHttpClient {
 
         for attempt in 0..=max_retries {
             let req = if attempt == 0 {
-                request.try_clone().unwrap_or_else(|| request.try_clone().unwrap())
+                request
+                    .try_clone()
+                    .unwrap_or_else(|| request.try_clone().unwrap())
             } else {
                 match request.try_clone() {
                     Some(r) => r,
@@ -169,9 +171,9 @@ impl GhostHttpClient {
 
         match status {
             StatusCode::UNAUTHORIZED => Err(CliError::AuthRequired),
-            StatusCode::NOT_FOUND => {
-                Err(CliError::NotFound(format!("resource not found{request_id}")))
-            }
+            StatusCode::NOT_FOUND => Err(CliError::NotFound(format!(
+                "resource not found{request_id}"
+            ))),
             StatusCode::CONFLICT => {
                 let body = resp.text().await.unwrap_or_default();
                 Err(CliError::Conflict(format!("{body}{request_id}")))
@@ -184,9 +186,7 @@ impl GhostHttpClient {
             }
             _ => {
                 let body = resp.text().await.unwrap_or_default();
-                Err(CliError::Http(format!(
-                    "HTTP {status}: {body}{request_id}"
-                )))
+                Err(CliError::Http(format!("HTTP {status}: {body}{request_id}")))
             }
         }
     }
