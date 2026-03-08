@@ -136,11 +136,7 @@ fn verify_backup_archive(
         return Err(ApiError::not_found("Backup file not found"));
     }
 
-    let verify_dir = tempfile::tempdir()
-        .map_err(|e| ApiError::internal(format!("create restore verification dir: {e}")))?;
-    let importer = ghost_backup::BackupImporter::new(verify_dir.path());
-    let manifest = importer
-        .import(backup_path, passphrase)
+    let manifest = ghost_backup::BackupImporter::verify_archive(backup_path, passphrase)
         .map_err(|e| ApiError::internal(format!("Backup verification failed: {e}")))?;
     let (checksum, size_bytes) = checksum_file(backup_path)?;
     Ok((manifest, checksum, size_bytes))
@@ -319,7 +315,7 @@ pub async fn restore_backup(
                 entry_count: manifest.entries.len(),
                 version: manifest.version.clone(),
                 message: format!(
-                    "Archive verified (BLAKE3: {}…, {} bytes). This checks the export package only, not migration rollback safety.",
+                    "Archive verified (BLAKE3: {}…, {} bytes). Restore remains operator-controlled and requires a fresh target directory.",
                     &checksum[..16],
                     size_bytes
                 ),

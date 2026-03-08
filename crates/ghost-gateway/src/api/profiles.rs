@@ -555,6 +555,7 @@ mod tests {
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_ticket_auth_only: false,
             tools_config: crate::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
@@ -620,6 +621,8 @@ mod tests {
                 idempotency_key: Some("idem-1".to_string()),
                 idempotency_status: None,
                 is_mutating: true,
+                client_supplied_operation_id: true,
+                client_supplied_idempotency_key: true,
             }),
             Path("agent-1".to_string()),
             Json(AssignProfileRequest {

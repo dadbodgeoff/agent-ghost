@@ -188,7 +188,14 @@
     loadStatus();
     loadActionLog();
     const unsub = wsStore.on('AgentStateChange', () => { loadStatus(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => {
+      loadStatus();
+      loadActionLog();
+    });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 </script>
 

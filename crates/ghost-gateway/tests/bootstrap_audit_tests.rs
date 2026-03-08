@@ -568,6 +568,7 @@ mod appstate_field_tests {
             )
             .definitions,
             Arc::clone(&db),
+            ghost_gateway::config::ExternalSkillsConfig::default(),
         )
         .await
         .unwrap();
@@ -595,6 +596,7 @@ mod appstate_field_tests {
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_ticket_auth_only: false,
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),

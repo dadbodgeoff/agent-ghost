@@ -616,6 +616,7 @@ mod tests {
             )
             .definitions,
             Arc::clone(&db),
+            crate::config::ExternalSkillsConfig::default(),
         )
         .await
         .unwrap();

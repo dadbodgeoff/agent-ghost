@@ -288,10 +288,17 @@ impl GatewayBootstrap {
             crate::skill_catalog::service::SkillCatalogService::new(
                 compiled_skills.definitions,
                 Arc::clone(&db),
+                config.external_skills.clone(),
             )
             .await
             .map_err(|e| BootstrapError::Database(format!("skill catalog: {e}")))?,
         );
+        if config.external_skills.enabled && config.external_skills.rescan_on_boot {
+            skill_catalog
+                .rescan_external_skills("bootstrap")
+                .await
+                .map_err(|e| BootstrapError::Database(format!("skill ingest: {e}")))?;
+        }
         let skill_names = skill_catalog
             .list_skills()
             .map_err(|e| BootstrapError::Database(format!("skill catalog: {e}")))?
@@ -302,7 +309,7 @@ impl GatewayBootstrap {
         tracing::info!(
             count = skill_names.len(),
             skills = ?skill_names,
-            "Compiled skill catalog initialized"
+            "Skill catalog initialized"
         );
 
         let app_state = Arc::new(AppState {
@@ -323,6 +330,7 @@ impl GatewayBootstrap {
             default_model_provider: config.models.default_provider.clone(),
             pc_control_circuit_breaker,
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
             tools_config: config.tools.clone(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
@@ -674,15 +682,13 @@ impl GatewayBootstrap {
         let mut registry = AgentRegistry::new();
         for agent in &config.agents {
             tracing::info!(agent = %agent.name, "Registering agent");
-            // Dual key registration (Task 3.6 AC3, Task 5.5 AC10):
-            // Load agent public key from ~/.ghost/agents/{name}/keys/agent.pub
-            // Register in both MessageDispatcher (for inter-agent message
-            // signature verification) and cortex-crdt KeyRegistry (for
-            // CRDT delta signature verification).
+            // Load-time key presence check only. Do not claim runtime
+            // registration here unless the consuming subsystem actually wires
+            // the verifying key into its acceptance path.
             let key_path =
                 shellexpand_tilde(&format!("~/.ghost/agents/{}/keys/agent.pub", agent.name));
             if std::path::Path::new(&key_path).exists() {
-                tracing::info!(agent = %agent.name, "Public key found — dual registration");
+                tracing::info!(agent = %agent.name, "Public key found");
             } else {
                 tracing::warn!(
                     agent = %agent.name,

@@ -49,8 +49,7 @@ pub fn error_response_with_idempotency(error: ApiError) -> Response {
     response
 }
 
-pub fn write_mutation_audit_entry(
-    conn: &rusqlite::Connection,
+fn mutation_audit_entry(
     agent_id: &str,
     event_type: &str,
     severity: &str,
@@ -59,9 +58,8 @@ pub fn write_mutation_audit_entry(
     details: serde_json::Value,
     operation_context: &OperationContext,
     idempotency_status: &IdempotencyStatus,
-) {
-    let engine = ghost_audit::AuditQueryEngine::new(conn);
-    let entry = ghost_audit::AuditEntry {
+) -> ghost_audit::AuditEntry {
+    ghost_audit::AuditEntry {
         id: uuid::Uuid::now_v7().to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         agent_id: agent_id.to_string(),
@@ -80,9 +78,58 @@ pub fn write_mutation_audit_entry(
         request_id: Some(operation_context.request_id.clone()),
         idempotency_key: operation_context.idempotency_key.clone(),
         idempotency_status: Some(idempotency_status.as_header_value().to_string()),
-    };
+    }
+}
 
-    if let Err(error) = engine.insert(&entry) {
+pub fn insert_mutation_audit_entry(
+    conn: &rusqlite::Connection,
+    agent_id: &str,
+    event_type: &str,
+    severity: &str,
+    actor: &str,
+    outcome: &str,
+    details: serde_json::Value,
+    operation_context: &OperationContext,
+    idempotency_status: &IdempotencyStatus,
+) -> Result<(), ApiError> {
+    let engine = ghost_audit::AuditQueryEngine::new(conn);
+    let entry = mutation_audit_entry(
+        agent_id,
+        event_type,
+        severity,
+        actor,
+        outcome,
+        details,
+        operation_context,
+        idempotency_status,
+    );
+    engine
+        .insert(&entry)
+        .map_err(|error| ApiError::db_error("mutation_audit_log", error))
+}
+
+pub fn write_mutation_audit_entry(
+    conn: &rusqlite::Connection,
+    agent_id: &str,
+    event_type: &str,
+    severity: &str,
+    actor: &str,
+    outcome: &str,
+    details: serde_json::Value,
+    operation_context: &OperationContext,
+    idempotency_status: &IdempotencyStatus,
+) {
+    if let Err(error) = insert_mutation_audit_entry(
+        conn,
+        agent_id,
+        event_type,
+        severity,
+        actor,
+        outcome,
+        details,
+        operation_context,
+        idempotency_status,
+    ) {
         tracing::warn!(
             event_type = %event_type,
             agent_id = %agent_id,
@@ -107,6 +154,8 @@ mod tests {
             idempotency_key: Some("idem-1".to_string()),
             idempotency_status: None,
             is_mutating: true,
+            client_supplied_operation_id: true,
+            client_supplied_idempotency_key: true,
         };
 
         write_mutation_audit_entry(

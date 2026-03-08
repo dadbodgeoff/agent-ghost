@@ -12,13 +12,22 @@
   let error = $state<string | null>(null);
   let actionLoading = $state<string | null>(null);
   let activeTab = $state<'installed' | 'available'>('installed');
+  let confirmSkill = $state<Skill | null>(null);
+  let quarantineSkill = $state<Skill | null>(null);
+  let quarantineReason = $state('');
+
+  type SkillAction = 'install' | 'uninstall' | 'quarantine' | 'resolve' | 'reverify';
 
   onMount(() => {
     loadSkills();
 
     // T-5.9.1: Wire SkillChange WS event to refresh skills list.
     const unsub = wsStore.on('SkillChange', () => { loadSkills(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => { loadSkills(); });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 
   async function loadSkills() {
@@ -37,14 +46,16 @@
     }
   }
 
-  let confirmSkill = $state<Skill | null>(null);
-
-  async function handleAction(skill: Skill, action: 'install' | 'uninstall') {
-    if (action === 'install' && !skill.installable) return;
-    if (action === 'uninstall' && !skill.removable) return;
-
+  async function handleAction(skill: Skill, action: SkillAction) {
     if (action === 'install') {
+      if (!skill.installable) return;
       confirmSkill = skill;
+      return;
+    }
+    if (action === 'uninstall' && !skill.removable) return;
+    if (action === 'quarantine') {
+      quarantineSkill = skill;
+      quarantineReason = skill.quarantine_reason ?? '';
       return;
     }
     await doAction(skill, action);
@@ -56,14 +67,45 @@
     confirmSkill = null;
   }
 
-  async function doAction(skill: Skill, action: 'install' | 'uninstall') {
+  async function confirmQuarantine() {
+    if (!quarantineSkill || !quarantineReason.trim()) return;
+    await doAction(quarantineSkill, 'quarantine', quarantineReason.trim());
+    if (!error) {
+      quarantineSkill = null;
+      quarantineReason = '';
+    }
+  }
+
+  function closeQuarantineDialog() {
+    quarantineSkill = null;
+    quarantineReason = '';
+  }
+
+  async function doAction(skill: Skill, action: SkillAction, reason?: string) {
     actionLoading = skill.id;
     try {
       const client = await getGhostClient();
-      if (action === 'install') {
-        await client.skills.install(skill.name);
-      } else {
-        await client.skills.uninstall(skill.name);
+      switch (action) {
+        case 'install':
+          await client.skills.install(skill.id);
+          break;
+        case 'uninstall':
+          await client.skills.uninstall(skill.id);
+          break;
+        case 'quarantine':
+          await client.skills.quarantine(skill.id, { reason: reason ?? '' });
+          break;
+        case 'resolve':
+          if (skill.quarantine_revision == null) {
+            throw new Error('Quarantine revision is required to resolve a skill quarantine');
+          }
+          await client.skills.resolveQuarantine(skill.id, {
+            expected_quarantine_revision: skill.quarantine_revision,
+          });
+          break;
+        case 'reverify':
+          await client.skills.reverify(skill.id);
+          break;
       }
       await loadSkills();
     } catch (e: unknown) {
@@ -78,7 +120,10 @@
 <div class="page">
   <header class="page-header">
     <h1>Skills</h1>
-    <p class="subtitle">Manage the compiled skill catalog exposed by the gateway runtime</p>
+    <p class="subtitle">
+      Manage compiled and external skills through the gateway-owned catalog, verification, and
+      quarantine state
+    </p>
   </header>
 
   <div class="tabs">
@@ -160,8 +205,14 @@
     >
       <h2>Review Install Access</h2>
       <p>
-        Installing <strong>{confirmSkill.name}</strong> exposes the skill to eligible runtimes and grants
-        the following declared privileges:
+        Installing <strong>{confirmSkill.name}</strong>
+        {#if confirmSkill.source === 'compiled'}
+          exposes the skill to eligible runtimes and grants the following declared privileges:
+        {:else}
+          records the external artifact as installed in the catalog. Runtime execution remains gated
+          off until the external WASM runtime is enabled. Declared privileges are still shown for
+          review:
+        {/if}
       </p>
       {#if confirmSkill.privileges.length > 0}
         <ul class="privilege-list">
@@ -180,6 +231,43 @@
         <button class="cancel-btn" onclick={() => (confirmSkill = null)}>Cancel</button>
         <button class="approve-btn" onclick={confirmInstall} disabled={actionLoading === confirmSkill.id}>
           {actionLoading === confirmSkill.id ? 'Installing...' : 'Approve & Install'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if quarantineSkill}
+  <div class="confirm-overlay" onclick={closeQuarantineDialog} role="presentation">
+    <div
+      class="confirm-dialog"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
+      role="dialog"
+      tabindex="-1"
+      aria-modal="true"
+      aria-label="Quarantine skill"
+    >
+      <h2>Quarantine External Skill</h2>
+      <p>
+        Quarantining <strong>{quarantineSkill.name}</strong> blocks installation and execution until
+        an operator explicitly resolves the quarantine.
+      </p>
+      <label class="dialog-label" for="quarantine-reason">Reason</label>
+      <textarea
+        id="quarantine-reason"
+        bind:value={quarantineReason}
+        rows="4"
+        placeholder="Explain why this artifact is being quarantined"
+      ></textarea>
+      <div class="confirm-actions">
+        <button class="cancel-btn" onclick={closeQuarantineDialog}>Cancel</button>
+        <button
+          class="approve-btn"
+          onclick={confirmQuarantine}
+          disabled={actionLoading === quarantineSkill.id || !quarantineReason.trim()}
+        >
+          {actionLoading === quarantineSkill.id ? 'Quarantining...' : 'Confirm Quarantine'}
         </button>
       </div>
     </div>
@@ -246,6 +334,29 @@
     color: var(--color-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+  }
+
+  .dialog-label {
+    display: block;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: var(--spacing-2);
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 7rem;
+    resize: vertical;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border-default);
+    background: var(--color-bg-elevated-2);
+    color: var(--color-text-primary);
+    padding: var(--spacing-3);
+    font: inherit;
+    margin-bottom: var(--spacing-4);
   }
 
   .no-caps {

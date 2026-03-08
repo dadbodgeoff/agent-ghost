@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use thiserror::Error;
 
 use crate::migrations::{current_version, LATEST_VERSION};
@@ -50,9 +50,21 @@ impl SchemaProblem {
         }
     }
 
+    fn missing_index_contract(index: &str, detail: &str) -> Self {
+        Self {
+            message: format!("index {index} missing contract {detail}"),
+        }
+    }
+
     fn missing_trigger(trigger: &str) -> Self {
         Self {
             message: format!("missing trigger {trigger}"),
+        }
+    }
+
+    fn missing_table_contract(table: &str, detail: &str) -> Self {
+        Self {
+            message: format!("table {table} missing contract {detail}"),
         }
     }
 }
@@ -88,6 +100,18 @@ pub enum SchemaContractError {
 struct TableRequirement {
     name: &'static str,
     required_columns: &'static [&'static str],
+}
+
+struct TableSqlRequirement {
+    table: &'static str,
+    description: &'static str,
+    pattern: &'static str,
+}
+
+struct IndexSqlRequirement {
+    index: &'static str,
+    description: &'static str,
+    pattern: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +327,75 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
         required_columns: &["skill_name", "state", "updated_at", "updated_by"],
     },
     TableRequirement {
+        name: "skill_signers",
+        required_columns: &[
+            "key_id",
+            "publisher",
+            "public_key",
+            "state",
+            "updated_at",
+            "updated_by",
+            "revocation_reason",
+        ],
+    },
+    TableRequirement {
+        name: "external_skill_artifacts",
+        required_columns: &[
+            "artifact_digest",
+            "artifact_schema_version",
+            "skill_name",
+            "skill_version",
+            "publisher",
+            "description",
+            "source_kind",
+            "execution_mode",
+            "entrypoint",
+            "source_uri",
+            "managed_artifact_path",
+            "managed_entrypoint_path",
+            "manifest_json",
+            "requested_capabilities",
+            "declared_privileges",
+            "signer_key_id",
+            "artifact_size_bytes",
+            "ingested_at",
+        ],
+    },
+    TableRequirement {
+        name: "external_skill_verifications",
+        required_columns: &[
+            "artifact_digest",
+            "status",
+            "signer_key_id",
+            "signer_publisher",
+            "details_json",
+            "verified_at",
+        ],
+    },
+    TableRequirement {
+        name: "external_skill_quarantine",
+        required_columns: &[
+            "artifact_digest",
+            "state",
+            "reason_code",
+            "reason_detail",
+            "revision",
+            "updated_at",
+            "updated_by",
+        ],
+    },
+    TableRequirement {
+        name: "external_skill_install_state",
+        required_columns: &[
+            "artifact_digest",
+            "skill_name",
+            "skill_version",
+            "state",
+            "updated_at",
+            "updated_by",
+        ],
+    },
+    TableRequirement {
         name: "a2a_tasks",
         required_columns: &[],
     },
@@ -400,11 +493,37 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
     },
     TableRequirement {
         name: "stream_event_log",
-        required_columns: &[],
+        required_columns: &[
+            "id",
+            "session_id",
+            "message_id",
+            "event_type",
+            "payload",
+            "created_at",
+        ],
     },
     TableRequirement {
         name: "workflow_executions",
-        required_columns: &[],
+        required_columns: &[
+            "id",
+            "workflow_id",
+            "workflow_name",
+            "journal_id",
+            "operation_id",
+            "owner_token",
+            "lease_epoch",
+            "state_version",
+            "status",
+            "current_step_index",
+            "current_node_id",
+            "recovery_action",
+            "state",
+            "final_response_status",
+            "final_response_body",
+            "started_at",
+            "completed_at",
+            "updated_at",
+        ],
     },
     TableRequirement {
         name: "channels",
@@ -447,6 +566,14 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
             "status",
             "created_at",
             "last_seen_at",
+            "request_id",
+            "response_status_code",
+            "response_body",
+            "response_content_type",
+            "committed_at",
+            "lease_expires_at",
+            "owner_token",
+            "lease_epoch",
         ],
     },
     TableRequirement {
@@ -544,6 +671,12 @@ const REQUIRED_INDEXES: &[&str] = &[
     "idx_installed_skills_state",
     "idx_installed_skills_name",
     "idx_skill_install_state_state",
+    "idx_skill_signers_state",
+    "idx_external_skill_artifacts_name",
+    "idx_external_skill_artifacts_source_kind",
+    "idx_external_skill_quarantine_state",
+    "idx_external_skill_install_state_name",
+    "idx_external_skill_install_state_state",
     "idx_a2a_tasks_status",
     "idx_a2a_tasks_created",
     "idx_discovered_agents_trust",
@@ -577,6 +710,9 @@ const REQUIRED_INDEXES: &[&str] = &[
     "idx_credit_tx_to",
     "idx_credit_escrows_contract",
     "idx_mkt_reviews_reviewee",
+    "idx_stream_event_recovery",
+    "idx_live_execution_route_status",
+    "idx_live_execution_actor_operation",
     "idx_channels_agent",
     "idx_channels_type",
     "idx_session_bookmarks_session",
@@ -586,6 +722,9 @@ const REQUIRED_INDEXES: &[&str] = &[
     "idx_operation_journal_operation_id",
     "idx_operation_journal_status_lease",
     "idx_operation_journal_fingerprint",
+    "idx_workflow_executions_journal_id",
+    "idx_workflow_executions_operation_id",
+    "idx_workflow_executions_workflow_status",
     "idx_goal_proposals_v2_lineage",
     "idx_goal_proposals_v2_subject",
     "idx_goal_proposal_transitions_proposal",
@@ -625,6 +764,72 @@ const REQUIRED_TRIGGERS: &[&str] = &[
     "prevent_goal_proposal_transitions_delete",
     "prevent_audit_log_row_update",
     "prevent_audit_log_row_delete",
+    "prevent_operation_journal_delete",
+    "operation_journal_commit_requires_current_request",
+];
+
+const REQUIRED_TABLE_SQL_PATTERNS: &[TableSqlRequirement] = &[
+    TableSqlRequirement {
+        table: "operation_journal",
+        description: "aborted journal status",
+        pattern: "CHECK(status IN ('in_progress', 'committed', 'aborted'))",
+    },
+    TableSqlRequirement {
+        table: "operation_journal",
+        description: "owner token non-empty check",
+        pattern: "owner_token TEXT NOT NULL DEFAULT '' CHECK(length(owner_token) > 0)",
+    },
+    TableSqlRequirement {
+        table: "operation_journal",
+        description: "lease epoch non-negative check",
+        pattern: "lease_epoch INTEGER NOT NULL DEFAULT 0 CHECK(lease_epoch >= 0)",
+    },
+    TableSqlRequirement {
+        table: "live_execution_records",
+        description: "journal_id unique contract",
+        pattern: "journal_id   TEXT NOT NULL UNIQUE",
+    },
+    TableSqlRequirement {
+        table: "live_execution_records",
+        description: "operation_id unique contract",
+        pattern: "operation_id TEXT NOT NULL UNIQUE",
+    },
+    TableSqlRequirement {
+        table: "live_execution_records",
+        description: "recovery-required execution status",
+        pattern: "CHECK(status IN ('accepted', 'running', 'completed', 'recovery_required'))",
+    },
+    TableSqlRequirement {
+        table: "workflow_executions",
+        description: "workflow state default json contract",
+        pattern: "state TEXT NOT NULL DEFAULT '{}'",
+    },
+    TableSqlRequirement {
+        table: "workflow_executions",
+        description: "workflow execution version contract",
+        pattern: "state_version INTEGER NOT NULL DEFAULT 0 CHECK(state_version >= 0)",
+    },
+    TableSqlRequirement {
+        table: "workflow_executions",
+        description: "workflow execution status contract",
+        pattern:
+            "status TEXT NOT NULL DEFAULT 'recovery_required' CHECK(status IN ('running', 'completed', 'failed', 'recovery_required'))",
+    },
+];
+
+const REQUIRED_INDEX_SQL_PATTERNS: &[IndexSqlRequirement] = &[
+    IndexSqlRequirement {
+        index: "idx_workflow_executions_journal_id",
+        description: "workflow execution journal uniqueness",
+        pattern:
+            "CREATE UNIQUE INDEX idx_workflow_executions_journal_id ON workflow_executions(journal_id) WHERE journal_id IS NOT NULL",
+    },
+    IndexSqlRequirement {
+        index: "idx_workflow_executions_operation_id",
+        description: "workflow execution operation uniqueness",
+        pattern:
+            "CREATE UNIQUE INDEX idx_workflow_executions_operation_id ON workflow_executions(operation_id) WHERE operation_id IS NOT NULL",
+    },
 ];
 
 const REQUIRED_COLUMN_TYPES: &[ColumnTypeRequirement] = &[
@@ -818,6 +1023,41 @@ const REQUIRED_COLUMN_TYPES: &[ColumnTypeRequirement] = &[
         column: "new_value",
         affinity: ColumnAffinity::Real,
     },
+    ColumnTypeRequirement {
+        table: "stream_event_log",
+        column: "id",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "workflow_executions",
+        column: "lease_epoch",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "workflow_executions",
+        column: "state_version",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "workflow_executions",
+        column: "current_step_index",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "workflow_executions",
+        column: "final_response_status",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "operation_journal",
+        column: "response_status_code",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "operation_journal",
+        column: "lease_epoch",
+        affinity: ColumnAffinity::Integer,
+    },
 ];
 
 pub fn require_schema_ready(
@@ -887,6 +1127,30 @@ pub fn require_schema_ready(
         }
     }
 
+    for requirement in REQUIRED_TABLE_SQL_PATTERNS {
+        let Some(sql) = load_table_sql(conn, requirement.table)? else {
+            continue;
+        };
+        if !normalize_schema_sql(&sql).contains(&normalize_schema_sql(requirement.pattern)) {
+            problems.push(SchemaProblem::missing_table_contract(
+                requirement.table,
+                requirement.description,
+            ));
+        }
+    }
+
+    for requirement in REQUIRED_INDEX_SQL_PATTERNS {
+        let Some(sql) = load_index_sql(conn, requirement.index)? else {
+            continue;
+        };
+        if !normalize_schema_sql(&sql).contains(&normalize_schema_sql(requirement.pattern)) {
+            problems.push(SchemaProblem::missing_index_contract(
+                requirement.index,
+                requirement.description,
+            ));
+        }
+    }
+
     if !problems.is_empty() {
         let summary = problems
             .iter()
@@ -906,6 +1170,26 @@ pub fn require_schema_ready(
         current_version: current,
         latest_version: LATEST_VERSION,
     })
+}
+
+fn load_table_sql(conn: &Connection, table: &str) -> Result<Option<String>, SchemaContractError> {
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|error| SchemaContractError::Query(error.to_string()))
+}
+
+fn load_index_sql(conn: &Connection, index: &str) -> Result<Option<String>, SchemaContractError> {
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        [index],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|error| SchemaContractError::Query(error.to_string()))
 }
 
 fn load_named_objects(
@@ -960,6 +1244,13 @@ fn normalize_declared_type(declared_type: &str) -> ColumnAffinity {
     } else {
         ColumnAffinity::Numeric
     }
+}
+
+fn normalize_schema_sql(sql: &str) -> String {
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 fn verify_integrity(conn: &Connection) -> Result<(), SchemaContractError> {

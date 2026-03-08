@@ -6,9 +6,14 @@
    */
 
   let {
-    state = 'disconnected' as 'connected' | 'connecting' | 'reconnecting' | 'disconnected',
+    state = 'disconnected' as
+      | 'connected'
+      | 'connecting'
+      | 'reconnecting'
+      | 'disconnected'
+      | 'follower',
   }: {
-    state?: 'connected' | 'connecting' | 'reconnecting' | 'disconnected';
+    state?: 'connected' | 'connecting' | 'reconnecting' | 'disconnected' | 'follower';
   } = $props();
 
   const STATE_MAP: Record<string, { color: string; label: string }> = {
@@ -16,6 +21,7 @@
     connecting:   { color: 'var(--color-severity-soft)',   label: 'Connecting' },
     reconnecting: { color: 'var(--color-severity-soft)',   label: 'Reconnecting' },
     disconnected: { color: 'var(--color-severity-hard)',   label: 'Disconnected' },
+    follower:     { color: 'var(--color-text-muted)',      label: 'Follower' },
   };
 
   let info = $derived(STATE_MAP[state] || STATE_MAP.disconnected);

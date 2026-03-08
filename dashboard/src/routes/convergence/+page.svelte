@@ -135,7 +135,11 @@
   onMount(() => {
     loadScores();
     const unsub = wsStore.on('ScoreUpdate', () => { loadScores(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => { loadScores(); });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 </script>
 

@@ -69,6 +69,29 @@ pub fn get_by_journal_id(
     }
 }
 
+pub fn get_by_operation_id(
+    conn: &Connection,
+    operation_id: &str,
+) -> CortexResult<Option<LiveExecutionRecord>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, journal_id, operation_id, route_kind, actor_key, status, state_json, created_at, updated_at
+             FROM live_execution_records
+             WHERE operation_id = ?1",
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let mut rows = stmt
+        .query_map(params![operation_id], map_row)
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    match rows.next() {
+        Some(Ok(row)) => Ok(Some(row)),
+        Some(Err(e)) => Err(to_storage_err(e.to_string())),
+        None => Ok(None),
+    }
+}
+
 pub fn get_by_id(conn: &Connection, id: &str) -> CortexResult<Option<LiveExecutionRecord>> {
     conn.query_row(
         "SELECT id, journal_id, operation_id, route_kind, actor_key, status, state_json, created_at, updated_at

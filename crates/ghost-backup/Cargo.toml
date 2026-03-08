@@ -15,7 +15,9 @@ thiserror = { workspace = true }
 blake3 = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+age = "0.11"
+rusqlite = { workspace = true }
+tempfile = "3"
 
 [dev-dependencies]
 proptest = { workspace = true }
-tempfile = "3"

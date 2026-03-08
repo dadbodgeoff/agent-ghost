@@ -46,6 +46,9 @@ pub struct GhostConfig {
     /// Tool configuration — web_search, web_fetch, http_request, shell.
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// External skill ingestion, trust roots, and managed artifact storage.
+    #[serde(default)]
+    pub external_skills: ExternalSkillsConfig,
     /// OpenTelemetry configuration (WP9-A). Only active with `otel` feature.
     #[serde(default)]
     pub otel: OtelConfig,
@@ -97,6 +100,9 @@ pub struct GatewayConfig {
     /// WP7-C: WebSocket event replay buffer size.
     #[serde(default = "default_ws_replay_buffer_size")]
     pub ws_replay_buffer_size: usize,
+    /// Require short-lived WebSocket tickets and reject legacy bearer upgrade auth.
+    #[serde(default)]
+    pub ws_ticket_auth_only: bool,
     /// WP9-D: Session TTL in days. Sessions inactive beyond this are soft-deleted.
     /// Hard-deleted after 2x TTL. Default: 90 days.
     #[serde(default = "default_session_ttl_days")]
@@ -111,9 +117,67 @@ impl Default for GatewayConfig {
             db_path: default_db_path(),
             ws_broadcast_capacity: default_ws_broadcast_capacity(),
             ws_replay_buffer_size: default_ws_replay_buffer_size(),
+            ws_ticket_auth_only: false,
             session_ttl_days: default_session_ttl_days(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalSkillsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub rescan_on_boot: bool,
+    #[serde(default)]
+    pub execution_enabled: bool,
+    #[serde(default = "default_external_skill_storage_path")]
+    pub managed_storage_path: String,
+    #[serde(default)]
+    pub approved_roots: Vec<ExternalSkillRootConfig>,
+    #[serde(default)]
+    pub trusted_signers: Vec<TrustedSkillSignerConfig>,
+}
+
+impl Default for ExternalSkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rescan_on_boot: false,
+            execution_enabled: false,
+            managed_storage_path: default_external_skill_storage_path(),
+            approved_roots: Vec::new(),
+            trusted_signers: Vec::new(),
+        }
+    }
+}
+
+fn default_external_skill_storage_path() -> String {
+    "~/.ghost/data/skill-artifacts".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalSkillRootConfig {
+    pub source: ExternalSkillSourceConfig,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalSkillSourceConfig {
+    #[default]
+    User,
+    Workspace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedSkillSignerConfig {
+    pub key_id: String,
+    pub publisher: String,
+    /// Base64-encoded Ed25519 public key bytes.
+    pub public_key: String,
+    #[serde(default)]
+    pub revoked: bool,
 }
 
 /// WP9-D: Default session TTL in days.
@@ -761,6 +825,37 @@ impl GhostConfig {
                 "gateway.db_path cannot be empty".into(),
             ));
         }
+        if self.external_skills.enabled {
+            if self.external_skills.managed_storage_path.trim().is_empty() {
+                return Err(ConfigError::ValidationError(
+                    "external_skills.managed_storage_path cannot be empty".into(),
+                ));
+            }
+            for root in &self.external_skills.approved_roots {
+                if root.path.trim().is_empty() {
+                    return Err(ConfigError::ValidationError(
+                        "external_skills.approved_roots[].path cannot be empty".into(),
+                    ));
+                }
+            }
+            for signer in &self.external_skills.trusted_signers {
+                if signer.key_id.trim().is_empty() {
+                    return Err(ConfigError::ValidationError(
+                        "external_skills.trusted_signers[].key_id cannot be empty".into(),
+                    ));
+                }
+                if signer.publisher.trim().is_empty() {
+                    return Err(ConfigError::ValidationError(
+                        "external_skills.trusted_signers[].publisher cannot be empty".into(),
+                    ));
+                }
+                if signer.public_key.trim().is_empty() {
+                    return Err(ConfigError::ValidationError(
+                        "external_skills.trusted_signers[].public_key cannot be empty".into(),
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -778,6 +873,7 @@ impl Default for GhostConfig {
             mesh: MeshConfig::default(),
             pc_control: ghost_pc_control::safety::PcControlConfig::default(),
             tools: ToolsConfig::default(),
+            external_skills: ExternalSkillsConfig::default(),
             otel: OtelConfig::default(),
         }
     }

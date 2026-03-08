@@ -2,14 +2,14 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, Request};
 use axum::middleware::Next;
 use axum::response::Response;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 pub const OPERATION_ID_HEADER: &str = "x-ghost-operation-id";
 pub const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 pub const IDEMPOTENCY_STATUS_HEADER: &str = "x-ghost-idempotency-status";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdempotencyStatus {
     Executed,
@@ -29,13 +29,15 @@ impl IdempotencyStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OperationContext {
     pub request_id: String,
     pub operation_id: Option<String>,
     pub idempotency_key: Option<String>,
     pub idempotency_status: Option<IdempotencyStatus>,
     pub is_mutating: bool,
+    pub client_supplied_operation_id: bool,
+    pub client_supplied_idempotency_key: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -65,9 +67,13 @@ fn set_header(headers: &mut HeaderMap, name: &'static str, value: &str) {
 pub async fn operation_context_middleware(mut request: Request<Body>, next: Next) -> Response {
     let is_mutating = is_mutating_method(request.method());
 
-    let operation_id = read_header(request.headers(), OPERATION_ID_HEADER)
+    let client_operation_id = read_header(request.headers(), OPERATION_ID_HEADER);
+    let client_idempotency_key = read_header(request.headers(), IDEMPOTENCY_KEY_HEADER);
+    let operation_id = client_operation_id
+        .clone()
         .or_else(|| is_mutating.then(|| uuid::Uuid::now_v7().to_string()));
-    let idempotency_key = read_header(request.headers(), IDEMPOTENCY_KEY_HEADER)
+    let idempotency_key = client_idempotency_key
+        .clone()
         .or_else(|| is_mutating.then(|| operation_id.clone()).flatten());
     let request_id = read_header(request.headers(), REQUEST_ID_HEADER)
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
@@ -92,6 +98,8 @@ pub async fn operation_context_middleware(mut request: Request<Body>, next: Next
         idempotency_key: idempotency_key.clone(),
         idempotency_status: None,
         is_mutating,
+        client_supplied_operation_id: client_operation_id.is_some(),
+        client_supplied_idempotency_key: client_idempotency_key.is_some(),
     });
 
     let mut response = next.run(request).await;
@@ -109,6 +117,7 @@ pub async fn operation_context_middleware(mut request: Request<Body>, next: Next
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use axum::extract::Extension;
     use axum::http::{Request, StatusCode};
     use axum::response::Json;
@@ -140,6 +149,32 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let context: OperationContext = serde_json::from_slice(&body).unwrap();
+        assert!(!context.client_supplied_operation_id);
+        assert!(!context.client_supplied_idempotency_key);
+    }
+
+    #[tokio::test]
+    async fn caller_supplied_ids_are_tracked_explicitly() {
+        let app = Router::new()
+            .route("/mutate", post(context_handler))
+            .layer(axum::middleware::from_fn(operation_context_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/mutate")
+                    .header(OPERATION_ID_HEADER, "op-123")
+                    .header(IDEMPOTENCY_KEY_HEADER, "idem-123")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
         let headers = response.headers();
         let operation_id = headers
             .get(OPERATION_ID_HEADER)
@@ -150,7 +185,8 @@ mod tests {
             .and_then(|value| value.to_str().ok())
             .unwrap();
 
-        assert_eq!(idempotency_key, operation_id);
+        assert_eq!(operation_id, "op-123");
+        assert_eq!(idempotency_key, "idem-123");
         assert!(headers.get(REQUEST_ID_HEADER).is_some());
         assert_eq!(
             headers
@@ -158,6 +194,10 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             None
         );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let context: OperationContext = serde_json::from_slice(&body).unwrap();
+        assert!(context.client_supplied_operation_id);
+        assert!(context.client_supplied_idempotency_key);
     }
 
     #[tokio::test]

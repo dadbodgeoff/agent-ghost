@@ -18,7 +18,8 @@ use crate::api::auth::Claims;
 use crate::api::error::ApiError;
 use crate::api::idempotency::{
     abort_prepared_json_operation, commit_prepared_json_operation,
-    execute_idempotent_json_mutation, prepare_json_operation, PreparedOperation,
+    execute_idempotent_json_mutation, prepare_json_operation, start_operation_lease_heartbeat,
+    PreparedOperation,
 };
 use crate::api::mutation::{
     error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
@@ -267,7 +268,7 @@ fn oauth_execute_audit_details(
 
 async fn finalize_oauth_execute_terminal_response(
     state: &Arc<AppState>,
-    journal_id: &str,
+    lease: &crate::api::idempotency::PreparedOperationLease,
     operation_context: &OperationContext,
     actor: &str,
     execution_id: &str,
@@ -285,7 +286,7 @@ async fn finalize_oauth_execute_terminal_response(
         return error_response_with_idempotency(error);
     }
 
-    match commit_prepared_json_operation(&db, operation_context, journal_id, status, &body) {
+    match commit_prepared_json_operation(&db, operation_context, lease, status, &body) {
         Ok(outcome) => {
             let audit_outcome = if status == StatusCode::OK {
                 "completed"
@@ -311,7 +312,7 @@ async fn finalize_oauth_execute_terminal_response(
 
 async fn finalize_oauth_execute_recovery_response(
     state: &Arc<AppState>,
-    journal_id: &str,
+    lease: &crate::api::idempotency::PreparedOperationLease,
     operation_context: &OperationContext,
     actor: &str,
     execution_id: &str,
@@ -326,13 +327,8 @@ async fn finalize_oauth_execute_recovery_response(
         return error_response_with_idempotency(error);
     }
 
-    match commit_prepared_json_operation(
-        &db,
-        operation_context,
-        journal_id,
-        StatusCode::ACCEPTED,
-        &body,
-    ) {
+    match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::ACCEPTED, &body)
+    {
         Ok(outcome) => {
             write_mutation_audit_entry(
                 &db,
@@ -595,7 +591,7 @@ pub async fn execute_api_call(
             "IDEMPOTENCY_IN_PROGRESS",
             "An equivalent request is already in progress",
         )),
-        Ok(PreparedOperation::Acquired { journal_id }) => {
+        Ok(PreparedOperation::Acquired { lease }) => {
             let operation_id = operation_context
                 .operation_id
                 .clone()
@@ -605,7 +601,7 @@ pub async fn execute_api_call(
                 let db = state.db.write().await;
                 match cortex_storage::queries::live_execution_queries::get_by_journal_id(
                     &db,
-                    &journal_id,
+                    &lease.journal_id,
                 ) {
                     Ok(Some(record)) => Some(record),
                     Ok(None) => {
@@ -623,19 +619,19 @@ pub async fn execute_api_call(
                         if let Err(error) = persist_oauth_execute_record(
                             &db,
                             &execution_id,
-                            &journal_id,
+                            &lease.journal_id,
                             &operation_id,
                             actor,
                             &execution_state,
                         ) {
-                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(error);
                         }
 
                         Some(
                             cortex_storage::queries::live_execution_queries::LiveExecutionRecord {
                                 id: execution_id,
-                                journal_id,
+                                journal_id: lease.journal_id.clone(),
                                 operation_id: operation_id.clone(),
                                 route_kind: OAUTH_EXECUTE_ROUTE_KIND.to_string(),
                                 actor_key: actor.to_string(),
@@ -648,7 +644,7 @@ pub async fn execute_api_call(
                         )
                     }
                     Err(error) => {
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(ApiError::db_error(
                             "load_live_execution_record",
                             error,
@@ -671,7 +667,7 @@ pub async fn execute_api_call(
                     {
                         return finalize_oauth_execute_terminal_response(
                             &state,
-                            &execution_record.journal_id,
+                            &lease,
                             &operation_context,
                             actor,
                             &execution_record.id,
@@ -686,7 +682,7 @@ pub async fn execute_api_call(
                     let recovery_body = oauth_execute_recovery_body(&execution_state);
                     return finalize_oauth_execute_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         actor,
                         &execution_record.id,
@@ -700,7 +696,7 @@ pub async fn execute_api_call(
                     let recovery_body = oauth_execute_recovery_body(&execution_state);
                     return finalize_oauth_execute_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         actor,
                         &execution_record.id,
@@ -730,8 +726,12 @@ pub async fn execute_api_call(
                 }
             }
 
+            let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
             match state.oauth_broker.execute(&ref_id, &req.api_request) {
                 Ok(response) => {
+                    if let Err(error) = heartbeat.stop().await {
+                        return error_response_with_idempotency(error);
+                    }
                     tracing::info!(
                         ref_id = %req.ref_id,
                         method = %req.api_request.method,
@@ -741,7 +741,7 @@ pub async fn execute_api_call(
                     );
                     finalize_oauth_execute_terminal_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         actor,
                         &execution_record.id,
@@ -757,10 +757,13 @@ pub async fn execute_api_call(
                     .await
                 }
                 Err(error) => {
+                    if let Err(heartbeat_error) = heartbeat.stop().await {
+                        return error_response_with_idempotency(heartbeat_error);
+                    }
                     if let Some((status, body)) = oauth_execute_terminal_error(&error) {
                         return finalize_oauth_execute_terminal_response(
                             &state,
-                            &execution_record.journal_id,
+                            &lease,
                             &operation_context,
                             actor,
                             &execution_record.id,
@@ -781,7 +784,7 @@ pub async fn execute_api_call(
                     );
                     finalize_oauth_execute_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         actor,
                         &execution_record.id,

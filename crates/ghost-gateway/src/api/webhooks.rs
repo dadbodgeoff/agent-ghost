@@ -16,7 +16,8 @@ use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::idempotency::{
     abort_prepared_json_operation, commit_prepared_json_operation,
-    execute_idempotent_json_mutation, prepare_json_operation, PreparedOperation,
+    execute_idempotent_json_mutation, prepare_json_operation, start_operation_lease_heartbeat,
+    PreparedOperation,
 };
 use crate::api::mutation::{
     error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
@@ -501,13 +502,13 @@ pub async fn test_webhook(
             "IDEMPOTENCY_IN_PROGRESS",
             "An equivalent request is already in progress",
         )),
-        Ok(PreparedOperation::Acquired { journal_id }) => {
+        Ok(PreparedOperation::Acquired { lease }) => {
             let webhook_config = {
                 let db = match state.db.read() {
                     Ok(db) => db,
                     Err(error) => {
                         let db = state.db.write().await;
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(ApiError::db_error(
                             "test_webhook",
                             error,
@@ -530,7 +531,7 @@ pub async fn test_webhook(
 
             let Some((url, secret, headers_json)) = webhook_config else {
                 let db = state.db.write().await;
-                let _ = abort_prepared_json_operation(&db, &journal_id);
+                let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                 return error_response_with_idempotency(ApiError::not_found(format!(
                     "Webhook '{id}' not found"
                 )));
@@ -542,15 +543,11 @@ pub async fn test_webhook(
                 "message": "This is a test webhook from GHOST ADE",
             });
 
+            let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
             let status = fire_single_webhook(&url, &secret, &headers_json, &payload).await;
-            crate::api::websocket::broadcast_event(
-                &state,
-                WsEvent::WebhookFired {
-                    webhook_id: id.clone(),
-                    event_type: "test".into(),
-                    status_code: status,
-                },
-            );
+            if let Err(error) = heartbeat.stop().await {
+                return error_response_with_idempotency(error);
+            }
 
             let response_body = serde_json::json!({
                 "webhook_id": id,
@@ -562,11 +559,19 @@ pub async fn test_webhook(
             match commit_prepared_json_operation(
                 &db,
                 &operation_context,
-                &journal_id,
+                &lease,
                 StatusCode::OK,
                 &response_body,
             ) {
                 Ok(outcome) => {
+                    crate::api::websocket::broadcast_event(
+                        &state,
+                        WsEvent::WebhookFired {
+                            webhook_id: id.clone(),
+                            event_type: "test".into(),
+                            status_code: status,
+                        },
+                    );
                     write_mutation_audit_entry(
                         &db,
                         "platform",

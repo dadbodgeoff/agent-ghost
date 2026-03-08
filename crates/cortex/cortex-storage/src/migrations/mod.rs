@@ -40,6 +40,8 @@ pub mod v051_live_execution_records;
 pub mod v052_skill_install_state;
 pub mod v053_stream_event_log_unscoped;
 pub mod v054_operation_journal_ownership;
+pub mod v055_external_skill_pipeline;
+pub mod v056_workflow_execution_contract;
 
 use std::path::{Path, PathBuf};
 
@@ -49,14 +51,14 @@ use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
 use rusqlite::{Connection, DatabaseName};
 
-pub const LATEST_VERSION: u32 = 54;
+pub const LATEST_VERSION: u32 = 56;
 
 /// Maximum number of migration backup files to retain.
 const MAX_MIGRATION_BACKUPS: usize = 3;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 39] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 41] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -131,6 +133,16 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 39] = [
         54,
         "operation_journal_ownership",
         v054_operation_journal_ownership::migrate,
+    ),
+    (
+        55,
+        "external_skill_pipeline",
+        v055_external_skill_pipeline::migrate,
+    ),
+    (
+        56,
+        "workflow_execution_contract",
+        v056_workflow_execution_contract::migrate,
     ),
 ];
 

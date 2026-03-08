@@ -101,6 +101,9 @@ use utoipa::OpenApi;
         list_skills,
         install_skill,
         uninstall_skill,
+        quarantine_skill,
+        resolve_skill_quarantine,
+        reverify_skill,
         execute_skill_by_name,
         get_crdt_state,
         verify_integrity_chain,
@@ -202,11 +205,17 @@ use utoipa::OpenApi;
             PushSubscriptionSchema,
             WebhookSchema,
             crate::skill_catalog::SkillStateDto,
+            crate::skill_catalog::SkillInstallStateDto,
+            crate::skill_catalog::SkillVerificationStatusDto,
+            crate::skill_catalog::SkillQuarantineStateDto,
             crate::skill_catalog::SkillSummaryDto,
             crate::skill_catalog::SkillListResponseDto,
+            crate::skill_catalog::SkillQuarantineRequestDto,
+            crate::skill_catalog::SkillQuarantineResolutionRequestDto,
             crate::skill_catalog::ExecuteSkillRequestDto,
             crate::skill_catalog::ExecuteSkillResponseDto,
             crate::skill_catalog::definitions::SkillExecutionMode,
+            crate::skill_catalog::definitions::SkillMutationKind,
             crate::skill_catalog::definitions::SkillSourceKind,
             A2ATaskSchema,
         )
@@ -233,7 +242,7 @@ use utoipa::OpenApi;
         (name = "admin", description = "Backup, restore, and administrative data operations"),
         (name = "provider-keys", description = "Provider key management"),
         (name = "webhooks", description = "Webhook configuration and testing"),
-        (name = "skills", description = "Gateway-owned compiled skill catalog management and execution"),
+        (name = "skills", description = "Gateway-owned mixed-source skill catalog management and execution"),
         (name = "channels", description = "Channel lifecycle and reconnect operations"),
         (name = "itp", description = "ITP event inspection"),
         (name = "oauth", description = "OAuth provider and connection flows"),
@@ -1866,9 +1875,50 @@ async fn install_skill() {}
 async fn uninstall_skill() {}
 
 #[utoipa::path(
+    post, path = "/api/skills/{id}/quarantine",
+    tag = "skills",
+    params(("id" = String, Path, description = "Skill ID")),
+    request_body = crate::skill_catalog::SkillQuarantineRequestDto,
+    responses(
+        (status = 200, description = "Skill quarantined", body = crate::skill_catalog::SkillSummaryDto),
+        (status = 404, description = "Skill not found", body = ErrorResponseSchema),
+        (status = 409, description = "Skill cannot be quarantined", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn quarantine_skill() {}
+
+#[utoipa::path(
+    post, path = "/api/skills/{id}/quarantine/resolve",
+    tag = "skills",
+    params(("id" = String, Path, description = "Skill ID")),
+    request_body = crate::skill_catalog::SkillQuarantineResolutionRequestDto,
+    responses(
+        (status = 200, description = "Skill quarantine resolved", body = crate::skill_catalog::SkillSummaryDto),
+        (status = 404, description = "Skill not found", body = ErrorResponseSchema),
+        (status = 409, description = "Skill quarantine could not be resolved", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn resolve_skill_quarantine() {}
+
+#[utoipa::path(
+    post, path = "/api/skills/{id}/reverify",
+    tag = "skills",
+    params(("id" = String, Path, description = "Skill ID")),
+    responses(
+        (status = 200, description = "Skill reverified", body = crate::skill_catalog::SkillSummaryDto),
+        (status = 404, description = "Skill not found", body = ErrorResponseSchema),
+        (status = 409, description = "Skill cannot be reverified", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn reverify_skill() {}
+
+#[utoipa::path(
     post, path = "/api/skills/{name}/execute",
     tag = "skills",
-    params(("name" = String, Path, description = "Compiled skill name")),
+    params(("name" = String, Path, description = "Catalog skill identifier")),
     request_body = crate::skill_catalog::ExecuteSkillRequestDto,
     responses(
         (status = 200, description = "Skill execution result", body = crate::skill_catalog::ExecuteSkillResponseDto),

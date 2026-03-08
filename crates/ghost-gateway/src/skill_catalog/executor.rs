@@ -1,8 +1,9 @@
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ghost_policy::context::{PolicyContext, ToolCall};
 use ghost_policy::engine::{CorpPolicy, PolicyDecision, PolicyEngine};
+use rusqlite::Connection;
 
 use super::dto::ExecuteSkillResponseDto;
 use super::service::{SkillCatalogError, SkillCatalogService};
@@ -52,6 +53,24 @@ impl SkillCatalogExecutor {
         session_id: uuid::Uuid,
         input: &serde_json::Value,
     ) -> Result<ExecuteSkillResponseDto, SkillCatalogExecutionError> {
+        let db = self
+            .db
+            .legacy_connection()
+            .map_err(|e| SkillCatalogExecutionError::DbPool(e.to_string()))?;
+        let db = db
+            .lock()
+            .map_err(|_| SkillCatalogExecutionError::DbLockPoisoned)?;
+        self.execute_with_connection(&db, skill_name, agent, session_id, input)
+    }
+
+    pub fn execute_with_connection(
+        &self,
+        conn: &Connection,
+        skill_name: &str,
+        agent: &ResolvedRuntimeAgent,
+        session_id: uuid::Uuid,
+        input: &serde_json::Value,
+    ) -> Result<ExecuteSkillResponseDto, SkillCatalogExecutionError> {
         let resolved = self.catalog.resolve_for_execute(skill_name, agent)?;
         self.ensure_policy_permitted(
             &resolved.definition.policy_capability,
@@ -61,14 +80,7 @@ impl SkillCatalogExecutor {
             input,
         )?;
 
-        let db = self
-            .db
-            .legacy_connection()
-            .map_err(|e| SkillCatalogExecutionError::DbPool(e.to_string()))?;
-        let db = db
-            .lock()
-            .map_err(|_| SkillCatalogExecutionError::DbLockPoisoned)?;
-        let ctx = self.skill_context(&db, agent.id, session_id);
+        let ctx = self.skill_context(conn, agent.id, session_id);
 
         let result = resolved.skill.execute(&ctx, input)?;
         Ok(ExecuteSkillResponseDto {
@@ -79,7 +91,7 @@ impl SkillCatalogExecutor {
 
     fn skill_context<'a>(
         &'a self,
-        db: &'a MutexGuard<'_, rusqlite::Connection>,
+        db: &'a Connection,
         agent_id: uuid::Uuid,
         session_id: uuid::Uuid,
     ) -> ghost_skills::skill::SkillContext<'a> {

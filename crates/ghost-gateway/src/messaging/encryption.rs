@@ -16,7 +16,8 @@ pub struct EncryptedPayload {
 
 /// Check if a message can be encrypted (broadcast messages cannot — AC8).
 pub fn can_encrypt(is_broadcast: bool) -> bool {
-    !is_broadcast
+    let _ = is_broadcast;
+    false
 }
 
 /// Encrypt a payload using X25519-XSalsa20-Poly1305.
@@ -32,14 +33,7 @@ pub fn encrypt(
     if plaintext.is_empty() {
         return Err(EncryptionError::EmptyPayload);
     }
-
-    // Placeholder: in production, generate ephemeral X25519 keypair,
-    // compute shared secret, encrypt with XSalsa20-Poly1305.
-    Ok(EncryptedPayload {
-        ephemeral_public: [0u8; 32],
-        nonce: [0u8; 24],
-        ciphertext: plaintext.to_vec(), // Placeholder — real impl encrypts
-    })
+    Err(EncryptionError::Unsupported)
 }
 
 /// Decrypt a payload using X25519-XSalsa20-Poly1305.
@@ -50,10 +44,7 @@ pub fn decrypt(
     if encrypted.ciphertext.is_empty() {
         return Err(EncryptionError::EmptyPayload);
     }
-
-    // Placeholder: in production, compute shared secret from ephemeral
-    // public + recipient secret, decrypt with XSalsa20-Poly1305.
-    Ok(encrypted.ciphertext.clone()) // Placeholder — real impl decrypts
+    Err(EncryptionError::Unsupported)
 }
 
 /// Encryption errors.
@@ -62,6 +53,7 @@ pub enum EncryptionError {
     EmptyPayload,
     InvalidKey,
     DecryptionFailed,
+    Unsupported,
 }
 
 impl std::fmt::Display for EncryptionError {
@@ -70,6 +62,10 @@ impl std::fmt::Display for EncryptionError {
             Self::EmptyPayload => write!(f, "empty payload"),
             Self::InvalidKey => write!(f, "invalid key"),
             Self::DecryptionFailed => write!(f, "decryption failed"),
+            Self::Unsupported => write!(
+                f,
+                "message encryption is disabled until authenticated encryption is implemented"
+            ),
         }
     }
 }

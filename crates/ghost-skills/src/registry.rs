@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -45,23 +46,32 @@ pub struct RegisteredSkill {
 /// Skill registry.
 pub struct SkillRegistry {
     skills: BTreeMap<String, RegisteredSkill>,
+    manifest_verifier: Option<Arc<dyn Fn(&SkillManifest) -> bool + Send + Sync>>,
 }
 
 impl SkillRegistry {
     pub fn new() -> Self {
         Self {
             skills: BTreeMap::new(),
+            manifest_verifier: None,
         }
     }
 
-    /// Register a skill. Quarantines if signature is invalid or missing.
+    /// Register a skill.
+    ///
+    /// This legacy registry is no longer a trust root. Without an explicit
+    /// verifier, registrations fail closed into quarantine.
     pub fn register(&mut self, manifest: SkillManifest, source: SkillSource, path: PathBuf) {
-        let state = if self.verify_signature(&manifest) {
+        let state = if self
+            .manifest_verifier
+            .as_ref()
+            .is_some_and(|verifier| verifier(&manifest))
+        {
             SkillState::Loaded
         } else {
             tracing::warn!(
                 skill = %manifest.name,
-                "Skill quarantined: invalid or missing signature"
+                "Skill quarantined: registry prototype has no authoritative verifier"
             );
             SkillState::Quarantined
         };
@@ -75,6 +85,16 @@ impl SkillRegistry {
                 state,
             },
         );
+    }
+
+    pub fn with_manifest_verifier<F>(verifier: F) -> Self
+    where
+        F: Fn(&SkillManifest) -> bool + Send + Sync + 'static,
+    {
+        Self {
+            skills: BTreeMap::new(),
+            manifest_verifier: Some(Arc::new(verifier)),
+        }
     }
 
     /// Lookup a skill by name.
@@ -96,11 +116,6 @@ impl SkillRegistry {
             .values()
             .filter(|s| s.state == SkillState::Quarantined)
             .collect()
-    }
-
-    fn verify_signature(&self, manifest: &SkillManifest) -> bool {
-        // Signature verification via ghost-signing
-        manifest.signature.is_some()
     }
 }
 

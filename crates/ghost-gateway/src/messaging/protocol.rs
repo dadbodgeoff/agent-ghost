@@ -162,4 +162,12 @@ impl AgentMessage {
         let canonical = self.canonical_bytes();
         *blake3::hash(&canonical).as_bytes()
     }
+
+    /// Recompute the content hash and sign the canonical message bytes.
+    pub fn sign(&mut self, key: &ghost_signing::SigningKey) {
+        self.content_hash = self.compute_content_hash();
+        self.signature = ghost_signing::sign(&self.canonical_bytes(), key)
+            .to_bytes()
+            .to_vec();
+    }
 }

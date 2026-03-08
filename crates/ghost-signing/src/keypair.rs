@@ -22,6 +22,22 @@ impl SigningKey {
         &self.inner
     }
 
+    /// Serialize to the 32-byte Ed25519 secret seed.
+    ///
+    /// This is intentionally explicit rather than implementing serde for the
+    /// signing key. Callers that persist this value should do so through an
+    /// encrypted-at-rest secret store.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.inner.to_bytes()
+    }
+
+    /// Reconstruct a signing key from a 32-byte Ed25519 secret seed.
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        Self {
+            inner: ed25519_dalek::SigningKey::from_bytes(bytes),
+        }
+    }
+
     /// Derive the corresponding verifying (public) key.
     pub fn verifying_key(&self) -> VerifyingKey {
         VerifyingKey {

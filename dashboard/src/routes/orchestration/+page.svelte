@@ -72,7 +72,11 @@
 
     // T-5.9.1: Wire A2ATaskUpdate WS event to refresh A2A tasks.
     const unsub = wsStore.on('A2ATaskUpdate', () => { loadA2A(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => { loadA2A(); });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 
   async function loadAll() {

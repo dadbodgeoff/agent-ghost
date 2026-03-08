@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::export::BackupExporter;
-use crate::BackupResult;
+use crate::{BackupError, BackupResult};
 
 /// Backup schedule interval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,13 +56,18 @@ impl BackupScheduler {
 
     /// Run a single backup cycle: create backup, enforce retention.
     pub fn run_once(&self) -> BackupResult<PathBuf> {
-        let passphrase = std::env::var(&self.config.passphrase_env).unwrap_or_else(|_| {
-            tracing::warn!(
-                env_var = %self.config.passphrase_env,
-                "backup passphrase env var not set — using empty passphrase (backup will NOT be encrypted)"
-            );
-            String::new()
-        });
+        let passphrase = std::env::var(&self.config.passphrase_env).map_err(|_| {
+            BackupError::EncryptionError(format!(
+                "backup passphrase env var {} is not set",
+                self.config.passphrase_env
+            ))
+        })?;
+        if passphrase.trim().is_empty() {
+            return Err(BackupError::EncryptionError(format!(
+                "backup passphrase env var {} is empty",
+                self.config.passphrase_env
+            )));
+        }
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         let filename = format!("ghost_{}.ghost-backup", timestamp);
         let output_path = self.config.backup_dir.join(&filename);

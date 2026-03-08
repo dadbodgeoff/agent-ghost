@@ -72,7 +72,8 @@
     // T-5.9.1: Wire KillSwitchActivation + InterventionChange to refresh safety state.
     const unsub1 = wsStore.on('KillSwitchActivation', () => { refreshSafety(); });
     const unsub2 = wsStore.on('InterventionChange', () => { refreshSafety(); });
-    return () => { unsub1(); unsub2(); };
+    const unsubResync = wsStore.onResync(() => { refreshSafety(); });
+    return () => { unsub1(); unsub2(); unsubResync(); };
   });
 
   interface FilterState {

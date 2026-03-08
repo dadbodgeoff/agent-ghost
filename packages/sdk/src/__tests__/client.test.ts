@@ -453,6 +453,28 @@ describe('GoalsAPI', () => {
 });
 
 describe('SkillsAPI', () => {
+  const catalogSkill = (overrides: Record<string, unknown> = {}) => ({
+    id: 'test-skill',
+    name: 'test-skill',
+    version: '0.1.0',
+    description: 'Compiled test skill',
+    source: 'compiled',
+    removable: true,
+    installable: true,
+    execution_mode: 'native',
+    policy_capability: 'skill:test-skill',
+    privileges: ['Read test data'],
+    requested_capabilities: [],
+    mutation_kind: 'read_only',
+    state: 'installed',
+    install_state: 'installed',
+    verification_status: 'not_applicable',
+    quarantine_state: 'clear',
+    runtime_visible: true,
+    capabilities: ['skill:test-skill'],
+    ...overrides,
+  });
+
   it('lists skills', async () => {
     const skills = { installed: [], available: [] };
     const fetch = mockFetch(jsonResponse(skills));
@@ -463,20 +485,7 @@ describe('SkillsAPI', () => {
   });
 
   it('installs a skill', async () => {
-    const skill = {
-      id: 'test-skill',
-      name: 'test-skill',
-      version: '0.1.0',
-      description: 'Compiled test skill',
-      source: 'compiled',
-      removable: true,
-      installable: true,
-      execution_mode: 'native',
-      policy_capability: 'skill:test-skill',
-      privileges: ['Read test data'],
-      state: 'installed',
-      capabilities: ['skill:test-skill'],
-    };
+    const skill = catalogSkill();
     const fetch = mockFetch(jsonResponse(skill));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
@@ -489,20 +498,11 @@ describe('SkillsAPI', () => {
   });
 
   it('uninstalls a skill with the same catalog shape', async () => {
-    const skill = {
-      id: 'test-skill',
-      name: 'test-skill',
-      version: '0.1.0',
-      description: 'Compiled test skill',
-      source: 'compiled',
-      removable: true,
-      installable: true,
-      execution_mode: 'native',
-      policy_capability: 'skill:test-skill',
-      privileges: ['Read test data'],
+    const skill = catalogSkill({
       state: 'available',
-      capabilities: ['skill:test-skill'],
-    };
+      install_state: 'disabled',
+      runtime_visible: false,
+    });
     const fetch = mockFetch(jsonResponse(skill));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
@@ -510,6 +510,90 @@ describe('SkillsAPI', () => {
     expect(result).toEqual(skill);
     expect(fetch).toHaveBeenCalledWith(
       'http://test:1234/api/skills/test-skill/uninstall',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('quarantines an external skill by catalog identifier', async () => {
+    const skill = catalogSkill({
+      id: 'digest-1',
+      name: 'echo',
+      source: 'workspace',
+      execution_mode: 'wasm',
+      state: 'quarantined',
+      install_state: 'not_installed',
+      verification_status: 'verified',
+      quarantine_state: 'quarantined',
+      quarantine_reason: 'manual review',
+      quarantine_revision: 2,
+      runtime_visible: false,
+    });
+    const fetch = mockFetch(jsonResponse(skill));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.skills.quarantine('digest-1', {
+      reason: 'manual review',
+    });
+    expect(result).toEqual(skill);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/skills/digest-1/quarantine',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ reason: 'manual review' }),
+      }),
+    );
+  });
+
+  it('resolves quarantine with an expected revision guard', async () => {
+    const skill = catalogSkill({
+      id: 'digest-1',
+      name: 'echo',
+      source: 'workspace',
+      execution_mode: 'wasm',
+      state: 'verified',
+      install_state: 'not_installed',
+      verification_status: 'verified',
+      quarantine_state: 'clear',
+      quarantine_revision: 3,
+      runtime_visible: false,
+    });
+    const fetch = mockFetch(jsonResponse(skill));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.skills.resolveQuarantine('digest-1', {
+      expected_quarantine_revision: 2,
+    });
+    expect(result).toEqual(skill);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/skills/digest-1/quarantine/resolve',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ expected_quarantine_revision: 2 }),
+      }),
+    );
+  });
+
+  it('reverifies an external skill by catalog identifier', async () => {
+    const skill = catalogSkill({
+      id: 'digest-1',
+      name: 'echo',
+      source: 'workspace',
+      execution_mode: 'wasm',
+      state: 'verification_failed',
+      install_state: 'disabled',
+      verification_status: 'revoked_signer',
+      quarantine_state: 'quarantined',
+      quarantine_reason: 'revoked during incident response',
+      quarantine_revision: 4,
+      runtime_visible: false,
+    });
+    const fetch = mockFetch(jsonResponse(skill));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.skills.reverify('digest-1');
+    expect(result).toEqual(skill);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/skills/digest-1/reverify',
       expect.objectContaining({ method: 'POST' }),
     );
   });

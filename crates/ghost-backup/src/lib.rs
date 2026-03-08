@@ -14,6 +14,9 @@ pub use scheduler::BackupScheduler;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub(crate) const ARCHIVE_MAGIC: &[u8] = b"GHOST-BACKUP-V2\0";
+pub(crate) const MANAGED_ROOTS: &[&str] = &["data", "config", "agents"];
+
 #[derive(Debug, Error)]
 pub enum BackupError {
     #[error("io error: {0}")]
@@ -26,9 +29,14 @@ pub enum BackupError {
     SerializationError(String),
     #[error("version mismatch: archive={archive}, current={current}")]
     VersionMismatch { archive: String, current: String },
+    #[error("unsupported archive format: {0}")]
+    UnsupportedArchive(String),
+    #[error("invalid restore target: {0}")]
+    InvalidRestoreTarget(String),
 }
 
 pub type BackupResult<T> = Result<T, BackupError>;
+pub const CURRENT_BACKUP_FORMAT_VERSION: &str = "2";
 
 /// Manifest embedded in every backup archive.
 #[derive(Debug, Clone, Serialize, Deserialize)]

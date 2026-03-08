@@ -29,19 +29,27 @@ impl TestGateway {
     ///
     /// Returns once the `/api/health` endpoint responds with 200.
     pub async fn start() -> Self {
-        Self::start_with_replay_capacity(100).await
+        Self::start_internal(100, false, false).await
     }
 
     pub async fn start_with_compiled_skills() -> Self {
-        Self::start_internal(100, true).await
+        Self::start_internal(100, true, false).await
     }
 
     /// Boot a gateway with a custom WebSocket replay buffer capacity.
     pub async fn start_with_replay_capacity(replay_capacity: usize) -> Self {
-        Self::start_internal(replay_capacity, false).await
+        Self::start_internal(replay_capacity, false, false).await
     }
 
-    async fn start_internal(replay_capacity: usize, include_compiled_skills: bool) -> Self {
+    pub async fn start_with_ws_ticket_auth_only(ws_ticket_auth_only: bool) -> Self {
+        Self::start_internal(100, false, ws_ticket_auth_only).await
+    }
+
+    async fn start_internal(
+        replay_capacity: usize,
+        include_compiled_skills: bool,
+        ws_ticket_auth_only: bool,
+    ) -> Self {
         // Find an available port.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -53,7 +61,8 @@ impl TestGateway {
         let db_path_str = db_path.to_str().unwrap().to_string();
 
         // Build a minimal test config.
-        let config = ghost_gateway::config::GhostConfig::test_config(port, &db_path_str);
+        let mut config = ghost_gateway::config::GhostConfig::test_config(port, &db_path_str);
+        config.gateway.ws_ticket_auth_only = ws_ticket_auth_only;
 
         // Create database pool and run migrations.
         let db =
@@ -98,6 +107,7 @@ impl TestGateway {
                 ghost_gateway::skill_catalog::SkillCatalogService::new(
                     definitions,
                     Arc::clone(&db),
+                    config.external_skills.clone(),
                 )
                 .await
                 .expect("compiled test skill catalog"),
@@ -131,6 +141,7 @@ impl TestGateway {
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),

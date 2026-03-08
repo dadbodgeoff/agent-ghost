@@ -73,6 +73,9 @@ pub struct AppState {
     /// Single-use WebSocket upgrade tickets keyed by a token hash.
     pub websocket_auth_tickets: Arc<dashmap::DashMap<String, crate::api::websocket::WsAuthTicket>>,
 
+    /// Require short-lived WebSocket tickets and reject legacy bearer upgrade auth.
+    pub ws_ticket_auth_only: bool,
+
     /// Tool configurations (web_search, web_fetch, http_request, shell).
     pub tools_config: crate::config::ToolsConfig,
 

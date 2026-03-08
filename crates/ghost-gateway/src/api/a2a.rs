@@ -19,7 +19,7 @@ use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::idempotency::{
     abort_prepared_json_operation, commit_prepared_json_operation, prepare_json_operation,
-    PreparedOperation,
+    start_operation_lease_heartbeat, PreparedOperation,
 };
 use crate::api::mutation::{
     error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
@@ -188,7 +188,7 @@ pub async fn send_task(
                 "An equivalent request is already in progress",
             ));
         }
-        Ok(PreparedOperation::Acquired { journal_id }) => {
+        Ok(PreparedOperation::Acquired { lease }) => {
             let input_str = serde_json::to_string(&req.input).unwrap_or_else(|_| "null".into());
             {
                 let db = state.db.write().await;
@@ -204,7 +204,7 @@ pub async fn send_task(
                         created_at
                     ],
                 ) {
-                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                     return error_response_with_idempotency(ApiError::db_error(
                         "insert a2a task",
                         error,
@@ -212,6 +212,7 @@ pub async fn send_task(
                 }
             }
 
+            let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
             let client = reqwest::Client::new();
             let resp = match client
                 .post(&verified_agent.endpoint_url)
@@ -223,6 +224,7 @@ pub async fn send_task(
             {
                 Ok(response) => response,
                 Err(error) => {
+                    let _ = heartbeat.stop().await;
                     let db = state.db.write().await;
                     let _ = db.execute(
                         "UPDATE a2a_tasks SET status = 'failed', output = ?1 WHERE id = ?2",
@@ -232,12 +234,15 @@ pub async fn send_task(
                             task_id
                         ],
                     );
-                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                     return error_response_with_idempotency(ApiError::internal(format!(
                         "A2A request failed: {error}"
                     )));
                 }
             };
+            if let Err(error) = heartbeat.stop().await {
+                return error_response_with_idempotency(error);
+            }
 
             let status_code = resp.status();
             let body: serde_json::Value = resp
@@ -273,23 +278,22 @@ pub async fn send_task(
                 ],
             );
 
-            crate::api::websocket::broadcast_event(
-                &state,
-                WsEvent::A2ATaskUpdate {
-                    task_id: task_id.clone(),
-                    status: task_status.into(),
-                    agent_name: agent_name.clone(),
-                },
-            );
-
             match commit_prepared_json_operation(
                 &db,
                 &operation_context,
-                &journal_id,
+                &lease,
                 StatusCode::OK,
                 &response_body,
             ) {
                 Ok(outcome) => {
+                    crate::api::websocket::broadcast_event(
+                        &state,
+                        WsEvent::A2ATaskUpdate {
+                            task_id: task_id.clone(),
+                            status: task_status.into(),
+                            agent_name: agent_name.clone(),
+                        },
+                    );
                     write_mutation_audit_entry(
                         &db,
                         "a2a",
@@ -312,7 +316,7 @@ pub async fn send_task(
                     );
                 }
                 Err(error) => {
-                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                     return error_response_with_idempotency(error);
                 }
             }

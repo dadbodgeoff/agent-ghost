@@ -1131,9 +1131,14 @@ mod messaging {
     use ghost_gateway::messaging::dispatcher::{MessageDispatcher, VerifyResult};
     use ghost_gateway::messaging::encryption::can_encrypt;
     use ghost_gateway::messaging::protocol::{AgentMessage, DelegationState, MessagePayload};
+    use ghost_signing::{generate_keypair, SigningKey};
     use uuid::Uuid;
 
-    fn make_message(sender: Uuid, recipient: Uuid) -> AgentMessage {
+    fn make_message(
+        sender: Uuid,
+        recipient: Uuid,
+        signing_key: Option<&SigningKey>,
+    ) -> AgentMessage {
         let mut msg = AgentMessage {
             id: Uuid::now_v7(),
             sender,
@@ -1149,6 +1154,9 @@ mod messaging {
             encrypted: false,
         };
         msg.content_hash = msg.compute_content_hash();
+        if let Some(signing_key) = signing_key {
+            msg.sign(signing_key);
+        }
         msg
     }
 
@@ -1240,21 +1248,27 @@ mod messaging {
     fn content_hash_verification() {
         let sender = Uuid::now_v7();
         let recipient = Uuid::now_v7();
-        let msg = make_message(sender, recipient);
+        let msg = make_message(sender, recipient, None);
         assert_eq!(msg.content_hash, msg.compute_content_hash());
     }
 
     #[test]
     fn dispatcher_accepts_valid_message() {
         let mut dispatcher = MessageDispatcher::new();
-        let msg = make_message(Uuid::now_v7(), Uuid::now_v7());
+        let (signing_key, verifying_key) = generate_keypair();
+        let sender = Uuid::now_v7();
+        dispatcher.register_verifying_key(sender, verifying_key);
+        let msg = make_message(sender, Uuid::now_v7(), Some(&signing_key));
         assert!(matches!(dispatcher.verify(&msg), VerifyResult::Accepted));
     }
 
     #[test]
     fn dispatcher_rejects_tampered_hash() {
         let mut dispatcher = MessageDispatcher::new();
-        let mut msg = make_message(Uuid::now_v7(), Uuid::now_v7());
+        let (signing_key, verifying_key) = generate_keypair();
+        let sender = Uuid::now_v7();
+        dispatcher.register_verifying_key(sender, verifying_key);
+        let mut msg = make_message(sender, Uuid::now_v7(), Some(&signing_key));
         msg.content_hash[0] ^= 0xFF; // Tamper
         assert!(matches!(
             dispatcher.verify(&msg),
@@ -1265,7 +1279,10 @@ mod messaging {
     #[test]
     fn dispatcher_rejects_replay() {
         let mut dispatcher = MessageDispatcher::new();
-        let msg = make_message(Uuid::now_v7(), Uuid::now_v7());
+        let (signing_key, verifying_key) = generate_keypair();
+        let sender = Uuid::now_v7();
+        dispatcher.register_verifying_key(sender, verifying_key);
+        let msg = make_message(sender, Uuid::now_v7(), Some(&signing_key));
         assert!(matches!(dispatcher.verify(&msg), VerifyResult::Accepted));
         // Same nonce again → replay
         assert!(matches!(
@@ -1279,6 +1296,8 @@ mod messaging {
         let mut dispatcher = MessageDispatcher::new();
         let sender = Uuid::now_v7();
         let recipient = Uuid::now_v7();
+        let (signing_key, verifying_key) = generate_keypair();
+        dispatcher.register_verifying_key(sender, verifying_key);
         let mut msg = AgentMessage {
             id: Uuid::now_v7(),
             sender,
@@ -1293,7 +1312,7 @@ mod messaging {
             signature: Vec::new(),
             encrypted: false,
         };
-        msg.content_hash = msg.compute_content_hash();
+        msg.sign(&signing_key);
         assert!(matches!(
             dispatcher.verify(&msg),
             VerifyResult::RejectedReplay(_)
@@ -1303,14 +1322,16 @@ mod messaging {
     #[test]
     fn dispatcher_rate_limit() {
         let mut dispatcher = MessageDispatcher::new();
+        let (signing_key, verifying_key) = generate_keypair();
         let sender = Uuid::now_v7();
         let recipient = Uuid::now_v7();
+        dispatcher.register_verifying_key(sender, verifying_key);
         for _ in 0..60 {
-            let msg = make_message(sender, recipient);
+            let msg = make_message(sender, recipient, Some(&signing_key));
             dispatcher.verify(&msg);
         }
         // 61st should be rate limited
-        let msg = make_message(sender, recipient);
+        let msg = make_message(sender, recipient, Some(&signing_key));
         assert!(matches!(
             dispatcher.verify(&msg),
             VerifyResult::RejectedRateLimit
@@ -1321,8 +1342,10 @@ mod messaging {
     fn anomaly_detection_three_failures() {
         let mut dispatcher = MessageDispatcher::new();
         let sender = Uuid::now_v7();
+        let (signing_key, verifying_key) = generate_keypair();
+        dispatcher.register_verifying_key(sender, verifying_key);
         for _ in 0..3 {
-            let mut msg = make_message(sender, Uuid::now_v7());
+            let mut msg = make_message(sender, Uuid::now_v7(), Some(&signing_key));
             msg.content_hash[0] ^= 0xFF; // Tamper
             dispatcher.verify(&msg);
         }
@@ -1333,7 +1356,8 @@ mod messaging {
     fn offline_queue() {
         let mut dispatcher = MessageDispatcher::new();
         let recipient = Uuid::now_v7();
-        let msg = make_message(Uuid::now_v7(), recipient);
+        let (signing_key, _) = generate_keypair();
+        let msg = make_message(Uuid::now_v7(), recipient, Some(&signing_key));
         dispatcher.queue_offline(recipient, msg);
         let delivered = dispatcher.deliver_queued(recipient);
         assert_eq!(delivered.len(), 1);
@@ -1356,7 +1380,7 @@ mod messaging {
     #[test]
     fn broadcast_cannot_be_encrypted() {
         assert!(!can_encrypt(true));
-        assert!(can_encrypt(false));
+        assert!(!can_encrypt(false));
     }
 }
 

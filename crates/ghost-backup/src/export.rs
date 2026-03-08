@@ -1,14 +1,22 @@
-//! Backup export — collect, compress, encrypt, archive (Req 30 AC3).
+//! Backup export — collect, encrypt, archive (Req 30 AC3).
 //!
-//! This is a platform-state archive for export/import flows. It is not the
-//! SQLite-consistent rollback artifact used for schema migrations.
+//! This archive is intended for verified operator export/import flows. It is
+//! distinct from the DB-adjacent migration rollback backup.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::{BackupError, BackupManifest, BackupResult, ManifestEntry};
+use age::secrecy::SecretString as AgeSecretString;
+use age::Encryptor;
+use rusqlite::{Connection, DatabaseName, OpenFlags};
+use tempfile::NamedTempFile;
+
+use crate::{
+    BackupError, BackupManifest, BackupResult, ManifestEntry, ARCHIVE_MAGIC,
+    CURRENT_BACKUP_FORMAT_VERSION, MANAGED_ROOTS,
+};
 
 /// Collects platform state and writes a `.ghost-backup` archive.
 pub struct BackupExporter {
@@ -24,47 +32,44 @@ impl BackupExporter {
 
     /// Export platform state to a backup archive at `output_path`.
     ///
-    /// Collects: SQLite DB, identity files, skills, config, baselines,
-    /// session history, signing keys.
+    /// Collects the managed platform roots and snapshots `data/ghost.db`
+    /// through SQLite's backup API so committed WAL state is preserved.
     pub fn export(&self, output_path: &Path, passphrase: &str) -> BackupResult<BackupManifest> {
-        let mut entries = Vec::new();
+        let passphrase = require_passphrase(passphrase)?;
         let mut archive_data: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
-        // Collect files from ghost directory
-        let collect_dirs = ["data", "config", "agents"];
-        for dir_name in &collect_dirs {
-            let dir = self.ghost_dir.join(dir_name);
+        for root in MANAGED_ROOTS {
+            let dir = self.ghost_dir.join(root);
             if dir.exists() {
-                self.collect_dir(&dir, dir_name, &mut entries, &mut archive_data)?;
+                self.collect_dir(&dir, root, &mut archive_data)?;
             }
         }
 
+        let entries = archive_data
+            .iter()
+            .map(|(path, data)| ManifestEntry {
+                path: path.clone(),
+                size: data.len() as u64,
+                blake3_hash: blake3::hash(data).to_hex().to_string(),
+            })
+            .collect();
+
         let manifest = BackupManifest {
-            version: "1".to_string(),
+            version: CURRENT_BACKUP_FORMAT_VERSION.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             platform_version: env!("CARGO_PKG_VERSION").to_string(),
             entries,
         };
 
-        // Serialize manifest + data
-        let manifest_json = serde_json::to_vec(&manifest)
-            .map_err(|e| BackupError::SerializationError(e.to_string()))?;
-        let data_json = serde_json::to_vec(&archive_data)
-            .map_err(|e| BackupError::SerializationError(e.to_string()))?;
+        let plaintext = encode_archive(&manifest, &archive_data)?;
+        let encrypted = encrypt_archive(&plaintext, passphrase)?;
 
-        // Combine: [manifest_len(4 bytes)][manifest][data]
-        let manifest_len = (manifest_json.len() as u32).to_le_bytes();
-        let mut raw = Vec::new();
-        raw.extend_from_slice(&manifest_len);
-        raw.extend_from_slice(&manifest_json);
-        raw.extend_from_slice(&data_json);
-
-        // Encrypt with passphrase (XOR-based placeholder — production would use age)
-        let encrypted = Self::encrypt(&raw, passphrase);
-
-        // Write to output
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let mut file = fs::File::create(output_path)?;
         file.write_all(&encrypted)?;
+        file.sync_all()?;
 
         tracing::info!(
             path = %output_path.display(),
@@ -79,39 +84,136 @@ impl BackupExporter {
         &self,
         dir: &Path,
         prefix: &str,
-        entries: &mut Vec<ManifestEntry>,
         archive: &mut BTreeMap<String, Vec<u8>>,
     ) -> BackupResult<()> {
         if !dir.is_dir() {
             return Ok(());
         }
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
+
+        let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+        for entry in entries {
             let path = entry.path();
             let rel = format!("{}/{}", prefix, entry.file_name().to_string_lossy());
             if path.is_file() {
-                let data = fs::read(&path)?;
-                let hash = blake3::hash(&data).to_hex().to_string();
-                entries.push(ManifestEntry {
-                    path: rel.clone(),
-                    size: data.len() as u64,
-                    blake3_hash: hash,
-                });
-                archive.insert(rel, data);
+                archive.insert(rel.clone(), self.read_file_for_backup(&path, &rel)?);
             } else if path.is_dir() {
-                self.collect_dir(&path, &rel, entries, archive)?;
+                self.collect_dir(&path, &rel, archive)?;
             }
         }
+
         Ok(())
     }
 
-    /// Simple XOR encryption placeholder. Production uses `age` crate.
-    fn encrypt(data: &[u8], passphrase: &str) -> Vec<u8> {
-        let key_bytes = blake3::hash(passphrase.as_bytes());
-        let key = key_bytes.as_bytes();
-        data.iter()
-            .enumerate()
-            .map(|(i, b)| b ^ key[i % 32])
-            .collect()
+    fn read_file_for_backup(&self, path: &Path, rel: &str) -> BackupResult<Vec<u8>> {
+        if rel == "data/ghost.db" {
+            snapshot_sqlite_db(path)
+        } else {
+            fs::read(path).map_err(BackupError::from)
+        }
     }
+}
+
+pub(crate) fn encode_archive(
+    manifest: &BackupManifest,
+    archive_data: &BTreeMap<String, Vec<u8>>,
+) -> BackupResult<Vec<u8>> {
+    let manifest_json = serde_json::to_vec(manifest)
+        .map_err(|error| BackupError::SerializationError(error.to_string()))?;
+
+    let mut raw = Vec::new();
+    raw.extend_from_slice(ARCHIVE_MAGIC);
+    raw.extend_from_slice(&(manifest_json.len() as u64).to_le_bytes());
+    raw.extend_from_slice(&manifest_json);
+
+    for entry in &manifest.entries {
+        let data = archive_data.get(&entry.path).ok_or_else(|| {
+            BackupError::IntegrityError(format!(
+                "manifest entry missing archived data: {}",
+                entry.path
+            ))
+        })?;
+        raw.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        raw.extend_from_slice(data);
+    }
+
+    Ok(raw)
+}
+
+pub(crate) fn encrypt_archive(data: &[u8], passphrase: &str) -> BackupResult<Vec<u8>> {
+    let encryptor = Encryptor::with_user_passphrase(AgeSecretString::from(passphrase.to_string()));
+    let mut encrypted = Vec::new();
+    let mut writer = encryptor
+        .wrap_output(&mut encrypted)
+        .map_err(|error| BackupError::EncryptionError(error.to_string()))?;
+    writer
+        .write_all(data)
+        .map_err(|error| BackupError::EncryptionError(error.to_string()))?;
+    writer
+        .finish()
+        .map_err(|error| BackupError::EncryptionError(error.to_string()))?;
+    Ok(encrypted)
+}
+
+pub(crate) fn require_passphrase(passphrase: &str) -> BackupResult<&str> {
+    let trimmed = passphrase.trim();
+    if trimmed.is_empty() {
+        return Err(BackupError::EncryptionError(
+            "backup passphrase must be non-empty".to_string(),
+        ));
+    }
+    Ok(trimmed)
+}
+
+fn snapshot_sqlite_db(db_path: &Path) -> BackupResult<Vec<u8>> {
+    let source = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| {
+        BackupError::IntegrityError(format!("open SQLite source {}: {error}", db_path.display()))
+    })?;
+    source
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|error| {
+            BackupError::IntegrityError(format!(
+                "set SQLite busy timeout {}: {error}",
+                db_path.display()
+            ))
+        })?;
+
+    let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let snapshot = NamedTempFile::new_in(parent).map_err(|error| BackupError::Io(error))?;
+    source
+        .backup(DatabaseName::Main, snapshot.path(), None)
+        .map_err(|error| {
+            BackupError::IntegrityError(format!(
+                "backup SQLite database {}: {error}",
+                db_path.display()
+            ))
+        })?;
+
+    let backup = Connection::open(snapshot.path()).map_err(|error| {
+        BackupError::IntegrityError(format!(
+            "open SQLite snapshot {}: {error}",
+            snapshot.path().display()
+        ))
+    })?;
+    let integrity: String = backup
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| {
+            BackupError::IntegrityError(format!(
+                "verify SQLite snapshot {}: {error}",
+                db_path.display()
+            ))
+        })?;
+    if integrity != "ok" {
+        return Err(BackupError::IntegrityError(format!(
+            "SQLite snapshot integrity check failed for {}: {integrity}",
+            db_path.display()
+        )));
+    }
+
+    fs::read(snapshot.path()).map_err(BackupError::from)
 }

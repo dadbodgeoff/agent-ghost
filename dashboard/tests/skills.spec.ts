@@ -66,8 +66,50 @@ function compiledSkill(overrides: Record<string, unknown>) {
     execution_mode: 'native',
     policy_capability: 'skill:test-skill',
     privileges: ['Use the compiled skill pipeline through the gateway runtime'],
+    requested_capabilities: [],
+    mutation_kind: 'read_only',
+    install_state: 'disabled',
+    verification_status: 'not_applicable',
+    quarantine_state: 'clear',
+    runtime_visible: false,
+    publisher: null,
+    source_uri: null,
+    signer_key_id: null,
+    signer_publisher: null,
+    quarantine_reason: null,
+    quarantine_revision: null,
     state: 'available',
     capabilities: ['skill:test-skill'],
+    ...overrides,
+  };
+}
+
+function externalSkill(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'digest-external',
+    name: 'echo',
+    version: '1.0.0',
+    description: 'External WASM skill',
+    source: 'workspace',
+    removable: true,
+    installable: true,
+    execution_mode: 'wasm',
+    policy_capability: 'skill:echo',
+    privileges: ['Pure WASM computation over caller-provided JSON input without host access'],
+    requested_capabilities: [],
+    mutation_kind: 'read_only',
+    install_state: 'not_installed',
+    verification_status: 'verified',
+    quarantine_state: 'clear',
+    runtime_visible: false,
+    publisher: 'Acme',
+    source_uri: '/managed/digest-external/artifact.ghostskill',
+    signer_key_id: 'key-1',
+    signer_publisher: 'Acme',
+    quarantine_reason: null,
+    quarantine_revision: 1,
+    state: 'verified',
+    capabilities: ['skill:echo'],
     ...overrides,
   };
 }
@@ -83,6 +125,8 @@ async function mockSkillsPage(page: Page) {
       policy_capability: 'skill:convergence_check',
       privileges: ['Read agent convergence scores, levels, and safety metrics from the gateway database'],
       state: 'always_on',
+      install_state: 'always_on',
+      runtime_visible: true,
     }),
   ];
   let available = [
@@ -95,6 +139,7 @@ async function mockSkillsPage(page: Page) {
         'Create, read, update, delete, and search notes stored in the gateway database',
       ],
       state: 'available',
+      install_state: 'disabled',
     }),
   ];
 
@@ -149,6 +194,8 @@ async function mockSkillsPage(page: Page) {
         'Create, read, update, delete, and search notes stored in the gateway database',
       ],
       state: 'installed',
+      install_state: 'installed',
+      runtime_visible: true,
     });
     installed = [...installed, installedSkill];
     available = [];
@@ -183,4 +230,79 @@ test('skills page reviews real privileges and respects always-on state', async (
 
   await expect(page.getByText('Structured note-taking skill')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Uninstall' })).toBeVisible();
+});
+
+test('skills page exposes external quarantine and reverify actions truthfully', async ({ page }) => {
+  await seedRuntime(page);
+
+  const installed = [];
+  const available = [externalSkill()];
+
+  await page.route('**/api/**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: '{}',
+    }),
+  );
+
+  await page.route('**/api/auth/session', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        authenticated: true,
+        subject: 'tester',
+        role: 'admin',
+        mode: 'legacy',
+      }),
+    }),
+  );
+
+  await page.route('**/api/push/vapid-key', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ key: null }),
+    }),
+  );
+
+  await page.route('**/service-worker.js', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/javascript', body: '' }),
+  );
+
+  await page.route('**/api/skills', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ installed, available }),
+    }),
+  );
+
+  await page.route('**/api/skills/digest-external/quarantine', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(
+        externalSkill({
+          state: 'quarantined',
+          quarantine_state: 'quarantined',
+          quarantine_reason: 'manual review',
+          quarantine_revision: 2,
+        }),
+      ),
+    });
+  });
+
+  await page.goto('/skills', { waitUntil: 'networkidle' });
+
+  await page.getByRole('button', { name: /Available \(1\)/ }).click();
+  await expect(page.getByText('External WASM skill')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reverify' })).toBeVisible();
+  await page.getByRole('button', { name: 'Quarantine' }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Quarantine skill' });
+  await expect(dialog).toBeVisible();
+  await page.getByLabel('Reason').fill('manual review');
+  await page.getByRole('button', { name: 'Confirm Quarantine' }).click();
 });

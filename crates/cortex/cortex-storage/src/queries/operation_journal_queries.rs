@@ -125,8 +125,9 @@ pub fn take_over_in_progress(
     last_seen_at: &str,
     lease_expires_at: &str,
 ) -> CortexResult<bool> {
-    let updated = conn.execute(
-        "UPDATE operation_journal
+    let updated = conn
+        .execute(
+            "UPDATE operation_journal
          SET operation_id = ?2,
              request_id = ?3,
              owner_token = ?4,
@@ -134,16 +135,16 @@ pub fn take_over_in_progress(
              lease_expires_at = ?6,
              lease_epoch = lease_epoch + 1
          WHERE id = ?1 AND status = 'in_progress'",
-        params![
-            id,
-            operation_id,
-            request_id,
-            owner_token,
-            last_seen_at,
-            lease_expires_at
-        ],
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+            params![
+                id,
+                operation_id,
+                request_id,
+                owner_token,
+                last_seen_at,
+                lease_expires_at
+            ],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(updated > 0)
 }
 
@@ -156,8 +157,9 @@ pub fn restart_aborted(
     last_seen_at: &str,
     lease_expires_at: &str,
 ) -> CortexResult<bool> {
-    let updated = conn.execute(
-        "UPDATE operation_journal
+    let updated = conn
+        .execute(
+            "UPDATE operation_journal
          SET status = 'in_progress',
              operation_id = ?2,
              request_id = ?3,
@@ -170,16 +172,16 @@ pub fn restart_aborted(
              lease_expires_at = ?6,
              lease_epoch = lease_epoch + 1
          WHERE id = ?1 AND status = 'aborted'",
-        params![
-            id,
-            operation_id,
-            request_id,
-            owner_token,
-            last_seen_at,
-            lease_expires_at
-        ],
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+            params![
+                id,
+                operation_id,
+                request_id,
+                owner_token,
+                last_seen_at,
+                lease_expires_at
+            ],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(updated > 0)
 }
 
@@ -194,8 +196,9 @@ pub fn mark_committed(
     response_content_type: &str,
     committed_at: &str,
 ) -> CortexResult<bool> {
-    let updated = conn.execute(
-        "UPDATE operation_journal
+    let updated = conn
+        .execute(
+            "UPDATE operation_journal
          SET status = 'committed',
              request_id = ?4,
              response_status_code = ?5,
@@ -208,18 +211,18 @@ pub fn mark_committed(
            AND owner_token = ?2
            AND lease_epoch = ?3
            AND status = 'in_progress'",
-        params![
-            id,
-            owner_token,
-            lease_epoch,
-            request_id,
-            response_status_code,
-            response_body,
-            response_content_type,
-            committed_at,
-        ],
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+            params![
+                id,
+                owner_token,
+                lease_epoch,
+                request_id,
+                response_status_code,
+                response_body,
+                response_content_type,
+                committed_at,
+            ],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(updated > 0)
 }
 
@@ -231,8 +234,9 @@ pub fn mark_aborted(
     request_id: Option<&str>,
     aborted_at: &str,
 ) -> CortexResult<bool> {
-    let updated = conn.execute(
-        "UPDATE operation_journal
+    let updated = conn
+        .execute(
+            "UPDATE operation_journal
          SET status = 'aborted',
              request_id = ?4,
              response_status_code = NULL,
@@ -245,9 +249,9 @@ pub fn mark_aborted(
            AND owner_token = ?2
            AND lease_epoch = ?3
            AND status = 'in_progress'",
-        params![id, owner_token, lease_epoch, request_id, aborted_at],
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+            params![id, owner_token, lease_epoch, request_id, aborted_at],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(updated > 0)
 }
 
@@ -259,17 +263,18 @@ pub fn renew_lease(
     last_seen_at: &str,
     lease_expires_at: &str,
 ) -> CortexResult<bool> {
-    let updated = conn.execute(
-        "UPDATE operation_journal
+    let updated = conn
+        .execute(
+            "UPDATE operation_journal
          SET last_seen_at = ?4,
              lease_expires_at = ?5
          WHERE id = ?1
            AND owner_token = ?2
            AND lease_epoch = ?3
            AND status = 'in_progress'",
-        params![id, owner_token, lease_epoch, last_seen_at, lease_expires_at],
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+            params![id, owner_token, lease_epoch, last_seen_at, lease_expires_at],
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(updated > 0)
 }
 

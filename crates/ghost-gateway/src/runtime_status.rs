@@ -31,11 +31,17 @@ pub fn distributed_kill_status_value(
                     "enabled": true,
                     "status": format!("{:?}", snapshot.state),
                     "authoritative": false,
+                    "resume_permitted": guard.gate.resume_permitted(),
                     "node_id": snapshot.node_id.to_string(),
                     "closed_at": snapshot.closed_at.map(|t| t.to_rfc3339()),
                     "close_reason": snapshot.close_reason,
                     "acked_nodes": snapshot.acked_nodes.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                     "chain_length": snapshot.chain_length,
+                    "reason": if guard.gate.resume_permitted() {
+                        serde_json::Value::Null
+                    } else {
+                        json!("resume disabled until authenticated cluster membership is configured")
+                    },
                 })
             }
             Err(error) => json!({

@@ -38,7 +38,11 @@
 
     // T-5.9.1: Wire AgentStateChange to refresh agent list.
     const unsub = wsStore.on('AgentStateChange', () => { loadAgents(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => { loadAgents(); });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 
   function getScore(agentId: string): ConvergenceScore | undefined {

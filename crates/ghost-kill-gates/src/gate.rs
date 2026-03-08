@@ -126,6 +126,10 @@ impl KillGate {
         GateState::from_u8(self.state.load(Ordering::SeqCst))
     }
 
+    pub fn resume_permitted(&self) -> bool {
+        self.config.authenticated_cluster_membership
+    }
+
     /// Close the gate (local kill triggered). Returns the chain event.
     pub fn close(&self, reason: String) -> GateChainEvent {
         let now = Utc::now();
@@ -267,6 +271,14 @@ impl KillGate {
 
     /// Cast a resume vote. Returns true if quorum reached and gate reopened.
     pub fn cast_resume_vote(&self, vote: ResumeVote, cluster_size: usize) -> bool {
+        if !self.resume_permitted() {
+            tracing::warn!(
+                node_id = %self.node_id,
+                voting_node = %vote.node_id,
+                "distributed kill resume disabled until authenticated cluster membership is configured"
+            );
+            return false;
+        }
         let current = self.state.load(Ordering::SeqCst);
         if current == STATE_NORMAL {
             return true; // already open
@@ -381,5 +393,57 @@ impl KillGate {
     /// Node ID of this gate.
     pub fn node_id(&self) -> Uuid {
         self.node_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_votes_fail_closed_without_authenticated_membership() {
+        let gate = KillGate::new(Uuid::now_v7(), KillGateConfig::default());
+        gate.close("test".into());
+
+        let resumed = gate.cast_resume_vote(
+            ResumeVote {
+                node_id: Uuid::now_v7(),
+                reason: "resume".into(),
+                initiated_by: "tester".into(),
+                voted_at: Utc::now(),
+            },
+            3,
+        );
+
+        assert!(!resumed);
+        assert!(gate.is_closed());
+    }
+
+    #[test]
+    fn authenticated_resume_votes_can_reach_quorum() {
+        let mut config = KillGateConfig::default();
+        config.authenticated_cluster_membership = true;
+        let gate = KillGate::new(Uuid::now_v7(), config);
+        gate.close("test".into());
+
+        assert!(!gate.cast_resume_vote(
+            ResumeVote {
+                node_id: Uuid::now_v7(),
+                reason: "resume".into(),
+                initiated_by: "tester-a".into(),
+                voted_at: Utc::now(),
+            },
+            3,
+        ));
+        assert!(gate.cast_resume_vote(
+            ResumeVote {
+                node_id: Uuid::now_v7(),
+                reason: "resume".into(),
+                initiated_by: "tester-b".into(),
+                voted_at: Utc::now(),
+            },
+            3,
+        ));
+        assert_eq!(gate.state(), GateState::Normal);
     }
 }

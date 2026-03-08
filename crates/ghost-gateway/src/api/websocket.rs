@@ -15,6 +15,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::api::auth::{AuthConfig, Claims, RevocationSet};
@@ -38,6 +39,7 @@ pub struct WsEnvelope {
 /// Ring buffer for event replay on reconnect.
 pub struct EventReplayBuffer {
     buffer: parking_lot::RwLock<VecDeque<WsEnvelope>>,
+    publish_lock: parking_lot::Mutex<()>,
     capacity: usize,
 }
 
@@ -45,16 +47,33 @@ impl EventReplayBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             buffer: parking_lot::RwLock::new(VecDeque::with_capacity(capacity)),
+            publish_lock: parking_lot::Mutex::new(()),
             capacity,
         }
     }
 
-    pub fn push(&self, envelope: WsEnvelope) {
+    fn push(&self, envelope: WsEnvelope) {
         let mut buf = self.buffer.write();
         if buf.len() >= self.capacity {
             buf.pop_front();
         }
         buf.push_back(envelope);
+    }
+
+    pub fn push_and_broadcast(
+        &self,
+        event: WsEvent,
+        tx: &broadcast::Sender<WsEnvelope>,
+    ) -> (WsEnvelope, bool) {
+        let _publish_guard = self.publish_lock.lock();
+        let envelope = WsEnvelope {
+            seq: EVENT_SEQ.fetch_add(1, Ordering::SeqCst) + 1,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            event,
+        };
+        self.push(envelope.clone());
+        let has_receivers = tx.send(envelope.clone()).is_ok();
+        (envelope, has_receivers)
     }
 
     /// Replay events after `last_seq`. Returns None if gap too large
@@ -76,18 +95,14 @@ impl EventReplayBuffer {
 
 /// Helper: wrap a WsEvent in an envelope and push to replay buffer.
 ///
-/// Uses SeqCst ordering on the sequence counter and assigns the sequence
-/// number inside the replay buffer's write lock to guarantee monotonic
-/// ordering in the buffer even under concurrent calls.
+/// Uses a dedicated publication lock so `seq assignment -> replay append ->
+/// broadcast send` happens in a single critical section.
 pub fn broadcast_event(state: &crate::state::AppState, event: WsEvent) {
-    let seq = EVENT_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-    let envelope = WsEnvelope {
-        seq,
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        event,
-    };
-    state.replay_buffer.push(envelope.clone());
-    if state.event_tx.send(envelope).is_err() {
+    if !state
+        .replay_buffer
+        .push_and_broadcast(event, &state.event_tx)
+        .1
+    {
         tracing::debug!("broadcast_event: no WebSocket receivers");
     }
 }
@@ -329,6 +344,7 @@ impl Default for WsConnectionTracker {
 /// Auth modes (same as REST middleware):
 /// 1. Preferred: validate a short-lived `ghost-ticket.<ticket>` subprotocol
 /// 2. Deprecated: validate `ghost-token.<jwt_or_legacy_token>` or `?token=`
+///    unless `gateway.ws_ticket_auth_only` disables legacy auth entirely
 /// 3. No-auth mode: allow if neither is set
 ///
 /// Rate limiting: max 5 concurrent WebSocket connections per IP (T-1.1.5).
@@ -378,6 +394,21 @@ pub async fn ws_handler(
             }
             selected_protocol = Some(format!("ghost-ticket.{ticket}"));
         } else {
+            if state.ws_ticket_auth_only {
+                ws_tracker.release(client_ip);
+                if protocol_token.is_some() || params.token.is_some() {
+                    tracing::warn!(
+                        "legacy WebSocket auth rejected because ws_ticket_auth_only is enabled"
+                    );
+                    return (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        "Legacy WebSocket auth is disabled. Use POST /api/ws/tickets.",
+                    )
+                        .into_response();
+                }
+                return axum::http::StatusCode::UNAUTHORIZED.into_response();
+            }
+
             let token = if let Some(token) = protocol_token {
                 selected_protocol = Some(format!("ghost-token.{token}"));
                 tracing::warn!(
@@ -433,10 +464,20 @@ pub async fn ws_handler(
         .into_response()
 }
 
-/// Client reconnect message: `{ "last_seq": N }`.
+/// Client reconnect message: `{ "last_seq": N, "topics": ["..."] }`.
 #[derive(Debug, Deserialize)]
 struct ReconnectMessage {
     last_seq: u64,
+    #[serde(default)]
+    topics: Vec<String>,
+}
+
+fn event_matches_subscriptions(event: &WsEvent, subscribed_topics: &HashSet<String>) -> bool {
+    if subscribed_topics.is_empty() {
+        return true;
+    }
+    let keys = event.topic_keys();
+    keys.is_empty() || keys.iter().any(|key| subscribed_topics.contains(key))
 }
 
 async fn handle_socket(
@@ -471,6 +512,8 @@ async fn handle_socket(
     // Subscribe to the broadcast channel for real-time events.
     let mut event_rx = state.event_tx.subscribe();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+    // Consume the immediate first tick because we already sent an initial ping above.
+    interval.tick().await;
 
     // Wait briefly for a potential reconnect message with last_seq.
     // Use a short timeout so fresh connections aren't delayed.
@@ -479,14 +522,21 @@ async fn handle_socket(
 
     if let Ok(Some(Ok(Message::Text(text)))) = reconnect_check {
         if let Ok(reconnect) = serde_json::from_str::<ReconnectMessage>(&text) {
+            subscribed_topics.extend(reconnect.topics);
             tracing::info!(
                 last_seq = reconnect.last_seq,
                 "WS client reconnecting with last_seq"
             );
             match state.replay_buffer.replay_after(reconnect.last_seq) {
                 Some(missed) => {
-                    tracing::info!(count = missed.len(), "Replaying missed events");
-                    for envelope in missed {
+                    let replayable: Vec<_> = missed
+                        .into_iter()
+                        .filter(|envelope| {
+                            event_matches_subscriptions(&envelope.event, &subscribed_topics)
+                        })
+                        .collect();
+                    tracing::info!(count = replayable.len(), "Replaying missed events");
+                    for envelope in replayable {
                         let json = match serde_json::to_string(&envelope) {
                             Ok(s) => s,
                             Err(_) => continue,
@@ -561,11 +611,8 @@ async fn handle_socket(
                         // Topic filtering (T-2.1.8): if client has subscriptions,
                         // only forward events matching subscribed topics.
                         // Pings always pass through.
-                        if !subscribed_topics.is_empty() {
-                            let keys = envelope.event.topic_keys();
-                            if !keys.is_empty() && !keys.iter().any(|k| subscribed_topics.contains(k)) {
-                                continue;
-                            }
+                        if !event_matches_subscriptions(&envelope.event, &subscribed_topics) {
+                            continue;
                         }
 
                         let json = match serde_json::to_string(&envelope) {
@@ -670,4 +717,62 @@ pub async fn push_event(socket: &mut WebSocket, event: &WsEvent) -> Result<(), S
         .send(Message::Text(json))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_broadcast_maintains_monotonic_order() {
+        let replay_buffer = Arc::new(EventReplayBuffer::new(2048));
+        let (event_tx, mut event_rx) = broadcast::channel(2048);
+        let barrier = Arc::new(tokio::sync::Barrier::new(11));
+        let mut handles = Vec::new();
+
+        for producer in 0..10 {
+            let replay_buffer = Arc::clone(&replay_buffer);
+            let event_tx = event_tx.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                for offset in 0..100 {
+                    replay_buffer.push_and_broadcast(
+                        WsEvent::SystemWarning {
+                            message: format!("producer-{producer}-{offset}"),
+                        },
+                        &event_tx,
+                    );
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+
+        barrier.wait().await;
+
+        let mut received = Vec::with_capacity(1000);
+        while received.len() < 1000 {
+            received.push(event_rx.recv().await.expect("event published").seq);
+        }
+
+        for handle in handles {
+            handle.await.expect("producer finished");
+        }
+
+        assert!(
+            received.windows(2).all(|pair| pair[0] < pair[1]),
+            "received sequences must be strictly increasing: {received:?}"
+        );
+
+        let replayed: Vec<u64> = replay_buffer
+            .buffer
+            .read()
+            .iter()
+            .map(|envelope| envelope.seq)
+            .collect();
+        assert!(
+            replayed.windows(2).all(|pair| pair[0] < pair[1]),
+            "replay buffer sequences must be strictly increasing: {replayed:?}"
+        );
+    }
 }

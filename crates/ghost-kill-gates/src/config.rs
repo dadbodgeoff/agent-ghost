@@ -19,6 +19,8 @@ pub struct KillGateConfig {
     pub partition_timeout: Duration,
     /// Whether to verify hash chains on node sync/rejoin.
     pub chain_verify_on_sync: bool,
+    /// Whether authenticated cluster membership is configured for resume quorum.
+    pub authenticated_cluster_membership: bool,
 }
 
 impl Default for KillGateConfig {
@@ -30,6 +32,7 @@ impl Default for KillGateConfig {
             heartbeat_interval: Duration::from_millis(1000),
             partition_timeout: Duration::from_millis(3000),
             chain_verify_on_sync: true,
+            authenticated_cluster_membership: false,
         }
     }
 }

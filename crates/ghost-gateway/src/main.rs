@@ -22,7 +22,10 @@ use ghost_gateway::cli::secret::{
     SecretDeleteArgs, SecretListArgs, SecretProviderArgs, SecretSetArgs,
 };
 use ghost_gateway::cli::session::{SessionInspectArgs, SessionListArgs, SessionReplayArgs};
-use ghost_gateway::cli::skill::{SkillInspectArgs, SkillInstallArgs, SkillListArgs};
+use ghost_gateway::cli::skill::{
+    SkillInspectArgs, SkillInstallArgs, SkillListArgs, SkillQuarantineArgs,
+    SkillResolveQuarantineArgs, SkillReverifyArgs,
+};
 use ghost_gateway::config::GhostConfig;
 
 #[derive(Parser)]
@@ -391,6 +394,20 @@ enum SkillCommands {
     Install { path: String },
     /// Inspect a skill.
     Inspect { name: String },
+    /// Manually quarantine an external skill artifact.
+    Quarantine {
+        id: String,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Resolve an external skill quarantine using the last observed revision.
+    Resolve {
+        id: String,
+        #[arg(long = "expected-revision")]
+        expected_revision: i64,
+    },
+    /// Re-run verification against the gateway-managed external artifact.
+    Reverify { id: String },
 }
 
 #[derive(clap::Subcommand)]
@@ -994,6 +1011,41 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                     cli::skill::run_inspect(
                         SkillInspectArgs {
                             name,
+                            output: cli_args.global.output,
+                        },
+                        &backend,
+                    )
+                    .await
+                }
+                SkillCommands::Quarantine { id, reason } => {
+                    cli::skill::run_quarantine(
+                        SkillQuarantineArgs {
+                            id,
+                            reason,
+                            output: cli_args.global.output,
+                        },
+                        &backend,
+                    )
+                    .await
+                }
+                SkillCommands::Resolve {
+                    id,
+                    expected_revision,
+                } => {
+                    cli::skill::run_resolve_quarantine(
+                        SkillResolveQuarantineArgs {
+                            id,
+                            expected_revision,
+                            output: cli_args.global.output,
+                        },
+                        &backend,
+                    )
+                    .await
+                }
+                SkillCommands::Reverify { id } => {
+                    cli::skill::run_reverify(
+                        SkillReverifyArgs {
+                            id,
                             output: cli_args.global.output,
                         },
                         &backend,

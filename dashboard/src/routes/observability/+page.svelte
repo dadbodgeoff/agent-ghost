@@ -31,7 +31,14 @@
     const unsub = wsStore.on('TraceUpdate', () => {
       if (selectedSession) loadTraces(selectedSession);
     });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => {
+      loadSessions();
+      if (selectedSession) loadTraces(selectedSession);
+    });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 
   async function loadSessions() {

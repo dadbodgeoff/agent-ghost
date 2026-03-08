@@ -150,6 +150,13 @@ impl KillGateRelay {
                 reason,
                 initiated_by,
             } => {
+                if !self.gate.resume_permitted() {
+                    tracing::warn!(
+                        origin_node = %node_id,
+                        "ignoring resume vote broadcast because authenticated cluster membership is not configured"
+                    );
+                    return None;
+                }
                 let vote = crate::quorum::ResumeVote {
                     node_id,
                     reason,

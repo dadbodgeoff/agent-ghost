@@ -4,6 +4,28 @@
 
 Close the verified production-risk gaps in idempotency, crash recovery, workflow durability, backup integrity, messaging authenticity, distributed kill-gate coordination, skill-catalog mutation safety, and persisted-state/schema contracts.
 
+## Implementation Status
+
+Updated March 8, 2026 against the checked-in code, not the original comments.
+
+Completed and enforced in code:
+- `operation_journal` ownership is now lease/CAS-based with durable `owner_token` and `lease_epoch`. Stale owners cannot commit after takeover, and aborted rows are retained as audit history instead of being silently deleted.
+- Agent chat stream replay is durably journaled before replayable events are emitted. Persistence failures now fail closed into recovery-required semantics instead of pretending replay safety.
+- Workflow executions now persist a typed/versioned durable snapshot of the exact node graph, order, outputs, and active step, bound to operation-journal ownership. Resume and duplicate retries continue from the last durably committed step, reuse the same execution id, and fail closed into explicit `recovery_required` when a crash left a non-retry-safe node in flight. Unknown/skipped/invalid workflow nodes still fail execution instead of reporting `completed`.
+- Saved workflow definitions are now validated as real graph arrays with explicit node ids/types and known edge endpoints. Corrupt persisted workflow rows fail closed on read instead of defaulting to empty graphs or disappearing from list results.
+- Distributed kill-gate resume votes now fail closed unless authenticated cluster membership is configured. Unauthenticated resume quorum is no longer accepted.
+- Inter-agent message verification now rejects missing signatures, forged signatures, unknown sender keys, replayed nonces inside the replay window, and any message marked `encrypted`. The old replay-cache hourly reset hole is closed by timestamped eviction instead of wholesale nonce clearing.
+- Skill install/uninstall and transactional skill execution now run under the operation journal with durable mutation audit and caller-supplied idempotency keys. Explicitly non-idempotent external side-effect skills are rejected instead of being executed under a false retry-safe contract, and installed external-skill catalog entries now surface truthfully in list/install/execute paths.
+- Schema verification now checks recovery-critical columns, indexes, triggers, and constraints for `operation_journal`, `live_execution_records`, `stream_event_log`, and `workflow_executions`. "Schema verified" now means those contract elements were actually present.
+- Backup archives now use explicit format `v2`, authenticated `age` passphrase encryption, exact archive framing, path traversal rejection, tamper detection, and SQLite backup snapshots for `data/ghost.db`. Scheduler-backed exports now fail closed when no non-empty backup passphrase is configured.
+
+Intentionally gated or still fail-closed:
+- Workflow resume is only automatic for durably safe progress. If a crash happens mid-step on a non-retry-safe node, the execution is marked `recovery_required` and further automatic resume is blocked instead of rerunning side effects.
+- Workflow `tool_exec` nodes are still not implemented under the durable runtime path. They continue to fail as unknown node types instead of bypassing safety or journaling.
+- Inter-agent authenticated encryption is not implemented. Messages marked `encrypted` are rejected instead of passing through as plaintext.
+- Runtime bootstrap no longer claims key registration it does not perform. The dispatcher hardening is real, but any consumer must explicitly wire verifying keys into its acceptance path.
+- Backup import only restores into a fresh target directory. In-place overwrite restore remains disabled because the repo does not yet have a crash-safe whole-tree swap contract for an active existing target.
+
 ## Scope
 
 Primary code paths:
@@ -248,7 +270,7 @@ Goal: land high-risk fixes without corrupting existing state or breaking mixed-v
 ## Migration and Rollout Notes
 
 - `operation_journal` changes require additive migration first. Do not remove legacy columns until all writers compare-and-set on the new ownership fields.
-- `workflow_executions` and `live_execution_records` need explicit state versioning. Old rows must either be upgraded in place or marked non-resumable.
+- `workflow_executions` now use typed/versioned state columns and migration `v056` marks legacy rows `recovery_required` instead of silently resuming them. `live_execution_records` still need the same explicit state-versioning treatment.
 - Backup format change should be versioned. Keep legacy import behind an explicit compatibility flag and never restore legacy archives silently.
 - Distributed kill-gate resume must remain disabled unless authenticated cluster membership is configured and verified.
 - Skill route enforcement can roll out in two steps:

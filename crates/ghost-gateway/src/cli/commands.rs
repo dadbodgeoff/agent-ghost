@@ -21,10 +21,20 @@ pub fn run_backup(output: Option<&str>) -> Result<(), CliError> {
         }
     }
 
-    let passphrase = std::env::var("GHOST_BACKUP_KEY").unwrap_or_default();
-    if passphrase.is_empty() {
-        tracing::warn!("GHOST_BACKUP_KEY not set — backup will use empty passphrase");
-    }
+    let passphrase = std::env::var("GHOST_BACKUP_PASSPHRASE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("GHOST_BACKUP_KEY")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .ok_or_else(|| {
+            CliError::Config(
+                "set GHOST_BACKUP_PASSPHRASE (or legacy GHOST_BACKUP_KEY) before creating backups"
+                    .into(),
+            )
+        })?;
 
     let exporter = ghost_backup::export::BackupExporter::new(&ghost_dir);
     match exporter.export(&output_path, &passphrase) {

@@ -87,7 +87,7 @@ describe('GhostWebSocket', () => {
     socket.disconnect();
   });
 
-  it('reconnects with last_seq before replaying subscriptions', async () => {
+  it('reconnects with a combined replay cursor and topic payload', async () => {
     vi.useFakeTimers();
     const fetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -121,8 +121,7 @@ describe('GhostWebSocket', () => {
     secondTransport.open();
 
     expect(secondTransport.sent).toEqual([
-      JSON.stringify({ last_seq: 7 }),
-      JSON.stringify({ type: 'Subscribe', topics: ['agent:alpha'] }),
+      JSON.stringify({ last_seq: 7, topics: ['agent:alpha'] }),
     ]);
 
     socket.disconnect();
@@ -243,5 +242,37 @@ describe('GhostWebSocket', () => {
     expect(MockWebSocket.instances).toHaveLength(0);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(errors).toEqual(['WebSocket authentication failed: unauthorized']);
+  });
+
+  it('transitions to disconnected when reconnect attempts are exhausted', async () => {
+    vi.useFakeTimers();
+    const states: string[] = [];
+    const reconnectFailed = vi.fn();
+
+    const socket = new GhostWebSocket(
+      { baseUrl: 'http://test:39780' },
+      {
+        maxReconnectAttempts: 1,
+        onReconnectFailed: reconnectFailed,
+        onStateChange: (state) => states.push(state),
+      },
+    ).connect();
+
+    await flushAsyncWork();
+
+    const firstTransport = MockWebSocket.instances[0];
+    firstTransport.open();
+    firstTransport.close();
+
+    vi.advanceTimersByTime(1000);
+    await flushAsyncWork();
+
+    const secondTransport = MockWebSocket.instances[1];
+    secondTransport.close();
+
+    expect(reconnectFailed).toHaveBeenCalledTimes(1);
+    expect(states.at(-1)).toBe('disconnected');
+
+    socket.disconnect();
   });
 });

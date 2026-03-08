@@ -43,8 +43,14 @@
     const unsub = wsStore.on('ProposalDecision', () => {
       loadProposals();
     });
+    const unsubResync = wsStore.onResync(() => {
+      loadProposals();
+    });
 
-    return () => unsub();
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 
   function switchTab(tab: (typeof statusTabs)[number]) {

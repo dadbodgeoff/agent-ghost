@@ -10,7 +10,12 @@
 import { GhostWebSocket } from '@ghost/sdk';
 import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
 
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+export type ConnectionState =
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'follower';
 
 export type WsEventType =
   | 'ScoreUpdate'
@@ -26,6 +31,8 @@ export type WsEventType =
   | 'A2ATaskUpdate'
   | 'SessionEvent'
   | 'ChatMessage'
+  | 'SystemWarning'
+  | 'ContextTruncated'
   | 'Resync'
   | 'Ping';
 
@@ -42,18 +49,24 @@ interface WsEnvelope {
 }
 
 type EventHandler = (msg: WsMessage) => void;
+type ResyncHandler = () => void;
 
 class WebSocketStore {
   state = $state<ConnectionState>('disconnected');
   lastMessage = $state<WsMessage | null>(null);
   lastError = $state('');
   reconnectAttempt = $state(0);
+  resyncVersion = $state(0);
 
   private socket: GhostWebSocket | null = null;
   private handlers = new Map<WsEventType, Set<EventHandler>>();
+  private resyncHandlers = new Set<ResyncHandler>();
   private isLeader = true;
   private bc: BroadcastChannel | null = null;
   private lastSeq = 0;
+  private leaderElectionStarted = false;
+  private leaderReady: Promise<void> | null = null;
+  private leaderReadyResolve: (() => void) | null = null;
 
   on(type: WsEventType, handler: EventHandler): () => void {
     if (!this.handlers.has(type)) {
@@ -65,13 +78,23 @@ class WebSocketStore {
     };
   }
 
+  onResync(handler: ResyncHandler): () => void {
+    this.resyncHandlers.add(handler);
+    return () => {
+      this.resyncHandlers.delete(handler);
+    };
+  }
+
   async connect() {
     if (this.socket || this.state === 'connecting' || this.state === 'connected') {
       return;
     }
 
-    this.initLeaderElection();
-    if (!this.isLeader) return;
+    await this.initLeaderElection();
+    if (!this.isLeader) {
+      this.state = 'follower';
+      return;
+    }
 
     const runtime = await getRuntime();
     const baseUrl = await runtime.getBaseUrl();
@@ -93,18 +116,27 @@ class WebSocketStore {
           }
         },
         onStateChange: (state) => {
+          if (!this.isLeader) {
+            return;
+          }
           this.state = state;
           if (state === 'connected') {
             this.reconnectAttempt = 0;
             this.lastError = '';
           }
-          if (state === 'disconnected' && !this.isLeader) {
-            this.state = 'connected';
-          }
         },
         onReconnectScheduled: (attempt) => {
+          if (!this.isLeader) {
+            return;
+          }
           this.reconnectAttempt = attempt;
           this.state = 'reconnecting';
+        },
+        onReconnectFailed: () => {
+          if (!this.isLeader) {
+            return;
+          }
+          this.lastError = 'Connection lost - click to reconnect';
         },
         onError: (message) => {
           this.lastError = message;
@@ -121,9 +153,19 @@ class WebSocketStore {
     this.bc = null;
   }
 
-  private initLeaderElection() {
-    if (isTauriEnvironment()) return;
-    if (this.bc) return;
+  private async initLeaderElection() {
+    if (isTauriEnvironment()) {
+      this.isLeader = true;
+      return;
+    }
+    if (this.leaderElectionStarted) {
+      await this.leaderReady;
+      return;
+    }
+    this.leaderElectionStarted = true;
+    this.leaderReady = new Promise((resolve) => {
+      this.leaderReadyResolve = resolve;
+    });
 
     try {
       this.bc = new BroadcastChannel('ghost-ws-leader');
@@ -137,39 +179,69 @@ class WebSocketStore {
         }
       };
     } catch {
+      this.isLeader = true;
+      this.resolveLeaderReady();
       return;
     }
 
     if (typeof navigator !== 'undefined' && navigator.locks) {
       navigator.locks.request('ghost-ws-leader', { ifAvailable: true }, async (lock) => {
         if (lock) {
-          this.becomeLeader();
+          this.isLeader = true;
+          this.state = 'disconnected';
+          this.resolveLeaderReady();
           return new Promise<void>(() => {});
         }
 
         this.becomeFollower();
+        this.resolveLeaderReady();
         navigator.locks.request('ghost-ws-leader', async () => {
           this.becomeLeader();
           return new Promise<void>(() => {});
         });
       });
+    } else {
+      this.isLeader = true;
+      this.resolveLeaderReady();
     }
+
+    await this.leaderReady;
   }
 
   private becomeLeader() {
-    if (this.isLeader) return;
+    if (this.isLeader && this.socket) return;
     this.isLeader = true;
+    this.socket?.disconnect();
+    this.socket = null;
+    this.state = 'disconnected';
+    this.lastError = '';
+    this.reconnectAttempt = 0;
     void this.connect();
   }
 
   private becomeFollower() {
-    if (!this.isLeader) return;
     this.isLeader = false;
     this.socket?.disconnect();
     this.socket = null;
-    this.state = 'connected';
+    this.state = 'follower';
     this.lastError = '';
     this.reconnectAttempt = 0;
+  }
+
+  private resolveLeaderReady() {
+    this.leaderReadyResolve?.();
+    this.leaderReadyResolve = null;
+  }
+
+  private notifyResync() {
+    this.resyncVersion += 1;
+    for (const handler of this.resyncHandlers) {
+      try {
+        handler();
+      } catch (error) {
+        console.error('[ws] resync handler error:', error);
+      }
+    }
   }
 
   private routeEnvelope(envelope: WsEnvelope) {
@@ -190,6 +262,7 @@ class WebSocketStore {
       console.warn(
         `[ws] Resync: missed ${(msg as { missed_events?: number }).missed_events ?? '?'} events — refreshing all stores`,
       );
+      this.notifyResync();
     }
 
     const typeHandlers = this.handlers.get(msg.type);

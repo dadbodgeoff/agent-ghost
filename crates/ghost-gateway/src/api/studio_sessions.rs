@@ -30,7 +30,8 @@ use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult, ErrorResponse};
 use crate::api::idempotency::{
     abort_prepared_json_operation, commit_prepared_json_operation,
-    execute_idempotent_json_mutation, prepare_json_operation, PreparedOperation,
+    execute_idempotent_json_mutation, prepare_json_operation, start_operation_lease_heartbeat,
+    PreparedOperation,
 };
 use crate::api::mutation::{
     error_response_with_idempotency, json_response_with_idempotency, response_with_idempotency,
@@ -447,7 +448,7 @@ pub async fn send_message(
             "IDEMPOTENCY_IN_PROGRESS",
             "An equivalent request is already in progress",
         )),
-        Ok(PreparedOperation::Acquired { journal_id }) => {
+        Ok(PreparedOperation::Acquired { lease }) => {
             let operation_id = operation_context
                 .operation_id
                 .clone()
@@ -457,7 +458,7 @@ pub async fn send_message(
                 let db = state.db.write().await;
                 match cortex_storage::queries::live_execution_queries::get_by_journal_id(
                     &db,
-                    &journal_id,
+                    &lease.journal_id,
                 ) {
                     Ok(record) => record,
                     Err(error) => {
@@ -475,7 +476,7 @@ pub async fn send_message(
                         Ok(db) => db,
                         Err(error) => {
                             let db = state.db.write().await;
-                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(ApiError::db_error(
                                 "get_session",
                                 error,
@@ -489,14 +490,14 @@ pub async fn send_message(
                         Ok(Some(session)) => session,
                         Ok(None) => {
                             let db = state.db.write().await;
-                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(ApiError::not_found(format!(
                                 "session {session_id} not found"
                             )));
                         }
                         Err(error) => {
                             let db = state.db.write().await;
-                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(ApiError::db_error(
                                 "get_session",
                                 error,
@@ -512,13 +513,13 @@ pub async fn send_message(
                     Ok(agent) => agent,
                     Err(error) => {
                         let db = state.db.write().await;
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(error);
                     }
                 };
                 if let Err(error) = ensure_agent_available(&state, agent.id) {
                     let db = state.db.write().await;
-                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                     return error_response_with_idempotency(error);
                 }
 
@@ -535,7 +536,7 @@ pub async fn send_message(
                         Ok(db) => db,
                         Err(error) => {
                             let db = state.db.write().await;
-                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(ApiError::db_error(
                                 "list_messages",
                                 error,
@@ -549,7 +550,7 @@ pub async fn send_message(
                         Ok(history) => history,
                         Err(error) => {
                             let db = state.db.write().await;
-                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(ApiError::db_error(
                                 "list_messages",
                                 error,
@@ -569,7 +570,7 @@ pub async fn send_message(
                     .map_err(map_runner_error)
                 {
                     let db = state.db.write().await;
-                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                     return error_response_with_idempotency(error);
                 }
 
@@ -584,7 +585,7 @@ pub async fn send_message(
                     Ok(runner) => runner,
                     Err(error) => {
                         let db = state.db.write().await;
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(map_runtime_safety_error(error));
                     }
                 };
@@ -599,7 +600,7 @@ pub async fn send_message(
                     .await;
                 if let Err(error) = pre_loop_ctx {
                     let db = state.db.write().await;
-                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                     return error_response_with_idempotency(map_runner_error(error));
                 }
 
@@ -644,7 +645,7 @@ pub async fn send_message(
                         0,
                         "clean",
                     ) {
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(ApiError::db_error(
                             "insert_user_message",
                             error,
@@ -661,7 +662,7 @@ pub async fn send_message(
                             detail,
                         )
                     {
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(ApiError::db_error(
                             "insert_safety_audit",
                             error,
@@ -670,14 +671,14 @@ pub async fn send_message(
                     if let Err(error) = persist_live_execution_record(
                         &db,
                         &execution_id,
-                        &journal_id,
+                        &lease.journal_id,
                         &operation_id,
                         actor,
                         STUDIO_MESSAGE_ROUTE_KIND,
                         "accepted",
                         &execution_state,
                     ) {
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(error);
                     }
                 }
@@ -688,7 +689,7 @@ pub async fn send_message(
                     );
                     return finalize_studio_message_terminal_response(
                         &state,
-                        &journal_id,
+                        &lease,
                         &operation_context,
                         &session_id,
                         actor,
@@ -707,7 +708,7 @@ pub async fn send_message(
                     );
                     return finalize_studio_message_terminal_response(
                         &state,
-                        &journal_id,
+                        &lease,
                         &operation_context,
                         &session_id,
                         actor,
@@ -722,7 +723,7 @@ pub async fn send_message(
                 execution_record = Some(
                     cortex_storage::queries::live_execution_queries::LiveExecutionRecord {
                         id: execution_id,
-                        journal_id,
+                        journal_id: lease.journal_id.clone(),
                         operation_id,
                         route_kind: STUDIO_MESSAGE_ROUTE_KIND.to_string(),
                         actor_key: actor.to_string(),
@@ -751,7 +752,7 @@ pub async fn send_message(
                     {
                         return finalize_studio_message_terminal_response(
                             &state,
-                            &execution_record.journal_id,
+                            &lease,
                             &operation_context,
                             &session_id,
                             actor,
@@ -767,7 +768,7 @@ pub async fn send_message(
                     let response_body = studio_message_recovery_body(&execution_state);
                     return finalize_studio_message_terminal_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &session_id,
                         actor,
@@ -784,7 +785,7 @@ pub async fn send_message(
                     {
                         return finalize_studio_message_terminal_response(
                             &state,
-                            &execution_record.journal_id,
+                            &lease,
                             &operation_context,
                             &session_id,
                             actor,
@@ -799,7 +800,7 @@ pub async fn send_message(
                     let response_body = studio_message_recovery_body(&execution_state);
                     return finalize_studio_message_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &session_id,
                         actor,
@@ -836,7 +837,7 @@ pub async fn send_message(
                         let response_body = studio_message_recovery_body(&execution_state);
                         return finalize_studio_message_recovery_response(
                             &state,
-                            &execution_record.journal_id,
+                            &lease,
                             &operation_context,
                             &session_id,
                             actor,
@@ -933,7 +934,7 @@ pub async fn send_message(
                 );
                 return finalize_studio_message_terminal_response(
                     &state,
-                    &execution_record.journal_id,
+                    &lease,
                     &operation_context,
                     &session_id,
                     actor,
@@ -945,6 +946,7 @@ pub async fn send_message(
                 .await;
             }
 
+            let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
             let mut ctx = match runner
                 .pre_loop(
                     runtime_ctx.agent.id,
@@ -956,6 +958,10 @@ pub async fn send_message(
             {
                 Ok(ctx) => ctx,
                 Err(error) => {
+                    let heartbeat_result = heartbeat.stop().await;
+                    if let Err(error) = heartbeat_result {
+                        return error_response_with_idempotency(error);
+                    }
                     return error_response_with_idempotency(map_runner_error(error));
                 }
             };
@@ -978,12 +984,20 @@ pub async fn send_message(
                 .await;
 
             let result = match result {
-                Ok(result) => result,
+                Ok(result) => {
+                    if let Err(error) = heartbeat.stop().await {
+                        return error_response_with_idempotency(error);
+                    }
+                    result
+                }
                 Err(error) => {
+                    if let Err(heartbeat_error) = heartbeat.stop().await {
+                        return error_response_with_idempotency(heartbeat_error);
+                    }
                     let response_body = studio_message_recovery_body(&execution_state);
                     let response = finalize_studio_message_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &session_id,
                         actor,
@@ -1022,7 +1036,7 @@ pub async fn send_message(
                     let response_body = studio_message_recovery_body(&execution_state);
                     return finalize_studio_message_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &session_id,
                         actor,
@@ -1063,17 +1077,6 @@ pub async fn send_message(
                 }
             }
 
-            crate::api::websocket::broadcast_event(
-                &state,
-                WsEvent::ChatMessage {
-                    session_id: execution_state.session_id.clone(),
-                    message_id: execution_state.assistant_message_id.clone(),
-                    role: "assistant".into(),
-                    content: truncate_preview(&response_content, 200),
-                    safety_status: output_safety_status.into(),
-                },
-            );
-
             let final_body =
                 match reconstruct_studio_message_completed_body(&state.db, &execution_state) {
                     Ok(Some(body)) => body,
@@ -1083,7 +1086,7 @@ pub async fn send_message(
 
             finalize_studio_message_terminal_response(
                 &state,
-                &execution_record.journal_id,
+                &lease,
                 &operation_context,
                 &session_id,
                 actor,
@@ -1260,7 +1263,7 @@ fn reconstruct_studio_message_completed_body(
 
 async fn finalize_studio_message_terminal_response(
     state: &Arc<AppState>,
-    journal_id: &str,
+    lease: &crate::api::idempotency::PreparedOperationLease,
     operation_context: &OperationContext,
     session_id: &str,
     actor: &str,
@@ -1279,8 +1282,33 @@ async fn finalize_studio_message_terminal_response(
         return error_response_with_idempotency(error);
     }
 
-    match commit_prepared_json_operation(&db, operation_context, journal_id, status, &body) {
+    match commit_prepared_json_operation(&db, operation_context, lease, status, &body) {
         Ok(outcome) => {
+            if status == StatusCode::OK {
+                let assistant_message = outcome.body.get("assistant_message");
+                let safety_status = outcome
+                    .body
+                    .get("safety_status")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("clean");
+                if let Some(message) = assistant_message {
+                    if let (Some(message_id), Some(content)) = (
+                        message.get("id").and_then(|value| value.as_str()),
+                        message.get("content").and_then(|value| value.as_str()),
+                    ) {
+                        crate::api::websocket::broadcast_event(
+                            state,
+                            WsEvent::ChatMessage {
+                                session_id: session_id.to_string(),
+                                message_id: message_id.to_string(),
+                                role: "assistant".into(),
+                                content: truncate_preview(content, 200),
+                                safety_status: safety_status.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
             let audit_outcome = if status == StatusCode::OK {
                 "completed"
             } else {
@@ -1311,7 +1339,7 @@ async fn finalize_studio_message_terminal_response(
 
 async fn finalize_studio_message_recovery_response(
     state: &Arc<AppState>,
-    journal_id: &str,
+    lease: &crate::api::idempotency::PreparedOperationLease,
     operation_context: &OperationContext,
     session_id: &str,
     actor: &str,
@@ -1326,13 +1354,8 @@ async fn finalize_studio_message_recovery_response(
         return error_response_with_idempotency(error);
     }
 
-    match commit_prepared_json_operation(
-        &db,
-        operation_context,
-        journal_id,
-        StatusCode::ACCEPTED,
-        &body,
-    ) {
+    match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::ACCEPTED, &body)
+    {
         Ok(outcome) => {
             write_mutation_audit_entry(
                 &db,

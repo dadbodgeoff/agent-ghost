@@ -115,7 +115,11 @@
     loadChannels();
     loadAgents();
     const unsub = wsStore.on('AgentStateChange', () => { loadChannels(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => { loadChannels(); });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 </script>
 

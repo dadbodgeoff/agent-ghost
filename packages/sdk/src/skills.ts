@@ -1,92 +1,103 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components } from './generated-types.js';
 
 // ── Types ──
 
-export type SkillSource = 'compiled' | 'user' | 'workspace';
-export type SkillExecutionMode = 'native' | 'wasm';
-export type SkillState =
-  | 'always_on'
-  | 'installed'
-  | 'available'
-  | 'disabled'
-  | 'quarantined';
-
-export interface Skill {
-  id: string;
-  name: string;
-  version: string;
-  description: string;
-  source: SkillSource;
-  removable: boolean;
-  installable: boolean;
-  execution_mode: SkillExecutionMode;
-  policy_capability: string;
-  privileges: string[];
-  state: SkillState;
-  quarantine_reason?: string | null;
-  enabled_for_agent?: boolean | null;
-  // Compatibility alias retained while older clients still read capability badges.
-  capabilities: string[];
-}
-
-export interface ListSkillsResult {
-  installed: Skill[];
-  available: Skill[];
-}
-
-export interface ExecuteSkillParams {
-  agent_id: string;
-  session_id: string;
-  input?: unknown;
-}
-
-export interface ExecuteSkillResult {
-  skill: string;
-  result: unknown;
-}
+export type Skill = components['schemas']['SkillSummaryDto'];
+export type SkillSource = components['schemas']['SkillSourceKind'];
+export type SkillExecutionMode = components['schemas']['SkillExecutionMode'];
+export type SkillState = components['schemas']['SkillStateDto'];
+export type SkillInstallState = components['schemas']['SkillInstallStateDto'];
+export type SkillVerificationStatus = components['schemas']['SkillVerificationStatusDto'];
+export type SkillQuarantineState = components['schemas']['SkillQuarantineStateDto'];
+export type SkillMutationKind = components['schemas']['SkillMutationKind'];
+export type ListSkillsResult = components['schemas']['SkillListResponseDto'];
+export type ExecuteSkillParams = components['schemas']['ExecuteSkillRequestDto'];
+export type ExecuteSkillResult = components['schemas']['ExecuteSkillResponseDto'];
+export type QuarantineSkillParams = components['schemas']['SkillQuarantineRequestDto'];
+export type ResolveSkillQuarantineParams =
+  components['schemas']['SkillQuarantineResolutionRequestDto'];
 
 // ── API ──
 
 export class SkillsAPI {
   constructor(private request: GhostRequestFn) {}
 
-  /** List installed and available skills. */
+  /** List installed and available skills from the mixed-source catalog. */
   async list(): Promise<ListSkillsResult> {
     return this.request<ListSkillsResult>('GET', '/api/skills');
   }
 
-  /** Install a skill by name. */
-  async install(name: string, options?: GhostRequestOptions): Promise<Skill> {
+  /** Install a skill by canonical catalog identifier. */
+  async install(id: string, options?: GhostRequestOptions): Promise<Skill> {
     return this.request<Skill>(
       'POST',
-      `/api/skills/${encodeURIComponent(name)}/install`,
+      `/api/skills/${encodeURIComponent(id)}/install`,
       undefined,
       options,
     );
   }
 
-  /** Uninstall a skill by name. */
+  /** Uninstall a skill by canonical catalog identifier. */
   async uninstall(
-    name: string,
+    id: string,
     options?: GhostRequestOptions,
   ): Promise<Skill> {
     return this.request<Skill>(
       'POST',
-      `/api/skills/${encodeURIComponent(name)}/uninstall`,
+      `/api/skills/${encodeURIComponent(id)}/uninstall`,
       undefined,
       options,
     );
   }
 
-  /** Execute a skill for a specific runtime agent/session. */
+  /** Manually quarantine an external skill artifact by catalog identifier. */
+  async quarantine(
+    id: string,
+    params: QuarantineSkillParams,
+    options?: GhostRequestOptions,
+  ): Promise<Skill> {
+    return this.request<Skill>(
+      'POST',
+      `/api/skills/${encodeURIComponent(id)}/quarantine`,
+      params,
+      options,
+    );
+  }
+
+  /** Resolve a quarantined external skill artifact with an expected revision guard. */
+  async resolveQuarantine(
+    id: string,
+    params: ResolveSkillQuarantineParams,
+    options?: GhostRequestOptions,
+  ): Promise<Skill> {
+    return this.request<Skill>(
+      'POST',
+      `/api/skills/${encodeURIComponent(id)}/quarantine/resolve`,
+      params,
+      options,
+    );
+  }
+
+  /** Re-run verification against the gateway-managed artifact. */
+  async reverify(id: string, options?: GhostRequestOptions): Promise<Skill> {
+    return this.request<Skill>(
+      'POST',
+      `/api/skills/${encodeURIComponent(id)}/reverify`,
+      undefined,
+      options,
+    );
+  }
+
+  /** Execute a catalog skill for a specific runtime agent/session. */
   async execute(
-    name: string,
+    idOrName: string,
     params: ExecuteSkillParams,
     options?: GhostRequestOptions,
   ): Promise<ExecuteSkillResult> {
     return this.request<ExecuteSkillResult>(
       'POST',
-      `/api/skills/${encodeURIComponent(name)}/execute`,
+      `/api/skills/${encodeURIComponent(idOrName)}/execute`,
       params,
       options,
     );

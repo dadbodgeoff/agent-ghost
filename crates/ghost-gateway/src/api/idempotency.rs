@@ -7,6 +7,7 @@ use crate::api::error::ApiError;
 use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 
 const OPERATION_LEASE_SECONDS: i64 = 30;
+const OPERATION_LEASE_RENEW_INTERVAL_SECONDS: u64 = 10;
 
 #[derive(Debug, Clone)]
 pub struct RequiredOperationContext {
@@ -21,9 +22,16 @@ pub struct StoredJsonResponse {
     pub body: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedOperationLease {
+    pub journal_id: String,
+    pub owner_token: String,
+    pub lease_epoch: i64,
+}
+
 #[derive(Debug, Clone)]
 pub enum PreparedOperation {
-    Acquired { journal_id: String },
+    Acquired { lease: PreparedOperationLease },
     Replay(StoredJsonResponse),
     InProgress,
     Mismatch,
@@ -34,6 +42,13 @@ pub struct ExecutedJsonMutation {
     pub status: StatusCode,
     pub body: Value,
     pub idempotency_status: IdempotencyStatus,
+}
+
+pub struct OperationLeaseHeartbeat {
+    journal_id: String,
+    stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    lost_rx: tokio::sync::watch::Receiver<bool>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 fn canonical_json_string(value: &Value) -> String {
@@ -119,6 +134,47 @@ fn lease_expires_at(now: chrono::DateTime<chrono::Utc>) -> String {
         .to_rfc3339()
 }
 
+fn ownership_lost_error(journal_id: &str) -> ApiError {
+    ApiError::with_details(
+        StatusCode::CONFLICT,
+        "OPERATION_OWNERSHIP_LOST",
+        "Operation ownership was lost before the mutation could be finalized",
+        serde_json::json!({
+            "journal_id": journal_id,
+        }),
+    )
+}
+
+fn parse_committed_replay(
+    entry: &cortex_storage::queries::operation_journal_queries::OperationJournalRow,
+) -> Result<StoredJsonResponse, ApiError> {
+    let raw_status = entry.response_status_code.ok_or_else(|| {
+        ApiError::internal(format!(
+            "committed operation_journal row {} missing response_status_code",
+            entry.id
+        ))
+    })?;
+    let status = StatusCode::from_u16(raw_status as u16).map_err(|_| {
+        ApiError::internal(format!(
+            "committed operation_journal row {} has invalid status code {}",
+            entry.id, raw_status
+        ))
+    })?;
+    let raw_body = entry.response_body.as_deref().ok_or_else(|| {
+        ApiError::internal(format!(
+            "committed operation_journal row {} missing response_body",
+            entry.id
+        ))
+    })?;
+    let body = serde_json::from_str(raw_body).map_err(|error| {
+        ApiError::internal(format!(
+            "committed operation_journal row {} has invalid response_body: {error}",
+            entry.id
+        ))
+    })?;
+    Ok(StoredJsonResponse { status, body })
+}
+
 pub fn prepare_json_operation(
     conn: &rusqlite::Connection,
     context: &OperationContext,
@@ -130,6 +186,7 @@ pub fn prepare_json_operation(
     let required = require_operation_context(context)?;
     let now = chrono::Utc::now();
     let fingerprint = fingerprint_json_request(method, route_template, actor_key, body);
+    let next_owner_token = uuid::Uuid::now_v7().to_string();
 
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| ApiError::db_error("operation_journal_begin", e))?;
@@ -142,72 +199,135 @@ pub fn prepare_json_operation(
         )
         .map_err(|e| ApiError::db_error("operation_journal_lookup", e))?;
 
-    let result = match existing {
-        Some(entry) if entry.request_fingerprint != fingerprint => PreparedOperation::Mismatch,
-        Some(entry) if entry.status == "committed" => {
-            let status = StatusCode::from_u16(entry.response_status_code.unwrap_or(200) as u16)
-                .unwrap_or(StatusCode::OK);
-            let body = entry
-                .response_body
-                .as_deref()
-                .and_then(|value| serde_json::from_str(value).ok())
-                .unwrap_or(Value::Null);
-            PreparedOperation::Replay(StoredJsonResponse { status, body })
-        }
-        Some(entry) => {
-            let expired = entry
-                .lease_expires_at
-                .as_deref()
-                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-                .map(|value| value.with_timezone(&chrono::Utc) <= now)
-                .unwrap_or(false);
-
-            if expired {
-                cortex_storage::queries::operation_journal_queries::take_over_in_progress(
-                    conn,
-                    &entry.id,
-                    &required.operation_id,
-                    Some(&required.request_id),
-                    &now.to_rfc3339(),
-                    &lease_expires_at(now),
-                )
-                .map_err(|e| ApiError::db_error("operation_journal_takeover", e))?;
-                PreparedOperation::Acquired {
-                    journal_id: entry.id,
-                }
-            } else {
-                PreparedOperation::InProgress
+    let result = (|| -> Result<PreparedOperation, ApiError> {
+        Ok(match existing {
+            Some(entry) if entry.request_fingerprint != fingerprint => PreparedOperation::Mismatch,
+            Some(entry) if entry.status == "committed" => {
+                PreparedOperation::Replay(parse_committed_replay(&entry)?)
             }
-        }
-        None => {
-            let journal_id = uuid::Uuid::now_v7().to_string();
-            let body_string = canonical_json_string(body);
-            let created_at = now.to_rfc3339();
-            let lease_expires_at = lease_expires_at(now);
-            let entry =
-                cortex_storage::queries::operation_journal_queries::NewOperationJournalEntry {
-                    id: &journal_id,
-                    actor_key,
-                    method,
-                    route_template,
-                    operation_id: &required.operation_id,
-                    request_id: Some(&required.request_id),
-                    idempotency_key: &required.idempotency_key,
-                    request_fingerprint: &fingerprint,
-                    request_body: &body_string,
-                    created_at: &created_at,
-                    lease_expires_at: &lease_expires_at,
-                };
-            cortex_storage::queries::operation_journal_queries::insert_in_progress(conn, &entry)
+            Some(entry) if entry.status == "aborted" => {
+                let new_epoch = entry.lease_epoch + 1;
+                let restarted =
+                    cortex_storage::queries::operation_journal_queries::restart_aborted(
+                        conn,
+                        &entry.id,
+                        &required.operation_id,
+                        Some(&required.request_id),
+                        &next_owner_token,
+                        &now.to_rfc3339(),
+                        &lease_expires_at(now),
+                    )
+                    .map_err(|e| ApiError::db_error("operation_journal_restart", e))?;
+                if !restarted {
+                    return Err(ApiError::custom(
+                        StatusCode::CONFLICT,
+                        "OPERATION_RESTART_FAILED",
+                        "Failed to reacquire aborted operation journal entry",
+                    ));
+                }
+                PreparedOperation::Acquired {
+                    lease: PreparedOperationLease {
+                        journal_id: entry.id,
+                        owner_token: next_owner_token.clone(),
+                        lease_epoch: new_epoch,
+                    },
+                }
+            }
+            Some(entry) => {
+                let expired = entry.lease_expires_at.as_deref().ok_or_else(|| {
+                    ApiError::internal(format!(
+                        "in-progress operation_journal row {} missing lease_expires_at",
+                        entry.id
+                    ))
+                })?;
+                let expired = chrono::DateTime::parse_from_rfc3339(expired)
+                .map_err(|error| {
+                    ApiError::internal(format!(
+                        "in-progress operation_journal row {} has invalid lease_expires_at: {error}",
+                        entry.id
+                    ))
+                })?
+                .with_timezone(&chrono::Utc)
+                <= now;
+
+                if expired {
+                    let new_epoch = entry.lease_epoch + 1;
+                    let taken_over =
+                        cortex_storage::queries::operation_journal_queries::take_over_in_progress(
+                            conn,
+                            &entry.id,
+                            &required.operation_id,
+                            Some(&required.request_id),
+                            &next_owner_token,
+                            &now.to_rfc3339(),
+                            &lease_expires_at(now),
+                        )
+                        .map_err(|e| ApiError::db_error("operation_journal_takeover", e))?;
+                    if !taken_over {
+                        return Err(ApiError::custom(
+                            StatusCode::CONFLICT,
+                            "OPERATION_TAKEOVER_FAILED",
+                            "Failed to take ownership of expired operation journal entry",
+                        ));
+                    }
+                    PreparedOperation::Acquired {
+                        lease: PreparedOperationLease {
+                            journal_id: entry.id,
+                            owner_token: next_owner_token.clone(),
+                            lease_epoch: new_epoch,
+                        },
+                    }
+                } else {
+                    PreparedOperation::InProgress
+                }
+            }
+            None => {
+                let journal_id = uuid::Uuid::now_v7().to_string();
+                let body_string = canonical_json_string(body);
+                let created_at = now.to_rfc3339();
+                let lease_expires_at = lease_expires_at(now);
+                let entry =
+                    cortex_storage::queries::operation_journal_queries::NewOperationJournalEntry {
+                        id: &journal_id,
+                        actor_key,
+                        method,
+                        route_template,
+                        operation_id: &required.operation_id,
+                        request_id: Some(&required.request_id),
+                        idempotency_key: &required.idempotency_key,
+                        request_fingerprint: &fingerprint,
+                        request_body: &body_string,
+                        created_at: &created_at,
+                        lease_expires_at: &lease_expires_at,
+                        owner_token: &next_owner_token,
+                        lease_epoch: 0,
+                    };
+                cortex_storage::queries::operation_journal_queries::insert_in_progress(
+                    conn, &entry,
+                )
                 .map_err(|e| ApiError::db_error("operation_journal_insert", e))?;
-            PreparedOperation::Acquired { journal_id }
+                PreparedOperation::Acquired {
+                    lease: PreparedOperationLease {
+                        journal_id,
+                        owner_token: next_owner_token,
+                        lease_epoch: 0,
+                    },
+                }
+            }
+        })
+    })();
+
+    match result {
+        Ok(result) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| ApiError::db_error("operation_journal_commit", e))?;
+            Ok(result)
         }
-    };
-
-    conn.execute_batch("COMMIT")
-        .map_err(|e| ApiError::db_error("operation_journal_commit", e))?;
-
-    Ok(result)
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 pub fn execute_idempotent_json_mutation<F>(
@@ -248,7 +368,7 @@ where
                 "An equivalent request is already in progress",
             ));
         }
-        PreparedOperation::Acquired { journal_id } => {
+        PreparedOperation::Acquired { lease } => {
             conn.execute_batch("BEGIN IMMEDIATE")
                 .map_err(|e| ApiError::db_error("operation_execute_begin", e))?;
 
@@ -257,7 +377,7 @@ where
                     let outcome = mark_prepared_json_operation_committed(
                         conn,
                         context,
-                        &journal_id,
+                        &lease,
                         status,
                         &response_body,
                     )?;
@@ -267,7 +387,7 @@ where
                 }
                 Err(error) => {
                     let _ = conn.execute_batch("ROLLBACK");
-                    let _ = abort_prepared_json_operation(conn, &journal_id);
+                    let _ = abort_prepared_json_operation(conn, context, &lease);
                     Err(error)
                 }
             }
@@ -278,32 +398,40 @@ where
 pub fn commit_prepared_json_operation(
     conn: &rusqlite::Connection,
     context: &OperationContext,
-    journal_id: &str,
+    lease: &PreparedOperationLease,
     status: StatusCode,
     response_body: &Value,
 ) -> Result<ExecutedJsonMutation, ApiError> {
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| ApiError::db_error("operation_commit_begin", e))?;
-    let outcome =
-        mark_prepared_json_operation_committed(conn, context, journal_id, status, response_body)?;
-    conn.execute_batch("COMMIT")
-        .map_err(|e| ApiError::db_error("operation_execute_commit", e))?;
-    Ok(outcome)
+    match mark_prepared_json_operation_committed(conn, context, lease, status, response_body) {
+        Ok(outcome) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| ApiError::db_error("operation_execute_commit", e))?;
+            Ok(outcome)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 fn mark_prepared_json_operation_committed(
     conn: &rusqlite::Connection,
     context: &OperationContext,
-    journal_id: &str,
+    lease: &PreparedOperationLease,
     status: StatusCode,
     response_body: &Value,
 ) -> Result<ExecutedJsonMutation, ApiError> {
     let required = require_operation_context(context)?;
     let response_body_string =
         serde_json::to_string(response_body).map_err(|e| ApiError::internal(e.to_string()))?;
-    cortex_storage::queries::operation_journal_queries::mark_committed(
+    let committed = cortex_storage::queries::operation_journal_queries::mark_committed(
         conn,
-        journal_id,
+        &lease.journal_id,
+        &lease.owner_token,
+        lease.lease_epoch,
         Some(&required.request_id),
         i64::from(status.as_u16()),
         &response_body_string,
@@ -311,6 +439,9 @@ fn mark_prepared_json_operation_committed(
         &chrono::Utc::now().to_rfc3339(),
     )
     .map_err(|e| ApiError::db_error("operation_journal_mark_committed", e))?;
+    if !committed {
+        return Err(ownership_lost_error(&lease.journal_id));
+    }
 
     Ok(ExecutedJsonMutation {
         status,
@@ -321,10 +452,105 @@ fn mark_prepared_json_operation_committed(
 
 pub fn abort_prepared_json_operation(
     conn: &rusqlite::Connection,
-    journal_id: &str,
+    context: &OperationContext,
+    lease: &PreparedOperationLease,
 ) -> Result<(), ApiError> {
-    cortex_storage::queries::operation_journal_queries::delete_entry(conn, journal_id)
-        .map_err(|e| ApiError::db_error("operation_journal_delete", e))
+    let required = require_operation_context(context)?;
+    let aborted = cortex_storage::queries::operation_journal_queries::mark_aborted(
+        conn,
+        &lease.journal_id,
+        &lease.owner_token,
+        lease.lease_epoch,
+        Some(&required.request_id),
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .map_err(|e| ApiError::db_error("operation_journal_abort", e))?;
+    if !aborted {
+        return Err(ownership_lost_error(&lease.journal_id));
+    }
+    Ok(())
+}
+
+pub fn renew_prepared_json_operation_lease(
+    conn: &rusqlite::Connection,
+    lease: &PreparedOperationLease,
+) -> Result<(), ApiError> {
+    let now = chrono::Utc::now();
+    let renewed = cortex_storage::queries::operation_journal_queries::renew_lease(
+        conn,
+        &lease.journal_id,
+        &lease.owner_token,
+        lease.lease_epoch,
+        &now.to_rfc3339(),
+        &lease_expires_at(now),
+    )
+    .map_err(|e| ApiError::db_error("operation_journal_renew_lease", e))?;
+    if !renewed {
+        return Err(ownership_lost_error(&lease.journal_id));
+    }
+    Ok(())
+}
+
+pub fn start_operation_lease_heartbeat(
+    db: std::sync::Arc<crate::db_pool::DbPool>,
+    lease: PreparedOperationLease,
+) -> OperationLeaseHeartbeat {
+    let journal_id = lease.journal_id.clone();
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+    let (lost_tx, lost_rx) = tokio::sync::watch::channel(false);
+    let renewal_lease = lease.clone();
+    let renewal_journal_id = journal_id.clone();
+    let handle = tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(OPERATION_LEASE_RENEW_INTERVAL_SECONDS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = &mut stop_rx => break,
+                _ = interval.tick() => {
+                    let conn = db.write().await;
+                    if let Err(error) = renew_prepared_json_operation_lease(&conn, &renewal_lease) {
+                        tracing::warn!(
+                            journal_id = %renewal_journal_id,
+                            error = %error,
+                            "operation lease heartbeat lost ownership"
+                        );
+                        let _ = lost_tx.send(true);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    OperationLeaseHeartbeat {
+        journal_id,
+        stop_tx: Some(stop_tx),
+        lost_rx,
+        handle,
+    }
+}
+
+impl OperationLeaseHeartbeat {
+    pub async fn stop(mut self) -> Result<(), ApiError> {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        match self.handle.await {
+            Ok(()) => {}
+            Err(error) => {
+                return Err(ApiError::internal(format!(
+                    "operation lease heartbeat task failed for {}: {error}",
+                    self.journal_id
+                )));
+            }
+        }
+
+        if *self.lost_rx.borrow() {
+            return Err(ownership_lost_error(&self.journal_id));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -340,6 +566,8 @@ mod tests {
             idempotency_key: Some("idem-1".into()),
             idempotency_status: None,
             is_mutating: true,
+            client_supplied_operation_id: true,
+            client_supplied_idempotency_key: true,
         }
     }
 
@@ -402,5 +630,122 @@ mod tests {
 
         assert_eq!(replay.idempotency_status, IdempotencyStatus::Replayed);
         assert_eq!(replay.body["status"], "approved");
+    }
+
+    #[test]
+    fn stale_owner_cannot_commit_after_takeover() {
+        let conn = cortex_storage::open_in_memory().unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+
+        let initial = operation_context();
+        let body = serde_json::json!({"status": "approve"});
+        let PreparedOperation::Acquired { lease: stale_lease } = prepare_json_operation(
+            &conn,
+            &initial,
+            "legacy-token-user",
+            "POST",
+            "/api/goals/:id/approve",
+            &body,
+        )
+        .unwrap() else {
+            panic!("expected initial acquisition");
+        };
+
+        conn.execute(
+            "UPDATE operation_journal
+             SET last_seen_at = ?2, lease_expires_at = ?3
+             WHERE id = ?1",
+            rusqlite::params![
+                stale_lease.journal_id,
+                (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339(),
+                (chrono::Utc::now() - chrono::Duration::minutes(4)).to_rfc3339(),
+            ],
+        )
+        .unwrap();
+
+        let takeover_context = OperationContext {
+            request_id: "request-2".into(),
+            operation_id: Some("018f0f23-8c65-7abc-9def-1234567890ac".into()),
+            idempotency_key: Some("idem-1".into()),
+            idempotency_status: None,
+            is_mutating: true,
+            client_supplied_operation_id: true,
+            client_supplied_idempotency_key: true,
+        };
+        let PreparedOperation::Acquired {
+            lease: winning_lease,
+        } = prepare_json_operation(
+            &conn,
+            &takeover_context,
+            "legacy-token-user",
+            "POST",
+            "/api/goals/:id/approve",
+            &body,
+        )
+        .unwrap()
+        else {
+            panic!("expected takeover acquisition");
+        };
+
+        let stale_result = commit_prepared_json_operation(
+            &conn,
+            &initial,
+            &stale_lease,
+            StatusCode::OK,
+            &serde_json::json!({"status": "stale"}),
+        );
+        assert!(stale_result.is_err());
+
+        let winner = commit_prepared_json_operation(
+            &conn,
+            &takeover_context,
+            &winning_lease,
+            StatusCode::OK,
+            &serde_json::json!({"status": "winner"}),
+        )
+        .unwrap();
+        assert_eq!(winner.body["status"], "winner");
+    }
+
+    #[test]
+    fn aborted_operation_can_be_reacquired_without_deleting_history() {
+        let conn = cortex_storage::open_in_memory().unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+
+        let context = operation_context();
+        let body = serde_json::json!({"status": "retryable"});
+        let PreparedOperation::Acquired { lease } = prepare_json_operation(
+            &conn,
+            &context,
+            "legacy-token-user",
+            "POST",
+            "/api/goals/:id/approve",
+            &body,
+        )
+        .unwrap() else {
+            panic!("expected acquisition");
+        };
+
+        abort_prepared_json_operation(&conn, &context, &lease).unwrap();
+
+        let reacquired = prepare_json_operation(
+            &conn,
+            &OperationContext {
+                request_id: "request-3".into(),
+                operation_id: Some("018f0f23-8c65-7abc-9def-1234567890ad".into()),
+                idempotency_key: Some("idem-1".into()),
+                idempotency_status: None,
+                is_mutating: true,
+                client_supplied_operation_id: true,
+                client_supplied_idempotency_key: true,
+            },
+            "legacy-token-user",
+            "POST",
+            "/api/goals/:id/approve",
+            &body,
+        )
+        .unwrap();
+
+        assert!(matches!(reacquired, PreparedOperation::Acquired { .. }));
     }
 }

@@ -593,34 +593,48 @@ async fn seed_operation_journal_in_progress(
     route_template: &str,
     request_body: &serde_json::Value,
 ) -> String {
-    let context = ghost_gateway::api::operation_context::OperationContext {
-        request_id: request_id.to_string(),
-        operation_id: Some(operation_id.to_string()),
-        idempotency_key: Some(idempotency_key.to_string()),
-        idempotency_status: None,
-        is_mutating: true,
-    };
     let db = app_state.db.write().await;
-    let prepared = ghost_gateway::api::idempotency::prepare_json_operation(
-        &db,
-        &context,
-        actor,
+    let journal_id = uuid::Uuid::now_v7().to_string();
+    let request_fingerprint = ghost_gateway::api::idempotency::fingerprint_json_request(
         "POST",
         route_template,
+        actor,
         request_body,
-    )
-    .unwrap();
-    let ghost_gateway::api::idempotency::PreparedOperation::Acquired { journal_id } = prepared
-    else {
-        panic!("expected an acquired operation journal entry");
-    };
+    );
+    let request_body = serde_json::to_string(request_body).unwrap();
     let stale_created_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let stale_lease_expires_at = (chrono::Utc::now() - chrono::Duration::minutes(4)).to_rfc3339();
     db.execute(
-        "UPDATE operation_journal
-         SET created_at = ?2, last_seen_at = ?2, lease_expires_at = ?3
-         WHERE id = ?1",
-        rusqlite::params![journal_id, stale_created_at, stale_lease_expires_at],
+        "INSERT INTO operation_journal (
+            id,
+            actor_key,
+            method,
+            route_template,
+            operation_id,
+            request_id,
+            idempotency_key,
+            request_fingerprint,
+            request_body,
+            status,
+            created_at,
+            last_seen_at,
+            lease_expires_at,
+            owner_token,
+            lease_epoch
+         ) VALUES (?1, ?2, 'POST', ?3, ?4, ?5, ?6, ?7, ?8, 'in_progress', ?9, ?9, ?10, ?11, 0)",
+        rusqlite::params![
+            journal_id,
+            actor,
+            route_template,
+            operation_id,
+            request_id,
+            idempotency_key,
+            request_fingerprint,
+            request_body,
+            stale_created_at,
+            stale_lease_expires_at,
+            format!("seed-owner-{journal_id}"),
+        ],
     )
     .unwrap();
     journal_id
@@ -647,6 +661,54 @@ async fn seed_live_execution_record(
             actor_key: actor,
             status,
             state_json,
+        },
+    )
+    .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_workflow_execution_record(
+    app_state: &Arc<ghost_gateway::state::AppState>,
+    execution_id: &str,
+    workflow_id: &str,
+    workflow_name: &str,
+    journal_id: &str,
+    operation_id: &str,
+    owner_token: &str,
+    lease_epoch: i64,
+    state_version: i64,
+    status: &str,
+    current_step_index: Option<i64>,
+    current_node_id: Option<&str>,
+    recovery_action: Option<&str>,
+    state_json: &str,
+    final_response_status: Option<i64>,
+    final_response_body: Option<&str>,
+    started_at: &str,
+    completed_at: Option<&str>,
+) {
+    let db = app_state.db.write().await;
+    cortex_storage::queries::workflow_execution_queries::insert(
+        &db,
+        &cortex_storage::queries::workflow_execution_queries::NewWorkflowExecutionRow {
+            id: execution_id,
+            workflow_id,
+            workflow_name,
+            journal_id,
+            operation_id,
+            owner_token,
+            lease_epoch,
+            state_version,
+            status,
+            current_step_index,
+            current_node_id,
+            recovery_action,
+            state: state_json,
+            final_response_status,
+            final_response_body,
+            started_at,
+            completed_at,
+            updated_at: started_at,
         },
     )
     .unwrap();
@@ -753,6 +815,7 @@ impl PersistentGateway {
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
@@ -1000,6 +1063,8 @@ async fn in_progress_duplicate_returns_conflict() {
             request_body: &body_string,
             created_at: &created_at,
             lease_expires_at: &lease_expires_at,
+            owner_token: "journal-progress-owner",
+            lease_epoch: 0,
         };
         cortex_storage::queries::operation_journal_queries::insert_in_progress(&db, &entry)
             .unwrap();
@@ -1680,6 +1745,523 @@ async fn execute_workflow_replays_committed_response_and_records_audit_provenanc
     assert_eq!(audit_rows[0].2.as_deref(), Some("executed"));
     assert_eq!(audit_rows[1].0.as_deref(), Some("workflow-execute-retry"));
     assert_eq!(audit_rows[1].2.as_deref(), Some("replayed"));
+}
+
+#[tokio::test]
+async fn execute_workflow_fails_closed_on_unknown_node_types() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    seed_workflow(
+        &gateway.app_state,
+        "workflow-unknown-node",
+        "Unknown node workflow",
+        serde_json::json!([{ "id": "n1", "type": "mystery" }]),
+        serde_json::json!([]),
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(gateway.url("/api/workflows/workflow-unknown-node/execute"))
+        .json(&serde_json::json!({ "input": { "hello": "world" } }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-d234567890ac",
+        )
+        .header("idempotency-key", "workflow-unknown-node-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["status"], "failed");
+}
+
+#[tokio::test]
+async fn workflow_resume_requires_existing_execution_record() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    seed_workflow(
+        &gateway.app_state,
+        "workflow-resume-missing",
+        "Resume missing workflow",
+        serde_json::json!([{ "id": "n1", "type": "transform" }]),
+        serde_json::json!([]),
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(gateway.url("/api/workflows/workflow-resume-missing/resume/execution-123"))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-d234567890ad",
+        )
+        .header("idempotency-key", "workflow-resume-missing-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        None
+    );
+    let body = json_body(response).await;
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn workflow_resume_replays_safe_inflight_step_after_crash() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    seed_workflow(
+        &gateway.app_state,
+        "workflow-resume-safe",
+        "Resume safe workflow",
+        serde_json::json!([
+            { "id": "wait1", "type": "wait", "wait_ms": 1 },
+            { "id": "done", "type": "transform" }
+        ]),
+        serde_json::json!([{ "source": "wait1", "target": "done" }]),
+    )
+    .await;
+
+    let execution_id = "018f0f23-8c65-7abc-9def-d234567890ae";
+    let state_json = serde_json::json!({
+        "version": 2,
+        "execution_id": execution_id,
+        "workflow_id": "workflow-resume-safe",
+        "workflow_name": "Resume safe workflow",
+        "input": { "hello": "world" },
+        "nodes": [
+            { "id": "wait1", "type": "wait", "wait_ms": 1 },
+            { "id": "done", "type": "transform" }
+        ],
+        "edges": [{ "source": "wait1", "target": "done" }],
+        "order": ["wait1", "done"],
+        "node_states": {},
+        "node_outputs": {},
+        "next_step_index": 0,
+        "active_step": {
+            "step_index": 0,
+            "node_id": "wait1",
+            "node_type": "wait",
+            "started_at": "2026-03-01T00:00:00Z",
+            "retry_safe": true
+        },
+        "started_at": "2026-03-01T00:00:00Z",
+        "completed_at": null,
+        "final_status": null,
+        "final_response_status": null,
+        "final_response_body": null,
+        "recovery_required": false,
+        "recovery_action": null,
+        "recovery_reason": null
+    })
+    .to_string();
+    seed_workflow_execution_record(
+        &gateway.app_state,
+        execution_id,
+        "workflow-resume-safe",
+        "Resume safe workflow",
+        "old-journal-safe",
+        "old-op-safe",
+        "old-owner-safe",
+        0,
+        2,
+        "running",
+        Some(0),
+        Some("wait1"),
+        None,
+        &state_json,
+        None,
+        None,
+        "2026-03-01T00:00:00Z",
+        None,
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(gateway.url(&format!(
+            "/api/workflows/workflow-resume-safe/resume/{execution_id}"
+        )))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-d234567890af",
+        )
+        .header("idempotency-key", "workflow-resume-safe-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["execution_id"], execution_id);
+    assert_eq!(body["steps"].as_array().unwrap().len(), 2);
+
+    let db = gateway.app_state.db.read().unwrap();
+    let row = cortex_storage::queries::workflow_execution_queries::get_by_id(&db, execution_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, "completed");
+    assert_eq!(row.final_response_status, Some(200));
+}
+
+#[tokio::test]
+async fn workflow_resume_fails_closed_for_non_retry_safe_inflight_step() {
+    let _guard = hold_env_lock();
+    let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("workflow-resume-unsafe.db");
+    let gateway = PersistentGateway::start_with_runtime_config(
+        &db_path,
+        std::collections::BTreeMap::new(),
+        openai_compat_provider_configs(&provider.base_url),
+        Some("openai_compat".into()),
+    )
+    .await;
+
+    let execution_id = "018f0f23-8c65-7abc-9def-d234567890b0";
+    let state_json = serde_json::json!({
+        "version": 2,
+        "execution_id": execution_id,
+        "workflow_id": "workflow-resume-unsafe",
+        "workflow_name": "Resume unsafe workflow",
+        "input": { "hello": "world" },
+        "nodes": [
+            { "id": "llm1", "type": "llm_call", "prompt": "Say hi" },
+            { "id": "done", "type": "transform" }
+        ],
+        "edges": [{ "source": "llm1", "target": "done" }],
+        "order": ["llm1", "done"],
+        "node_states": {},
+        "node_outputs": {},
+        "next_step_index": 0,
+        "active_step": {
+            "step_index": 0,
+            "node_id": "llm1",
+            "node_type": "llm_call",
+            "started_at": "2026-03-01T00:00:00Z",
+            "retry_safe": false
+        },
+        "started_at": "2026-03-01T00:00:00Z",
+        "completed_at": null,
+        "final_status": null,
+        "final_response_status": null,
+        "final_response_body": null,
+        "recovery_required": false,
+        "recovery_action": null,
+        "recovery_reason": null
+    })
+    .to_string();
+    seed_workflow_execution_record(
+        &gateway.app_state,
+        execution_id,
+        "workflow-resume-unsafe",
+        "Resume unsafe workflow",
+        "old-journal-unsafe",
+        "old-op-unsafe",
+        "old-owner-unsafe",
+        0,
+        2,
+        "running",
+        Some(0),
+        Some("llm1"),
+        None,
+        &state_json,
+        None,
+        None,
+        "2026-03-01T00:00:00Z",
+        None,
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(gateway.url(&format!(
+            "/api/workflows/workflow-resume-unsafe/resume/{execution_id}"
+        )))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-d234567890b1",
+        )
+        .header("idempotency-key", "workflow-resume-unsafe-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = json_body(response).await;
+    assert_eq!(body["status"], "recovery_required");
+    assert_eq!(body["recovery_action"], "manual_recovery_required");
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
+
+    {
+        let db = gateway.app_state.db.read().unwrap();
+        let row = cortex_storage::queries::workflow_execution_queries::get_by_id(&db, execution_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, "recovery_required");
+        assert_eq!(row.final_response_status, Some(409));
+    }
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn execute_workflow_retry_resumes_from_durable_progress_without_rerunning_completed_steps() {
+    let _guard = hold_env_lock();
+    let _openai_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("workflow-retry-resume.db");
+    let gateway = PersistentGateway::start_with_runtime_config(
+        &db_path,
+        std::collections::BTreeMap::new(),
+        openai_compat_provider_configs(&provider.base_url),
+        Some("openai_compat".into()),
+    )
+    .await;
+
+    seed_workflow(
+        &gateway.app_state,
+        "workflow-retry-progress",
+        "Workflow retry progress",
+        serde_json::json!([
+            { "id": "llm1", "type": "llm_call", "prompt": "Say hi" },
+            { "id": "done", "type": "transform" }
+        ]),
+        serde_json::json!([{ "source": "llm1", "target": "done" }]),
+    )
+    .await;
+
+    let request_body = serde_json::json!({
+        "workflow_id": "workflow-retry-progress",
+        "input": { "hello": "world" }
+    });
+    let journal_id = seed_operation_journal_in_progress(
+        &gateway.app_state,
+        "anonymous",
+        "old-op-retry",
+        "old-request-retry",
+        "workflow-retry-progress-key",
+        "/api/workflows/:id/execute",
+        &request_body,
+    )
+    .await;
+    let execution_id = "018f0f23-8c65-7abc-9def-d234567890b2";
+    let state_json = serde_json::json!({
+        "version": 2,
+        "execution_id": execution_id,
+        "workflow_id": "workflow-retry-progress",
+        "workflow_name": "Workflow retry progress",
+        "input": { "hello": "world" },
+        "nodes": [
+            { "id": "llm1", "type": "llm_call", "prompt": "Say hi" },
+            { "id": "done", "type": "transform" }
+        ],
+        "edges": [{ "source": "llm1", "target": "done" }],
+        "order": ["llm1", "done"],
+        "node_states": {
+            "llm1": {
+                "node_id": "llm1",
+                "node_type": "llm_call",
+                "status": "completed",
+                "result": { "status": "completed", "tokens": 7 },
+                "started_at": "2026-03-01T00:00:00Z",
+                "completed_at": "2026-03-01T00:00:01Z"
+            }
+        },
+        "node_outputs": {
+            "llm1": { "text": "from prior durable output" }
+        },
+        "next_step_index": 1,
+        "active_step": null,
+        "started_at": "2026-03-01T00:00:00Z",
+        "completed_at": null,
+        "final_status": null,
+        "final_response_status": null,
+        "final_response_body": null,
+        "recovery_required": false,
+        "recovery_action": null,
+        "recovery_reason": null
+    })
+    .to_string();
+    seed_workflow_execution_record(
+        &gateway.app_state,
+        execution_id,
+        "workflow-retry-progress",
+        "Workflow retry progress",
+        &journal_id,
+        "old-op-retry",
+        &format!("seed-owner-{journal_id}"),
+        0,
+        2,
+        "running",
+        Some(1),
+        Some("done"),
+        None,
+        &state_json,
+        None,
+        None,
+        "2026-03-01T00:00:00Z",
+        None,
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(gateway.url("/api/workflows/workflow-retry-progress/execute"))
+        .json(&serde_json::json!({ "input": { "hello": "world" } }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-d234567890b3",
+        )
+        .header("idempotency-key", "workflow-retry-progress-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["execution_id"], execution_id);
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
+
+    {
+        let db = gateway.app_state.db.read().unwrap();
+        let row = cortex_storage::queries::workflow_execution_queries::get_by_id(&db, execution_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.operation_id.as_deref(),
+            Some("018f0f23-8c65-7abc-9def-d234567890b3")
+        );
+        assert_eq!(row.status, "completed");
+    }
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn workflow_resume_rejects_legacy_state_versions() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    let execution_id = "018f0f23-8c65-7abc-9def-d234567890b4";
+    seed_workflow_execution_record(
+        &gateway.app_state,
+        execution_id,
+        "workflow-legacy-state",
+        "Workflow legacy state",
+        "legacy-journal",
+        "legacy-op",
+        "legacy-owner",
+        0,
+        0,
+        "recovery_required",
+        None,
+        None,
+        Some("legacy_state_upgrade_required"),
+        "{\"version\":1}",
+        None,
+        None,
+        "2026-03-01T00:00:00Z",
+        None,
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(gateway.url(&format!(
+            "/api/workflows/workflow-legacy-state/resume/{execution_id}"
+        )))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-d234567890b5",
+        )
+        .header("idempotency-key", "workflow-legacy-state-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = json_body(response).await;
+    assert_eq!(body["status"], "recovery_required");
+    assert_eq!(body["recovery_action"], "legacy_state_upgrade_required");
+}
+
+#[tokio::test]
+async fn create_workflow_rejects_non_array_graph_payload() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+
+    let response = gateway
+        .client
+        .post(gateway.url("/api/workflows"))
+        .json(&serde_json::json!({
+            "name": "invalid-graph",
+            "nodes": { "id": "n1", "type": "transform" },
+            "edges": [],
+        }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-d234567890ae",
+        )
+        .header("idempotency-key", "workflow-invalid-graph-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = json_body(response).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(body["error"]["message"], "workflow nodes must be an array");
+}
+
+#[tokio::test]
+async fn get_workflow_fails_closed_on_corrupt_persisted_graph_json() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    {
+        let db = gateway.app_state.db.write().await;
+        db.execute(
+            "INSERT INTO workflows (id, name, description, nodes, edges, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "workflow-corrupt-row",
+                "Corrupt workflow",
+                "bad persisted graph",
+                "{not-json",
+                "[]",
+                "test-operator",
+            ],
+        )
+        .unwrap();
+    }
+
+    let get_response = gateway
+        .client
+        .get(gateway.url("/api/workflows/workflow-corrupt-row"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let get_body = json_body(get_response).await;
+    assert_eq!(get_body["error"]["code"], "INTERNAL_ERROR");
+    assert_eq!(get_body["error"]["message"], "An internal error occurred");
+
+    let list_response = gateway
+        .client
+        .get(gateway.url("/api/workflows"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let list_body = json_body(list_response).await;
+    assert_eq!(list_body["error"]["code"], "INTERNAL_ERROR");
+    assert_eq!(list_body["error"]["message"], "An internal error occurred");
 }
 
 #[tokio::test]
@@ -4878,6 +5460,8 @@ async fn agent_chat_stream_replays_accepted_metadata_without_refiring_provider()
         idempotency_key: Some(idempotency_key.to_string()),
         idempotency_status: None,
         is_mutating: true,
+        client_supplied_operation_id: true,
+        client_supplied_idempotency_key: true,
     };
     let agent_id = ghost_gateway::agents::registry::durable_agent_id(
         ghost_gateway::runtime_safety::API_SYNTHETIC_AGENT_NAME,
@@ -4896,7 +5480,7 @@ async fn agent_chat_stream_replays_accepted_metadata_without_refiring_provider()
             &request_body,
         )
         .unwrap();
-        let ghost_gateway::api::idempotency::PreparedOperation::Acquired { journal_id } = prepared
+        let ghost_gateway::api::idempotency::PreparedOperation::Acquired { lease } = prepared
         else {
             panic!("expected an acquired journal entry");
         };
@@ -4922,7 +5506,7 @@ async fn agent_chat_stream_replays_accepted_metadata_without_refiring_provider()
         ghost_gateway::api::idempotency::commit_prepared_json_operation(
             &db,
             &context,
-            &journal_id,
+            &lease,
             StatusCode::OK,
             &accepted_body,
         )

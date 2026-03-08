@@ -116,6 +116,88 @@ impl CaptureServer {
     }
 }
 
+struct BlockingCaptureServer {
+    url: String,
+    hits: Arc<AtomicUsize>,
+    release: Arc<tokio::sync::Notify>,
+    hit_notifier: Arc<tokio::sync::Notify>,
+    shutdown: CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl BlockingCaptureServer {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hit_notifier = Arc::new(tokio::sync::Notify::new());
+        let shutdown = CancellationToken::new();
+        let shutdown_token = shutdown.clone();
+        let app_hits = Arc::clone(&hits);
+        let app_release = Arc::clone(&release);
+        let app_hit_notifier = Arc::clone(&hit_notifier);
+        let app = Router::new().route(
+            "/hook",
+            post(move |Json(_payload): Json<serde_json::Value>| {
+                let hits = Arc::clone(&app_hits);
+                let release = Arc::clone(&app_release);
+                let hit_notifier = Arc::clone(&app_hit_notifier);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    hit_notifier.notify_waiters();
+                    release.notified().await;
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+
+        let bind_addr = format!("127.0.0.1:{port}");
+        let handle = tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await
+                .unwrap();
+        });
+
+        Self {
+            url: format!("http://127.0.0.1:{port}/hook"),
+            hits,
+            release,
+            hit_notifier,
+            shutdown,
+            handle,
+        }
+    }
+
+    async fn wait_for_hit(&self) {
+        if self.hits.load(Ordering::SeqCst) > 0 {
+            return;
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.hit_notifier.notified(),
+        )
+        .await
+        .expect("timed out waiting for blocking webhook hit");
+    }
+
+    fn release(&self) {
+        self.release.notify_waiters();
+    }
+
+    async fn stop(self) {
+        self.release();
+        self.shutdown.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.handle).await;
+    }
+}
+
 struct PersistentGateway {
     base_url: String,
     client: reqwest::Client,
@@ -180,6 +262,7 @@ impl PersistentGateway {
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
@@ -643,6 +726,84 @@ async fn test_webhook_replay_does_not_refire_side_effect() {
     assert_eq!(audit_rows[1].1.as_deref(), Some("replayed"));
 
     drop(db);
+    gateway.stop().await;
+    capture.stop().await;
+}
+
+#[tokio::test]
+async fn test_webhook_lost_ownership_does_not_broadcast_websocket_event() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("webhook-test-ownership.db");
+    let _jwt_secret = EnvVarGuard::set("GHOST_JWT_SECRET", "webhook-ownership-secret");
+    let token = jwt_for_role("webhook-admin", "admin", "webhook-ownership-secret");
+    let capture = BlockingCaptureServer::start().await;
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    let mut event_rx = gateway.app_state.event_tx.subscribe();
+    let webhook_id = "capture-webhook-ownership".to_string();
+    {
+        let db = gateway.app_state.db.write().await;
+        db.execute(
+            "INSERT INTO webhooks (id, name, url, secret, events, headers, active) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            rusqlite::params![
+                webhook_id,
+                "Capture webhook ownership",
+                capture.url,
+                "whsec_capture",
+                serde_json::to_string(&vec!["backup_complete"]).unwrap(),
+                "{}",
+            ],
+        )
+        .unwrap();
+    }
+
+    let operation_id = "018f0f23-8c65-7abc-9def-1234567890bc";
+    let request = gateway
+        .client
+        .post(format!(
+            "{}/api/webhooks/{webhook_id}/test",
+            gateway.base_url
+        ))
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", "webhook-ownership-key");
+
+    let response_task = tokio::spawn(async move { request.send().await.unwrap() });
+
+    capture.wait_for_hit().await;
+
+    {
+        let db = gateway.app_state.db.write().await;
+        let journal = cortex_storage::queries::operation_journal_queries::get_by_operation_id(
+            &db,
+            operation_id,
+        )
+        .unwrap()
+        .expect("operation journal row should exist while request is in flight");
+        db.execute(
+            "UPDATE operation_journal
+             SET owner_token = ?2,
+                 lease_epoch = ?3
+             WHERE id = ?1",
+            rusqlite::params![journal.id, "stolen-owner-token", journal.lease_epoch + 1],
+        )
+        .unwrap();
+    }
+
+    capture.release();
+
+    let response = response_task.await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(capture.hits.load(Ordering::SeqCst), 1);
+
+    let next_event =
+        tokio::time::timeout(std::time::Duration::from_millis(250), event_rx.recv()).await;
+    assert!(
+        next_event.is_err(),
+        "WebhookFired must not be broadcast when commit ownership is lost"
+    );
+
     gateway.stop().await;
     capture.stop().await;
 }

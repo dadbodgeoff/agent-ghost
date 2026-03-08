@@ -79,7 +79,7 @@ async fn read_non_ping_envelope(
 }
 
 #[tokio::test]
-async fn websocket_requires_auth_when_legacy_token_is_configured() {
+async fn websocket_allows_legacy_auth_when_ticket_only_mode_is_disabled() {
     let _guard = auth_env_guard();
     let _env = EnvVarGuard::set("GHOST_TOKEN", "ws-test-token");
 
@@ -150,6 +150,62 @@ async fn websocket_requires_auth_when_legacy_token_is_configured() {
 }
 
 #[tokio::test]
+async fn websocket_rejects_legacy_auth_when_ticket_only_mode_is_enabled() {
+    let _guard = auth_env_guard();
+    let _env = EnvVarGuard::set("GHOST_TOKEN", "ws-test-token");
+
+    let gateway = TestGateway::start_with_ws_ticket_auth_only(true).await;
+    let client = reqwest::Client::new();
+    let ws_url = format!("ws://127.0.0.1:{}/api/ws", gateway.port);
+
+    let ticket_response: serde_json::Value = client
+        .post(gateway.url("/api/ws/tickets"))
+        .bearer_auth("ws-test-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ticket = ticket_response["ticket"].as_str().unwrap();
+
+    let mut ticket_request = ws_url.clone().into_client_request().unwrap();
+    ticket_request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("ghost-ticket.{ticket}").parse().unwrap(),
+    );
+    let (mut ticket_socket, _) = connect_async(ticket_request)
+        .await
+        .expect("ticket websocket connection should succeed");
+    let envelope = read_envelope(&mut ticket_socket).await;
+    assert!(matches!(envelope.event, WsEvent::Ping));
+    let _ = ticket_socket.close(None).await;
+
+    let mut protocol_request = ws_url.clone().into_client_request().unwrap();
+    protocol_request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        "ghost-token.ws-test-token".parse().unwrap(),
+    );
+    let protocol_err = connect_async(protocol_request)
+        .await
+        .expect_err("legacy subprotocol auth should be rejected");
+    match protocol_err {
+        tungstenite::Error::Http(response) => assert_eq!(response.status(), 401),
+        other => panic!("expected HTTP auth failure, got {other:?}"),
+    }
+
+    let query_err = connect_async(format!("{ws_url}?token=ws-test-token"))
+        .await
+        .expect_err("legacy query auth should be rejected");
+    match query_err {
+        tungstenite::Error::Http(response) => assert_eq!(response.status(), 401),
+        other => panic!("expected HTTP auth failure, got {other:?}"),
+    }
+
+    gateway.stop().await;
+}
+
+#[tokio::test]
 async fn websocket_replays_events_after_last_seq() {
     let _guard = auth_env_guard();
     let gateway = TestGateway::start().await;
@@ -211,6 +267,78 @@ async fn websocket_replays_events_after_last_seq() {
 }
 
 #[tokio::test]
+async fn websocket_reconnect_replays_only_subscribed_topics() {
+    let _guard = auth_env_guard();
+    let gateway = TestGateway::start().await;
+    let ws_url = format!("ws://127.0.0.1:{}/api/ws", gateway.port);
+
+    let (mut first_socket, _) = connect_async(&ws_url).await.unwrap();
+    let ping = read_envelope(&mut first_socket).await;
+    assert!(matches!(ping.event, WsEvent::Ping));
+
+    broadcast_event(
+        &gateway.app_state,
+        WsEvent::ScoreUpdate {
+            agent_id: "alpha".into(),
+            score: 0.5,
+            level: 2,
+            signals: vec![0.1, 0.2],
+        },
+    );
+    let first_event = read_non_ping_envelope(&mut first_socket).await;
+
+    broadcast_event(
+        &gateway.app_state,
+        WsEvent::AgentStateChange {
+            agent_id: "beta".into(),
+            new_state: "Running".into(),
+        },
+    );
+    let _ = read_non_ping_envelope(&mut first_socket).await;
+    let _ = first_socket.close(None).await;
+
+    let (mut second_socket, _) = connect_async(&ws_url).await.unwrap();
+    second_socket
+        .send(Message::Text(
+            serde_json::json!({
+                "last_seq": first_event.seq,
+                "topics": ["agent:alpha"],
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+    let reconnect_ping = read_envelope(&mut second_socket).await;
+    assert!(matches!(reconnect_ping.event, WsEvent::Ping));
+
+    let replay = tokio::time::timeout(Duration::from_millis(250), second_socket.next()).await;
+    assert!(
+        replay.is_err(),
+        "off-topic replay should be filtered when reconnect topics are provided"
+    );
+
+    broadcast_event(
+        &gateway.app_state,
+        WsEvent::ScoreUpdate {
+            agent_id: "alpha".into(),
+            score: 0.9,
+            level: 3,
+            signals: vec![0.4, 0.5],
+        },
+    );
+    let live_event = read_non_ping_envelope(&mut second_socket).await;
+    match live_event.event {
+        WsEvent::ScoreUpdate { ref agent_id, .. } => assert_eq!(agent_id, "alpha"),
+        other => panic!("expected alpha ScoreUpdate event, got {other:?}"),
+    }
+
+    let _ = second_socket.close(None).await;
+    gateway.stop().await;
+}
+
+#[tokio::test]
 async fn websocket_sends_resync_when_replay_gap_is_too_large() {
     let _guard = auth_env_guard();
     let gateway = TestGateway::start_with_replay_capacity(1).await;
@@ -263,5 +391,53 @@ async fn websocket_sends_resync_when_replay_gap_is_too_large() {
     }
 
     let _ = second_socket.close(None).await;
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn concurrent_broadcast_maintains_monotonic_order() {
+    let _guard = auth_env_guard();
+    let gateway = TestGateway::start_with_replay_capacity(2048).await;
+    let mut event_rx = gateway.app_state.event_tx.subscribe();
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(11));
+    let mut handles = Vec::new();
+
+    for producer in 0..10 {
+        let state = std::sync::Arc::clone(&gateway.app_state);
+        let barrier = std::sync::Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            for offset in 0..100 {
+                broadcast_event(
+                    &state,
+                    WsEvent::SystemWarning {
+                        message: format!("producer-{producer}-{offset}"),
+                    },
+                );
+                tokio::task::yield_now().await;
+            }
+        }));
+    }
+
+    barrier.wait().await;
+
+    let mut seqs = Vec::with_capacity(1000);
+    while seqs.len() < 1000 {
+        let envelope = tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("timed out waiting for broadcast event")
+            .expect("broadcast channel closed");
+        seqs.push(envelope.seq);
+    }
+
+    for handle in handles {
+        handle.await.expect("producer task should complete");
+    }
+
+    assert!(
+        seqs.windows(2).all(|pair| pair[0] < pair[1]),
+        "broadcast sequence must be strictly increasing: {seqs:?}"
+    );
+
     gateway.stop().await;
 }

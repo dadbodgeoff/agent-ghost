@@ -19,7 +19,11 @@
 
     // T-5.9.1: Wire WebhookFired WS event to refresh webhook list.
     const unsub = wsStore.on('WebhookFired', () => { loadWebhooks(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => { loadWebhooks(); });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 
   async function loadWebhooks() {

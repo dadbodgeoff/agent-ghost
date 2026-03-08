@@ -21,6 +21,14 @@ pub enum SkillSourceKind {
     Workspace,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillMutationKind {
+    ReadOnly,
+    Transactional,
+    ExternalSideEffect,
+}
+
 #[derive(Clone)]
 pub struct SkillDefinition {
     pub name: String,
@@ -34,6 +42,7 @@ pub struct SkillDefinition {
     pub execution_mode: SkillExecutionMode,
     pub policy_capability: String,
     pub privileges: Vec<String>,
+    pub mutation_kind: SkillMutationKind,
     pub skill: Arc<dyn Skill>,
 }
 
@@ -95,10 +104,23 @@ fn extend_skill_definitions(definitions: &mut Vec<SkillDefinition>, skills: Vec<
             execution_mode: SkillExecutionMode::Native,
             policy_capability: format!("skill:{name}"),
             privileges: privileges_for_skill(&name),
+            mutation_kind: mutation_kind_for_skill(&name),
             removable,
             name,
             skill,
         });
+    }
+}
+
+fn mutation_kind_for_skill(name: &str) -> SkillMutationKind {
+    match name {
+        "reflection_write" | "note_take" | "timer_set" | "email_draft" | "delegate_to_agent"
+        | "agent_spawn_safe" | "cancel_task" => SkillMutationKind::Transactional,
+        "git_branch" | "git_commit" | "git_stash" | "format_code" | "mouse_move"
+        | "mouse_click" | "mouse_drag" | "scroll" | "keyboard_type" | "keyboard_hotkey"
+        | "keyboard_press" | "focus_window" | "resize_window" | "launch_app" | "kill_process"
+        | "clipboard_write" => SkillMutationKind::ExternalSideEffect,
+        _ => SkillMutationKind::ReadOnly,
     }
 }
 

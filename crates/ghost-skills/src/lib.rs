@@ -8,6 +8,7 @@
 //! - Skill registry, credential broker, workflow recording
 //! - WASM sandbox for user-installed skills
 
+pub mod artifact;
 pub mod autonomy;
 pub mod bridges;
 pub mod bundled_skills;

@@ -20,7 +20,11 @@
 
     // T-5.9.1: Wire BackupComplete WS event to refresh backup list.
     const unsub = wsStore.on('BackupComplete', () => { loadBackups(); });
-    return () => unsub();
+    const unsubResync = wsStore.onResync(() => { loadBackups(); });
+    return () => {
+      unsub();
+      unsubResync();
+    };
   });
 
   async function loadBackups() {

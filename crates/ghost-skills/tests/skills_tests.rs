@@ -1,8 +1,5 @@
 //! Phase 5 tests for ghost-skills (Task 5.8).
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-
 // ═══════════════════════════════════════════════════════════════════════
 // Task 5.8 — Skill Registry
 // ═══════════════════════════════════════════════════════════════════════
@@ -27,8 +24,10 @@ mod registry {
     }
 
     #[test]
-    fn valid_signature_loads() {
-        let mut reg = SkillRegistry::new();
+    fn configured_verifier_can_admit_preverified_entries() {
+        let mut reg = SkillRegistry::with_manifest_verifier(|manifest| {
+            manifest.signature.as_deref() == Some("valid_sig")
+        });
         reg.register(
             make_manifest("good_skill", true),
             SkillSource::Workspace,
@@ -39,14 +38,14 @@ mod registry {
     }
 
     #[test]
-    fn invalid_signature_quarantines() {
+    fn default_registry_fails_closed_without_real_verifier() {
         let mut reg = SkillRegistry::new();
         reg.register(
-            make_manifest("bad_skill", false),
+            make_manifest("signed_but_untrusted", true),
             SkillSource::Workspace,
-            PathBuf::from("/skills/bad.wasm"),
+            PathBuf::from("/skills/signed.wasm"),
         );
-        let skill = reg.lookup("bad_skill").unwrap();
+        let skill = reg.lookup("signed_but_untrusted").unwrap();
         assert_eq!(skill.state, SkillState::Quarantined);
     }
 
@@ -78,7 +77,9 @@ mod registry {
 
     #[test]
     fn loaded_skills_excludes_quarantined() {
-        let mut reg = SkillRegistry::new();
+        let mut reg = SkillRegistry::with_manifest_verifier(|manifest| {
+            manifest.signature.as_deref() == Some("valid_sig")
+        });
         reg.register(
             make_manifest("good", true),
             SkillSource::Workspace,
@@ -216,7 +217,7 @@ mod native_sandbox {
 
 mod credential_broker {
     use chrono::Utc;
-    use ghost_skills::credential::broker::{CredentialBroker, CredentialError};
+    use ghost_skills::credential::broker::CredentialBroker;
 
     #[test]
     fn register_and_reify() {

@@ -1,6 +1,6 @@
 //! Message dispatcher: 3-gate verification pipeline (Req 19 AC4-AC7, AC12-AC13).
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use cortex_core::safety::trigger::TriggerEvent;
@@ -36,7 +36,7 @@ pub enum VerifyResult {
 /// Message dispatcher with 3-gate pipeline.
 pub struct MessageDispatcher {
     /// Seen nonces for replay prevention.
-    seen_nonces: BTreeSet<Uuid>,
+    seen_nonces: BTreeMap<Uuid, Instant>,
     /// Per-agent message counts for rate limiting.
     agent_counts: BTreeMap<Uuid, u32>,
     /// Per-pair message counts.
@@ -50,13 +50,15 @@ pub struct MessageDispatcher {
     /// Last rate limit counter reset time.
     last_rate_reset: Instant,
     /// Per-sender last seen UUIDv7 nonce for monotonicity check (AC4).
-    last_nonce: BTreeMap<Uuid, Uuid>,
+    last_nonce: BTreeMap<Uuid, (Uuid, Instant)>,
+    /// Registered sender verifying keys.
+    verifying_keys: BTreeMap<Uuid, ghost_signing::VerifyingKey>,
 }
 
 impl MessageDispatcher {
     pub fn new() -> Self {
         Self {
-            seen_nonces: BTreeSet::new(),
+            seen_nonces: BTreeMap::new(),
             agent_counts: BTreeMap::new(),
             pair_counts: BTreeMap::new(),
             sig_failures: BTreeMap::new(),
@@ -64,7 +66,12 @@ impl MessageDispatcher {
             _grace_keys: BTreeMap::new(),
             last_rate_reset: Instant::now(),
             last_nonce: BTreeMap::new(),
+            verifying_keys: BTreeMap::new(),
         }
+    }
+
+    pub fn register_verifying_key(&mut self, agent_id: Uuid, key: ghost_signing::VerifyingKey) {
+        self.verifying_keys.insert(agent_id, key);
     }
 
     /// Process an incoming message through the 3-gate pipeline.
@@ -75,6 +82,14 @@ impl MessageDispatcher {
     pub fn verify(&mut self, msg: &AgentMessage) -> VerifyResult {
         // Periodic rate limit counter reset (hourly)
         self.maybe_reset_rate_limits();
+        self.prune_replay_state();
+
+        if msg.encrypted {
+            return VerifyResult::RejectedPolicy(
+                "encrypted inter-agent messages are disabled until authenticated encryption is implemented"
+                    .into(),
+            );
+        }
 
         // Gate 1: Signature verification (content_hash first, then Ed25519)
         let computed_hash = msg.compute_content_hash();
@@ -84,7 +99,33 @@ impl MessageDispatcher {
             }
             return VerifyResult::RejectedSignature("content_hash mismatch".into());
         }
-        // Ed25519 verification would happen here with registered keys
+        if msg.signature.is_empty() {
+            if let Some(result) = self.record_sig_failure(msg.sender) {
+                return result;
+            }
+            return VerifyResult::RejectedSignature("missing signature".into());
+        }
+        let signature = match ghost_signing::Signature::from_bytes(&msg.signature) {
+            Some(signature) => signature,
+            None => {
+                if let Some(result) = self.record_sig_failure(msg.sender) {
+                    return result;
+                }
+                return VerifyResult::RejectedSignature("invalid signature length".into());
+            }
+        };
+        let Some(key) = self.verifying_keys.get(&msg.sender) else {
+            if let Some(result) = self.record_sig_failure(msg.sender) {
+                return result;
+            }
+            return VerifyResult::RejectedSignature("unknown sender verifying key".into());
+        };
+        if !ghost_signing::verify(&msg.canonical_bytes(), &signature, key) {
+            if let Some(result) = self.record_sig_failure(msg.sender) {
+                return result;
+            }
+            return VerifyResult::RejectedSignature("signature verification failed".into());
+        }
 
         // Gate 2: Replay prevention
         if !self.check_replay(msg) {
@@ -119,7 +160,7 @@ impl MessageDispatcher {
         }
 
         // Nonce uniqueness
-        if self.seen_nonces.contains(&msg.nonce) {
+        if self.seen_nonces.contains_key(&msg.nonce) {
             return false;
         }
 
@@ -127,7 +168,7 @@ impl MessageDispatcher {
         // greater than the last seen nonce from this sender. UUIDv7
         // encodes a timestamp in the high bits, so lexicographic
         // comparison enforces temporal monotonicity.
-        if let Some(last) = self.last_nonce.get(&msg.sender) {
+        if let Some((last, _seen_at)) = self.last_nonce.get(&msg.sender) {
             if msg.nonce <= *last {
                 tracing::warn!(
                     sender = %msg.sender,
@@ -138,9 +179,10 @@ impl MessageDispatcher {
                 return false;
             }
         }
-        self.last_nonce.insert(msg.sender, msg.nonce);
+        let now = Instant::now();
+        self.last_nonce.insert(msg.sender, (msg.nonce, now));
 
-        self.seen_nonces.insert(msg.nonce);
+        self.seen_nonces.insert(msg.nonce, now);
         true
     }
 
@@ -162,27 +204,19 @@ impl MessageDispatcher {
 
     /// Reset rate limit counters hourly. Without this, agents are
     /// permanently rate-limited after reaching the per-hour threshold.
-    /// Also cleans expired nonces and last_nonce tracking to prevent
-    /// unbounded memory growth.
     fn maybe_reset_rate_limits(&mut self) {
         if self.last_rate_reset.elapsed() >= RATE_LIMIT_RESET_INTERVAL {
             self.agent_counts.clear();
             self.pair_counts.clear();
             self.last_rate_reset = Instant::now();
-            // Clean expired nonces — nonces older than REPLAY_WINDOW are
-            // no longer needed for replay prevention. We can't track
-            // individual nonce timestamps in a BTreeSet, so we clear all
-            // nonces on the hourly reset. This is safe because the replay
-            // window (5min) is much shorter than the reset interval (1h),
-            // so any nonce older than 1h is well past the replay window.
-            self.seen_nonces.clear();
-            // Clear last_nonce tracking — without this, the map grows
-            // unboundedly as new senders appear over time. Clearing on
-            // the hourly reset is safe because UUIDv7 monotonicity is a
-            // per-window check, and the replay window (5min) is well
-            // within the reset interval (1h).
-            self.last_nonce.clear();
         }
+    }
+
+    fn prune_replay_state(&mut self) {
+        self.seen_nonces
+            .retain(|_, seen_at| seen_at.elapsed() < REPLAY_WINDOW);
+        self.last_nonce
+            .retain(|_, (_, seen_at)| seen_at.elapsed() < REPLAY_WINDOW);
     }
 
     /// Record a signature failure and check anomaly threshold (AC6).
@@ -290,5 +324,113 @@ impl MessageDispatcher {
 impl Default for MessageDispatcher {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn signed_message(
+        dispatcher: &mut MessageDispatcher,
+        sender_key: &ghost_signing::SigningKey,
+        sender: Uuid,
+        recipient: Uuid,
+    ) -> AgentMessage {
+        dispatcher.register_verifying_key(sender, sender_key.verifying_key());
+        let mut msg = AgentMessage::new(
+            sender,
+            recipient,
+            "Notification".into(),
+            serde_json::json!({ "message": "hello" }),
+        );
+        msg.timestamp = Utc::now();
+        msg.sign(sender_key);
+        msg
+    }
+
+    #[test]
+    fn missing_signature_is_rejected() {
+        let mut dispatcher = MessageDispatcher::new();
+        let (signing_key, verifying_key) = ghost_signing::generate_keypair();
+        let sender = Uuid::now_v7();
+        dispatcher.register_verifying_key(sender, verifying_key);
+        let mut msg = AgentMessage::new(
+            sender,
+            Uuid::now_v7(),
+            "Notification".into(),
+            serde_json::json!({ "message": "unsigned" }),
+        );
+        msg.content_hash = msg.compute_content_hash();
+        assert!(matches!(
+            dispatcher.verify(&msg),
+            VerifyResult::RejectedSignature(_)
+        ));
+        drop(signing_key);
+    }
+
+    #[test]
+    fn signed_message_is_accepted() {
+        let mut dispatcher = MessageDispatcher::new();
+        let (signing_key, _) = ghost_signing::generate_keypair();
+        let msg = signed_message(
+            &mut dispatcher,
+            &signing_key,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        assert!(matches!(dispatcher.verify(&msg), VerifyResult::Accepted));
+    }
+
+    #[test]
+    fn forged_signature_is_rejected() {
+        let mut dispatcher = MessageDispatcher::new();
+        let (trusted_key, _) = ghost_signing::generate_keypair();
+        let (forged_key, _) = ghost_signing::generate_keypair();
+        let sender = Uuid::now_v7();
+        let mut msg = signed_message(&mut dispatcher, &trusted_key, sender, Uuid::now_v7());
+        msg.sign(&forged_key);
+        assert!(matches!(
+            dispatcher.verify(&msg),
+            VerifyResult::RejectedSignature(_)
+        ));
+    }
+
+    #[test]
+    fn encrypted_messages_fail_closed() {
+        let mut dispatcher = MessageDispatcher::new();
+        let (signing_key, _) = ghost_signing::generate_keypair();
+        let mut msg = signed_message(
+            &mut dispatcher,
+            &signing_key,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        msg.encrypted = true;
+        assert!(matches!(
+            dispatcher.verify(&msg),
+            VerifyResult::RejectedPolicy(_)
+        ));
+    }
+
+    #[test]
+    fn replay_window_survives_rate_limit_reset_boundary() {
+        let mut dispatcher = MessageDispatcher::new();
+        let (signing_key, _) = ghost_signing::generate_keypair();
+        let sender = Uuid::now_v7();
+        let original = signed_message(&mut dispatcher, &signing_key, sender, Uuid::now_v7());
+        assert!(matches!(
+            dispatcher.verify(&original),
+            VerifyResult::Accepted
+        ));
+
+        dispatcher.last_rate_reset = Instant::now() - RATE_LIMIT_RESET_INTERVAL;
+        let fresh = signed_message(&mut dispatcher, &signing_key, sender, Uuid::now_v7());
+        assert!(matches!(dispatcher.verify(&fresh), VerifyResult::Accepted));
+        assert!(matches!(
+            dispatcher.verify(&original),
+            VerifyResult::RejectedReplay(_)
+        ));
     }
 }

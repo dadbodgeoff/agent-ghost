@@ -976,6 +976,7 @@ mod tests {
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_ticket_auth_only: false,
             tools_config: crate::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
@@ -1007,6 +1008,8 @@ mod tests {
             idempotency_key: Some(idempotency_key.into()),
             idempotency_status: None,
             is_mutating: true,
+            client_supplied_operation_id: true,
+            client_supplied_idempotency_key: true,
         }
     }
 

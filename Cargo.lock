@@ -2129,9 +2129,11 @@ dependencies = [
 name = "ghost-backup"
 version = "0.1.0"
 dependencies = [
+ "age",
  "blake3",
  "chrono",
  "proptest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -2258,6 +2260,7 @@ dependencies = [
  "ghost-skills",
  "governor",
  "hmac",
+ "http-body-util",
  "jsonwebtoken",
  "lettre",
  "libc",
@@ -2578,6 +2581,7 @@ name = "ghost-skills"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "cortex-convergence",
@@ -2592,6 +2596,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "simulation-boundary",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

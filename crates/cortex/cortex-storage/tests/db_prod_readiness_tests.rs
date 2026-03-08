@@ -131,6 +131,109 @@ fn latest_version_db_missing_channels_indexes_fails_verification() {
 }
 
 #[test]
+fn latest_version_db_missing_workflow_execution_state_version_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch(
+        "DROP TABLE workflow_executions;
+         CREATE TABLE workflow_executions (
+            id TEXT PRIMARY KEY,
+            state TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("table workflow_executions missing column state_version"),
+        "{err}"
+    );
+}
+
+#[test]
+fn latest_version_db_with_non_unique_workflow_execution_journal_index_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch(
+        "DROP INDEX idx_workflow_executions_journal_id;
+         CREATE INDEX idx_workflow_executions_journal_id
+            ON workflow_executions(journal_id);",
+    )
+    .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "index idx_workflow_executions_journal_id missing contract workflow execution journal uniqueness"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn latest_version_db_missing_operation_journal_owner_contract_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS prevent_operation_journal_delete;
+         DROP TRIGGER IF EXISTS operation_journal_commit_requires_current_request;
+         DROP TABLE operation_journal;
+         CREATE TABLE operation_journal (
+            id TEXT PRIMARY KEY,
+            actor_key TEXT NOT NULL,
+            method TEXT NOT NULL,
+            route_template TEXT NOT NULL,
+            operation_id TEXT NOT NULL,
+            request_id TEXT,
+            idempotency_key TEXT NOT NULL,
+            request_fingerprint TEXT NOT NULL,
+            request_body TEXT NOT NULL DEFAULT 'null',
+            status TEXT NOT NULL CHECK(status IN ('in_progress', 'committed')),
+            response_status_code INTEGER,
+            response_body TEXT,
+            response_content_type TEXT,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            committed_at TEXT,
+            lease_expires_at TEXT
+         );
+         CREATE UNIQUE INDEX idx_operation_journal_actor_key_idempotency
+            ON operation_journal(actor_key, idempotency_key);
+         CREATE UNIQUE INDEX idx_operation_journal_operation_id
+            ON operation_journal(operation_id);
+         CREATE INDEX idx_operation_journal_status_lease
+            ON operation_journal(status, lease_expires_at);
+         CREATE INDEX idx_operation_journal_fingerprint
+            ON operation_journal(request_fingerprint);",
+    )
+    .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("table operation_journal missing column owner_token"),
+        "{err}"
+    );
+}
+
+#[test]
+fn latest_version_db_missing_operation_journal_delete_trigger_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch("DROP TRIGGER prevent_operation_journal_delete;")
+        .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("missing trigger prevent_operation_journal_delete"),
+        "{err}"
+    );
+}
+
+#[test]
 fn latest_version_db_with_wrong_column_type_fails_verification() {
     let conn = Connection::open_in_memory().unwrap();
     cortex_storage::run_all_migrations(&conn).unwrap();

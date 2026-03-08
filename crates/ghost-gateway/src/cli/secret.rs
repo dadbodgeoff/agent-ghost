@@ -12,6 +12,7 @@ const KNOWN_KEYS: &[&str] = &[
     "ghost_cli_token",
     "GHOST_TOKEN",
     "GHOST_JWT_SECRET",
+    "GHOST_BACKUP_PASSPHRASE",
     "GHOST_BACKUP_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",

@@ -564,6 +564,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/live-executions/{execution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_live_execution"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/marketplace/agents": {
         parameters: {
             query?: never;
@@ -1572,6 +1588,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/skills/{id}/quarantine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["quarantine_skill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{id}/quarantine/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resolve_skill_quarantine"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/skills/{id}/reverify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reverify_skill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/skills/{id}/uninstall": {
         parameters: {
             query?: never;
@@ -1965,6 +2029,19 @@ export interface components {
             source: string;
             timestamp: string;
         };
+        LiveExecutionSchema: {
+            accepted_response: unknown;
+            created_at: string;
+            execution_id: string;
+            operation_id: string;
+            recovery_required: boolean;
+            result_body?: unknown;
+            /** Format: int32 */
+            result_status_code?: number | null;
+            route_kind: string;
+            status: string;
+            updated_at: string;
+        };
         MemoryGraphEdgeSchema: {
             relationship: string;
             source: string;
@@ -2126,30 +2203,58 @@ export interface components {
         };
         /** @enum {string} */
         SkillExecutionMode: "native" | "wasm";
+        /** @enum {string} */
+        SkillInstallStateDto: "always_on" | "installed" | "disabled" | "not_installed";
         SkillListResponseDto: {
             available: components["schemas"]["SkillSummaryDto"][];
             installed: components["schemas"]["SkillSummaryDto"][];
         };
         /** @enum {string} */
+        SkillMutationKind: "read_only" | "transactional" | "external_side_effect";
+        SkillQuarantineRequestDto: {
+            reason: string;
+        };
+        SkillQuarantineResolutionRequestDto: {
+            /** Format: int64 */
+            expected_quarantine_revision: number;
+        };
+        /** @enum {string} */
+        SkillQuarantineStateDto: "clear" | "quarantined";
+        /** @enum {string} */
         SkillSourceKind: "compiled" | "user" | "workspace";
         /** @enum {string} */
-        SkillStateDto: "always_on" | "installed" | "available" | "disabled" | "quarantined";
+        SkillStateDto: "always_on" | "installed" | "available" | "disabled" | "verified" | "quarantined" | "verification_failed";
         SkillSummaryDto: {
+            artifact_digest?: string | null;
             capabilities: string[];
             description: string;
             enabled_for_agent?: boolean | null;
             execution_mode: components["schemas"]["SkillExecutionMode"];
             id: string;
+            install_state: components["schemas"]["SkillInstallStateDto"];
             installable: boolean;
+            mutation_kind: components["schemas"]["SkillMutationKind"];
             name: string;
             policy_capability: string;
             privileges: string[];
+            publisher?: string | null;
             quarantine_reason?: string | null;
+            /** Format: int64 */
+            quarantine_revision?: number | null;
+            quarantine_state: components["schemas"]["SkillQuarantineStateDto"];
             removable: boolean;
+            requested_capabilities: string[];
+            runtime_visible: boolean;
+            signer_key_id?: string | null;
+            signer_publisher?: string | null;
             source: components["schemas"]["SkillSourceKind"];
+            source_uri?: string | null;
             state: components["schemas"]["SkillStateDto"];
+            verification_status: components["schemas"]["SkillVerificationStatusDto"];
             version: string;
         };
+        /** @enum {string} */
+        SkillVerificationStatusDto: "not_applicable" | "verified" | "validation_failed" | "digest_mismatch" | "missing_signature" | "invalid_signature" | "unknown_signer" | "revoked_signer" | "unsupported_capability" | "unsupported_execution_mode";
         WebhookSchema: {
             active: boolean;
             events: string[];
@@ -2580,6 +2685,15 @@ export interface operations {
         responses: {
             /** @description Single-turn agent chat result */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Agent chat accepted and requires recovery polling */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3378,6 +3492,38 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    get_live_execution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable live execution identifier */
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted-boundary execution state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveExecutionSchema"];
+                };
+            };
+            /** @description Execution not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5839,6 +5985,137 @@ export interface operations {
             };
         };
     };
+    quarantine_skill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Skill ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillQuarantineRequestDto"];
+            };
+        };
+        responses: {
+            /** @description Skill quarantined */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillSummaryDto"];
+                };
+            };
+            /** @description Skill not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+            /** @description Skill cannot be quarantined */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    resolve_skill_quarantine: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Skill ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillQuarantineResolutionRequestDto"];
+            };
+        };
+        responses: {
+            /** @description Skill quarantine resolved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillSummaryDto"];
+                };
+            };
+            /** @description Skill not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+            /** @description Skill quarantine could not be resolved */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    reverify_skill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Skill ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Skill reverified */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillSummaryDto"];
+                };
+            };
+            /** @description Skill not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+            /** @description Skill cannot be reverified */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
     uninstall_skill: {
         parameters: {
             query?: never;
@@ -5885,7 +6162,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Compiled skill name */
+                /** @description Catalog skill identifier */
                 name: string;
             };
             cookie?: never;
@@ -6153,8 +6430,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Studio message accepted */
+            /** @description Studio message completed */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Studio message accepted and requires recovery polling */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

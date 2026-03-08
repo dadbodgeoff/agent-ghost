@@ -2,12 +2,25 @@
   import type { Skill } from '@ghost/sdk';
   import CapabilityBadge from './CapabilityBadge.svelte';
 
+  export type SkillCardAction =
+    | 'install'
+    | 'uninstall'
+    | 'quarantine'
+    | 'resolve'
+    | 'reverify';
+
   interface Props {
     skill: Skill;
     installed: boolean;
-    onAction: (skill: Skill, action: 'install' | 'uninstall') => void;
+    onAction: (skill: Skill, action: SkillCardAction) => void;
     loading?: boolean;
   }
+
+  type ActionSpec = {
+    id: SkillCardAction;
+    label: string;
+    tone?: 'danger' | 'secondary';
+  };
 
   let { skill, installed, onAction, loading = false }: Props = $props();
 
@@ -16,23 +29,55 @@
     installed: 'Installed',
     available: 'Available',
     disabled: 'Disabled',
+    verified: 'Verified',
     quarantined: 'Quarantined',
+    verification_failed: 'Verification failed',
   };
 
-  function resolveAction(): 'install' | 'uninstall' | null {
-    if (installed) {
-      return skill.removable ? 'uninstall' : null;
-    }
-    return skill.installable ? 'install' : null;
+  function isExternalSkill(skill: Skill): boolean {
+    return skill.source !== 'compiled';
   }
 
-  let action = $derived.by(resolveAction);
+  function resolveActions(skill: Skill, installed: boolean): ActionSpec[] {
+    const actions: ActionSpec[] = [];
 
-  let actionLabel = $derived.by(() => {
-    if (loading) return '...';
-    if (action === 'install') return 'Install';
-    if (action === 'uninstall') return 'Uninstall';
-    return skill.state === 'always_on' ? 'Always on' : 'Unavailable';
+    if (installed) {
+      if (skill.removable) {
+        actions.push({ id: 'uninstall', label: 'Uninstall', tone: 'danger' });
+      }
+    } else if (
+      skill.installable &&
+      (!isExternalSkill(skill) ||
+        (skill.quarantine_state === 'clear' && skill.verification_status === 'verified'))
+    ) {
+      actions.push({ id: 'install', label: 'Install' });
+    }
+
+    if (!isExternalSkill(skill)) {
+      return actions;
+    }
+
+    actions.push({ id: 'reverify', label: 'Reverify', tone: 'secondary' });
+    if (skill.quarantine_state === 'quarantined') {
+      if (skill.verification_status === 'verified' && skill.quarantine_revision != null) {
+        actions.push({ id: 'resolve', label: 'Resolve', tone: 'secondary' });
+      }
+    } else {
+      actions.push({ id: 'quarantine', label: 'Quarantine', tone: 'danger' });
+    }
+
+    return actions;
+  }
+
+  const actions = $derived.by(() => resolveActions(skill, installed));
+  const runtimeNote = $derived.by(() => {
+    if (isExternalSkill(skill) && skill.install_state === 'installed' && !skill.runtime_visible) {
+      return 'Installed in catalog only. Runtime execution remains gated off.';
+    }
+    if (skill.quarantine_state === 'quarantined' && skill.quarantine_reason) {
+      return skill.quarantine_reason;
+    }
+    return null;
   });
 </script>
 
@@ -44,15 +89,33 @@
     </div>
     <span class="state-badge state-{skill.state}">{STATE_LABELS[skill.state]}</span>
   </div>
+
   <p class="skill-desc">{skill.description}</p>
+
   <div class="skill-meta">
     <span class="skill-source">{skill.source}</span>
     <span class="skill-mode">{skill.execution_mode}</span>
+    <span>verify:{skill.verification_status}</span>
+    <span>install:{skill.install_state}</span>
+    <span>runtime:{skill.runtime_visible ? 'visible' : 'gated'}</span>
   </div>
+
+  {#if skill.publisher || skill.signer_publisher}
+    <div class="trust-row">
+      {#if skill.publisher}
+        <span>Publisher: {skill.publisher}</span>
+      {/if}
+      {#if skill.signer_publisher}
+        <span>Signer: {skill.signer_publisher}</span>
+      {/if}
+    </div>
+  {/if}
+
   <div class="policy-row">
     <span class="section-label">Policy</span>
     <CapabilityBadge capability={skill.policy_capability} />
   </div>
+
   <div class="privilege-row">
     <span class="section-label">Privileges</span>
     {#if skill.privileges.length > 0}
@@ -68,15 +131,29 @@
       <p class="no-privileges">No elevated privileges declared.</p>
     {/if}
   </div>
+
+  {#if runtimeNote}
+    <p class="runtime-note">{runtimeNote}</p>
+  {/if}
+
   <div class="skill-footer">
-    <button
-      class="action-btn"
-      class:danger={action === 'uninstall'}
-      disabled={loading || !action}
-      onclick={() => action && onAction(skill, action)}
-    >
-      {actionLabel}
-    </button>
+    {#if actions.length === 0}
+      <button class="action-btn secondary" disabled>
+        {skill.state === 'always_on' ? 'Always on' : 'Unavailable'}
+      </button>
+    {:else}
+      {#each actions as action}
+        <button
+          class="action-btn"
+          class:danger={action.tone === 'danger'}
+          class:secondary={action.tone === 'secondary'}
+          disabled={loading}
+          onclick={() => onAction(skill, action.id)}
+        >
+          {loading ? '...' : action.label}
+        </button>
+      {/each}
+    {/if}
   </div>
 </div>
 
@@ -157,19 +234,30 @@
     border-color: color-mix(in srgb, var(--color-text-muted) 24%, transparent);
   }
 
-  .state-quarantined {
+  .state-verified {
+    background: color-mix(in srgb, var(--color-score-high) 10%, transparent);
+    color: var(--color-score-high);
+    border-color: color-mix(in srgb, var(--color-score-high) 24%, transparent);
+  }
+
+  .state-quarantined,
+  .state-verification_failed {
     background: color-mix(in srgb, var(--color-severity-hard) 12%, transparent);
     color: var(--color-severity-hard);
     border-color: color-mix(in srgb, var(--color-severity-hard) 28%, transparent);
   }
 
-  .skill-meta {
+  .skill-meta,
+  .trust-row {
     display: flex;
     flex-wrap: wrap;
     gap: var(--spacing-2);
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-    text-transform: capitalize;
+  }
+
+  .skill-meta {
+    text-transform: lowercase;
   }
 
   .policy-row,
@@ -197,16 +285,26 @@
     line-height: 1.5;
   }
 
-  .no-privileges {
+  .no-privileges,
+  .runtime-note {
     margin: 0;
     color: var(--color-text-muted);
     font-size: var(--font-size-xs);
+    line-height: 1.5;
+  }
+
+  .runtime-note {
+    padding: var(--spacing-2) var(--spacing-3);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated-2);
   }
 
   .skill-footer {
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--spacing-2);
     margin-top: auto;
   }
 
@@ -229,6 +327,12 @@
   .action-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .action-btn.secondary {
+    background: transparent;
+    color: var(--color-text-secondary);
+    border-color: var(--color-border-default);
   }
 
   .action-btn.danger {

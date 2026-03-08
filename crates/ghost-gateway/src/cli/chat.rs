@@ -356,6 +356,7 @@ async fn run_interactive_chat_inner() {
         match crate::skill_catalog::service::SkillCatalogService::new(
             compiled.definitions,
             Arc::clone(pool),
+            effective_config.external_skills.clone(),
         )
         .await
         {

@@ -50,6 +50,8 @@ export type WsEvent =
       content: string;
       safety_status: 'clean' | 'warning' | 'blocked';
     }
+  | { type: 'SystemWarning'; message: string }
+  | { type: 'ContextTruncated'; layer: string; removed_tokens: number }
   | { type: 'Ping' }
   | { type: 'Resync'; missed_events: number }
   | { type: string; [key: string]: unknown };
@@ -220,12 +222,16 @@ export class GhostWebSocket {
       this.reconnectAttempt = 0;
       this.setState('connected');
       if (this.lastSeq > 0) {
-        this.ws!.send(JSON.stringify({ last_seq: this.lastSeq }));
-      }
-      if (this.subscribedTopics.length > 0) {
         this.ws!.send(
-          JSON.stringify({ type: 'Subscribe', topics: this.subscribedTopics }),
+          JSON.stringify({
+            last_seq: this.lastSeq,
+            ...(this.subscribedTopics.length > 0
+              ? { topics: this.subscribedTopics }
+              : {}),
+          }),
         );
+      } else if (this.subscribedTopics.length > 0) {
+        this.ws!.send(JSON.stringify({ type: 'Subscribe', topics: this.subscribedTopics }));
       }
     };
 
@@ -323,6 +329,7 @@ export class GhostWebSocket {
     const maxAttempts = this.wsOptions.maxReconnectAttempts ?? 10;
     if (maxAttempts > 0 && this.reconnectAttempt >= maxAttempts) {
       this.closed = true;
+      this.setState('disconnected');
       this.wsOptions.onReconnectFailed?.();
       return;
     }

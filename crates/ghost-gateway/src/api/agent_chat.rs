@@ -19,8 +19,8 @@ use ghost_agent_loop::runner::{AgentRunner, AgentStreamEvent};
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ErrorResponse};
 use crate::api::idempotency::{
-    abort_prepared_json_operation, commit_prepared_json_operation,
-    execute_idempotent_json_mutation, prepare_json_operation, PreparedOperation,
+    abort_prepared_json_operation, commit_prepared_json_operation, prepare_json_operation,
+    start_operation_lease_heartbeat, PreparedOperation,
 };
 use crate::api::mutation::{
     error_response_with_idempotency, json_response_with_idempotency, response_with_idempotency,
@@ -38,6 +38,8 @@ use crate::state::AppState;
 const AGENT_CHAT_ROUTE_TEMPLATE: &str = "/api/agent/chat";
 const AGENT_CHAT_STREAM_ROUTE_TEMPLATE: &str = "/api/agent/chat/stream";
 const AGENT_CHAT_ROUTE_KIND: &str = "agent_chat";
+const AGENT_CHAT_STREAM_ROUTE_KIND: &str = "agent_chat_stream";
+const AGENT_STREAM_EXECUTION_STATE_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentChatRequest {
@@ -73,6 +75,18 @@ struct AgentStreamAcceptance {
     session_id: String,
     message_id: String,
     stream_start_seq: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentStreamExecutionState {
+    version: u32,
+    session_id: String,
+    agent_id: String,
+    message_id: String,
+    stream_start_seq: i64,
+    recovery_required: bool,
+    terminal_event_type: Option<String>,
+    terminal_payload: Option<serde_json::Value>,
 }
 
 struct PreparedAgentRuntime {
@@ -141,7 +155,7 @@ pub async fn agent_chat(
             "IDEMPOTENCY_IN_PROGRESS",
             "An equivalent request is already in progress",
         )),
-        Ok(PreparedOperation::Acquired { journal_id }) => {
+        Ok(PreparedOperation::Acquired { lease }) => {
             let operation_id = operation_context
                 .operation_id
                 .clone()
@@ -151,7 +165,7 @@ pub async fn agent_chat(
                 let db = state.db.write().await;
                 match cortex_storage::queries::live_execution_queries::get_by_journal_id(
                     &db,
-                    &journal_id,
+                    &lease.journal_id,
                 ) {
                     Ok(Some(record)) => Some(record),
                     Ok(None) => {
@@ -176,19 +190,19 @@ pub async fn agent_chat(
                         if let Err(error) = persist_agent_execution_record(
                             &db,
                             &execution_id,
-                            &journal_id,
+                            &lease.journal_id,
                             &operation_id,
                             actor,
                             &execution_state,
                         ) {
-                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(error);
                         }
 
                         Some(
                             cortex_storage::queries::live_execution_queries::LiveExecutionRecord {
                                 id: execution_id,
-                                journal_id,
+                                journal_id: lease.journal_id.clone(),
                                 operation_id: operation_id.clone(),
                                 route_kind: AGENT_CHAT_ROUTE_KIND.to_string(),
                                 actor_key: actor.to_string(),
@@ -201,7 +215,7 @@ pub async fn agent_chat(
                         )
                     }
                     Err(error) => {
-                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(ApiError::db_error(
                             "get_live_execution_record",
                             error,
@@ -237,7 +251,7 @@ pub async fn agent_chat(
                     {
                         return finalize_agent_chat_terminal_response(
                             &state,
-                            &execution_record.journal_id,
+                            &lease,
                             &operation_context,
                             &agent_audit_id,
                             actor,
@@ -252,7 +266,7 @@ pub async fn agent_chat(
                     let recovery_body = agent_chat_recovery_body(&execution_state);
                     return finalize_agent_chat_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &agent_audit_id,
                         actor,
@@ -266,7 +280,7 @@ pub async fn agent_chat(
                     let recovery_body = agent_chat_recovery_body(&execution_state);
                     return finalize_agent_chat_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &agent_audit_id,
                         actor,
@@ -295,7 +309,7 @@ pub async fn agent_chat(
                     let (status, body) = api_error_status_and_body(error);
                     return finalize_agent_chat_terminal_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &agent_audit_id,
                         actor,
@@ -315,6 +329,7 @@ pub async fn agent_chat(
                 providers,
             } = prepared_runtime;
 
+            let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
             let mut ctx = match runner
                 .pre_loop(
                     runtime_ctx.agent.id,
@@ -326,10 +341,14 @@ pub async fn agent_chat(
             {
                 Ok(ctx) => ctx,
                 Err(error) => {
+                    let heartbeat_result = heartbeat.stop().await;
+                    if let Err(error) = heartbeat_result {
+                        return error_response_with_idempotency(error);
+                    }
                     let (status, body) = api_error_status_and_body(map_runner_error(error));
                     return finalize_agent_chat_terminal_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &agent_id,
                         actor,
@@ -355,6 +374,9 @@ pub async fn agent_chat(
                 .await
             {
                 Ok(result) => {
+                    if let Err(error) = heartbeat.stop().await {
+                        return error_response_with_idempotency(error);
+                    }
                     let body = serde_json::to_value(AgentChatResponse {
                         content: result.output.unwrap_or_default(),
                         session_id: runtime_ctx.session_id.to_string(),
@@ -365,7 +387,7 @@ pub async fn agent_chat(
                     .unwrap_or(serde_json::Value::Null);
                     finalize_agent_chat_terminal_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &agent_id,
                         actor,
@@ -377,6 +399,9 @@ pub async fn agent_chat(
                     .await
                 }
                 Err(error) => {
+                    if let Err(heartbeat_error) = heartbeat.stop().await {
+                        return error_response_with_idempotency(heartbeat_error);
+                    }
                     let recovery_body = agent_chat_recovery_body(&execution_state);
                     tracing::warn!(
                         operation_id = %operation_id,
@@ -386,7 +411,7 @@ pub async fn agent_chat(
                     );
                     finalize_agent_chat_recovery_response(
                         &state,
-                        &execution_record.journal_id,
+                        &lease,
                         &operation_context,
                         &agent_id,
                         actor,
@@ -421,103 +446,273 @@ pub async fn agent_chat_stream(
     let user_message = req.message.clone();
     let requested_agent_id = req.agent_id.clone();
     let audit_agent_id = agent_audit_target_id(&state, requested_agent_id.as_deref());
-
-    let outcome = {
+    let prepared = {
         let db = state.db.write().await;
-        let outcome = execute_idempotent_json_mutation(
+        prepare_json_operation(
             &db,
             &operation_context,
             actor,
             "POST",
             AGENT_CHAT_STREAM_ROUTE_TEMPLATE,
             &request_body,
-            |conn| {
-                let agent = RuntimeSafetyBuilder::new(&state)
-                    .resolve_agent(requested_agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
-                    .map_err(map_runtime_safety_error)?;
-                ensure_agent_available(&state, agent.id)?;
+        )
+    };
 
-                let session_id = req.session_id.unwrap_or_else(Uuid::now_v7).to_string();
-                let message_id = Uuid::now_v7().to_string();
-                let start_payload = serde_json::json!({
-                    "session_id": session_id,
-                    "message_id": message_id,
-                });
-                let start_seq = cortex_storage::queries::stream_event_queries::insert_stream_event(
-                    conn,
-                    &session_id,
-                    &message_id,
-                    "stream_start",
-                    &start_payload.to_string(),
-                )
-                .map_err(|error| ApiError::db_error("insert_stream_start", error))?;
-
-                let providers = provider_runtime::ordered_provider_configs(&state);
-                if providers.is_empty() {
-                    return Ok((
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        validation_error_body(
-                            "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
-                        ),
-                    ));
+    match prepared {
+        Ok(PreparedOperation::Replay(stored)) => {
+            let acceptance = match parse_agent_stream_acceptance(&stored.body) {
+                Ok(acceptance) => acceptance,
+                Err(error) => {
+                    return response_with_idempotency(
+                        error.into_response(),
+                        IdempotencyStatus::Replayed,
+                    );
                 }
-
-                Ok((
-                    StatusCode::OK,
-                    agent_stream_accepted_body(
-                        &session_id,
-                        &agent.id.to_string(),
-                        &message_id,
-                        start_seq,
-                    ),
-                ))
-            },
-        );
-
-        if let Ok(ref outcome) = outcome {
-            let audit_outcome = match (&outcome.idempotency_status, outcome.status) {
-                (IdempotencyStatus::Replayed, _) => "replayed",
-                (_, status) if status.is_success() => "accepted",
-                _ => "rejected",
             };
+            let (persisted_events, execution_state) = {
+                let db = match state.db.read() {
+                    Ok(db) => db,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            ApiError::db_error("replay_stream_read", error).into_response(),
+                            IdempotencyStatus::Replayed,
+                        );
+                    }
+                };
+                let persisted_events =
+                    match cortex_storage::queries::stream_event_queries::recover_events_after(
+                        &db,
+                        &acceptance.session_id,
+                        &acceptance.message_id,
+                        0,
+                    ) {
+                        Ok(events) => events,
+                        Err(error) => {
+                            return response_with_idempotency(
+                                ApiError::db_error("replay_stream_read", error).into_response(),
+                                IdempotencyStatus::Replayed,
+                            );
+                        }
+                    };
+                let execution_state = operation_context
+                    .operation_id
+                    .as_deref()
+                    .and_then(|operation_id| {
+                        cortex_storage::queries::live_execution_queries::get_by_operation_id(
+                            &db,
+                            operation_id,
+                        )
+                        .ok()
+                        .flatten()
+                    })
+                    .and_then(|record| parse_agent_stream_execution_state(&record.state_json).ok());
+                (persisted_events, execution_state)
+            };
+
+            let db = state.db.write().await;
             write_mutation_audit_entry(
                 &db,
                 &audit_agent_id,
                 "agent_chat_stream",
                 "medium",
                 actor,
-                audit_outcome,
-                agent_chat_audit_details(&outcome.body),
+                "replayed",
+                agent_chat_audit_details(&stored.body),
                 &operation_context,
-                &outcome.idempotency_status,
+                &IdempotencyStatus::Replayed,
             );
+            agent_replay_stream_response(
+                acceptance,
+                persisted_events,
+                execution_state,
+                IdempotencyStatus::Replayed,
+            )
         }
+        Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency key was reused with a different request payload",
+            serde_json::json!({
+                "route_template": AGENT_CHAT_STREAM_ROUTE_TEMPLATE,
+                "method": "POST",
+            }),
+        )),
+        Ok(PreparedOperation::InProgress) => error_response_with_idempotency(ApiError::custom(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "An equivalent request is already in progress",
+        )),
+        Ok(PreparedOperation::Acquired { lease }) => {
+            let operation_id = operation_context
+                .operation_id
+                .clone()
+                .expect("prepared operations require operation_id");
 
-        outcome
-    };
+            let (acceptance, execution_id, execution_state) = {
+                let db = state.db.write().await;
+                match cortex_storage::queries::live_execution_queries::get_by_journal_id(
+                    &db,
+                    &lease.journal_id,
+                ) {
+                    Ok(Some(record)) => {
+                        let execution_state =
+                            match parse_agent_stream_execution_state(&record.state_json) {
+                                Ok(state) => state,
+                                Err(error) => {
+                                    let _ = abort_prepared_json_operation(
+                                        &db,
+                                        &operation_context,
+                                        &lease,
+                                    );
+                                    return error_response_with_idempotency(error);
+                                }
+                            };
+                        let accepted_body = agent_stream_accepted_body(
+                            &execution_state.session_id,
+                            &execution_state.agent_id,
+                            &execution_state.message_id,
+                            execution_state.stream_start_seq,
+                        );
+                        match commit_prepared_json_operation(
+                            &db,
+                            &operation_context,
+                            &lease,
+                            StatusCode::OK,
+                            &accepted_body,
+                        ) {
+                            Ok(outcome) => {
+                                write_mutation_audit_entry(
+                                    &db,
+                                    &audit_agent_id,
+                                    "agent_chat_stream",
+                                    "medium",
+                                    actor,
+                                    "accepted",
+                                    agent_chat_audit_details(&outcome.body),
+                                    &operation_context,
+                                    &outcome.idempotency_status,
+                                );
+                                let acceptance = parse_agent_stream_acceptance(&outcome.body)
+                                    .expect("stored stream acceptance must parse");
+                                (acceptance, record.id, execution_state)
+                            }
+                            Err(error) => return error_response_with_idempotency(error),
+                        }
+                    }
+                    Ok(None) => {
+                        let agent = match RuntimeSafetyBuilder::new(&state)
+                            .resolve_agent(requested_agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
+                            .map_err(map_runtime_safety_error)
+                        {
+                            Ok(agent) => agent,
+                            Err(error) => {
+                                let _ =
+                                    abort_prepared_json_operation(&db, &operation_context, &lease);
+                                return error_response_with_idempotency(error);
+                            }
+                        };
+                        if let Err(error) = ensure_agent_available(&state, agent.id) {
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                            return error_response_with_idempotency(error);
+                        }
+                        if provider_runtime::ordered_provider_configs(&state).is_empty() {
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                            return error_response_with_idempotency(ApiError::bad_request(
+                                "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
+                            ));
+                        }
 
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(error) => return error_response_with_idempotency(error),
-    };
+                        let session_id = req.session_id.unwrap_or_else(Uuid::now_v7).to_string();
+                        let message_id = Uuid::now_v7().to_string();
+                        let start_payload = serde_json::json!({
+                            "session_id": session_id,
+                            "message_id": message_id,
+                        });
+                        let start_seq =
+                            match cortex_storage::queries::stream_event_queries::insert_stream_event(
+                                &db,
+                                &session_id,
+                                &message_id,
+                                "stream_start",
+                                &start_payload.to_string(),
+                            ) {
+                                Ok(seq) => seq,
+                                Err(error) => {
+                                    let _ = abort_prepared_json_operation(
+                                        &db,
+                                        &operation_context,
+                                        &lease,
+                                    );
+                                    return error_response_with_idempotency(ApiError::db_error(
+                                        "insert_stream_start",
+                                        error,
+                                    ));
+                                }
+                            };
+                        let execution_state = agent_stream_execution_state(
+                            &session_id,
+                            &agent.id.to_string(),
+                            &message_id,
+                            start_seq,
+                        );
+                        if let Err(error) = persist_agent_stream_execution_record(
+                            &db,
+                            &message_id,
+                            &lease.journal_id,
+                            &operation_id,
+                            actor,
+                            &execution_state,
+                        ) {
+                            let _ = cortex_storage::queries::stream_event_queries::delete_events_for_message(
+                                &db,
+                                &message_id,
+                            );
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                            return error_response_with_idempotency(error);
+                        }
 
-    if outcome.status != StatusCode::OK {
-        return json_response_with_idempotency(
-            outcome.status,
-            outcome.body,
-            outcome.idempotency_status,
-        );
-    }
+                        let accepted_body = agent_stream_accepted_body(
+                            &session_id,
+                            &agent.id.to_string(),
+                            &message_id,
+                            start_seq,
+                        );
+                        match commit_prepared_json_operation(
+                            &db,
+                            &operation_context,
+                            &lease,
+                            StatusCode::OK,
+                            &accepted_body,
+                        ) {
+                            Ok(outcome) => {
+                                write_mutation_audit_entry(
+                                    &db,
+                                    &audit_agent_id,
+                                    "agent_chat_stream",
+                                    "medium",
+                                    actor,
+                                    "accepted",
+                                    agent_chat_audit_details(&outcome.body),
+                                    &operation_context,
+                                    &outcome.idempotency_status,
+                                );
+                                let acceptance = parse_agent_stream_acceptance(&outcome.body)
+                                    .expect("accepted stream body must parse");
+                                (acceptance, message_id, execution_state)
+                            }
+                            Err(error) => return error_response_with_idempotency(error),
+                        }
+                    }
+                    Err(error) => {
+                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                        return error_response_with_idempotency(ApiError::db_error(
+                            "load_agent_stream_execution_record",
+                            error,
+                        ));
+                    }
+                }
+            };
 
-    let acceptance = match parse_agent_stream_acceptance(&outcome.body) {
-        Ok(acceptance) => acceptance,
-        Err(error) => {
-            return response_with_idempotency(error.into_response(), outcome.idempotency_status);
-        }
-    };
-
-    match outcome.idempotency_status {
-        IdempotencyStatus::Executed => {
             let (stream_rx, task_handle) = spawn_agent_chat_stream_execution(
                 Arc::clone(&state),
                 requested_agent_id,
@@ -529,39 +724,13 @@ pub async fn agent_chat_stream(
             agent_live_stream_response(
                 Arc::clone(&state),
                 acceptance,
+                execution_id,
+                execution_state,
                 stream_rx,
                 IdempotencyStatus::Executed,
             )
         }
-        IdempotencyStatus::Replayed => {
-            let persisted_events = {
-                let db = match state.db.read() {
-                    Ok(db) => db,
-                    Err(error) => {
-                        return response_with_idempotency(
-                            ApiError::db_error("replay_stream_read", error).into_response(),
-                            IdempotencyStatus::Replayed,
-                        );
-                    }
-                };
-                match cortex_storage::queries::stream_event_queries::recover_events_after(
-                    &db,
-                    &acceptance.session_id,
-                    &acceptance.message_id,
-                    0,
-                ) {
-                    Ok(events) => events,
-                    Err(error) => {
-                        return response_with_idempotency(
-                            ApiError::db_error("replay_stream_read", error).into_response(),
-                            IdempotencyStatus::Replayed,
-                        );
-                    }
-                }
-            };
-            agent_replay_stream_response(acceptance, persisted_events, IdempotencyStatus::Replayed)
-        }
-        IdempotencyStatus::InProgress | IdempotencyStatus::Mismatch => unreachable!(),
+        Err(error) => error_response_with_idempotency(error),
     }
 }
 
@@ -589,12 +758,6 @@ fn agent_audit_target_id(state: &AppState, requested_agent_id: Option<&str>) -> 
                 .unwrap_or(API_SYNTHETIC_AGENT_NAME)
                 .to_string()
         })
-}
-
-fn validation_error_body(message: &str) -> serde_json::Value {
-    serde_json::to_value(ErrorResponse::new("VALIDATION_ERROR", message)).unwrap_or_else(
-        |_| serde_json::json!({ "error": { "code": "VALIDATION_ERROR", "message": message } }),
-    )
 }
 
 fn agent_chat_accepted_body(
@@ -761,7 +924,7 @@ fn stored_agent_chat_terminal_response(
 
 async fn finalize_agent_chat_terminal_response(
     state: &Arc<AppState>,
-    journal_id: &str,
+    lease: &crate::api::idempotency::PreparedOperationLease,
     operation_context: &OperationContext,
     agent_id: &str,
     actor: &str,
@@ -780,7 +943,7 @@ async fn finalize_agent_chat_terminal_response(
         return error_response_with_idempotency(error);
     }
 
-    match commit_prepared_json_operation(&db, operation_context, journal_id, status, &body) {
+    match commit_prepared_json_operation(&db, operation_context, lease, status, &body) {
         Ok(outcome) => {
             let audit_outcome = if status == StatusCode::OK {
                 "completed"
@@ -806,7 +969,7 @@ async fn finalize_agent_chat_terminal_response(
 
 async fn finalize_agent_chat_recovery_response(
     state: &Arc<AppState>,
-    journal_id: &str,
+    lease: &crate::api::idempotency::PreparedOperationLease,
     operation_context: &OperationContext,
     agent_id: &str,
     actor: &str,
@@ -821,13 +984,8 @@ async fn finalize_agent_chat_recovery_response(
         return error_response_with_idempotency(error);
     }
 
-    match commit_prepared_json_operation(
-        &db,
-        operation_context,
-        journal_id,
-        StatusCode::ACCEPTED,
-        &body,
-    ) {
+    match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::ACCEPTED, &body)
+    {
         Ok(outcome) => {
             write_mutation_audit_entry(
                 &db,
@@ -907,6 +1065,79 @@ fn agent_stream_accepted_body(
     })
 }
 
+fn agent_stream_execution_state(
+    session_id: &str,
+    agent_id: &str,
+    message_id: &str,
+    stream_start_seq: i64,
+) -> AgentStreamExecutionState {
+    AgentStreamExecutionState {
+        version: AGENT_STREAM_EXECUTION_STATE_VERSION,
+        session_id: session_id.to_string(),
+        agent_id: agent_id.to_string(),
+        message_id: message_id.to_string(),
+        stream_start_seq,
+        recovery_required: false,
+        terminal_event_type: None,
+        terminal_payload: None,
+    }
+}
+
+fn parse_agent_stream_execution_state(raw: &str) -> Result<AgentStreamExecutionState, ApiError> {
+    let state = serde_json::from_str::<AgentStreamExecutionState>(raw).map_err(|error| {
+        ApiError::internal(format!("failed to parse agent stream state: {error}"))
+    })?;
+    if state.version != AGENT_STREAM_EXECUTION_STATE_VERSION {
+        return Err(ApiError::internal(format!(
+            "unsupported agent stream state version {}",
+            state.version
+        )));
+    }
+    Ok(state)
+}
+
+fn persist_agent_stream_execution_record(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    journal_id: &str,
+    operation_id: &str,
+    actor: &str,
+    state: &AgentStreamExecutionState,
+) -> Result<(), ApiError> {
+    let state_json =
+        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
+    cortex_storage::queries::live_execution_queries::insert(
+        conn,
+        &cortex_storage::queries::live_execution_queries::NewLiveExecutionRecord {
+            id: execution_id,
+            journal_id,
+            operation_id,
+            route_kind: AGENT_CHAT_STREAM_ROUTE_KIND,
+            actor_key: actor,
+            status: "accepted",
+            state_json: &state_json,
+        },
+    )
+    .map_err(|error| ApiError::db_error("insert_agent_stream_execution_record", error))
+}
+
+fn update_agent_stream_execution_state(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    status: &str,
+    state: &AgentStreamExecutionState,
+) -> Result<(), ApiError> {
+    let state_json =
+        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
+    cortex_storage::queries::live_execution_queries::update_status_and_state(
+        conn,
+        execution_id,
+        status,
+        &state_json,
+    )
+    .map_err(|error| ApiError::db_error("update_agent_stream_execution_record", error))
+}
+
 fn parse_agent_stream_acceptance(
     body: &serde_json::Value,
 ) -> Result<AgentStreamAcceptance, ApiError> {
@@ -968,15 +1199,54 @@ fn replay_stream_event(
     )
 }
 
+fn agent_stream_recovery_payload(message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({
+        "message": message.into(),
+        "recovery_required": true,
+    })
+}
+
+async fn persist_stream_event_durable(
+    db: &Arc<crate::db_pool::DbPool>,
+    session_id: &str,
+    message_id: &str,
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> Result<i64, ApiError> {
+    let conn = db.write().await;
+    cortex_storage::queries::stream_event_queries::insert_stream_event(
+        &conn,
+        session_id,
+        message_id,
+        event_type,
+        &payload.to_string(),
+    )
+    .map_err(|error| ApiError::db_error("persist_stream_event", error))
+}
+
+async fn persist_agent_stream_terminal_state(
+    db: &Arc<crate::db_pool::DbPool>,
+    execution_id: &str,
+    status: &str,
+    execution_state: &AgentStreamExecutionState,
+) {
+    let conn = db.write().await;
+    let _ = update_agent_stream_execution_state(&conn, execution_id, status, execution_state);
+}
+
 fn agent_replay_stream_response(
     acceptance: AgentStreamAcceptance,
     persisted_events: Vec<cortex_storage::queries::stream_event_queries::StreamEventRow>,
+    execution_state: Option<AgentStreamExecutionState>,
     idempotency_status: IdempotencyStatus,
 ) -> Response {
     let replay_missing_start = persisted_events
         .first()
         .map(|row| row.event_type.as_str() != "stream_start")
         .unwrap_or(true);
+    let replay_missing_terminal = !persisted_events
+        .iter()
+        .any(|row| matches!(row.event_type.as_str(), "turn_complete" | "error"));
     let sse_stream = async_stream::stream! {
         if replay_missing_start {
             yield Ok::<Event, Infallible>(agent_stream_start_event(&acceptance));
@@ -984,6 +1254,18 @@ fn agent_replay_stream_response(
         for event in persisted_events {
             if let Some(event) = replay_stream_event(event) {
                 yield Ok(event);
+            }
+        }
+        if replay_missing_terminal {
+            if let Some(execution_state) = execution_state {
+                if execution_state.recovery_required {
+                    let payload = execution_state
+                        .terminal_payload
+                        .unwrap_or_else(|| agent_stream_recovery_payload(
+                            "Stream replay requires recovery because durable persistence did not complete",
+                        ));
+                    yield Ok(Event::default().event("error").data(payload.to_string()));
+                }
             }
         }
     };
@@ -999,6 +1281,8 @@ fn agent_replay_stream_response(
 fn agent_live_stream_response(
     state: Arc<AppState>,
     acceptance: AgentStreamAcceptance,
+    execution_id: String,
+    mut execution_state: AgentStreamExecutionState,
     mut rx: tokio::sync::mpsc::Receiver<AgentStreamEvent>,
     idempotency_status: IdempotencyStatus,
 ) -> Response {
@@ -1009,88 +1293,109 @@ fn agent_live_stream_response(
     let start_event = agent_stream_start_event(&acceptance);
 
     let sse_stream = async_stream::stream! {
-        let mut text_buffer = String::new();
-        const TEXT_FLUSH_THRESHOLD: usize = 2048;
-
-        let persist_event = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, etype: &str, payload: &serde_json::Value| -> Option<i64> {
-            match db.read() {
-                Ok(conn) => cortex_storage::queries::stream_event_queries::insert_stream_event(
-                    &conn,
-                    sid,
-                    mid,
-                    etype,
-                    &payload.to_string(),
-                )
-                .ok(),
-                Err(_) => None,
+        {
+            let conn = db_for_stream.write().await;
+            if let Err(error) = update_agent_stream_execution_state(&conn, &execution_id, "running", &execution_state) {
+                let payload = agent_stream_recovery_payload(format!(
+                    "Failed to mark stream execution as running: {error}"
+                ));
+                execution_state.recovery_required = true;
+                execution_state.terminal_event_type = Some("error".to_string());
+                execution_state.terminal_payload = Some(payload.clone());
+                drop(conn);
+                persist_agent_stream_terminal_state(
+                    &db_for_stream,
+                    &execution_id,
+                    "recovery_required",
+                    &execution_state,
+                ).await;
+                yield Ok::<Event, Infallible>(Event::default().event("error").data(payload.to_string()));
+                return;
             }
-        };
-
-        let flush_text = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, buf: &mut String| -> Option<i64> {
-            if buf.is_empty() {
-                return None;
-            }
-            let payload = serde_json::json!({ "content": buf.as_str() });
-            let seq = match db.read() {
-                Ok(conn) => cortex_storage::queries::stream_event_queries::insert_stream_event(
-                    &conn,
-                    sid,
-                    mid,
-                    "text_chunk",
-                    &payload.to_string(),
-                )
-                .ok(),
-                Err(_) => None,
-            };
-            buf.clear();
-            seq
-        };
+        }
 
         yield Ok::<Event, Infallible>(start_event);
 
         let mut stream_ended = false;
         while let Some(event) = rx.recv().await {
             match event {
-                AgentStreamEvent::StreamStart { message_id } => {
-                    yield Ok(Event::default()
-                        .event("stream_start")
-                        .data(serde_json::json!({ "message_id": message_id }).to_string()));
-                }
+                AgentStreamEvent::StreamStart { .. } => {}
                 AgentStreamEvent::TextDelta { content } => {
-                    text_buffer.push_str(&content);
-                    let mut seq = None;
-                    if text_buffer.len() >= TEXT_FLUSH_THRESHOLD {
-                        seq = flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
-                    }
-                    let mut ev = Event::default()
+                    let payload = serde_json::json!({ "content": content });
+                    let seq = match persist_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &message_id_sse,
+                        "text_chunk",
+                        &payload,
+                    ).await {
+                        Ok(seq) => seq,
+                        Err(error) => {
+                            let recovery_payload = agent_stream_recovery_payload(format!(
+                                "Failed to persist text chunk: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(recovery_payload.clone());
+                            persist_agent_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                "recovery_required",
+                                &execution_state,
+                            ).await;
+                            yield Ok(Event::default().event("error").data(recovery_payload.to_string()));
+                            stream_ended = true;
+                            break;
+                        }
+                    };
+                    let ev = Event::default()
                         .event("text_delta")
-                        .data(serde_json::json!({ "content": content }).to_string());
-                    if let Some(seq) = seq {
-                        ev = ev.id(seq.to_string());
-                    }
+                        .id(seq.to_string())
+                        .data(payload.to_string());
                     yield Ok(ev);
                 }
                 AgentStreamEvent::ToolUse { tool, tool_id, status } => {
-                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
                     let payload = serde_json::json!({
                         "tool": tool,
                         "tool_id": tool_id,
                         "status": status,
                     });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "tool_use", &payload);
+                    let seq = match persist_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &message_id_sse,
+                        "tool_use",
+                        &payload,
+                    ).await {
+                        Ok(seq) => seq,
+                        Err(error) => {
+                            let recovery_payload = agent_stream_recovery_payload(format!(
+                                "Failed to persist tool_use event: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(recovery_payload.clone());
+                            persist_agent_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                "recovery_required",
+                                &execution_state,
+                            ).await;
+                            yield Ok(Event::default().event("error").data(recovery_payload.to_string()));
+                            stream_ended = true;
+                            break;
+                        }
+                    };
 
                     crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
                         session_id: session_id_sse.clone(),
                         event_id: tool_id.clone(),
                         event_type: format!("tool_use:{}", tool),
                         sender: Some(tool.clone()),
-                        sequence_number: seq.unwrap_or(0),
+                        sequence_number: seq,
                     });
 
-                    let mut ev = Event::default().event("tool_use").data(payload.to_string());
-                    if let Some(seq) = seq {
-                        ev = ev.id(seq.to_string());
-                    }
+                    let ev = Event::default().event("tool_use").id(seq.to_string()).data(payload.to_string());
                     yield Ok(ev);
                 }
                 AgentStreamEvent::ToolResult { tool, tool_id, status, preview } => {
@@ -1100,20 +1405,42 @@ fn agent_live_stream_response(
                         "status": status,
                         "preview": preview,
                     });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "tool_result", &payload);
+                    let seq = match persist_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &message_id_sse,
+                        "tool_result",
+                        &payload,
+                    ).await {
+                        Ok(seq) => seq,
+                        Err(error) => {
+                            let recovery_payload = agent_stream_recovery_payload(format!(
+                                "Failed to persist tool_result event: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(recovery_payload.clone());
+                            persist_agent_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                "recovery_required",
+                                &execution_state,
+                            ).await;
+                            yield Ok(Event::default().event("error").data(recovery_payload.to_string()));
+                            stream_ended = true;
+                            break;
+                        }
+                    };
 
                     crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
                         session_id: session_id_sse.clone(),
                         event_id: tool_id.clone(),
                         event_type: format!("tool_result:{}", tool),
                         sender: Some(tool.clone()),
-                        sequence_number: seq.unwrap_or(0),
+                        sequence_number: seq,
                     });
 
-                    let mut ev = Event::default().event("tool_result").data(payload.to_string());
-                    if let Some(seq) = seq {
-                        ev = ev.id(seq.to_string());
-                    }
+                    let ev = Event::default().event("tool_result").id(seq.to_string()).data(payload.to_string());
                     yield Ok(ev);
                 }
                 AgentStreamEvent::Heartbeat { phase } => {
@@ -1122,26 +1449,70 @@ fn agent_live_stream_response(
                         .data(serde_json::json!({ "phase": phase }).to_string()));
                 }
                 AgentStreamEvent::TurnComplete { token_count, safety_status } => {
-                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
                     let payload = serde_json::json!({
                         "message_id": message_id_sse,
                         "session_id": session_id_sse,
                         "token_count": token_count,
                         "safety_status": safety_status,
                     });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "turn_complete", &payload);
-                    let mut ev = Event::default().event("stream_end").data(payload.to_string());
-                    if let Some(seq) = seq {
-                        ev = ev.id(seq.to_string());
-                    }
+                    let seq = match persist_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &message_id_sse,
+                        "turn_complete",
+                        &payload,
+                    ).await {
+                        Ok(seq) => seq,
+                        Err(error) => {
+                            let recovery_payload = agent_stream_recovery_payload(format!(
+                                "Failed to persist terminal stream event: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(recovery_payload.clone());
+                            persist_agent_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                "recovery_required",
+                                &execution_state,
+                            ).await;
+                            yield Ok(Event::default().event("error").data(recovery_payload.to_string()));
+                            stream_ended = true;
+                            break;
+                        }
+                    };
+                    execution_state.recovery_required = false;
+                    execution_state.terminal_event_type = Some("stream_end".to_string());
+                    execution_state.terminal_payload = Some(payload.clone());
+                    persist_agent_stream_terminal_state(
+                        &db_for_stream,
+                        &execution_id,
+                        "completed",
+                        &execution_state,
+                    ).await;
+                    let ev = Event::default().event("stream_end").id(seq.to_string()).data(payload.to_string());
                     yield Ok(ev);
                     stream_ended = true;
                     break;
                 }
                 AgentStreamEvent::Error { message } => {
-                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
-                    let payload = serde_json::json!({ "message": message });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "error", &payload);
+                    let payload = agent_stream_recovery_payload(message);
+                    let seq = persist_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &message_id_sse,
+                        "error",
+                        &payload,
+                    ).await.ok();
+                    execution_state.recovery_required = true;
+                    execution_state.terminal_event_type = Some("error".to_string());
+                    execution_state.terminal_payload = Some(payload.clone());
+                    persist_agent_stream_terminal_state(
+                        &db_for_stream,
+                        &execution_id,
+                        "recovery_required",
+                        &execution_state,
+                    ).await;
                     let mut ev = Event::default().event("error").data(payload.to_string());
                     if let Some(seq) = seq {
                         ev = ev.id(seq.to_string());
@@ -1154,7 +1525,19 @@ fn agent_live_stream_response(
         }
 
         if !stream_ended {
-            flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
+            let payload = agent_stream_recovery_payload(
+                "Stream ended before a durable terminal event was persisted",
+            );
+            execution_state.recovery_required = true;
+            execution_state.terminal_event_type = Some("error".to_string());
+            execution_state.terminal_payload = Some(payload.clone());
+            persist_agent_stream_terminal_state(
+                &db_for_stream,
+                &execution_id,
+                "recovery_required",
+                &execution_state,
+            ).await;
+            yield Ok(Event::default().event("error").data(payload.to_string()));
         }
     };
 

@@ -268,6 +268,18 @@ pub fn operator_routes() -> axum::Router<Arc<AppState>> {
             post(crate::api::skills::uninstall_skill),
         )
         .route(
+            "/api/skills/:id/quarantine",
+            post(crate::api::skills::quarantine_skill),
+        )
+        .route(
+            "/api/skills/:id/quarantine/resolve",
+            post(crate::api::skills::resolve_skill_quarantine),
+        )
+        .route(
+            "/api/skills/:id/reverify",
+            post(crate::api::skills::reverify_skill),
+        )
+        .route(
             "/api/skills/:name/execute",
             post(crate::api::skill_execute::execute_skill),
         )
