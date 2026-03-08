@@ -727,6 +727,7 @@ pub async fn send_message(
                         operation_id,
                         route_kind: STUDIO_MESSAGE_ROUTE_KIND.to_string(),
                         actor_key: actor.to_string(),
+                        state_version: STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
                         status: "accepted".to_string(),
                         state_json: serde_json::to_string(&execution_state)
                             .unwrap_or_else(|_| "{}".to_string()),
@@ -737,13 +738,14 @@ pub async fn send_message(
             }
 
             let execution_record = execution_record.expect("execution record must exist");
-            let execution_state =
-                match parse_studio_message_execution_state(&execution_record.state_json) {
-                    Ok(state) => state,
-                    Err(error) => {
-                        return error_response_with_idempotency(error);
-                    }
-                };
+            let execution_state = match parse_studio_message_execution_state(&execution_record) {
+                Ok(state) => state,
+                Err(error) => {
+                    let db = state.db.write().await;
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                    return error_response_with_idempotency(error);
+                }
+            };
 
             match execution_record.status.as_str() {
                 "completed" => {
@@ -1118,12 +1120,18 @@ fn studio_message_execution_state_version() -> u32 {
 }
 
 fn parse_studio_message_execution_state(
-    state_json: &str,
+    record: &cortex_storage::queries::live_execution_queries::LiveExecutionRecord,
 ) -> Result<StudioMessageExecutionState, ApiError> {
-    let state =
-        serde_json::from_str::<StudioMessageExecutionState>(state_json).map_err(|error| {
-            ApiError::internal(format!("failed to parse studio execution state: {error}"))
-        })?;
+    if record.state_version != STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64 {
+        return Err(ApiError::internal(format!(
+            "unsupported studio execution state version: {}",
+            record.state_version
+        )));
+    }
+
+    let state = serde_json::from_str::<StudioMessageExecutionState>(&record.state_json).map_err(
+        |error| ApiError::internal(format!("failed to parse studio execution state: {error}")),
+    )?;
     if state.version != STUDIO_MESSAGE_EXECUTION_STATE_VERSION {
         return Err(ApiError::internal(format!(
             "unsupported studio execution state version: {}",
@@ -1176,6 +1184,7 @@ fn persist_live_execution_record(
             operation_id,
             route_kind,
             actor_key: actor,
+            state_version: STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
             status,
             state_json: &state_json,
         },
@@ -1194,6 +1203,7 @@ fn update_live_execution_state(
     cortex_storage::queries::live_execution_queries::update_status_and_state(
         conn,
         execution_id,
+        STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
         status,
         &state_json,
     )
@@ -2542,10 +2552,29 @@ fn truncate_preview(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    fn record_for(
+        state_version: i64,
+        state_json: serde_json::Value,
+    ) -> cortex_storage::queries::live_execution_queries::LiveExecutionRecord {
+        cortex_storage::queries::live_execution_queries::LiveExecutionRecord {
+            id: "exec-1".to_string(),
+            journal_id: "journal-1".to_string(),
+            operation_id: "op-1".to_string(),
+            route_kind: STUDIO_MESSAGE_ROUTE_KIND.to_string(),
+            actor_key: "actor-1".to_string(),
+            state_version,
+            status: "accepted".to_string(),
+            state_json: state_json.to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        }
+    }
+
     #[test]
-    fn studio_execution_state_parser_defaults_missing_version_to_v1() {
-        let state = parse_studio_message_execution_state(
-            &serde_json::json!({
+    fn studio_execution_state_parser_requires_versioned_record() {
+        let error = parse_studio_message_execution_state(&record_for(
+            0,
+            serde_json::json!({
                 "session_id": "session-1",
                 "user_message_id": "user-1",
                 "assistant_message_id": "assistant-1",
@@ -2557,18 +2586,23 @@ mod tests {
                 },
                 "final_status_code": serde_json::Value::Null,
                 "final_response": serde_json::Value::Null,
-            })
-            .to_string(),
-        )
-        .unwrap();
+            }),
+        ))
+        .unwrap_err();
 
-        assert_eq!(state.version, STUDIO_MESSAGE_EXECUTION_STATE_VERSION);
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported studio execution state version"),
+            "{error}"
+        );
     }
 
     #[test]
     fn studio_execution_state_parser_rejects_unknown_version() {
-        let error = parse_studio_message_execution_state(
-            &serde_json::json!({
+        let error = parse_studio_message_execution_state(&record_for(
+            (STUDIO_MESSAGE_EXECUTION_STATE_VERSION + 1) as i64,
+            serde_json::json!({
                 "version": STUDIO_MESSAGE_EXECUTION_STATE_VERSION + 1,
                 "session_id": "session-1",
                 "user_message_id": "user-1",
@@ -2581,9 +2615,8 @@ mod tests {
                 },
                 "final_status_code": serde_json::Value::Null,
                 "final_response": serde_json::Value::Null,
-            })
-            .to_string(),
-        )
+            }),
+        ))
         .unwrap_err();
 
         assert!(

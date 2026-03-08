@@ -50,17 +50,17 @@ impl SkillMatcher {
                 let trigger_tokens = tokenize(trigger);
                 let similarity = cosine_similarity(&request_tokens, &trigger_tokens);
 
-                if similarity >= self.similarity_threshold {
-                    if best_match
-                        .as_ref()
-                        .map_or(true, |m| similarity > m.similarity)
-                    {
-                        best_match = Some(SkillMatch {
-                            skill_name: skill_name.clone(),
-                            similarity,
-                            trigger_message: trigger.clone(),
-                        });
-                    }
+                if similarity >= self.similarity_threshold
+                    && (best_match.as_ref().is_none()
+                        || best_match
+                            .as_ref()
+                            .is_some_and(|m| similarity > m.similarity))
+                {
+                    best_match = Some(SkillMatch {
+                        skill_name: skill_name.clone(),
+                        similarity,
+                        trigger_message: trigger.clone(),
+                    });
                 }
             }
         }

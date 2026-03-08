@@ -7,6 +7,7 @@
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 use crate::error::{MarketplaceError, MarketplaceResult};
 
@@ -38,20 +39,6 @@ impl ContractState {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "proposed" => Some(Self::Proposed),
-            "accepted" => Some(Self::Accepted),
-            "rejected" => Some(Self::Rejected),
-            "in_progress" => Some(Self::InProgress),
-            "completed" => Some(Self::Completed),
-            "disputed" => Some(Self::Disputed),
-            "canceled" => Some(Self::Canceled),
-            "resolved" => Some(Self::Resolved),
-            _ => None,
-        }
-    }
-
     /// Check if a transition from self -> target is valid.
     pub fn can_transition_to(&self, target: Self) -> bool {
         matches!(
@@ -65,6 +52,24 @@ impl ContractState {
                 | (Self::InProgress, Self::Disputed)
                 | (Self::Disputed, Self::Resolved)
         )
+    }
+}
+
+impl FromStr for ContractState {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "proposed" => Ok(Self::Proposed),
+            "accepted" => Ok(Self::Accepted),
+            "rejected" => Ok(Self::Rejected),
+            "in_progress" => Ok(Self::InProgress),
+            "completed" => Ok(Self::Completed),
+            "disputed" => Ok(Self::Disputed),
+            "canceled" => Ok(Self::Canceled),
+            "resolved" => Ok(Self::Resolved),
+            _ => Err(()),
+        }
     }
 }
 
@@ -166,9 +171,10 @@ pub fn transition_contract(
     let contract = cortex_storage::queries::marketplace_queries::get_contract(conn, contract_id)?
         .ok_or_else(|| MarketplaceError::NotFound(format!("contract {contract_id}")))?;
 
-    let current = ContractState::from_str(&contract.state).ok_or_else(|| {
-        MarketplaceError::Validation(format!("unknown state: {}", contract.state))
-    })?;
+    let current = contract
+        .state
+        .parse::<ContractState>()
+        .map_err(|()| MarketplaceError::Validation(format!("unknown state: {}", contract.state)))?;
 
     if !current.can_transition_to(target_state) {
         return Err(MarketplaceError::InvalidTransition {

@@ -11,6 +11,32 @@ pub struct DriftDb {
     conn: Mutex<Connection>,
 }
 
+pub type SymbolRecord = (
+    String,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<String>,
+    Option<Vec<u8>>,
+);
+
+pub type SymbolRow = (String, String, String, i64, Option<String>);
+pub type SymbolEmbeddingRow = (String, String, String, i64, Option<String>, Vec<u8>);
+pub type BeliefRow = (String, Option<String>, String, f64, String);
+pub type BeliefWithFileRow = (String, String, Option<String>, String, f64, String);
+pub type SnapshotRow = (
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<String>,
+);
+
 impl DriftDb {
     /// Open (or create) the drift database at the given path.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
@@ -141,15 +167,7 @@ impl DriftDb {
         content_hash: &str,
         last_modified: &str,
         size_bytes: i64,
-        symbols: &[(
-            String,
-            String,
-            String,
-            i64,
-            Option<i64>,
-            Option<String>,
-            Option<Vec<u8>>,
-        )],
+        symbols: &[SymbolRecord],
         // Each tuple: (id, name, kind, line_start, line_end, signature, embedding_bytes)
     ) -> anyhow::Result<bool> {
         let conn = self
@@ -342,7 +360,7 @@ impl DriftDb {
         &self,
         file_filter: Option<&str>,
         limit: u32,
-    ) -> anyhow::Result<Vec<(String, String, String, i64, Option<String>)>> {
+    ) -> anyhow::Result<Vec<SymbolRow>> {
         let conn = self
             .conn
             .lock()
@@ -392,7 +410,7 @@ impl DriftDb {
     pub fn symbols_with_embeddings(
         &self,
         file_filter: Option<&str>,
-    ) -> anyhow::Result<Vec<(String, String, String, i64, Option<String>, Vec<u8>)>> {
+    ) -> anyhow::Result<Vec<SymbolEmbeddingRow>> {
         let conn = self
             .conn
             .lock()
@@ -461,10 +479,7 @@ impl DriftDb {
         Ok(())
     }
 
-    pub fn get_beliefs_for_file(
-        &self,
-        file_path: &str,
-    ) -> anyhow::Result<Vec<(String, Option<String>, String, f64, String)>> {
+    pub fn get_beliefs_for_file(&self, file_path: &str) -> anyhow::Result<Vec<BeliefRow>> {
         let conn = self
             .conn
             .lock()
@@ -489,9 +504,7 @@ impl DriftDb {
         Ok(results)
     }
 
-    pub fn get_all_beliefs(
-        &self,
-    ) -> anyhow::Result<Vec<(String, String, Option<String>, String, f64, String)>> {
+    pub fn get_all_beliefs(&self) -> anyhow::Result<Vec<BeliefWithFileRow>> {
         let conn = self
             .conn
             .lock()
@@ -531,7 +544,7 @@ impl DriftDb {
         &self,
         max_freshness_days: f64,
         limit: u32,
-    ) -> anyhow::Result<Vec<(String, String, Option<String>, String, f64, String)>> {
+    ) -> anyhow::Result<Vec<BeliefWithFileRow>> {
         let conn = self
             .conn
             .lock()
@@ -586,22 +599,7 @@ impl DriftDb {
         Ok(())
     }
 
-    pub fn get_snapshot(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<
-        Option<(
-            String,
-            String,
-            i64,
-            i64,
-            i64,
-            Option<f64>,
-            Option<f64>,
-            Option<f64>,
-            Option<String>,
-        )>,
-    > {
+    pub fn get_snapshot(&self, id: &str) -> anyhow::Result<Option<SnapshotRow>> {
         let conn = self
             .conn
             .lock()
@@ -629,21 +627,7 @@ impl DriftDb {
         Ok(result)
     }
 
-    pub fn get_latest_snapshot(
-        &self,
-    ) -> anyhow::Result<
-        Option<(
-            String,
-            String,
-            i64,
-            i64,
-            i64,
-            Option<f64>,
-            Option<f64>,
-            Option<f64>,
-            Option<String>,
-        )>,
-    > {
+    pub fn get_latest_snapshot(&self) -> anyhow::Result<Option<SnapshotRow>> {
         let conn = self
             .conn
             .lock()

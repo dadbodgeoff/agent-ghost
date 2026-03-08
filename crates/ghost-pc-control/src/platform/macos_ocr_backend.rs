@@ -5,8 +5,6 @@
 //!
 //! Requires macOS 10.15+ (Catalina) for Vision framework support.
 
-#![cfg(target_os = "macos")]
-
 use std::io::Write;
 use std::process::Command;
 

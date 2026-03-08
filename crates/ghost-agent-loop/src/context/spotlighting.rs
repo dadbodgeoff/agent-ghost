@@ -362,8 +362,10 @@ mod tests {
 
     #[test]
     fn spotlighter_never_marks_l0_l1_l9() {
-        let mut config = SpotlightingConfig::default();
-        config.layers = vec![0, 1, 7, 8, 9]; // even if configured
+        let config = SpotlightingConfig {
+            layers: vec![0, 1, 7, 8, 9], // even if configured
+            ..Default::default()
+        };
         let spotlighter = Spotlighter::new(config);
 
         let content = "Hello";

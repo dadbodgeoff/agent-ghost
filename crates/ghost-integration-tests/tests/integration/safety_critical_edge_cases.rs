@@ -28,6 +28,23 @@ use ghost_gateway::session::compaction::{CompactionConfig, SessionCompactor};
 use simulation_boundary::enforcer::{EnforcementMode, SimulationBoundaryEnforcer};
 use uuid::Uuid;
 
+fn register_sender(dispatcher: &mut MessageDispatcher, sender: Uuid) -> ghost_signing::SigningKey {
+    let (signing_key, verifying_key) = ghost_signing::generate_keypair();
+    dispatcher.register_verifying_key(sender, verifying_key);
+    signing_key
+}
+
+fn signed_notification(
+    sender: Uuid,
+    recipient: Uuid,
+    payload_data: serde_json::Value,
+    signing_key: &ghost_signing::SigningKey,
+) -> AgentMessage {
+    let mut msg = AgentMessage::new(sender, recipient, "Notification".into(), payload_data);
+    msg.sign(signing_key);
+    msg
+}
+
 fn make_ctx(level: u8, caller: CallerType) -> ProposalContext {
     ProposalContext {
         active_goals: vec![],
@@ -594,11 +611,14 @@ fn hash_chain_duplicate_event_hashes() {
 #[test]
 fn messaging_tampered_content_hash_rejected() {
     let mut dispatcher = MessageDispatcher::new();
-    let mut msg = AgentMessage::new(
-        Uuid::now_v7(),
-        Uuid::now_v7(),
-        "Notification".into(),
+    let sender = Uuid::now_v7();
+    let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
+    let mut msg = signed_notification(
+        sender,
+        recipient,
         serde_json::json!({"message": "Hello"}),
+        &signing_key,
     );
     msg.content_hash = [0xFF; 32];
     let result = dispatcher.verify(&msg);
@@ -615,11 +635,14 @@ fn messaging_tampered_content_hash_rejected() {
 #[test]
 fn messaging_exact_replay_rejected() {
     let mut dispatcher = MessageDispatcher::new();
-    let msg = AgentMessage::new(
-        Uuid::now_v7(),
-        Uuid::now_v7(),
-        "Notification".into(),
+    let sender = Uuid::now_v7();
+    let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
+    let msg = signed_notification(
+        sender,
+        recipient,
         serde_json::json!({"message": "Hello"}),
+        &signing_key,
     );
     let r1 = dispatcher.verify(&msg);
     assert!(matches!(
@@ -641,13 +664,14 @@ fn messaging_exact_replay_rejected() {
 fn messaging_signature_anomaly_detection() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     for i in 0..3 {
-        let mut msg = AgentMessage::new(
+        let mut msg = signed_notification(
             sender,
             Uuid::now_v7(),
-            "Notification".into(),
             serde_json::json!({"message": format!("msg {}", i)}),
+            &signing_key,
         );
         msg.content_hash = [0xFF; 32];
         let result = dispatcher.verify(&msg);
@@ -669,13 +693,14 @@ fn messaging_rate_limit_enforced() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     for i in 0..31 {
-        let msg = AgentMessage::new(
+        let msg = signed_notification(
             sender,
             recipient,
-            "Notification".into(),
             serde_json::json!({"message": format!("msg {}", i)}),
+            &signing_key,
         );
         let result = dispatcher.verify(&msg);
         if i == 30 {

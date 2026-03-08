@@ -19,6 +19,7 @@ pub struct ResumeVote {
 }
 
 /// Tracks resume votes and determines quorum.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuorumTracker {
     required: usize,
     votes: BTreeSet<Uuid>,

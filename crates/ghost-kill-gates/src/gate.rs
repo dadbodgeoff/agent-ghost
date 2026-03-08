@@ -81,6 +81,19 @@ pub struct GateSnapshot {
     pub chain_length: usize,
 }
 
+/// Full persisted gate state for crash recovery and stable node identity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedGateState {
+    pub node_id: Uuid,
+    pub state: GateState,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub close_reason: Option<String>,
+    pub propagation_started_at: Option<DateTime<Utc>>,
+    pub acked_nodes: Vec<Uuid>,
+    pub chain: Vec<GateChainEvent>,
+    pub quorum_tracker: Option<QuorumTracker>,
+}
+
 /// The distributed kill gate.
 pub struct KillGate {
     node_id: Uuid,
@@ -111,6 +124,22 @@ impl KillGate {
                 acked_nodes: Vec::new(),
                 chain: Vec::new(),
                 quorum_tracker: None,
+            }),
+        }
+    }
+
+    pub fn from_persisted_state(config: KillGateConfig, persisted: PersistedGateState) -> Self {
+        Self {
+            node_id: persisted.node_id,
+            state: AtomicU8::new(persisted.state.to_u8()),
+            config,
+            inner: RwLock::new(GateInner {
+                closed_at: persisted.closed_at,
+                close_reason: persisted.close_reason,
+                propagation_start: instant_from_timestamp(persisted.propagation_started_at),
+                acked_nodes: persisted.acked_nodes,
+                chain: persisted.chain,
+                quorum_tracker: persisted.quorum_tracker,
             }),
         }
     }
@@ -376,6 +405,51 @@ impl KillGate {
         }
     }
 
+    pub fn persisted_state(&self) -> PersistedGateState {
+        let inner = match self.inner.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!(
+                    node_id = %self.node_id,
+                    "kill gate RwLock poisoned during persistence snapshot — recovering with poisoned guard"
+                );
+                poisoned.into_inner()
+            }
+        };
+
+        PersistedGateState {
+            node_id: self.node_id,
+            state: self.state(),
+            closed_at: inner.closed_at,
+            close_reason: inner.close_reason.clone(),
+            propagation_started_at: timestamp_from_instant(inner.propagation_start),
+            acked_nodes: inner.acked_nodes.clone(),
+            chain: inner.chain.clone(),
+            quorum_tracker: inner.quorum_tracker.clone(),
+        }
+    }
+
+    pub fn restore_persisted_state(&self, persisted: PersistedGateState) {
+        debug_assert_eq!(persisted.node_id, self.node_id);
+        self.state.store(persisted.state.to_u8(), Ordering::SeqCst);
+        let mut inner = match self.inner.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!(
+                    node_id = %self.node_id,
+                    "kill gate RwLock poisoned during restore — recovering with poisoned guard"
+                );
+                poisoned.into_inner()
+            }
+        };
+        inner.closed_at = persisted.closed_at;
+        inner.close_reason = persisted.close_reason;
+        inner.propagation_start = instant_from_timestamp(persisted.propagation_started_at);
+        inner.acked_nodes = persisted.acked_nodes;
+        inner.chain = persisted.chain;
+        inner.quorum_tracker = persisted.quorum_tracker;
+    }
+
     /// Get the full chain for verification.
     pub fn chain(&self) -> Vec<GateChainEvent> {
         match self.inner.read() {
@@ -394,6 +468,22 @@ impl KillGate {
     pub fn node_id(&self) -> Uuid {
         self.node_id
     }
+}
+
+fn instant_from_timestamp(timestamp: Option<DateTime<Utc>>) -> Option<Instant> {
+    let started_at = timestamp?;
+    let elapsed = (Utc::now() - started_at).to_std().unwrap_or_default();
+    Some(
+        Instant::now()
+            .checked_sub(elapsed)
+            .unwrap_or_else(Instant::now),
+    )
+}
+
+fn timestamp_from_instant(instant: Option<Instant>) -> Option<DateTime<Utc>> {
+    let started_at = instant?;
+    let elapsed = started_at.elapsed();
+    Some(Utc::now() - chrono::Duration::from_std(elapsed).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -445,5 +535,23 @@ mod tests {
             3,
         ));
         assert_eq!(gate.state(), GateState::Normal);
+    }
+
+    #[test]
+    fn persisted_state_round_trip_preserves_closed_gate() {
+        let node_id = Uuid::now_v7();
+        let gate = KillGate::new(node_id, KillGateConfig::default());
+        gate.close("persist me".into());
+        gate.begin_propagation();
+        gate.record_ack(Uuid::now_v7(), 2);
+
+        let restored =
+            KillGate::from_persisted_state(KillGateConfig::default(), gate.persisted_state());
+        let snapshot = restored.snapshot();
+
+        assert_eq!(restored.node_id(), node_id);
+        assert_eq!(snapshot.state, GateState::Confirmed);
+        assert_eq!(snapshot.close_reason.as_deref(), Some("persist me"));
+        assert_eq!(restored.chain().len(), gate.chain().len());
     }
 }

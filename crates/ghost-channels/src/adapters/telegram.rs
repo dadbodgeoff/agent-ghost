@@ -61,7 +61,7 @@ impl ChannelAdapter for TelegramAdapter {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(&self.api_url("sendMessage"))
+            .post(self.api_url("sendMessage"))
             .json(&body)
             .send()
             .await

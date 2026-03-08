@@ -30,18 +30,18 @@ impl TokenCounter {
         match self.strategy {
             TokenStrategy::ByteDiv4 => {
                 // Simple byte/4 approximation
-                (text.len() + 3) / 4
+                text.len().div_ceil(4)
             }
             TokenStrategy::OpenAI => {
                 // Approximation: ~4 chars per token for English text
                 // In production, use tiktoken-rs for exact counts
                 let chars = text.chars().count();
-                (chars + 3) / 4
+                chars.div_ceil(4)
             }
             TokenStrategy::Anthropic => {
                 // Anthropic uses a similar BPE tokenizer
                 let chars = text.chars().count();
-                (chars + 3) / 4
+                chars.div_ceil(4)
             }
         }
     }

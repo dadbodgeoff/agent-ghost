@@ -60,7 +60,7 @@ impl ExportParser for CharacterAiParser {
                                     .and_then(|t| t.as_i64())
                                     .and_then(|ms| chrono::DateTime::from_timestamp(ms / 1000, 0))
                             })
-                            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
+                            .unwrap_or(chrono::DateTime::UNIX_EPOCH);
 
                         messages.push(NormalizedMessage {
                             timestamp,

@@ -247,18 +247,22 @@ mod tests {
 
     #[test]
     fn should_deny_exploration_when_budget_exhausted() {
-        let mut budget = ExplorationBudget::default();
         // Use up 20% of a 1000-token budget with exploration.
-        budget.exploration_tokens = 200;
-        budget.exploitation_tokens = 0;
+        let budget = ExplorationBudget {
+            exploration_tokens: 200,
+            exploitation_tokens: 0,
+            ..Default::default()
+        };
         assert!(!budget.should_allow(ToolCallType::Exploration, 1000));
     }
 
     #[test]
     fn exploitation_always_allowed() {
-        let mut budget = ExplorationBudget::default();
-        budget.exploitation_tokens = 900;
-        budget.exploration_tokens = 0;
+        let budget = ExplorationBudget {
+            exploration_tokens: 0,
+            exploitation_tokens: 900,
+            ..Default::default()
+        };
         // Even when exploitation budget is "exceeded", it's still allowed.
         assert!(budget.should_allow(ToolCallType::Exploitation, 1000));
     }
@@ -275,9 +279,11 @@ mod tests {
 
     #[test]
     fn current_ratio_tracks_usage() {
-        let mut budget = ExplorationBudget::default();
-        budget.exploration_tokens = 200;
-        budget.exploitation_tokens = 800;
+        let budget = ExplorationBudget {
+            exploration_tokens: 200,
+            exploitation_tokens: 800,
+            ..Default::default()
+        };
         let (exp, expl) = budget.current_ratio();
         assert!((exp - 0.2).abs() < 0.001);
         assert!((expl - 0.8).abs() < 0.001);
@@ -285,9 +291,11 @@ mod tests {
 
     #[test]
     fn reset_session_clears_counters() {
-        let mut budget = ExplorationBudget::default();
-        budget.exploration_tokens = 100;
-        budget.exploitation_tokens = 400;
+        let mut budget = ExplorationBudget {
+            exploration_tokens: 100,
+            exploitation_tokens: 400,
+            ..Default::default()
+        };
         budget.recent_exploration_bpt.push(0.01);
         budget.reset_session();
         assert_eq!(budget.exploration_tokens, 0);

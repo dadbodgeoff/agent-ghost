@@ -117,6 +117,20 @@ fn latest_version_db_missing_audit_log_fails_verification() {
 }
 
 #[test]
+fn latest_version_db_missing_latest_migration_table_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch("DROP TABLE rate_limit_buckets;")
+        .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string().contains("missing table rate_limit_buckets"),
+        "{err}"
+    );
+}
+
+#[test]
 fn latest_version_db_missing_channels_indexes_fails_verification() {
     let conn = Connection::open_in_memory().unwrap();
     cortex_storage::run_all_migrations(&conn).unwrap();
@@ -148,6 +162,34 @@ fn latest_version_db_missing_workflow_execution_state_version_fails_verification
     assert!(
         err.to_string()
             .contains("table workflow_executions missing column state_version"),
+        "{err}"
+    );
+}
+
+#[test]
+fn latest_version_db_missing_live_execution_state_version_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch(
+        "DROP TABLE live_execution_records;
+         CREATE TABLE live_execution_records (
+            id TEXT PRIMARY KEY,
+            journal_id TEXT NOT NULL UNIQUE,
+            operation_id TEXT NOT NULL UNIQUE,
+            route_kind TEXT NOT NULL,
+            actor_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            state_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );",
+    )
+    .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("table live_execution_records missing column state_version"),
         "{err}"
     );
 }

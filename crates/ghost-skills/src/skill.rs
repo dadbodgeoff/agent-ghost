@@ -51,6 +51,18 @@ pub enum SkillError {
     #[error("authorization denied: {0}")]
     AuthorizationDenied(String),
 
+    /// External runtime exceeded its wall-clock deadline.
+    #[error("execution timed out: {0}")]
+    ExecutionTimedOut(String),
+
+    /// External runtime exhausted a constrained resource.
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
+
+    /// External runtime violated sandbox policy and was terminated.
+    #[error("sandbox violation: {0}")]
+    SandboxViolation(String),
+
     /// A reflection constraint was violated (cooldown, depth, session limit).
     #[error("reflection constraint: {0}")]
     ReflectionConstraint(String),
@@ -84,6 +96,9 @@ impl SkillError {
             Self::Storage(_) => "STORAGE_ERROR",
             Self::PlatformNotSupported(_) => "PLATFORM_NOT_SUPPORTED",
             Self::AuthorizationDenied(_) => "AUTHORIZATION_DENIED",
+            Self::ExecutionTimedOut(_) => "EXECUTION_TIMED_OUT",
+            Self::ResourceExhausted(_) => "RESOURCE_EXHAUSTED",
+            Self::SandboxViolation(_) => "SANDBOX_VIOLATION",
             Self::ReflectionConstraint(_) => "REFLECTION_CONSTRAINT",
             Self::DelegationFailed(_) => "DELEGATION_FAILED",
             Self::PcControlBlocked(_) => "PC_CONTROL_BLOCKED",

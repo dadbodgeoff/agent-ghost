@@ -650,6 +650,32 @@ async fn seed_live_execution_record(
     status: &str,
     state_json: &str,
 ) {
+    seed_live_execution_record_with_version(
+        app_state,
+        execution_id,
+        journal_id,
+        operation_id,
+        route_kind,
+        actor,
+        1,
+        status,
+        state_json,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_live_execution_record_with_version(
+    app_state: &Arc<ghost_gateway::state::AppState>,
+    execution_id: &str,
+    journal_id: &str,
+    operation_id: &str,
+    route_kind: &str,
+    actor: &str,
+    state_version: i64,
+    status: &str,
+    state_json: &str,
+) {
     let db = app_state.db.write().await;
     cortex_storage::queries::live_execution_queries::insert(
         &db,
@@ -659,6 +685,7 @@ async fn seed_live_execution_record(
             operation_id,
             route_kind,
             actor_key: actor,
+            state_version,
             status,
             state_json,
         },
@@ -4697,6 +4724,7 @@ async fn studio_message_retry_after_accepted_takeover_executes_once() {
     )
     .await;
     let state_json = serde_json::json!({
+        "version": 1,
         "session_id": session_id,
         "user_message_id": user_message_id,
         "assistant_message_id": assistant_message_id,
@@ -4819,6 +4847,7 @@ async fn studio_message_running_takeover_fails_closed_without_refiring_provider(
     )
     .await;
     let state_json = serde_json::json!({
+        "version": 1,
         "session_id": session_id,
         "user_message_id": user_message_id,
         "assistant_message_id": assistant_message_id,
@@ -5175,6 +5204,7 @@ async fn agent_chat_retry_after_accepted_takeover_executes_once() {
     )
     .to_string();
     let state_json = serde_json::json!({
+        "version": 1,
         "session_id": session_id,
         "accepted_response": {
             "status": "accepted",
@@ -5265,6 +5295,7 @@ async fn agent_chat_running_takeover_fails_closed_without_refiring_provider() {
     )
     .to_string();
     let state_json = serde_json::json!({
+        "version": 1,
         "session_id": session_id,
         "accepted_response": {
             "status": "accepted",
@@ -5332,6 +5363,93 @@ async fn agent_chat_running_takeover_fails_closed_without_refiring_provider() {
         execution_body["accepted_response"]["session_id"],
         session_id
     );
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn agent_chat_legacy_live_execution_state_aborts_retry_without_refiring_provider() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let gateway = PersistentGateway::start_with_model_providers(
+        &tmp.path().join("agent-chat-legacy-live-execution.db"),
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+
+    let operation_id = "018f0f23-8c65-7abc-9def-4e34567890b4";
+    let request_id = "agent-chat-legacy-state-request";
+    let idempotency_key = "agent-chat-legacy-state-key";
+    let session_id = "018f0f23-8c65-7abc-9def-4e34567890b5";
+    let execution_id = "018f0f23-8c65-7abc-9def-4e34567890b6";
+    let request_body = agent_chat_request_body("Legacy state", Some(session_id));
+    let journal_id = seed_operation_journal_in_progress(
+        &gateway.app_state,
+        "anonymous",
+        operation_id,
+        request_id,
+        idempotency_key,
+        "/api/agent/chat",
+        &request_body,
+    )
+    .await;
+    let agent_id = ghost_gateway::agents::registry::durable_agent_id(
+        ghost_gateway::runtime_safety::API_SYNTHETIC_AGENT_NAME,
+    )
+    .to_string();
+    let state_json = serde_json::json!({
+        "version": 1,
+        "session_id": session_id,
+        "accepted_response": {
+            "status": "accepted",
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "execution_id": execution_id
+        },
+        "final_status_code": serde_json::Value::Null,
+        "final_response": serde_json::Value::Null
+    })
+    .to_string();
+    seed_live_execution_record_with_version(
+        &gateway.app_state,
+        execution_id,
+        &journal_id,
+        operation_id,
+        "agent_chat",
+        "anonymous",
+        0,
+        "accepted",
+        &state_json,
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(gateway.url("/api/agent/chat"))
+        .json(&request_body)
+        .header("x-request-id", "agent-chat-legacy-state-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
+
+    {
+        let db = gateway.app_state.db.read().unwrap();
+        let status: String = db
+            .query_row(
+                "SELECT status FROM operation_journal WHERE id = ?1",
+                rusqlite::params![journal_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "aborted");
+    }
 
     gateway.stop().await;
     provider.stop().await;

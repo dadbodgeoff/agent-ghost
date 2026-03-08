@@ -398,7 +398,6 @@ fn adversarial_100_concurrent_requests_no_crash() {
     let mut handles = Vec::new();
     for i in 0..100 {
         let policy = Arc::clone(&policy);
-        let agent = agent;
         handles.push(thread::spawn(move || {
             let domain = if i % 2 == 0 {
                 "api.openai.com"

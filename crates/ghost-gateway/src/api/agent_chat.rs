@@ -39,6 +39,7 @@ const AGENT_CHAT_ROUTE_TEMPLATE: &str = "/api/agent/chat";
 const AGENT_CHAT_STREAM_ROUTE_TEMPLATE: &str = "/api/agent/chat/stream";
 const AGENT_CHAT_ROUTE_KIND: &str = "agent_chat";
 const AGENT_CHAT_STREAM_ROUTE_KIND: &str = "agent_chat_stream";
+const AGENT_CHAT_EXECUTION_STATE_VERSION: u32 = 1;
 const AGENT_STREAM_EXECUTION_STATE_VERSION: u32 = 1;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -64,6 +65,7 @@ pub struct AgentChatResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AgentChatExecutionState {
+    version: u32,
     session_id: String,
     accepted_response: serde_json::Value,
     final_status_code: Option<u16>,
@@ -181,6 +183,7 @@ pub async fn agent_chat(
                             .unwrap_or_default()
                             .to_string();
                         let execution_state = AgentChatExecutionState {
+                            version: AGENT_CHAT_EXECUTION_STATE_VERSION,
                             session_id,
                             accepted_response: accepted_response.clone(),
                             final_status_code: None,
@@ -206,6 +209,7 @@ pub async fn agent_chat(
                                 operation_id: operation_id.clone(),
                                 route_kind: AGENT_CHAT_ROUTE_KIND.to_string(),
                                 actor_key: actor.to_string(),
+                                state_version: AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
                                 status: "accepted".to_string(),
                                 state_json: serde_json::to_string(&execution_state)
                                     .unwrap_or_else(|_| "{}".to_string()),
@@ -226,16 +230,14 @@ pub async fn agent_chat(
 
             let execution_record =
                 execution_record.expect("agent chat execution record must exist");
-            let execution_state =
-                match serde_json::from_str::<AgentChatExecutionState>(&execution_record.state_json)
-                {
-                    Ok(state) => state,
-                    Err(error) => {
-                        return error_response_with_idempotency(ApiError::internal(format!(
-                            "failed to parse agent chat execution state: {error}"
-                        )));
-                    }
-                };
+            let execution_state = match parse_agent_chat_execution_state(&execution_record) {
+                Ok(state) => state,
+                Err(error) => {
+                    let db = state.db.write().await;
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                    return error_response_with_idempotency(error);
+                }
+            };
             let execution_id = execution_record.id.clone();
             let agent_audit_id = execution_state
                 .accepted_response
@@ -505,7 +507,7 @@ pub async fn agent_chat_stream(
                         .ok()
                         .flatten()
                     })
-                    .and_then(|record| parse_agent_stream_execution_state(&record.state_json).ok());
+                    .and_then(|record| parse_agent_stream_execution_state(&record).ok());
                 (persisted_events, execution_state)
             };
 
@@ -555,18 +557,14 @@ pub async fn agent_chat_stream(
                     &lease.journal_id,
                 ) {
                     Ok(Some(record)) => {
-                        let execution_state =
-                            match parse_agent_stream_execution_state(&record.state_json) {
-                                Ok(state) => state,
-                                Err(error) => {
-                                    let _ = abort_prepared_json_operation(
-                                        &db,
-                                        &operation_context,
-                                        &lease,
-                                    );
-                                    return error_response_with_idempotency(error);
-                                }
-                            };
+                        let execution_state = match parse_agent_stream_execution_state(&record) {
+                            Ok(state) => state,
+                            Err(error) => {
+                                let _ =
+                                    abort_prepared_json_operation(&db, &operation_context, &lease);
+                                return error_response_with_idempotency(error);
+                            }
+                        };
                         let accepted_body = agent_stream_accepted_body(
                             &execution_state.session_id,
                             &execution_state.agent_id,
@@ -781,6 +779,32 @@ fn agent_chat_recovery_body(state: &AgentChatExecutionState) -> serde_json::Valu
     body
 }
 
+fn parse_agent_chat_execution_state(
+    record: &cortex_storage::queries::live_execution_queries::LiveExecutionRecord,
+) -> Result<AgentChatExecutionState, ApiError> {
+    if record.state_version != AGENT_CHAT_EXECUTION_STATE_VERSION as i64 {
+        return Err(ApiError::internal(format!(
+            "unsupported agent chat execution state version: {}",
+            record.state_version
+        )));
+    }
+
+    let state =
+        serde_json::from_str::<AgentChatExecutionState>(&record.state_json).map_err(|error| {
+            ApiError::internal(format!(
+                "failed to parse agent chat execution state: {error}"
+            ))
+        })?;
+    if state.version != AGENT_CHAT_EXECUTION_STATE_VERSION {
+        return Err(ApiError::internal(format!(
+            "unsupported agent chat execution state version: {}",
+            state.version
+        )));
+    }
+
+    Ok(state)
+}
+
 fn parse_execution_session_id(state: &AgentChatExecutionState) -> Uuid {
     Uuid::parse_str(&state.session_id).unwrap_or_else(|_| Uuid::now_v7())
 }
@@ -890,6 +914,7 @@ fn persist_agent_execution_record(
             operation_id,
             route_kind: AGENT_CHAT_ROUTE_KIND,
             actor_key: actor,
+            state_version: AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
             status: "accepted",
             state_json: &state_json,
         },
@@ -908,6 +933,7 @@ fn update_agent_execution_state(
     cortex_storage::queries::live_execution_queries::update_status_and_state(
         conn,
         execution_id,
+        AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
         status,
         &state_json,
     )
@@ -1083,10 +1109,19 @@ fn agent_stream_execution_state(
     }
 }
 
-fn parse_agent_stream_execution_state(raw: &str) -> Result<AgentStreamExecutionState, ApiError> {
-    let state = serde_json::from_str::<AgentStreamExecutionState>(raw).map_err(|error| {
-        ApiError::internal(format!("failed to parse agent stream state: {error}"))
-    })?;
+fn parse_agent_stream_execution_state(
+    record: &cortex_storage::queries::live_execution_queries::LiveExecutionRecord,
+) -> Result<AgentStreamExecutionState, ApiError> {
+    if record.state_version != AGENT_STREAM_EXECUTION_STATE_VERSION as i64 {
+        return Err(ApiError::internal(format!(
+            "unsupported agent stream state version {}",
+            record.state_version
+        )));
+    }
+    let state =
+        serde_json::from_str::<AgentStreamExecutionState>(&record.state_json).map_err(|error| {
+            ApiError::internal(format!("failed to parse agent stream state: {error}"))
+        })?;
     if state.version != AGENT_STREAM_EXECUTION_STATE_VERSION {
         return Err(ApiError::internal(format!(
             "unsupported agent stream state version {}",
@@ -1114,6 +1149,7 @@ fn persist_agent_stream_execution_record(
             operation_id,
             route_kind: AGENT_CHAT_STREAM_ROUTE_KIND,
             actor_key: actor,
+            state_version: AGENT_STREAM_EXECUTION_STATE_VERSION as i64,
             status: "accepted",
             state_json: &state_json,
         },
@@ -1132,6 +1168,7 @@ fn update_agent_stream_execution_state(
     cortex_storage::queries::live_execution_queries::update_status_and_state(
         conn,
         execution_id,
+        AGENT_STREAM_EXECUTION_STATE_VERSION as i64,
         status,
         &state_json,
     )

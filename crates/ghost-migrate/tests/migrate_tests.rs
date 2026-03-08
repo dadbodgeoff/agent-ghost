@@ -1,6 +1,6 @@
 //! Tests for ghost-migrate (Task 6.5).
 
-use ghost_migrate::migrator::{MigrationResult, OpenClawMigrator};
+use ghost_migrate::migrator::OpenClawMigrator;
 use std::fs;
 use tempfile::TempDir;
 

@@ -29,6 +29,8 @@ use crate::proposal::router::ProposalRouter;
 use crate::tools::executor::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
 
+type CostRecorder = Arc<dyn Fn(Uuid, Uuid, f64, bool) + Send + Sync>;
+
 /// Lightweight reference to convergence shared state read from the
 /// atomic state file published by the convergence monitor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,7 +198,7 @@ pub struct AgentRunner {
     /// Optional DB connection for persisting proposals and audit entries.
     pub db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     /// Optional cost recording callback: (agent_id, session_id, cost, is_compaction).
-    pub cost_recorder: Option<Arc<dyn Fn(Uuid, Uuid, f64, bool) + Send + Sync>>,
+    pub cost_recorder: Option<CostRecorder>,
     /// L2: SOUL.md + IDENTITY.md content, loaded at startup.
     pub soul_identity: String,
     /// L4: Environment context, built at startup.
@@ -287,9 +289,7 @@ impl AgentRunner {
 
         // GATE 3: Kill switch
         log.checks.push("kill_switch");
-        if let Err(error) = self.check_kill_state(ctx.agent_id) {
-            return Err(error);
-        }
+        self.check_kill_state(ctx.agent_id)?;
 
         // GATE 3.5: Distributed kill gate (when enabled)
         log.checks.push("kill_gate");
@@ -624,9 +624,7 @@ impl AgentRunner {
             self.convergence_monitor_enabled,
             self.convergence_state_stale_after,
         );
-        if let Err(error) = self.handle_degraded_convergence_health(agent_id, &convergence_health) {
-            return Err(error);
-        }
+        self.handle_degraded_convergence_health(agent_id, &convergence_health)?;
         if let Some(cooldown_until) = convergence_health.cooldown_until {
             if chrono::Utc::now() < cooldown_until {
                 tracing::warn!(
@@ -844,7 +842,7 @@ impl AgentRunner {
 
         // Inject multi-turn conversation history (if any).
         if !self.conversation_history.is_empty() {
-            conversation.extend(self.conversation_history.drain(..));
+            conversation.append(&mut self.conversation_history);
         }
 
         // User message.
@@ -1297,7 +1295,7 @@ impl AgentRunner {
 
         // Inject multi-turn conversation history (if any).
         if !self.conversation_history.is_empty() {
-            conversation.extend(self.conversation_history.drain(..));
+            conversation.append(&mut self.conversation_history);
         }
 
         // User message.
@@ -1802,6 +1800,28 @@ fn inspect_convergence_shared_state_at(
     }
 }
 
+/// FlushExecutor trait — defined here, implemented by AgentRunner.
+/// Injected into SessionCompactor to break circular dependency (A34 Gap 2).
+#[async_trait::async_trait]
+pub trait FlushExecutor: Send + Sync {
+    /// Execute a memory flush turn.
+    async fn execute_flush(
+        &self,
+        agent_id: Uuid,
+        session_id: Uuid,
+        memories_to_flush: Vec<serde_json::Value>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Type alias for the LLM fallback chain used by `run_turn`.
+pub type LLMFallbackChain = ghost_llm::fallback::FallbackChain;
+
+/// Extract pricing from the first available provider in the fallback chain.
+/// Falls back to zero pricing if no providers are available.
+fn fallback_chain_pricing(chain: &LLMFallbackChain) -> ghost_llm::provider::TokenPricing {
+    chain.current_pricing()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1880,26 +1900,4 @@ mod tests {
             Err(RunError::ConvergenceProtectionDegraded(status)) if status == "corrupted"
         ));
     }
-}
-
-/// FlushExecutor trait — defined here, implemented by AgentRunner.
-/// Injected into SessionCompactor to break circular dependency (A34 Gap 2).
-#[async_trait::async_trait]
-pub trait FlushExecutor: Send + Sync {
-    /// Execute a memory flush turn.
-    async fn execute_flush(
-        &self,
-        agent_id: Uuid,
-        session_id: Uuid,
-        memories_to_flush: Vec<serde_json::Value>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-}
-
-/// Type alias for the LLM fallback chain used by `run_turn`.
-pub type LLMFallbackChain = ghost_llm::fallback::FallbackChain;
-
-/// Extract pricing from the first available provider in the fallback chain.
-/// Falls back to zero pricing if no providers are available.
-fn fallback_chain_pricing(chain: &LLMFallbackChain) -> ghost_llm::provider::TokenPricing {
-    chain.current_pricing()
 }

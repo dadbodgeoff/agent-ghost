@@ -112,7 +112,7 @@ impl ObjectivesTracker {
             let mut truncated = full;
             truncated.truncate(max_chars);
             // Clean up at last newline or semicolon
-            if let Some(pos) = truncated.rfind(|c| c == '\n' || c == ';') {
+            if let Some(pos) = truncated.rfind(['\n', ';']) {
                 truncated.truncate(pos);
             }
             truncated.push_str(" [truncated]");

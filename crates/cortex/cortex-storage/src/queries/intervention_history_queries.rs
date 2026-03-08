@@ -4,6 +4,7 @@ use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
 use rusqlite::{params, Connection};
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_intervention(
     conn: &Connection,
     id: &str,

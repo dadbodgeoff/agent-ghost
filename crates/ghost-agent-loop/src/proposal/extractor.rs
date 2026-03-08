@@ -109,8 +109,8 @@ fn extract_proposal_blocks(text: &str) -> Vec<String> {
                 let line_trimmed = line.trim();
 
                 // Count backtick sequences
-                if line_trimmed.starts_with("```") {
-                    if nesting_depth == 0 && !line_trimmed[3..].trim().is_empty() {
+                if let Some(fence_suffix) = line_trimmed.strip_prefix("```") {
+                    if nesting_depth == 0 && !fence_suffix.trim().is_empty() {
                         // Opening a nested code fence (e.g. ```json or ```rust)
                         nesting_depth += 1;
                     } else if nesting_depth > 0 {

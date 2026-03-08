@@ -289,7 +289,7 @@ fn parse_openai_response(
         .unwrap_or_default();
 
     let has_tool_calls = !tool_calls.is_empty();
-    let has_text = content.as_ref().map_or(false, |t| !t.is_empty());
+    let has_text = content.as_ref().is_some_and(|t| !t.is_empty());
 
     let response = match (has_text, has_tool_calls) {
         (true, false) => LLMResponse::Text(content.unwrap()),
@@ -1009,7 +1009,7 @@ impl LLMProvider for OllamaProvider {
         let client = build_client(LOCAL_TIMEOUT)?;
 
         let ollama_messages: Vec<serde_json::Value> =
-            messages.iter().map(|m| ollama_format_message(m)).collect();
+            messages.iter().map(ollama_format_message).collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -1093,7 +1093,7 @@ impl OllamaProvider {
 
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
         let ollama_messages: Vec<serde_json::Value> =
-            messages.iter().map(|m| ollama_format_message(m)).collect();
+            messages.iter().map(ollama_format_message).collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -1320,7 +1320,7 @@ fn parse_ollama_response(
     };
 
     let has_tool_calls = !tool_calls.is_empty();
-    let has_text = content.as_ref().map_or(false, |t| !t.is_empty());
+    let has_text = content.as_ref().is_some_and(|t| !t.is_empty());
 
     let response = match (has_text, has_tool_calls) {
         (true, false) => LLMResponse::Text(content.unwrap()),

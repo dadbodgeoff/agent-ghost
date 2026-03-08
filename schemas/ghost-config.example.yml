@@ -6,6 +6,7 @@ gateway:
   bind: "127.0.0.1"
   port: 18789
   db_path: "~/.ghost/data/ghost.db"
+  rate_limit_scope: "database"
 
 agents:
   - name: "aria"

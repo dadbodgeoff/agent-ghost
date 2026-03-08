@@ -575,14 +575,12 @@ fn extract_attr(tag: &str, attr: &str) -> Option<String> {
     let after_eq = &tag[start + pattern.len()..];
     let after_eq = after_eq.trim_start();
 
-    if after_eq.starts_with('"') {
+    if let Some(content) = after_eq.strip_prefix('"') {
         // Double-quoted value.
-        let content = &after_eq[1..];
         let end = content.find('"')?;
         Some(content[..end].to_string())
-    } else if after_eq.starts_with('\'') {
+    } else if let Some(content) = after_eq.strip_prefix('\'') {
         // Single-quoted value.
-        let content = &after_eq[1..];
         let end = content.find('\'')?;
         Some(content[..end].to_string())
     } else {

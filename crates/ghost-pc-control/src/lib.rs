@@ -71,6 +71,7 @@ pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
     all_pc_control_skills_with_circuit_breaker(config, config.circuit_breaker())
 }
 
+#[allow(clippy::vec_init_then_push)]
 pub fn all_pc_control_skills_with_circuit_breaker(
     config: &PcControlConfig,
     circuit_breaker: Arc<Mutex<safety::circuit_breaker::PcControlCircuitBreaker>>,

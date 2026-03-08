@@ -5,8 +5,6 @@
 //!
 //! Requires the "Accessibility" permission in System Settings > Privacy.
 
-#![cfg(target_os = "macos")]
-
 use std::process::Command;
 
 use crate::platform::window_backend::{LaunchResult, WindowBackend, WindowInfo};

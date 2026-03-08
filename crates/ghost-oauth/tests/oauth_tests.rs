@@ -1592,13 +1592,11 @@ mod broker_tests {
 
         let mut successes = 0;
         for h in handles {
-            match h.join().unwrap() {
-                Ok(resp) => {
-                    assert_eq!(resp.status, 200);
-                    successes += 1;
-                }
-                Err(_) => {} // Some may fail due to race, but none should panic
+            if let Ok(resp) = h.join().unwrap() {
+                assert_eq!(resp.status, 200);
+                successes += 1;
             }
+            // Some may fail due to race, but none should panic.
         }
         assert!(
             successes > 0,

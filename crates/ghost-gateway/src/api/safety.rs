@@ -31,13 +31,27 @@ const KILL_ALL_ROUTE_TEMPLATE: &str = "/api/safety/kill-all";
 const PAUSE_AGENT_ROUTE_TEMPLATE: &str = "/api/safety/pause/:agent_id";
 const RESUME_AGENT_ROUTE_TEMPLATE: &str = "/api/safety/resume/:agent_id";
 const QUARANTINE_AGENT_ROUTE_TEMPLATE: &str = "/api/safety/quarantine/:agent_id";
-const PERSISTED_SAFETY_STATE_VERSION: u32 = 2;
+const PERSISTED_SAFETY_STATE_VERSION: u32 = 3;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSafetyState {
     version: u32,
     updated_at: String,
     state: crate::safety::kill_switch::KillSwitchState,
+    distributed_gate: Option<ghost_kill_gates::gate::PersistedGateState>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PersistedSafetyStateV2 {
+    version: u32,
+    updated_at: String,
+    state: crate::safety::kill_switch::KillSwitchState,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RestoredSafetyRuntimeState {
+    pub state: crate::safety::kill_switch::KillSwitchState,
+    pub distributed_gate: Option<ghost_kill_gates::gate::PersistedGateState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,11 +71,38 @@ fn is_clear_safety_state(state: &crate::safety::kill_switch::KillSwitchState) ->
     state.platform_level == KillLevel::Normal && state.per_agent.is_empty()
 }
 
-fn persist_safety_state_snapshot_to_path(
+fn capture_kill_gate_state(state: &AppState) -> Option<ghost_kill_gates::gate::PersistedGateState> {
+    state.kill_gate.as_ref().map(|gate| match gate.read() {
+        Ok(bridge) => bridge.persisted_state(),
+        Err(poisoned) => {
+            tracing::error!("kill gate lock poisoned during persistence snapshot");
+            poisoned.into_inner().persisted_state()
+        }
+    })
+}
+
+fn restore_kill_gate_state(
+    state: &AppState,
+    snapshot: Option<ghost_kill_gates::gate::PersistedGateState>,
+) {
+    let (Some(gate), Some(snapshot)) = (state.kill_gate.as_ref(), snapshot) else {
+        return;
+    };
+    match gate.write() {
+        Ok(mut bridge) => bridge.restore_persisted_state(snapshot),
+        Err(poisoned) => {
+            tracing::error!("kill gate lock poisoned during restore");
+            poisoned.into_inner().restore_persisted_state(snapshot);
+        }
+    }
+}
+
+fn persist_runtime_safety_state_to_path(
     path: &FsPath,
     state: &crate::safety::kill_switch::KillSwitchState,
+    distributed_gate: Option<&ghost_kill_gates::gate::PersistedGateState>,
 ) -> Result<(), ApiError> {
-    if is_clear_safety_state(state) {
+    if is_clear_safety_state(state) && distributed_gate.is_none() {
         match std::fs::remove_file(path) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -82,6 +123,7 @@ fn persist_safety_state_snapshot_to_path(
         version: PERSISTED_SAFETY_STATE_VERSION,
         updated_at: chrono::Utc::now().to_rfc3339(),
         state: state.clone(),
+        distributed_gate: distributed_gate.cloned(),
     };
     let json_bytes = serde_json::to_vec_pretty(&payload).map_err(|error| {
         ApiError::internal(format!("serialize persisted safety state: {error}"))
@@ -103,36 +145,48 @@ fn persist_safety_state_snapshot_to_path(
     Ok(())
 }
 
-fn persist_current_safety_state(state: &AppState) -> Result<(), ApiError> {
-    let snapshot = state.kill_switch.current_state();
-    let path = persisted_safety_state_path();
-    persist_safety_state_snapshot_to_path(FsPath::new(&path), &snapshot)
+#[cfg(test)]
+fn persist_safety_state_snapshot_to_path(
+    path: &FsPath,
+    state: &crate::safety::kill_switch::KillSwitchState,
+) -> Result<(), ApiError> {
+    persist_runtime_safety_state_to_path(path, state, None)
 }
 
-fn execute_persisted_kill_switch_mutation<T>(
+pub(crate) fn persist_current_safety_state(state: &AppState) -> Result<(), ApiError> {
+    let snapshot = state.kill_switch.current_state();
+    let path = persisted_safety_state_path();
+    let gate_snapshot = capture_kill_gate_state(state);
+    persist_runtime_safety_state_to_path(FsPath::new(&path), &snapshot, gate_snapshot.as_ref())
+}
+
+fn execute_persisted_safety_mutation<T>(
     state: &AppState,
     mutate: impl FnOnce() -> Result<T, ApiError>,
 ) -> Result<T, ApiError> {
     let previous_state = state.kill_switch.current_state();
+    let previous_gate_state = capture_kill_gate_state(state);
     let result = mutate();
     match result {
         Ok(value) => {
             if let Err(error) = persist_current_safety_state(state) {
                 state.kill_switch.restore_state(previous_state);
+                restore_kill_gate_state(state, previous_gate_state);
                 return Err(error);
             }
             Ok(value)
         }
         Err(error) => {
             state.kill_switch.restore_state(previous_state);
+            restore_kill_gate_state(state, previous_gate_state);
             Err(error)
         }
     }
 }
 
-pub(crate) fn load_persisted_safety_state(
+pub(crate) fn load_persisted_runtime_safety_state(
     path: &FsPath,
-) -> Result<Option<crate::safety::kill_switch::KillSwitchState>, String> {
+) -> Result<Option<RestoredSafetyRuntimeState>, String> {
     if !path.exists() {
         return Ok(None);
     }
@@ -144,7 +198,18 @@ pub(crate) fn load_persisted_safety_state(
     }
 
     if let Ok(parsed) = serde_json::from_str::<PersistedSafetyState>(&raw) {
-        return Ok(Some(parsed.state));
+        return Ok(Some(RestoredSafetyRuntimeState {
+            state: parsed.state,
+            distributed_gate: parsed.distributed_gate,
+        }));
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<PersistedSafetyStateV2>(&raw) {
+        let _ = (parsed.version, parsed.updated_at.clone());
+        return Ok(Some(RestoredSafetyRuntimeState {
+            state: parsed.state,
+            distributed_gate: None,
+        }));
     }
 
     if let Ok(legacy) = serde_json::from_str::<LegacyPersistedKillAllState>(&raw) {
@@ -159,7 +224,10 @@ pub(crate) fn load_persisted_safety_state(
             restored.platform_level = KillLevel::KillAll;
             restored.activated_at = Some(chrono::Utc::now());
             restored.trigger = Some("legacy kill_state.json found on startup".into());
-            return Ok(Some(restored));
+            return Ok(Some(RestoredSafetyRuntimeState {
+                state: restored,
+                distributed_gate: None,
+            }));
         }
     }
 
@@ -170,10 +238,20 @@ pub(crate) fn load_persisted_safety_state(
         restored.platform_level = KillLevel::KillAll;
         restored.activated_at = Some(chrono::Utc::now());
         restored.trigger = Some("legacy kill_state.json found on startup".into());
-        return Ok(Some(restored));
+        return Ok(Some(RestoredSafetyRuntimeState {
+            state: restored,
+            distributed_gate: None,
+        }));
     }
 
     Err("persisted safety state did not match a supported schema".into())
+}
+
+#[cfg(test)]
+pub(crate) fn load_persisted_safety_state(
+    path: &FsPath,
+) -> Result<Option<crate::safety::kill_switch::KillSwitchState>, String> {
+    load_persisted_runtime_safety_state(path).map(|state| state.map(|state| state.state))
 }
 
 /// T-5.4.3: Look up agent ID by name, with DB fallback on registry poisoning.
@@ -341,8 +419,27 @@ pub async fn kill_all(
                 reason: body.reason.clone(),
                 initiated_by: body.initiated_by.clone(),
             };
-            execute_persisted_kill_switch_mutation(&state, || {
+            let mut gate_poisoned = None::<String>;
+            execute_persisted_safety_mutation(&state, || {
                 state.kill_switch.activate_kill_all(&trigger);
+                if let Some(ref gate) = state.kill_gate {
+                    match gate.write() {
+                        Ok(mut bridge) => {
+                            bridge.close_and_propagate(body.reason.clone());
+                            tracing::info!(
+                                node_id = %bridge.node_id(),
+                                "KILL_ALL propagated through distributed kill gate"
+                            );
+                        }
+                        Err(error) => {
+                            let err_msg = format!(
+                                "Kill gate RwLock poisoned during KILL_ALL. Error: {error}. Falling back to HTTP fanout."
+                            );
+                            tracing::error!("CRITICAL: {}", err_msg);
+                            gate_poisoned = Some(err_msg);
+                        }
+                    }
+                }
                 Ok(())
             })?;
 
@@ -352,6 +449,7 @@ pub async fn kill_all(
                     "status": "kill_all_activated",
                     "reason": body.reason,
                     "initiated_by": body.initiated_by,
+                    "gate_poisoned": gate_poisoned,
                 }),
             ))
         },
@@ -367,24 +465,11 @@ pub async fn kill_all(
                     },
                 );
 
-                let gate_poisoned = if let Some(ref gate) = state.kill_gate {
-                    match gate.write() {
-                        Ok(mut bridge) => {
-                            bridge.close_and_propagate(body.reason.clone());
-                            tracing::info!("KILL_ALL propagated through distributed kill gate");
-                            None
-                        }
-                        Err(error) => {
-                            let err_msg = format!(
-                                "Kill gate RwLock poisoned during KILL_ALL. Error: {error}. Falling back to HTTP fanout."
-                            );
-                            tracing::error!("CRITICAL: {}", err_msg);
-                            Some(err_msg)
-                        }
-                    }
-                } else {
-                    None
-                };
+                let gate_poisoned = outcome
+                    .body
+                    .get("gate_poisoned")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
                 if let Some(ref err_msg) = gate_poisoned {
                     write_audit_entry(&state, "kill_gate_poison", "critical", None, err_msg).await;
                 }
@@ -471,7 +556,7 @@ pub async fn pause_agent(
                 reason: body.reason.clone(),
                 initiated_by: actor.to_string(),
             };
-            execute_persisted_kill_switch_mutation(&state, || {
+            execute_persisted_safety_mutation(&state, || {
                 state
                     .kill_switch
                     .activate_agent(agent_id, KillLevel::Pause, &trigger);
@@ -634,7 +719,7 @@ pub async fn resume_agent(
             }
 
             let expected = agent_state.map(|s| s.level);
-            execute_persisted_kill_switch_mutation(&state, || {
+            execute_persisted_safety_mutation(&state, || {
                 state
                     .kill_switch
                     .resume_agent(agent_id, expected)
@@ -730,7 +815,7 @@ pub async fn quarantine_agent(
                 reason: body.reason.clone(),
                 initiated_by: actor.to_string(),
             };
-            execute_persisted_kill_switch_mutation(&state, || {
+            execute_persisted_safety_mutation(&state, || {
                 state
                     .kill_switch
                     .activate_agent(agent_id, KillLevel::Quarantine, &trigger);
@@ -1054,6 +1139,35 @@ mod tests {
             restored.per_agent[&quarantined_agent].level,
             KillLevel::Quarantine
         );
+    }
+
+    #[test]
+    fn persisted_safety_state_round_trip_preserves_distributed_gate_snapshot() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_path = temp_dir.path().join("kill_state.json");
+        let kill_switch = Arc::new(crate::safety::kill_switch::KillSwitch::new());
+        let node_id = uuid::Uuid::now_v7();
+        let mut bridge = crate::safety::kill_gate_bridge::KillGateBridge::new(
+            node_id,
+            Arc::clone(&kill_switch),
+            ghost_kill_gates::config::KillGateConfig::default(),
+        );
+        bridge.close_and_propagate("persisted".into());
+
+        let snapshot = kill_switch.current_state();
+        let gate_snapshot = bridge.persisted_state();
+        persist_runtime_safety_state_to_path(&state_path, &snapshot, Some(&gate_snapshot)).unwrap();
+
+        let restored = load_persisted_runtime_safety_state(&state_path)
+            .unwrap()
+            .unwrap();
+        let restored_gate = restored.distributed_gate.expect("persisted gate");
+        assert_eq!(restored_gate.node_id, node_id);
+        assert_eq!(
+            restored_gate.state,
+            ghost_kill_gates::gate::GateState::Propagating
+        );
+        assert_eq!(restored_gate.close_reason.as_deref(), Some("persisted"));
     }
 
     #[tokio::test]

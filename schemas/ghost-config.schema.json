@@ -9,7 +9,13 @@
       "properties": {
         "bind": { "type": "string", "default": "127.0.0.1" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 18789 },
-        "db_path": { "type": "string", "default": "~/.ghost/data/ghost.db" }
+        "db_path": { "type": "string", "default": "~/.ghost/data/ghost.db" },
+        "rate_limit_scope": {
+          "type": "string",
+          "enum": ["process", "database"],
+          "default": "database",
+          "description": "Where API rate limits are enforced. 'database' shares counters across gateway processes using the same SQLite database."
+        }
       },
       "additionalProperties": true
     },

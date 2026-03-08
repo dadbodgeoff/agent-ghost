@@ -34,9 +34,11 @@ impl EmbeddingCache {
     ///
     /// If the cache is at capacity, the oldest entry is evicted.
     pub fn insert(&mut self, content_hash: String, embedding: Vec<f32>) {
-        if self.entries.contains_key(&content_hash) {
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.entries.entry(content_hash.clone())
+        {
             // Already cached — update in place.
-            self.entries.insert(content_hash, embedding);
+            entry.insert(embedding);
             return;
         }
 

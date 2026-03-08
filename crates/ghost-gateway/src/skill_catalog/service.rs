@@ -7,6 +7,7 @@ use cortex_storage::queries::external_skill_queries::{
     ExternalSkillVerificationStatus,
 };
 use cortex_storage::queries::skill_install_state_queries::{self, SkillInstallState};
+use ghost_agent_loop::tools::skill_bridge::{CompiledSkillHandler, SkillHandler};
 use rusqlite::Connection;
 
 use super::definitions::{SkillDefinition, SkillExecutionMode, SkillMutationKind, SkillSourceKind};
@@ -14,6 +15,7 @@ use super::dto::{
     SkillInstallStateDto, SkillListResponseDto, SkillQuarantineStateDto, SkillStateDto,
     SkillSummaryDto, SkillVerificationStatusDto,
 };
+use super::external_runtime::ExternalWasmSkillHandler;
 use crate::config::ExternalSkillsConfig;
 use crate::db_pool::DbPool;
 use crate::runtime_safety::ResolvedRuntimeAgent;
@@ -66,13 +68,22 @@ pub enum SkillCatalogError {
 
 #[derive(Clone)]
 pub struct ResolvedSkill {
-    pub definition: Arc<SkillDefinition>,
-    pub skill: Arc<dyn ghost_skills::skill::Skill>,
+    pub metadata: ResolvedSkillMetadata,
+    pub compiled_skill: Option<Arc<dyn ghost_skills::skill::Skill>>,
+    pub handler: Arc<dyn SkillHandler>,
+}
+
+#[derive(Clone)]
+pub struct ResolvedSkillMetadata {
+    pub name: String,
+    pub policy_capability: String,
+    pub mutation_kind: SkillMutationKind,
+    pub native_containment: Option<ghost_skills::sandbox::native_sandbox::NativeContainmentProfile>,
 }
 
 #[derive(Clone, Default)]
 pub struct ResolvedSkillSet {
-    pub skills: Arc<HashMap<String, Arc<dyn ghost_skills::skill::Skill>>>,
+    pub skills: Arc<HashMap<String, Arc<dyn SkillHandler>>>,
     pub granted_policy_capabilities: Vec<String>,
     pub visible_skill_names: Vec<String>,
 }
@@ -305,7 +316,8 @@ impl SkillCatalogService {
                         entry.artifact.artifact_digest.clone(),
                     ));
                 }
-                if self.external_verification_status(&entry) != SkillVerificationStatusDto::Verified
+                if self.external_verification_status(&entry)?
+                    != SkillVerificationStatusDto::Verified
                 {
                     return Err(SkillCatalogError::VerificationFailed(
                         entry.artifact.artifact_digest.clone(),
@@ -384,6 +396,7 @@ impl SkillCatalogService {
         allowlist_override: Option<&[String]>,
     ) -> Result<ResolvedSkillSet, SkillCatalogError> {
         let states = self.load_install_states()?;
+        let external = self.load_external_catalog()?;
         let mut skills = HashMap::new();
         let mut granted_policy_capabilities = Vec::new();
         let mut visible_skill_names = Vec::new();
@@ -401,13 +414,42 @@ impl SkillCatalogService {
                 continue;
             }
 
-            skills.insert(definition.name.clone(), Arc::clone(&definition.skill));
+            skills.insert(
+                definition.name.clone(),
+                Arc::new(CompiledSkillHandler::new(Arc::clone(&definition.skill)))
+                    as Arc<dyn SkillHandler>,
+            );
             granted_policy_capabilities.push(definition.policy_capability.clone());
             visible_skill_names.push(definition.name.clone());
         }
 
-        // External artifacts are part of the catalog truth, but they remain
-        // runtime-dark until the deliberate T11 execution seam exists.
+        for entry in &external {
+            if !self.external_runtime_visible(entry)? {
+                continue;
+            }
+            if allowlist.is_some_and(|allowed| {
+                !allowed
+                    .iter()
+                    .any(|skill_name| skill_name == &entry.artifact.skill_name)
+            }) {
+                continue;
+            }
+            if skills.contains_key(&entry.artifact.skill_name) {
+                tracing::warn!(
+                    skill_name = %entry.artifact.skill_name,
+                    artifact_digest = %entry.artifact.artifact_digest,
+                    "external skill runtime exposure blocked due to name collision"
+                );
+                continue;
+            }
+
+            skills.insert(
+                entry.artifact.skill_name.clone(),
+                self.external_runtime_handler(entry),
+            );
+            granted_policy_capabilities.push(format!("skill:{}", entry.artifact.skill_name));
+            visible_skill_names.push(entry.artifact.skill_name.clone());
+        }
 
         granted_policy_capabilities.sort();
         granted_policy_capabilities.dedup();
@@ -495,15 +537,18 @@ impl SkillCatalogService {
         actor: Option<&str>,
     ) -> Result<SkillSummaryDto, SkillCatalogError> {
         let skill_id = entry.artifact.artifact_digest.clone();
-        if self.external_quarantine_state(&entry) == SkillQuarantineStateDto::Quarantined {
+        let verification_status = self.external_verification_status(&entry)?;
+        if self.external_quarantine_state(&entry, verification_status)
+            == SkillQuarantineStateDto::Quarantined
+        {
             return Err(SkillCatalogError::SkillQuarantined {
                 skill_id,
                 reason: self
-                    .external_quarantine_reason(&entry)
+                    .external_quarantine_reason(&entry, verification_status)
                     .unwrap_or_else(|| "external skill is quarantined".to_string()),
             });
         }
-        if self.external_verification_status(&entry) != SkillVerificationStatusDto::Verified {
+        if verification_status != SkillVerificationStatusDto::Verified {
             return Err(SkillCatalogError::VerificationFailed(
                 entry.artifact.artifact_digest.clone(),
             ));
@@ -612,8 +657,14 @@ impl SkillCatalogService {
         }
 
         Ok(ResolvedSkill {
-            definition: Arc::clone(definition),
-            skill: Arc::clone(&definition.skill),
+            metadata: ResolvedSkillMetadata {
+                name: definition.name.clone(),
+                policy_capability: definition.policy_capability.clone(),
+                mutation_kind: definition.mutation_kind,
+                native_containment: definition.native_containment.clone(),
+            },
+            compiled_skill: Some(Arc::clone(&definition.skill)),
+            handler: Arc::new(CompiledSkillHandler::new(Arc::clone(&definition.skill))),
         })
     }
 
@@ -621,33 +672,60 @@ impl SkillCatalogService {
         &self,
         identifier: &str,
         entry: &ExternalCatalogEntry,
-        _agent: &ResolvedRuntimeAgent,
+        agent: &ResolvedRuntimeAgent,
     ) -> Result<ResolvedSkill, SkillCatalogError> {
         let skill_id = entry.artifact.artifact_digest.clone();
-        if self.external_quarantine_state(entry) == SkillQuarantineStateDto::Quarantined {
+        let verification_status = self.external_verification_status(entry)?;
+        if self.external_quarantine_state(entry, verification_status)
+            == SkillQuarantineStateDto::Quarantined
+        {
             return Err(SkillCatalogError::SkillQuarantined {
                 skill_id,
                 reason: self
-                    .external_quarantine_reason(entry)
+                    .external_quarantine_reason(entry, verification_status)
                     .unwrap_or_else(|| "external skill is quarantined".to_string()),
             });
         }
-        if self.external_verification_status(entry) != SkillVerificationStatusDto::Verified {
+        if verification_status != SkillVerificationStatusDto::Verified {
             return Err(SkillCatalogError::VerificationFailed(
                 identifier.to_string(),
             ));
         }
         match entry.install.as_ref().map(|row| row.state) {
-            Some(ExternalSkillInstallState::Installed) => Err(
-                SkillCatalogError::ExecutionUnavailable(entry.artifact.artifact_digest.clone()),
-            ),
+            Some(ExternalSkillInstallState::Installed) => Ok(()),
             Some(ExternalSkillInstallState::Disabled) => Err(SkillCatalogError::SkillDisabled(
                 entry.artifact.artifact_digest.clone(),
             )),
             None => Err(SkillCatalogError::NotInstalled(
                 entry.artifact.artifact_digest.clone(),
             )),
+        }?;
+        if !self.external_runtime_supported(entry)? {
+            return Err(SkillCatalogError::ExecutionUnavailable(
+                entry.artifact.artifact_digest.clone(),
+            ));
         }
+        if agent.skill_allowlist.as_deref().is_some_and(|allowed| {
+            !allowed
+                .iter()
+                .any(|skill_name| skill_name == &entry.artifact.skill_name)
+        }) {
+            return Err(SkillCatalogError::NotEnabledForAgent {
+                skill_name: entry.artifact.skill_name.clone(),
+                agent_name: agent.name.clone(),
+            });
+        }
+
+        Ok(ResolvedSkill {
+            metadata: ResolvedSkillMetadata {
+                name: entry.artifact.skill_name.clone(),
+                policy_capability: format!("skill:{}", entry.artifact.skill_name),
+                mutation_kind: SkillMutationKind::ReadOnly,
+                native_containment: None,
+            },
+            compiled_skill: None,
+            handler: self.external_runtime_handler(entry),
+        })
     }
 
     fn resolve_catalog_entry(
@@ -836,11 +914,7 @@ impl SkillCatalogService {
         entry: &ExternalCatalogEntry,
         enabled_for_agent: Option<bool>,
     ) -> Result<SkillSummaryDto, SkillCatalogError> {
-        let requested_capabilities = self.parse_json_vec(
-            &entry.artifact.requested_capabilities,
-            "requested_capabilities",
-            &entry.artifact.artifact_digest,
-        )?;
+        let requested_capabilities = self.external_requested_capabilities(entry)?;
         let privileges = self.parse_json_vec(
             &entry.artifact.declared_privileges,
             "declared_privileges",
@@ -848,10 +922,14 @@ impl SkillCatalogService {
         )?;
         let execution_mode = self.execution_mode_from_db(&entry.artifact.execution_mode)?;
         let source = self.source_kind_from_db(&entry.artifact.source_kind)?;
-        let verification_status = self.external_verification_status(entry);
-        let quarantine_state = self.external_quarantine_state(entry);
+        let verification_status =
+            self.external_verification_status_with_requested(entry, &requested_capabilities);
+        let quarantine_state = self.external_quarantine_state(entry, verification_status);
         let install_state = self.external_install_state(entry);
-        let runtime_visible = self.external_runtime_visible(entry);
+        let runtime_visible = install_state == SkillInstallStateDto::Installed
+            && verification_status == SkillVerificationStatusDto::Verified
+            && quarantine_state == SkillQuarantineStateDto::Clear
+            && self.external_runtime_supported_with_requested(entry, &requested_capabilities);
         let state = if quarantine_state == SkillQuarantineStateDto::Quarantined {
             SkillStateDto::Quarantined
         } else if verification_status != SkillVerificationStatusDto::Verified {
@@ -900,11 +978,22 @@ impl SkillCatalogService {
                 .verification
                 .as_ref()
                 .and_then(|row| row.signer_publisher.clone()),
-            quarantine_reason: self.external_quarantine_reason(entry),
+            quarantine_reason: self.external_quarantine_reason(entry, verification_status),
             quarantine_revision: entry.quarantine.as_ref().map(|row| row.revision),
             enabled_for_agent,
             capabilities: vec![policy_capability],
         })
+    }
+
+    fn external_requested_capabilities(
+        &self,
+        entry: &ExternalCatalogEntry,
+    ) -> Result<Vec<String>, SkillCatalogError> {
+        self.parse_json_vec(
+            &entry.artifact.requested_capabilities,
+            "requested_capabilities",
+            &entry.artifact.artifact_digest,
+        )
     }
 
     fn parse_json_vec(
@@ -941,7 +1030,7 @@ impl SkillCatalogService {
         }
     }
 
-    fn external_verification_status(
+    fn stored_external_verification_status(
         &self,
         entry: &ExternalCatalogEntry,
     ) -> SkillVerificationStatusDto {
@@ -975,28 +1064,58 @@ impl SkillCatalogService {
         }
     }
 
-    fn external_quarantine_state(&self, entry: &ExternalCatalogEntry) -> SkillQuarantineStateDto {
+    fn external_verification_status(
+        &self,
+        entry: &ExternalCatalogEntry,
+    ) -> Result<SkillVerificationStatusDto, SkillCatalogError> {
+        let requested_capabilities = self.external_requested_capabilities(entry)?;
+        Ok(self.external_verification_status_with_requested(entry, &requested_capabilities))
+    }
+
+    fn external_verification_status_with_requested(
+        &self,
+        entry: &ExternalCatalogEntry,
+        requested_capabilities: &[String],
+    ) -> SkillVerificationStatusDto {
+        let stored = self.stored_external_verification_status(entry);
+        if stored != SkillVerificationStatusDto::Verified {
+            return stored;
+        }
+        if entry.artifact.execution_mode != "wasm" {
+            return SkillVerificationStatusDto::UnsupportedExecutionMode;
+        }
+        if !requested_capabilities.is_empty() {
+            return SkillVerificationStatusDto::UnsupportedCapability;
+        }
+        stored
+    }
+
+    fn external_quarantine_state(
+        &self,
+        entry: &ExternalCatalogEntry,
+        verification_status: SkillVerificationStatusDto,
+    ) -> SkillQuarantineStateDto {
         match entry.quarantine.as_ref().map(|row| row.state) {
             Some(ExternalSkillQuarantineState::Clear) => SkillQuarantineStateDto::Clear,
             Some(ExternalSkillQuarantineState::Quarantined) => SkillQuarantineStateDto::Quarantined,
-            None if self.external_verification_status(entry)
-                == SkillVerificationStatusDto::Verified =>
-            {
+            None if verification_status == SkillVerificationStatusDto::Verified => {
                 SkillQuarantineStateDto::Quarantined
             }
             None => SkillQuarantineStateDto::Clear,
         }
     }
 
-    fn external_quarantine_reason(&self, entry: &ExternalCatalogEntry) -> Option<String> {
+    fn external_quarantine_reason(
+        &self,
+        entry: &ExternalCatalogEntry,
+        verification_status: SkillVerificationStatusDto,
+    ) -> Option<String> {
         match &entry.quarantine {
             Some(row) if row.state == ExternalSkillQuarantineState::Quarantined => row
                 .reason_detail
                 .clone()
                 .or_else(|| row.reason_code.clone()),
-            None if self.external_verification_status(entry)
-                == SkillVerificationStatusDto::Verified =>
-            {
+            None if verification_status == SkillVerificationStatusDto::Verified => {
                 Some("catalog quarantine state is missing".to_string())
             }
             _ => None,
@@ -1011,15 +1130,50 @@ impl SkillCatalogService {
         }
     }
 
-    fn external_runtime_visible(&self, entry: &ExternalCatalogEntry) -> bool {
-        self.external_install_state(entry) == SkillInstallStateDto::Installed
-            && self.external_verification_status(entry) == SkillVerificationStatusDto::Verified
-            && self.external_quarantine_state(entry) == SkillQuarantineStateDto::Clear
-            && self.external_runtime_supported(entry)
+    fn external_runtime_visible(
+        &self,
+        entry: &ExternalCatalogEntry,
+    ) -> Result<bool, SkillCatalogError> {
+        let requested_capabilities = self.external_requested_capabilities(entry)?;
+        let verification_status =
+            self.external_verification_status_with_requested(entry, &requested_capabilities);
+        let quarantine_state = self.external_quarantine_state(entry, verification_status);
+        Ok(
+            self.external_install_state(entry) == SkillInstallStateDto::Installed
+                && verification_status == SkillVerificationStatusDto::Verified
+                && quarantine_state == SkillQuarantineStateDto::Clear
+                && self.external_runtime_supported_with_requested(entry, &requested_capabilities),
+        )
     }
 
-    fn external_runtime_supported(&self, _entry: &ExternalCatalogEntry) -> bool {
-        false
+    fn external_runtime_supported(
+        &self,
+        entry: &ExternalCatalogEntry,
+    ) -> Result<bool, SkillCatalogError> {
+        let requested_capabilities = self.external_requested_capabilities(entry)?;
+        Ok(self.external_runtime_supported_with_requested(entry, &requested_capabilities))
+    }
+
+    fn external_runtime_supported_with_requested(
+        &self,
+        entry: &ExternalCatalogEntry,
+        requested_capabilities: &[String],
+    ) -> bool {
+        self.ingest.execution_enabled()
+            && entry.artifact.execution_mode == "wasm"
+            && requested_capabilities.is_empty()
+            && !self.definitions.contains_key(&entry.artifact.skill_name)
+    }
+
+    fn external_runtime_handler(&self, entry: &ExternalCatalogEntry) -> Arc<dyn SkillHandler> {
+        Arc::new(ExternalWasmSkillHandler::new(
+            entry.artifact.artifact_digest.clone(),
+            entry.artifact.skill_name.clone(),
+            entry.artifact.description.clone(),
+            entry.artifact.managed_artifact_path.clone(),
+            Arc::clone(&self.db),
+            ghost_skills::sandbox::wasm_sandbox::WasmSandboxConfig::default(),
+        ))
     }
 }
 
@@ -1075,6 +1229,13 @@ mod tests {
     }
 
     async fn test_harness(definitions: Vec<SkillDefinition>) -> TestHarness {
+        test_harness_with_external_config(definitions, ExternalSkillsConfig::default()).await
+    }
+
+    async fn test_harness_with_external_config(
+        definitions: Vec<SkillDefinition>,
+        external_config: ExternalSkillsConfig,
+    ) -> TestHarness {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = temp_dir.path().join("catalog.db");
         let db = crate::db_pool::create_pool(db_path).unwrap();
@@ -1082,13 +1243,9 @@ mod tests {
             let writer = db.writer_for_migrations().await;
             cortex_storage::migrations::run_migrations(&writer).unwrap();
         }
-        let service = SkillCatalogService::new(
-            definitions,
-            Arc::clone(&db),
-            ExternalSkillsConfig::default(),
-        )
-        .await
-        .unwrap();
+        let service = SkillCatalogService::new(definitions, Arc::clone(&db), external_config)
+            .await
+            .unwrap();
         TestHarness {
             _temp_dir: temp_dir,
             db,
@@ -1110,6 +1267,13 @@ mod tests {
             policy_capability: format!("skill:{name}"),
             privileges: vec!["compiled privilege".to_string()],
             mutation_kind: SkillMutationKind::ReadOnly,
+            native_containment: Some(
+                ghost_skills::sandbox::native_sandbox::NativeContainmentProfile::new(
+                    ghost_skills::sandbox::native_sandbox::NativeContainmentMode::ReadOnly,
+                    true,
+                    ["skill_execute".to_string(), "db_read".to_string()],
+                ),
+            ),
             skill: Arc::new(TestSkill {
                 name: name.to_string(),
                 removable,

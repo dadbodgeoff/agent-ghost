@@ -225,6 +225,8 @@ async fn shell_tests(passed: &mut u32, failed: &mut u32) {
 
 fn kill_gate_tests(passed: &mut u32, failed: &mut u32) {
     let cfg = KillGateConfig::default();
+    let mut resume_cfg = cfg.clone();
+    resume_cfg.authenticated_cluster_membership = true;
 
     // 13. Gate starts Normal
     print_test("kill_gate: starts in Normal state");
@@ -261,9 +263,9 @@ fn kill_gate_tests(passed: &mut u32, failed: &mut u32) {
 
     // 17. Multi-node: 3-node cluster, close + propagation + ack
     print_test("kill_gate: 3-node propagation and ack");
-    let node_a = Arc::new(KillGate::new(Uuid::now_v7(), cfg.clone()));
-    let node_b = Arc::new(KillGate::new(Uuid::now_v7(), cfg.clone()));
-    let node_c = Arc::new(KillGate::new(Uuid::now_v7(), cfg.clone()));
+    let node_a = Arc::new(KillGate::new(Uuid::now_v7(), resume_cfg.clone()));
+    let node_b = Arc::new(KillGate::new(Uuid::now_v7(), resume_cfg.clone()));
+    let node_c = Arc::new(KillGate::new(Uuid::now_v7(), resume_cfg.clone()));
 
     // Node A closes
     node_a.close("rogue agent detected".into());
@@ -293,8 +295,8 @@ fn kill_gate_tests(passed: &mut u32, failed: &mut u32) {
         );
     }
 
-    // 18. Quorum resume: 2 of 3 nodes vote to resume
-    print_test("kill_gate: quorum resume with 2/3 votes");
+    // 18. Quorum resume: 2 of 3 authenticated cluster members vote to resume
+    print_test("kill_gate: quorum resume with authenticated 2/3 votes");
     let vote_a = ResumeVote {
         node_id: node_a.node_id(),
         reason: "all clear".into(),

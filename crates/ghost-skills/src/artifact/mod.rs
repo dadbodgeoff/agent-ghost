@@ -384,7 +384,7 @@ fn collect_source_files(
         .map_err(|e| ArtifactError::Io(e.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ArtifactError::Io(e.to_string()))?;
-    entries.sort_by(|left, right| left.path().cmp(&right.path()));
+    entries.sort_by_key(|left| left.path());
 
     for entry in entries {
         let path = entry.path();

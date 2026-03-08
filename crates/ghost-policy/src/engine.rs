@@ -118,7 +118,7 @@ impl PolicyEngine {
     fn has_capability(&self, agent_id: Uuid, capability: &str) -> bool {
         self.capability_grants
             .get(&agent_id)
-            .map_or(false, |caps| caps.contains(capability))
+            .is_some_and(|caps| caps.contains(capability))
     }
 
     fn record_denial(

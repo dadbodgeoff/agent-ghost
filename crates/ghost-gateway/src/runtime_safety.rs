@@ -378,11 +378,22 @@ fn resolve_explicit_runtime_agent(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::agents::registry::{AgentLifecycleState, RegisteredAgent};
+    use cortex_storage::queries::external_skill_queries::{
+        self, ExternalSkillInstallState, ExternalSkillQuarantineState,
+        ExternalSkillVerificationStatus,
+    };
     use ghost_agent_loop::tools::skill_bridge::ExecutionContext;
     use ghost_llm::provider::LLMToolCall;
+    use ghost_signing::generate_keypair;
+    use ghost_skills::artifact::{
+        ArtifactExecutionMode, ArtifactSourceKind, SkillArtifact, SkillManifestSource,
+    };
     use serde_json::json;
+    use wat::parse_str;
 
     fn registered(name: &str) -> RegisteredAgent {
         RegisteredAgent {
@@ -699,5 +710,202 @@ mod tests {
         .unwrap()
         .expect("stored note");
         assert_eq!(stored.title, "runtime note");
+    }
+
+    #[tokio::test]
+    async fn runtime_runner_registers_and_executes_runtime_visible_external_wasm_skills() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let db_path = tmp_dir.path().join("runtime-external.db");
+        let db = crate::db_pool::create_pool(db_path).unwrap();
+        {
+            let writer = db.writer_for_migrations().await;
+            cortex_storage::migrations::run_migrations(&writer).unwrap();
+        }
+
+        let managed_dir = tmp_dir.path().join("managed");
+        std::fs::create_dir_all(&managed_dir).unwrap();
+        let (signing_key, _) = generate_keypair();
+        let artifact = SkillArtifact::build(
+            SkillManifestSource {
+                manifest_schema_version: ghost_skills::artifact::MANIFEST_SCHEMA_VERSION,
+                name: "echo".to_string(),
+                version: "1.0.0".to_string(),
+                publisher: "ghost-test".to_string(),
+                description: "external echo".to_string(),
+                source_kind: ArtifactSourceKind::Workspace,
+                execution_mode: ArtifactExecutionMode::Wasm,
+                entrypoint: "module.wasm".to_string(),
+                requested_capabilities: Vec::new(),
+                declared_privileges: vec!["Pure WASM computation".to_string()],
+            },
+            BTreeMap::from([("module.wasm".to_string(), echo_module())]),
+            &signing_key,
+        )
+        .unwrap();
+        let digest = artifact.artifact_digest().unwrap();
+        let artifact_path = managed_dir.join("artifact.ghostskill");
+        artifact.write_to_path(&artifact_path).unwrap();
+
+        {
+            let writer = db.write().await;
+            external_skill_queries::upsert_external_skill_artifact(
+                &writer,
+                &digest,
+                1,
+                "echo",
+                "1.0.0",
+                "ghost-test",
+                "external echo",
+                "workspace",
+                "wasm",
+                "module.wasm",
+                &artifact_path.display().to_string(),
+                &artifact_path.display().to_string(),
+                &artifact_path.display().to_string(),
+                "{}",
+                "[]",
+                "[\"Pure WASM computation\"]",
+                Some("key-1"),
+                256,
+            )
+            .unwrap();
+            external_skill_queries::upsert_external_skill_verification(
+                &writer,
+                &digest,
+                ExternalSkillVerificationStatus::Verified,
+                Some("key-1"),
+                Some("ghost-test"),
+                "{}",
+            )
+            .unwrap();
+            external_skill_queries::upsert_external_skill_quarantine(
+                &writer,
+                &digest,
+                ExternalSkillQuarantineState::Clear,
+                None,
+                None,
+                Some("operator"),
+            )
+            .unwrap();
+            external_skill_queries::upsert_external_skill_install_state(
+                &writer,
+                &digest,
+                "echo",
+                "1.0.0",
+                ExternalSkillInstallState::Installed,
+                Some("operator"),
+            )
+            .unwrap();
+        }
+
+        let catalog = crate::skill_catalog::SkillCatalogService::new(
+            Vec::new(),
+            Arc::clone(&db),
+            crate::config::ExternalSkillsConfig {
+                enabled: true,
+                execution_enabled: true,
+                managed_storage_path: managed_dir.display().to_string(),
+                ..crate::config::ExternalSkillsConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let agent = ResolvedRuntimeAgent {
+            id: uuid::Uuid::now_v7(),
+            name: "external-runtime-agent".into(),
+            capabilities: Vec::new(),
+            skill_allowlist: Some(vec!["echo".into()]),
+            spending_cap: 5.0,
+        };
+        let ctx = RuntimeSafetyContext {
+            capability_scope: Vec::new(),
+            agent: agent.clone(),
+            session_id: uuid::Uuid::now_v7(),
+            run_id: uuid::Uuid::now_v7(),
+            message_id: None,
+            kill_switch: Arc::new(KillSwitch::new()),
+            kill_gate: None,
+            convergence_profile: "standard".into(),
+        };
+
+        let resolved_skills = catalog.resolve_for_runtime(&agent, None).unwrap();
+        assert!(resolved_skills
+            .visible_skill_names
+            .iter()
+            .any(|name| name == "echo"));
+        assert!(resolved_skills
+            .granted_policy_capabilities
+            .iter()
+            .any(|capability| capability == "skill:echo"));
+
+        let runner = build_live_runner_with_dependencies(
+            &ctx,
+            RuntimeRunnerDependencies {
+                db: Some(db.legacy_connection().unwrap()),
+                resolved_skills,
+                tools_config: ToolsConfig::default(),
+                convergence_profile: "standard".into(),
+                monitor_enabled: false,
+                monitor_block_on_degraded: false,
+                convergence_state_stale_after: std::time::Duration::from_secs(300),
+                cost_tracker: None,
+            },
+            RunnerBuildOptions::default(),
+        )
+        .unwrap();
+
+        assert!(runner.tool_registry.lookup("skill_echo").is_some());
+
+        let result = runner
+            .tool_executor
+            .execute(
+                &LLMToolCall {
+                    id: "call-echo".into(),
+                    name: "skill_echo".into(),
+                    arguments: json!({ "message": "runtime external" }),
+                },
+                &runner.tool_registry,
+                &ExecutionContext {
+                    agent_id: agent.id,
+                    session_id: ctx.session_id,
+                    intervention_level: 0,
+                    session_duration: std::time::Duration::ZERO,
+                    session_reflection_count: 0,
+                    is_compaction_flush: false,
+                },
+            )
+            .await
+            .unwrap();
+        let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(output, json!({ "message": "runtime external" }));
+    }
+
+    fn echo_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (memory (export "memory") 2)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.set $ptr
+                global.get $heap
+                local.get $len
+                i32.add
+                global.set $heap
+                local.get $ptr)
+              (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                local.get $input_ptr
+                i64.extend_i32_u
+                i64.const 32
+                i64.shl
+                local.get $input_len
+                i64.extend_i32_u
+                i64.or))
+            "#,
+        )
+        .unwrap()
     }
 }

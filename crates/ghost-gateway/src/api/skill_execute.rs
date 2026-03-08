@@ -103,6 +103,7 @@ fn map_execution_error(error: SkillCatalogExecutionError) -> ApiError {
         SkillCatalogExecutionError::DbLockPoisoned => ApiError::internal("db lock poisoned"),
         SkillCatalogExecutionError::PolicyDenied(message) => ApiError::Forbidden(message),
         SkillCatalogExecutionError::PolicyEscalation(message) => ApiError::Forbidden(message),
+        SkillCatalogExecutionError::NativeSandbox(message) => ApiError::Forbidden(message),
         SkillCatalogExecutionError::Skill(error) => {
             use ghost_skills::skill::SkillError;
             match error {
@@ -128,6 +129,24 @@ fn map_execution_error(error: SkillCatalogExecutionError) -> ApiError {
                 SkillError::PcControlBlocked(_) => ApiError::with_details(
                     axum::http::StatusCode::FORBIDDEN,
                     "PC_CONTROL_BLOCKED",
+                    error.to_string(),
+                    serde_json::json!({ "code": error.code() }),
+                ),
+                SkillError::ExecutionTimedOut(_) => ApiError::with_details(
+                    axum::http::StatusCode::REQUEST_TIMEOUT,
+                    "SKILL_TIMED_OUT",
+                    error.to_string(),
+                    serde_json::json!({ "code": error.code() }),
+                ),
+                SkillError::ResourceExhausted(_) => ApiError::with_details(
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    "SKILL_RESOURCE_EXHAUSTED",
+                    error.to_string(),
+                    serde_json::json!({ "code": error.code() }),
+                ),
+                SkillError::SandboxViolation(_) => ApiError::with_details(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "SKILL_SANDBOX_VIOLATION",
                     error.to_string(),
                     serde_json::json!({ "code": error.code() }),
                 ),
@@ -221,7 +240,7 @@ pub async fn execute_skill(
         state.convergence_profile.clone(),
     );
 
-    match resolved.definition.mutation_kind {
+    match resolved.metadata.mutation_kind {
         SkillMutationKind::ReadOnly => {
             match executor.execute(&skill_name, &agent, body.session_id, &body.input) {
                 Ok(result) => (StatusCode::OK, Json(result)).into_response(),
@@ -233,7 +252,7 @@ pub async fn execute_skill(
                 return error_response_with_idempotency(error);
             }
             let request_body =
-                execution_request_body(&skill_name, &body, resolved.definition.mutation_kind);
+                execution_request_body(&skill_name, &body, resolved.metadata.mutation_kind);
             let db = state.db.write().await;
             match prepare_json_operation(
                 &db,
@@ -299,7 +318,7 @@ pub async fn execute_skill(
                         execution_audit_details(
                             &skill_name,
                             &body,
-                            resolved.definition.mutation_kind,
+                            resolved.metadata.mutation_kind,
                             &result,
                         ),
                         &operation_context,

@@ -7,6 +7,7 @@
 //! Error classification (WP1-B):
 //! - Transient (5xx) and Fatal errors increment the failure counter.
 //! - RateLimit (429), AuthFailure (401/403), and ModelRefusal do NOT.
+//!
 //! This prevents non-transient errors from tripping the breaker.
 
 use std::time::{Duration, Instant};

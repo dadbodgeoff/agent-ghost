@@ -209,9 +209,9 @@
         {#if confirmSkill.source === 'compiled'}
           exposes the skill to eligible runtimes and grants the following declared privileges:
         {:else}
-          records the external artifact as installed in the catalog. Runtime execution remains gated
-          off until the external WASM runtime is enabled. Declared privileges are still shown for
-          review:
+          records the external artifact as installed in the catalog. Runtime execution is still
+          subject to verification, quarantine, runtime support, and the current external WASM
+          contract. Declared privileges are still shown for review:
         {/if}
       </p>
       {#if confirmSkill.privileges.length > 0}

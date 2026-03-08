@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use ghost_pc_control::safety::PcControlCircuitBreaker;
+use ghost_skills::sandbox::native_sandbox::{NativeContainmentMode, NativeContainmentProfile};
 use ghost_skills::skill::Skill;
 use utoipa::ToSchema;
 
@@ -43,6 +44,7 @@ pub struct SkillDefinition {
     pub policy_capability: String,
     pub privileges: Vec<String>,
     pub mutation_kind: SkillMutationKind,
+    pub native_containment: Option<NativeContainmentProfile>,
     pub skill: Arc<dyn Skill>,
 }
 
@@ -93,6 +95,7 @@ fn extend_skill_definitions(definitions: &mut Vec<SkillDefinition>, skills: Vec<
         let skill: Arc<dyn Skill> = Arc::from(skill);
         let name = skill.name().to_string();
         let removable = skill.removable();
+        let mutation_kind = mutation_kind_for_skill(&name);
 
         definitions.push(SkillDefinition {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -104,7 +107,8 @@ fn extend_skill_definitions(definitions: &mut Vec<SkillDefinition>, skills: Vec<
             execution_mode: SkillExecutionMode::Native,
             policy_capability: format!("skill:{name}"),
             privileges: privileges_for_skill(&name),
-            mutation_kind: mutation_kind_for_skill(&name),
+            mutation_kind,
+            native_containment: Some(native_containment_for_skill(&name, mutation_kind)),
             removable,
             name,
             skill,
@@ -122,6 +126,54 @@ fn mutation_kind_for_skill(name: &str) -> SkillMutationKind {
         | "clipboard_write" => SkillMutationKind::ExternalSideEffect,
         _ => SkillMutationKind::ReadOnly,
     }
+}
+
+fn native_containment_for_skill(
+    name: &str,
+    mutation_kind: SkillMutationKind,
+) -> NativeContainmentProfile {
+    let mut capabilities = vec!["skill_execute".to_string()];
+    match mutation_kind {
+        SkillMutationKind::ReadOnly => {
+            capabilities.push("db_read".into());
+        }
+        SkillMutationKind::Transactional => {
+            capabilities.push("db_read".into());
+            capabilities.push("db_write".into());
+        }
+        SkillMutationKind::ExternalSideEffect => {
+            capabilities.push("host_interaction".into());
+        }
+    }
+
+    match name {
+        "git_status" | "git_diff" | "git_log" | "doc_summarize" | "csv_analyze"
+        | "sqlite_query" | "parse_ast" | "get_diagnostics" | "find_references"
+        | "search_symbols" => capabilities.push("filesystem_read".into()),
+        "git_branch" | "git_commit" | "git_stash" | "format_code" => {
+            capabilities.push("filesystem_read".into());
+            capabilities.push("filesystem_write".into());
+            capabilities.push("process_spawn".into());
+        }
+        "calendar_check" | "arxiv_search" | "github_search" => {
+            capabilities.push("network_egress".into());
+        }
+        "mouse_move" | "mouse_click" | "mouse_drag" | "scroll" | "keyboard_type"
+        | "keyboard_hotkey" | "keyboard_press" | "focus_window" | "resize_window"
+        | "clipboard_read" | "clipboard_write" | "ocr_extract" | "accessibility_tree"
+        | "screenshot" | "list_windows" | "list_processes" | "launch_app" | "kill_process" => {
+            capabilities.push("desktop_control".into());
+        }
+        _ => {}
+    }
+
+    let mode = match mutation_kind {
+        SkillMutationKind::ReadOnly => NativeContainmentMode::ReadOnly,
+        SkillMutationKind::Transactional => NativeContainmentMode::Transactional,
+        SkillMutationKind::ExternalSideEffect => NativeContainmentMode::HostInteraction,
+    };
+
+    NativeContainmentProfile::new(mode, true, capabilities)
 }
 
 fn privileges_for_skill(name: &str) -> Vec<String> {
@@ -238,5 +290,29 @@ mod tests {
         assert!(!convergence.installable);
         assert!(note_take.installable);
         assert!(note_take.default_enabled);
+        assert!(convergence.native_containment.is_some());
+        assert!(note_take.native_containment.is_some());
+    }
+
+    #[test]
+    fn host_interacting_skills_declare_host_interaction_containment() {
+        let mut config = GhostConfig::default();
+        config.pc_control.enabled = true;
+        let seed = build_compiled_skill_definitions(&config);
+        let launch_app = seed
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "launch_app")
+            .expect("compiled launch_app definition");
+        let containment = launch_app
+            .native_containment
+            .as_ref()
+            .expect("native containment profile");
+
+        assert_eq!(containment.mode, NativeContainmentMode::HostInteraction);
+        assert!(containment.audited);
+        assert!(containment
+            .allowed_capabilities
+            .contains("host_interaction"));
     }
 }

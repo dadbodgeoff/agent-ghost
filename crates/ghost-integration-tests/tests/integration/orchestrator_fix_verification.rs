@@ -5,7 +5,6 @@
 //! expose silent failures, bypass vectors, and security gaps.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Utc;
 use ghost_gateway::gateway::{GatewayError, GatewaySharedState, GatewayState};
@@ -13,9 +12,26 @@ use ghost_gateway::health::{MonitorHealthChecker, MonitorHealthConfig};
 use ghost_gateway::messaging::dispatcher::{MessageDispatcher, VerifyResult};
 use ghost_gateway::messaging::protocol::AgentMessage;
 use ghost_gateway::session::compaction::{CompactionBlock, CompactionConfig, SessionCompactor};
-use ghost_llm::fallback::{AuthProfile, FallbackChain};
+use ghost_llm::fallback::AuthProfile;
 use ghost_llm::provider::{AnthropicProvider, LLMProvider, OpenAIProvider};
 use uuid::Uuid;
+
+fn register_sender(dispatcher: &mut MessageDispatcher, sender: Uuid) -> ghost_signing::SigningKey {
+    let (signing_key, verifying_key) = ghost_signing::generate_keypair();
+    dispatcher.register_verifying_key(sender, verifying_key);
+    signing_key
+}
+
+fn signed_notification(
+    sender: Uuid,
+    recipient: Uuid,
+    payload_data: serde_json::Value,
+    signing_key: &ghost_signing::SigningKey,
+) -> AgentMessage {
+    let mut msg = AgentMessage::new(sender, recipient, "Notification".into(), payload_data);
+    msg.sign(signing_key);
+    msg
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // FIX #1: get_db_conn() reconnection — stale SQLite connection
@@ -41,22 +57,23 @@ fn dispatcher_monotonicity_no_stale_state_after_construction() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     // First message should always be accepted
-    let msg1 = AgentMessage::new(
+    let msg1 = signed_notification(
         sender,
         recipient,
-        "Notification".into(),
         serde_json::json!({"message": "first"}),
+        &signing_key,
     );
     assert!(matches!(dispatcher.verify(&msg1), VerifyResult::Accepted));
 
     // Second message from same sender with a newer nonce should be accepted
-    let msg2 = AgentMessage::new(
+    let msg2 = signed_notification(
         sender,
         recipient,
-        "Notification".into(),
         serde_json::json!({"message": "second"}),
+        &signing_key,
     );
     assert!(matches!(dispatcher.verify(&msg2), VerifyResult::Accepted));
 }
@@ -68,19 +85,20 @@ fn dispatcher_uuidv7_monotonicity_rejects_old_nonce() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     // Send two messages — the second gets a newer UUIDv7 nonce
-    let msg1 = AgentMessage::new(
+    let msg1 = signed_notification(
         sender,
         recipient,
-        "Notification".into(),
         serde_json::json!({"message": "first"}),
+        &signing_key,
     );
-    let msg2 = AgentMessage::new(
+    let msg2 = signed_notification(
         sender,
         recipient,
-        "Notification".into(),
         serde_json::json!({"message": "second"}),
+        &signing_key,
     );
 
     // Accept msg2 first (newer nonce)
@@ -320,17 +338,17 @@ fn dispatcher_rejects_future_dated_messages() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
-    let mut msg = AgentMessage::new(
+    let mut msg = signed_notification(
         sender,
         recipient,
-        "Notification".into(),
         serde_json::json!({"message": "from the future"}),
+        &signing_key,
     );
     // Set timestamp 1 hour in the future (well beyond 30s tolerance)
     msg.timestamp = Utc::now() + chrono::Duration::hours(1);
-    // Recompute content hash since timestamp changed
-    msg.content_hash = msg.compute_content_hash();
+    msg.sign(&signing_key);
 
     let result = dispatcher.verify(&msg);
     assert!(
@@ -348,16 +366,17 @@ fn dispatcher_accepts_slight_clock_skew() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
-    let mut msg = AgentMessage::new(
+    let mut msg = signed_notification(
         sender,
         recipient,
-        "Notification".into(),
         serde_json::json!({"message": "slight skew"}),
+        &signing_key,
     );
     // 10 seconds in the future — within 30s tolerance
     msg.timestamp = Utc::now() + chrono::Duration::seconds(10);
-    msg.content_hash = msg.compute_content_hash();
+    msg.sign(&signing_key);
 
     let result = dispatcher.verify(&msg);
     assert!(
@@ -373,16 +392,17 @@ fn dispatcher_rejects_at_future_boundary() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
-    let mut msg = AgentMessage::new(
+    let mut msg = signed_notification(
         sender,
         recipient,
-        "Notification".into(),
         serde_json::json!({"message": "boundary"}),
+        &signing_key,
     );
     // 31 seconds in the future — just past 30s tolerance
     msg.timestamp = Utc::now() + chrono::Duration::seconds(31);
-    msg.content_hash = msg.compute_content_hash();
+    msg.sign(&signing_key);
 
     let result = dispatcher.verify(&msg);
     assert!(
@@ -600,11 +620,12 @@ fn dispatcher_many_senders_no_panic() {
 
     for _ in 0..1000 {
         let sender = Uuid::now_v7();
-        let msg = AgentMessage::new(
+        let signing_key = register_sender(&mut dispatcher, sender);
+        let msg = signed_notification(
             sender,
             recipient,
-            "Notification".into(),
             serde_json::json!({"message": "bulk"}),
+            &signing_key,
         );
         let _ = dispatcher.verify(&msg);
     }

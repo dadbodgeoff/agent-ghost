@@ -91,7 +91,7 @@ impl BackupExporter {
         }
 
         let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        entries.sort_by_key(|a| a.file_name());
 
         for entry in entries {
             let path = entry.path();
@@ -184,7 +184,7 @@ fn snapshot_sqlite_db(db_path: &Path) -> BackupResult<Vec<u8>> {
         })?;
 
     let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
-    let snapshot = NamedTempFile::new_in(parent).map_err(|error| BackupError::Io(error))?;
+    let snapshot = NamedTempFile::new_in(parent).map_err(BackupError::Io)?;
     source
         .backup(DatabaseName::Main, snapshot.path(), None)
         .map_err(|error| {
@@ -194,26 +194,58 @@ fn snapshot_sqlite_db(db_path: &Path) -> BackupResult<Vec<u8>> {
             ))
         })?;
 
-    let backup = Connection::open(snapshot.path()).map_err(|error| {
+    verify_sqlite_snapshot(snapshot.path(), db_path)?;
+
+    fs::read(snapshot.path()).map_err(BackupError::from)
+}
+
+pub(crate) fn verify_sqlite_snapshot(
+    snapshot_path: &Path,
+    context_path: &Path,
+) -> BackupResult<()> {
+    let snapshot = Connection::open(snapshot_path).map_err(|error| {
         BackupError::IntegrityError(format!(
             "open SQLite snapshot {}: {error}",
-            snapshot.path().display()
+            snapshot_path.display()
         ))
     })?;
-    let integrity: String = backup
+    let integrity: String = snapshot
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|error| {
             BackupError::IntegrityError(format!(
                 "verify SQLite snapshot {}: {error}",
-                db_path.display()
+                context_path.display()
             ))
         })?;
     if integrity != "ok" {
         return Err(BackupError::IntegrityError(format!(
             "SQLite snapshot integrity check failed for {}: {integrity}",
-            db_path.display()
+            context_path.display()
         )));
     }
 
-    fs::read(snapshot.path()).map_err(BackupError::from)
+    let violations = snapshot
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|error| {
+            BackupError::IntegrityError(format!(
+                "prepare foreign_key_check {}: {error}",
+                context_path.display()
+            ))
+        })?
+        .query_map([], |_row| Ok(()))
+        .map_err(|error| {
+            BackupError::IntegrityError(format!(
+                "run foreign_key_check {}: {error}",
+                context_path.display()
+            ))
+        })?
+        .count();
+    if violations != 0 {
+        return Err(BackupError::IntegrityError(format!(
+            "SQLite snapshot foreign key check failed for {}: {violations} violation(s)",
+            context_path.display()
+        )));
+    }
+
+    Ok(())
 }

@@ -131,7 +131,7 @@ proptest! {
         let flags = AgentCard::capabilities_from_strings(&caps);
         // Every capability in the input should be matched by the bitfield.
         for cap in &caps {
-            let single_flag = AgentCard::capabilities_from_strings(&[cap.clone()]);
+            let single_flag = AgentCard::capabilities_from_strings(std::slice::from_ref(cap));
             prop_assert!(
                 (flags & single_flag) == single_flag,
                 "capability '{}' not preserved in bitfield {:#b}",

@@ -150,11 +150,19 @@ fn oauth_execute_recovery_body(state: &OAuthExecuteExecutionState) -> serde_json
     body
 }
 
-fn parse_oauth_execute_state(state_json: &str) -> Result<OAuthExecuteExecutionState, ApiError> {
-    let state =
-        serde_json::from_str::<OAuthExecuteExecutionState>(state_json).map_err(|error| {
-            ApiError::internal(format!("failed to parse oauth execute state: {error}"))
-        })?;
+fn parse_oauth_execute_state(
+    record: &cortex_storage::queries::live_execution_queries::LiveExecutionRecord,
+) -> Result<OAuthExecuteExecutionState, ApiError> {
+    if record.state_version != OAUTH_EXECUTE_STATE_VERSION as i64 {
+        return Err(ApiError::internal(format!(
+            "unsupported oauth execute state version: {}",
+            record.state_version
+        )));
+    }
+
+    let state = serde_json::from_str::<OAuthExecuteExecutionState>(&record.state_json).map_err(
+        |error| ApiError::internal(format!("failed to parse oauth execute state: {error}")),
+    )?;
     if state.version != OAUTH_EXECUTE_STATE_VERSION {
         return Err(ApiError::internal(format!(
             "unsupported oauth execute state version: {}",
@@ -182,6 +190,7 @@ fn persist_oauth_execute_record(
             operation_id,
             route_kind: OAUTH_EXECUTE_ROUTE_KIND,
             actor_key: actor,
+            state_version: OAUTH_EXECUTE_STATE_VERSION as i64,
             status: "accepted",
             state_json: &state_json,
         },
@@ -200,6 +209,7 @@ fn update_oauth_execute_state(
     cortex_storage::queries::live_execution_queries::update_status_and_state(
         conn,
         execution_id,
+        OAUTH_EXECUTE_STATE_VERSION as i64,
         status,
         &state_json,
     )
@@ -635,6 +645,7 @@ pub async fn execute_api_call(
                                 operation_id: operation_id.clone(),
                                 route_kind: OAUTH_EXECUTE_ROUTE_KIND.to_string(),
                                 actor_key: actor.to_string(),
+                                state_version: OAUTH_EXECUTE_STATE_VERSION as i64,
                                 status: "accepted".to_string(),
                                 state_json: serde_json::to_string(&execution_state)
                                     .unwrap_or_else(|_| "{}".to_string()),
@@ -655,9 +666,13 @@ pub async fn execute_api_call(
 
             let execution_record =
                 execution_record.expect("oauth execute execution record must exist");
-            let execution_state = match parse_oauth_execute_state(&execution_record.state_json) {
+            let execution_state = match parse_oauth_execute_state(&execution_record) {
                 Ok(state) => state,
-                Err(error) => return error_response_with_idempotency(error),
+                Err(error) => {
+                    let db = state.db.write().await;
+                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                    return error_response_with_idempotency(error);
+                }
             };
 
             match execution_record.status.as_str() {

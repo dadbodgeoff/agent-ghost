@@ -173,7 +173,7 @@ impl<'a> AuditQueryEngine<'a> {
 
         // Fetch page
         let page = filter.page.max(1);
-        let page_size = filter.page_size.max(1).min(1000);
+        let page_size = filter.page_size.clamp(1, 1000);
         let offset = (page - 1) * page_size;
 
         let select_sql = format!(

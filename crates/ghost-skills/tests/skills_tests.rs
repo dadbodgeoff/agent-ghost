@@ -107,19 +107,23 @@ mod wasm_sandbox {
         EscapeType, ExecutionResult, WasmSandbox, WasmSandboxConfig,
     };
     use uuid::Uuid;
+    use wat::parse_str;
 
-    #[tokio::test]
-    async fn execute_returns_result() {
+    #[test]
+    fn execute_runs_a_minimal_pure_wasm_module() {
         let sandbox = WasmSandbox::default();
-        let result = sandbox
-            .execute(
-                b"fake_wasm",
-                serde_json::json!({"input": "test"}),
-                Uuid::now_v7(),
-                "test_skill",
-            )
-            .await;
-        assert!(matches!(result, ExecutionResult::Success { .. }));
+        let result = sandbox.execute(
+            &echo_module(),
+            serde_json::json!({"input": "test"}),
+            Uuid::now_v7(),
+            "test_skill",
+        );
+        match result {
+            ExecutionResult::Success { output, .. } => {
+                assert_eq!(output, serde_json::json!({"input": "test"}));
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
     }
 
     #[test]
@@ -170,8 +174,234 @@ mod wasm_sandbox {
             EscapeType::EnvVarRead,
             EscapeType::ProcessSpawn,
             EscapeType::MemoryExceeded,
+            EscapeType::HiddenImport,
         ];
-        assert_eq!(types.len(), 5);
+        assert_eq!(types.len(), 6);
+    }
+
+    #[test]
+    fn hidden_import_probe_is_detected_and_classified() {
+        let sandbox = WasmSandbox::default();
+        let result = sandbox.execute(
+            &env_import_module(),
+            serde_json::json!({}),
+            Uuid::now_v7(),
+            "env_probe",
+        );
+
+        match result {
+            ExecutionResult::EscapeDetected(attempt) => {
+                assert_eq!(attempt.escape_type, EscapeType::EnvVarRead);
+                assert!(attempt.details.contains("environ_get"));
+            }
+            other => panic!("expected escape detection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn filesystem_network_and_process_imports_fail_closed() {
+        let sandbox = WasmSandbox::default();
+
+        let fs = sandbox.execute(
+            &filesystem_import_module(),
+            serde_json::json!({}),
+            Uuid::now_v7(),
+            "fs_probe",
+        );
+        let net = sandbox.execute(
+            &network_import_module(),
+            serde_json::json!({}),
+            Uuid::now_v7(),
+            "net_probe",
+        );
+        let process = sandbox.execute(
+            &process_import_module(),
+            serde_json::json!({}),
+            Uuid::now_v7(),
+            "proc_probe",
+        );
+
+        assert!(matches!(
+            fs,
+            ExecutionResult::EscapeDetected(attempt)
+                if attempt.escape_type == EscapeType::FilesystemWrite
+        ));
+        assert!(matches!(
+            net,
+            ExecutionResult::EscapeDetected(attempt)
+                if attempt.escape_type == EscapeType::NetworkAccess
+        ));
+        assert!(matches!(
+            process,
+            ExecutionResult::EscapeDetected(attempt)
+                if attempt.escape_type == EscapeType::ProcessSpawn
+        ));
+    }
+
+    #[test]
+    fn infinite_loop_times_out() {
+        let sandbox = WasmSandbox::new(WasmSandboxConfig {
+            timeout: Duration::from_millis(20),
+            fuel_limit: u64::MAX / 4,
+            ..Default::default()
+        });
+        let result = sandbox.execute(
+            &infinite_loop_module(),
+            serde_json::json!({}),
+            Uuid::now_v7(),
+            "spin",
+        );
+        assert!(matches!(result, ExecutionResult::Timeout { .. }));
+    }
+
+    #[test]
+    fn fuel_exhaustion_fails_closed() {
+        let sandbox = WasmSandbox::new(WasmSandboxConfig {
+            timeout: Duration::from_secs(2),
+            fuel_limit: 10_000,
+            ..Default::default()
+        });
+        let result = sandbox.execute(
+            &infinite_loop_module(),
+            serde_json::json!({}),
+            Uuid::now_v7(),
+            "fuel_spin",
+        );
+        assert!(matches!(result, ExecutionResult::FuelExhausted { .. }));
+    }
+
+    #[test]
+    fn memory_limit_failures_do_not_crash_execution() {
+        let sandbox = WasmSandbox::new(WasmSandboxConfig {
+            memory_limit_bytes: 64 * 1024 * 1024,
+            ..Default::default()
+        });
+        let result = sandbox.execute(
+            &oversized_memory_module(),
+            serde_json::json!({}),
+            Uuid::now_v7(),
+            "memory_blowup",
+        );
+        assert!(matches!(result, ExecutionResult::MemoryExceeded { .. }));
+    }
+
+    fn echo_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (memory (export "memory") 2)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.set $ptr
+                global.get $heap
+                local.get $len
+                i32.add
+                global.set $heap
+                local.get $ptr)
+              (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+                local.get $input_ptr
+                i64.extend_i32_u
+                i64.const 32
+                i64.shl
+                local.get $input_len
+                i64.extend_i32_u
+                i64.or))
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn infinite_loop_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (memory (export "memory") 1)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                global.get $heap)
+              (func (export "run") (param i32 i32) (result i64)
+                (loop
+                  br 0)
+                i64.const 0))
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn oversized_memory_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (memory (export "memory") 2048)
+              (func (export "alloc") (param i32) (result i32)
+                i32.const 0)
+              (func (export "run") (param i32 i32) (result i64)
+                i64.const 0))
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn env_import_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "environ_get" (func $environ_get (param i32 i32) (result i32)))
+              (memory (export "memory") 1)
+              (func (export "alloc") (param i32) (result i32)
+                i32.const 0)
+              (func (export "run") (param i32 i32) (result i64)
+                i64.const 0))
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn filesystem_import_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "path_open" (func $path_open))
+              (memory (export "memory") 1)
+              (func (export "alloc") (param i32) (result i32)
+                i32.const 0)
+              (func (export "run") (param i32 i32) (result i64)
+                i64.const 0))
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn network_import_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "sock_open" (func $sock_open))
+              (memory (export "memory") 1)
+              (func (export "alloc") (param i32) (result i32)
+                i32.const 0)
+              (func (export "run") (param i32 i32) (result i64)
+                i64.const 0))
+            "#,
+        )
+        .unwrap()
+    }
+
+    fn process_import_module() -> Vec<u8> {
+        parse_str(
+            r#"
+            (module
+              (import "wasi_snapshot_preview1" "proc_exit" (func $proc_exit (param i32)))
+              (memory (export "memory") 1)
+              (func (export "alloc") (param i32) (result i32)
+                i32.const 0)
+              (func (export "run") (param i32 i32) (result i64)
+                i64.const 0))
+            "#,
+        )
+        .unwrap()
     }
 }
 
@@ -180,7 +410,9 @@ mod wasm_sandbox {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod native_sandbox {
-    use ghost_skills::sandbox::native_sandbox::NativeSandbox;
+    use ghost_skills::sandbox::native_sandbox::{
+        NativeContainmentMode, NativeContainmentProfile, NativeSandbox,
+    };
     use std::collections::HashSet;
 
     #[test]
@@ -208,6 +440,16 @@ mod native_sandbox {
         assert!(sandbox
             .validate_tool_call("write_file", "filesystem_write")
             .is_err());
+    }
+
+    #[test]
+    fn host_interaction_requires_audited_profile() {
+        let profile = NativeContainmentProfile::new(
+            NativeContainmentMode::HostInteraction,
+            false,
+            ["host_interaction".to_string()],
+        );
+        assert!(NativeSandbox::from_profile(&profile).is_err());
     }
 }
 

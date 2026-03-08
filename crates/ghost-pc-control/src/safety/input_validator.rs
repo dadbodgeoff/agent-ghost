@@ -129,7 +129,7 @@ impl InputValidator {
     /// Case-insensitive matching against the blocked hotkeys list.
     pub fn validate_hotkey(&self, keys: &str) -> ValidationResult {
         let normalized = keys.to_lowercase();
-        if self.blocked_hotkeys.iter().any(|h| *h == normalized) {
+        if self.blocked_hotkeys.contains(&normalized) {
             return ValidationResult::Denied(format!("hotkey '{keys}' blocked by safety policy"));
         }
         ValidationResult::Allowed

@@ -176,11 +176,11 @@ fn sign_verify_via_registry() {
 
 #[test]
 fn verify_fails_for_unregistered_agent() {
-    let key = SigningKey::generate(&mut OsRng);
+    let _key = SigningKey::generate(&mut OsRng);
     let agent_id = Uuid::new_v4();
     let registry = KeyRegistry::new();
 
-    let delta = TestDelta {
+    let _delta = TestDelta {
         field: "test".into(),
         value: 1,
     };

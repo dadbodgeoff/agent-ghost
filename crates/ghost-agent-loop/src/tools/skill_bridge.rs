@@ -1,7 +1,7 @@
 //! SkillBridge — connects the ghost-skills system to the ToolExecutor.
 //!
-//! Converts registered `Skill` instances into `RegisteredTool` entries
-//! so the LLM can discover and invoke them as tools during the agent loop.
+//! Converts resolved skill handlers into `RegisteredTool` entries so the LLM
+//! can discover and invoke them as tools during the agent loop.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -25,68 +25,57 @@ pub struct ExecutionContext {
     pub is_compaction_flush: bool,
 }
 
-/// Bridge between the Skill system and the ToolRegistry/ToolExecutor.
-///
-/// Holds the shared skill map, a DB connection for building `SkillContext`,
-/// and the convergence profile name.
-pub struct SkillBridge {
-    skills: Arc<HashMap<String, Arc<dyn Skill>>>,
-    db: Arc<Mutex<Connection>>,
-    convergence_profile: String,
+/// Shared execution environment available to all skill handlers.
+#[derive(Clone)]
+pub struct SkillHandlerEnvironment {
+    pub db: Arc<Mutex<Connection>>,
+    pub convergence_profile: String,
 }
 
-impl SkillBridge {
-    pub fn new(
-        skills: Arc<HashMap<String, Arc<dyn Skill>>>,
-        db: Arc<Mutex<Connection>>,
-        convergence_profile: String,
-    ) -> Self {
-        Self {
-            skills,
-            db,
-            convergence_profile,
-        }
-    }
-
-    /// Generate `RegisteredTool` entries for all skills.
-    ///
-    /// Each skill becomes a tool with a `skill_` prefix (e.g. `skill_note_take`).
-    pub fn registered_tools(&self) -> Vec<RegisteredTool> {
-        self.skills
-            .iter()
-            .map(|(name, skill)| {
-                let tool_name = format!("skill_{name}");
-                RegisteredTool {
-                    name: tool_name.clone(),
-                    description: skill.description().to_string(),
-                    schema: ToolSchema {
-                        name: tool_name,
-                        description: skill.description().to_string(),
-                        parameters: skill.parameters_schema(),
-                    },
-                    capability: format!("skill:{name}"),
-                    // Safety skills (not removable) are always visible (level 5 = never hidden).
-                    // Other skills are visible up to intervention level 3.
-                    hidden_at_level: if skill.removable() { 3 } else { 5 },
-                    timeout_secs: 30,
-                }
-            })
-            .collect()
-    }
-
-    /// Execute a skill by name, constructing a `SkillContext` from the
-    /// given `ExecutionContext`.
-    pub fn execute(
+/// Runtime skill handler abstraction shared by compiled and external skills.
+pub trait SkillHandler: Send + Sync {
+    fn description(&self) -> String;
+    fn parameters_schema(&self) -> serde_json::Value;
+    fn removable(&self) -> bool;
+    fn execute(
         &self,
-        skill_name: &str,
+        env: &SkillHandlerEnvironment,
+        input: &serde_json::Value,
+        exec_ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, SkillError>;
+}
+
+/// Adapter exposing a compiled `Skill` through the generic handler seam.
+pub struct CompiledSkillHandler {
+    skill: Arc<dyn Skill>,
+}
+
+impl CompiledSkillHandler {
+    pub fn new(skill: Arc<dyn Skill>) -> Self {
+        Self { skill }
+    }
+}
+
+impl SkillHandler for CompiledSkillHandler {
+    fn description(&self) -> String {
+        self.skill.description().to_string()
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.skill.parameters_schema()
+    }
+
+    fn removable(&self) -> bool {
+        self.skill.removable()
+    }
+
+    fn execute(
+        &self,
+        env: &SkillHandlerEnvironment,
         input: &serde_json::Value,
         exec_ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, SkillError> {
-        let skill = self.skills.get(skill_name).ok_or_else(|| {
-            SkillError::Internal(format!("skill '{skill_name}' not found in bridge"))
-        })?;
-
-        let db = self
+        let db = env
             .db
             .lock()
             .map_err(|_| SkillError::Storage("DB lock poisoned".into()))?;
@@ -95,15 +84,76 @@ impl SkillBridge {
             db: &db,
             agent_id: exec_ctx.agent_id,
             session_id: exec_ctx.session_id,
-            convergence_profile: &self.convergence_profile,
+            convergence_profile: &env.convergence_profile,
         };
 
-        skill.execute(&ctx, input)
+        self.skill.execute(&ctx, input)
+    }
+}
+
+/// Bridge between resolved skill handlers and the ToolRegistry/ToolExecutor.
+pub struct SkillBridge {
+    handlers: Arc<HashMap<String, Arc<dyn SkillHandler>>>,
+    env: SkillHandlerEnvironment,
+}
+
+impl SkillBridge {
+    pub fn new(
+        handlers: Arc<HashMap<String, Arc<dyn SkillHandler>>>,
+        db: Arc<Mutex<Connection>>,
+        convergence_profile: String,
+    ) -> Self {
+        Self {
+            handlers,
+            env: SkillHandlerEnvironment {
+                db,
+                convergence_profile,
+            },
+        }
+    }
+
+    /// Generate `RegisteredTool` entries for all resolved skill handlers.
+    ///
+    /// Each skill becomes a tool with a `skill_` prefix (e.g. `skill_note_take`).
+    pub fn registered_tools(&self) -> Vec<RegisteredTool> {
+        self.handlers
+            .iter()
+            .map(|(name, handler)| {
+                let tool_name = format!("skill_{name}");
+                RegisteredTool {
+                    name: tool_name.clone(),
+                    description: handler.description(),
+                    schema: ToolSchema {
+                        name: tool_name,
+                        description: handler.description(),
+                        parameters: handler.parameters_schema(),
+                    },
+                    capability: format!("skill:{name}"),
+                    // Safety skills (not removable) are always visible (level 5 = never hidden).
+                    // Other skills are visible up to intervention level 3.
+                    hidden_at_level: if handler.removable() { 3 } else { 5 },
+                    timeout_secs: 30,
+                }
+            })
+            .collect()
+    }
+
+    /// Execute a resolved skill handler by name.
+    pub fn execute(
+        &self,
+        skill_name: &str,
+        input: &serde_json::Value,
+        exec_ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, SkillError> {
+        let handler = self.handlers.get(skill_name).ok_or_else(|| {
+            SkillError::Internal(format!("skill '{skill_name}' not found in bridge"))
+        })?;
+        handler.execute(&self.env, input, exec_ctx)
     }
 
     /// Check if the bridge has a skill registered under the given name.
     pub fn has_skill(&self, skill_name: &str) -> bool {
-        self.skills.contains_key(skill_name)
+        self.handlers.contains_key(skill_name)
     }
 }
 
@@ -123,9 +173,9 @@ pub fn register_skills(
 
         if let Some(allowlist) = skill_allowlist {
             let is_safety = bridge
-                .skills
+                .handlers
                 .get(skill_name)
-                .map_or(false, |s| !s.removable());
+                .is_some_and(|handler| !handler.removable());
             if !is_safety && !allowlist.iter().any(|a| a == skill_name) {
                 continue;
             }

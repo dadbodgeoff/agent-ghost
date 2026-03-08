@@ -43,6 +43,7 @@ impl From<ghost_skills::skill::SkillError> for ToolError {
             | SkillError::AppNotAllowed { .. }
             | SkillError::UserDenied
             | SkillError::AuthorizationDenied(_)
+            | SkillError::SandboxViolation(_)
             | SkillError::PcControlBlocked(_)
             | SkillError::CircuitBreakerOpen(_) => ToolError::PolicyDenied(e.to_string()),
             _ => ToolError::ExecutionFailed(e.to_string()),

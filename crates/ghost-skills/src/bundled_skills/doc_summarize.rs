@@ -92,9 +92,11 @@ impl Skill for DocSummarizeSkill {
             "markdown" => "markdown",
             "text" => "text",
             _ => {
-                if file_path.ends_with(".md") || file_path.ends_with(".markdown") {
-                    "markdown"
-                } else if content.contains("# ") || content.contains("## ") {
+                if file_path.ends_with(".md")
+                    || file_path.ends_with(".markdown")
+                    || content.contains("# ")
+                    || content.contains("## ")
+                {
                     "markdown"
                 } else {
                     "text"
@@ -157,11 +159,11 @@ impl Skill for DocSummarizeSkill {
 /// - Filler sentences ("In this paper", "We also") score lower
 fn extract_key_sentences(text: &str, max: usize) -> Vec<String> {
     let sentences: Vec<&str> = text
-        .split(|c: char| c == '.' || c == '!' || c == '?')
+        .split(['.', '!', '?'])
         .map(|s| s.trim())
         .filter(|s| {
             let word_count = s.split_whitespace().count();
-            word_count >= 5 && word_count <= 60
+            (5..=60).contains(&word_count)
         })
         .collect();
 

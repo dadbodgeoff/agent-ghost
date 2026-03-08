@@ -1,11 +1,19 @@
 mod common;
 
+use std::collections::BTreeMap;
+use std::fs;
+
 use cortex_storage::queries::external_skill_queries::{
     self, ExternalSkillInstallState, ExternalSkillQuarantineState, ExternalSkillVerificationStatus,
 };
 use ghost_gateway::agents::registry::{durable_agent_id, AgentLifecycleState, RegisteredAgent};
+use ghost_signing::generate_keypair;
+use ghost_skills::artifact::{
+    ArtifactExecutionMode, ArtifactSourceKind, SkillArtifact, SkillManifestSource,
+};
 use reqwest::StatusCode;
 use serde_json::json;
+use wat::parse_str;
 
 fn with_operation_headers(
     builder: reqwest::RequestBuilder,
@@ -49,6 +57,26 @@ fn seed_external_skill(
     quarantine: ExternalSkillQuarantineState,
     install: Option<ExternalSkillInstallState>,
 ) {
+    seed_external_skill_with_requested_capabilities(
+        conn,
+        digest,
+        name,
+        verification,
+        quarantine,
+        install,
+        "[]",
+    );
+}
+
+fn seed_external_skill_with_requested_capabilities(
+    conn: &rusqlite::Connection,
+    digest: &str,
+    name: &str,
+    verification: ExternalSkillVerificationStatus,
+    quarantine: ExternalSkillQuarantineState,
+    install: Option<ExternalSkillInstallState>,
+    requested_capabilities: &str,
+) {
     external_skill_queries::upsert_external_skill_artifact(
         conn,
         digest,
@@ -64,7 +92,7 @@ fn seed_external_skill(
         &format!("/managed/{digest}/artifact.ghostskill"),
         &format!("/managed/{digest}/module.wasm"),
         "{}",
-        "[]",
+        requested_capabilities,
         "[\"Pure WASM computation\"]",
         Some("key-1"),
         256,
@@ -99,6 +127,132 @@ fn seed_external_skill(
         )
         .unwrap();
     }
+}
+
+fn seed_external_runtime_skill(
+    gateway: &common::TestGateway,
+    name: &str,
+    wasm_bytes: &[u8],
+    install: ExternalSkillInstallState,
+) -> String {
+    let managed_dir = gateway.temp_dir().join("managed-runtime");
+    fs::create_dir_all(&managed_dir).unwrap();
+    let (signing_key, _) = generate_keypair();
+    let artifact = SkillArtifact::build(
+        SkillManifestSource {
+            manifest_schema_version: ghost_skills::artifact::MANIFEST_SCHEMA_VERSION,
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            publisher: "ghost-test".to_string(),
+            description: "external skill".to_string(),
+            source_kind: ArtifactSourceKind::Workspace,
+            execution_mode: ArtifactExecutionMode::Wasm,
+            entrypoint: "module.wasm".to_string(),
+            requested_capabilities: Vec::new(),
+            declared_privileges: vec!["Pure WASM computation".to_string()],
+        },
+        BTreeMap::from([("module.wasm".to_string(), wasm_bytes.to_vec())]),
+        &signing_key,
+    )
+    .unwrap();
+    let digest = artifact.artifact_digest().unwrap();
+    let artifact_path = managed_dir.join(format!("{digest}.ghostskill"));
+    artifact.write_to_path(&artifact_path).unwrap();
+
+    let writer = gateway.app_state.db.legacy_connection().unwrap();
+    let writer = writer.lock().unwrap();
+    external_skill_queries::upsert_external_skill_artifact(
+        &writer,
+        &digest,
+        1,
+        name,
+        "1.0.0",
+        "ghost-test",
+        "external skill",
+        "workspace",
+        "wasm",
+        "module.wasm",
+        &artifact_path.display().to_string(),
+        &artifact_path.display().to_string(),
+        &artifact_path.display().to_string(),
+        "{}",
+        "[]",
+        "[\"Pure WASM computation\"]",
+        Some("key-1"),
+        256,
+    )
+    .unwrap();
+    external_skill_queries::upsert_external_skill_verification(
+        &writer,
+        &digest,
+        ExternalSkillVerificationStatus::Verified,
+        Some("key-1"),
+        Some("ghost-test"),
+        "{}",
+    )
+    .unwrap();
+    external_skill_queries::upsert_external_skill_quarantine(
+        &writer,
+        &digest,
+        ExternalSkillQuarantineState::Clear,
+        None,
+        None,
+        Some("operator"),
+    )
+    .unwrap();
+    external_skill_queries::upsert_external_skill_install_state(
+        &writer,
+        &digest,
+        name,
+        "1.0.0",
+        install,
+        Some("operator"),
+    )
+    .unwrap();
+    digest
+}
+
+fn echo_module() -> Vec<u8> {
+    parse_str(
+        r#"
+        (module
+          (memory (export "memory") 2)
+          (global $heap (mut i32) (i32.const 1024))
+          (func (export "alloc") (param $len i32) (result i32)
+            (local $ptr i32)
+            global.get $heap
+            local.set $ptr
+            global.get $heap
+            local.get $len
+            i32.add
+            global.set $heap
+            local.get $ptr)
+          (func (export "run") (param $input_ptr i32) (param $input_len i32) (result i64)
+            local.get $input_ptr
+            i64.extend_i32_u
+            i64.const 32
+            i64.shl
+            local.get $input_len
+            i64.extend_i32_u
+            i64.or))
+        "#,
+    )
+    .unwrap()
+}
+
+fn env_import_module() -> Vec<u8> {
+    parse_str(
+        r#"
+        (module
+          (import "wasi_snapshot_preview1" "environ_get" (func $environ_get (param i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "alloc") (param i32) (result i32)
+            i32.const 0)
+          (func (export "run") (param i32 i32) (result i64)
+            i64.const 0))
+        "#,
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -449,6 +603,172 @@ async fn execute_route_cannot_bypass_catalog_for_installed_external_skills() {
     assert_eq!(
         body["error"]["message"],
         "Skill 'digest-runtime-dark' is verified but runtime execution is still gated off"
+    );
+}
+
+#[tokio::test]
+async fn list_and_execute_routes_fail_closed_for_verified_rows_with_requested_capabilities() {
+    let gateway = common::TestGateway::start_with_external_skill_runtime().await;
+    let writer = gateway.app_state.db.write().await;
+    seed_external_skill_with_requested_capabilities(
+        &writer,
+        "digest-host-cap",
+        "echo",
+        ExternalSkillVerificationStatus::Verified,
+        ExternalSkillQuarantineState::Clear,
+        Some(ExternalSkillInstallState::Installed),
+        "[\"http_request\"]",
+    );
+    drop(writer);
+
+    let list = gateway
+        .client
+        .get(gateway.url("/api/skills"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body: serde_json::Value = list.json().await.unwrap();
+    let external = list_body["available"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|skill| skill["id"] == "digest-host-cap")
+        .cloned()
+        .expect("capability-requesting external skill in catalog");
+    assert_eq!(external["state"], "verification_failed");
+    assert_eq!(external["install_state"], "installed");
+    assert_eq!(external["verification_status"], "unsupported_capability");
+    assert_eq!(external["runtime_visible"], false);
+    assert_eq!(external["requested_capabilities"], json!(["http_request"]));
+
+    let response = gateway
+        .client
+        .post(gateway.url("/api/skills/digest-host-cap/execute"))
+        .json(&json!({
+            "agent_id": uuid::Uuid::now_v7(),
+            "session_id": uuid::Uuid::now_v7(),
+            "input": {
+                "message": "should stay blocked"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body["error"]["message"],
+        "Skill 'digest-host-cap' failed verification and cannot be installed or executed"
+    );
+}
+
+#[tokio::test]
+async fn execute_route_runs_installed_external_wasm_when_runtime_enabled() {
+    let gateway = common::TestGateway::start_with_external_skill_runtime().await;
+    let digest = seed_external_runtime_skill(
+        &gateway,
+        "echo",
+        &echo_module(),
+        ExternalSkillInstallState::Installed,
+    );
+    let agent_id =
+        register_agent_with_allowlist(&gateway, "external-echo-agent", Some(vec!["echo".into()]));
+    let session_id = uuid::Uuid::now_v7();
+
+    let list = gateway
+        .client
+        .get(gateway.url("/api/skills"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body: serde_json::Value = list.json().await.unwrap();
+    let external = list_body["installed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|skill| skill["id"] == digest)
+        .cloned()
+        .expect("runtime-visible external skill");
+    assert_eq!(external["runtime_visible"], true);
+
+    let response = gateway
+        .client
+        .post(gateway.url(&format!("/api/skills/{digest}/execute")))
+        .json(&json!({
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "input": {
+                "message": "hello external"
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["skill"], digest);
+    assert_eq!(body["result"], json!({ "message": "hello external" }));
+}
+
+#[tokio::test]
+async fn execute_route_quarantines_external_wasm_on_sandbox_violation() {
+    let gateway = common::TestGateway::start_with_external_skill_runtime().await;
+    let digest = seed_external_runtime_skill(
+        &gateway,
+        "evil",
+        &env_import_module(),
+        ExternalSkillInstallState::Installed,
+    );
+    let agent_id =
+        register_agent_with_allowlist(&gateway, "external-evil-agent", Some(vec!["evil".into()]));
+    let session_id = uuid::Uuid::now_v7();
+
+    let response = gateway
+        .client
+        .post(gateway.url(&format!("/api/skills/{digest}/execute")))
+        .json(&json!({
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "input": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "SKILL_SANDBOX_VIOLATION");
+
+    let read = gateway.app_state.db.read().unwrap();
+    let quarantine = external_skill_queries::get_external_skill_quarantine(&read, &digest)
+        .unwrap()
+        .unwrap();
+    assert_eq!(quarantine.state, ExternalSkillQuarantineState::Quarantined);
+    assert_eq!(quarantine.reason_code.as_deref(), Some("sandbox_escape"));
+
+    let second = gateway
+        .client
+        .post(gateway.url(&format!("/api/skills/{digest}/execute")))
+        .json(&json!({
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "input": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::CONFLICT);
+    let second_body: serde_json::Value = second.json().await.unwrap();
+    assert_eq!(
+        second_body["error"]["message"],
+        format!(
+            "Skill '{digest}' is quarantined: {}",
+            quarantine.reason_detail.unwrap()
+        )
     );
 }
 

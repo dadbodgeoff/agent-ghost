@@ -72,6 +72,7 @@ pub enum HumanDecisionError {
     Storage(String),
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_proposal(
     conn: &Connection,
     id: &str,
@@ -714,6 +715,7 @@ fn canonicalize_content(
     content
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_transition(
     conn: &Connection,
     proposal_id: &str,

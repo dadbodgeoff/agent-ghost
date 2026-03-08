@@ -303,9 +303,6 @@ mod tests {
 
     #[test]
     fn rejects_drop_in_select() {
-        let db = test_db();
-        let ctx = test_ctx(&db);
-
         let result = validate_read_only("SELECT * FROM users; DROP TABLE users");
         assert!(result.is_err());
     }

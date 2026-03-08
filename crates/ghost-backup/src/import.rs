@@ -1,18 +1,26 @@
 //! Backup import — decrypt, verify, staged restore (Req 30 AC4).
 
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
-use std::io::Read;
+#[cfg(test)]
+use std::io::Cursor;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use age::secrecy::SecretString as AgeSecretString;
 use age::Decryptor;
 use uuid::Uuid;
 
-use crate::export::require_passphrase;
+use crate::export::{require_passphrase, verify_sqlite_snapshot};
 use crate::{
-    BackupError, BackupManifest, BackupResult, ARCHIVE_MAGIC, CURRENT_BACKUP_FORMAT_VERSION,
+    BackupError, BackupManifest, BackupResult, ManifestEntry, ARCHIVE_MAGIC,
+    CURRENT_BACKUP_FORMAT_VERSION,
 };
+
+const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
+const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Imports and restores from a `.ghost-backup` archive.
 pub struct BackupImporter {
@@ -31,33 +39,20 @@ impl BackupImporter {
         archive_path: &std::path::Path,
         passphrase: &str,
     ) -> BackupResult<BackupManifest> {
-        let (manifest, _) = read_archive(archive_path, passphrase)?;
-        Ok(manifest)
+        let passphrase = require_passphrase(passphrase)?;
+        let encrypted = fs::read(archive_path)?;
+        with_decrypted_archive_reader(&encrypted, passphrase, |reader| {
+            let mut sink = NoopSink;
+            process_archive_reader(reader, &mut sink)
+        })
     }
 
     /// Import from a backup archive into a fresh restore target.
-    ///
-    /// In-place overwrite is disabled. Callers must restore into a target path
-    /// that does not already exist, then perform any operator-controlled swap
-    /// outside this library.
     pub fn import(
         &self,
         archive_path: &std::path::Path,
         passphrase: &str,
     ) -> BackupResult<BackupManifest> {
-        let (manifest, data) = read_archive(archive_path, passphrase)?;
-        self.restore_verified_archive(&data)?;
-
-        tracing::info!(
-            entries = manifest.entries.len(),
-            target = %self.ghost_dir.display(),
-            "Backup imported and restored into fresh target"
-        );
-
-        Ok(manifest)
-    }
-
-    fn restore_verified_archive(&self, data: &BTreeMap<String, Vec<u8>>) -> BackupResult<()> {
         if self.ghost_dir.exists() {
             return Err(BackupError::InvalidRestoreTarget(format!(
                 "restore target {} already exists; in-place restore is disabled",
@@ -65,6 +60,8 @@ impl BackupImporter {
             )));
         }
 
+        let passphrase = require_passphrase(passphrase)?;
+        let encrypted = fs::read(archive_path)?;
         let parent = self.ghost_dir.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent)?;
 
@@ -77,39 +74,159 @@ impl BackupImporter {
         }
         fs::create_dir_all(&stage_root)?;
 
-        let restore_result = (|| {
-            for (rel_path, file_data) in data {
-                let sanitized = sanitize_entry_path(rel_path)?;
-                let target = stage_root.join(&sanitized);
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&target, file_data)?;
+        let restore_result = with_decrypted_archive_reader(&encrypted, passphrase, |reader| {
+            let mut sink = RestoreSink::new(&stage_root);
+            process_archive_reader(reader, &mut sink)
+        });
+
+        match restore_result {
+            Ok(manifest) => {
+                fs::rename(&stage_root, &self.ghost_dir)?;
+                tracing::info!(
+                    entries = manifest.entries.len(),
+                    target = %self.ghost_dir.display(),
+                    "Backup imported and restored into fresh target"
+                );
+                Ok(manifest)
             }
-            fs::rename(&stage_root, &self.ghost_dir)?;
-            Ok(())
-        })();
-
-        if restore_result.is_err() {
-            let _ = fs::remove_dir_all(&stage_root);
+            Err(error) => {
+                let _ = fs::remove_dir_all(&stage_root);
+                Err(error)
+            }
         }
-
-        restore_result
     }
 }
 
+trait ArchiveEntrySink {
+    type State;
+
+    fn begin_entry(&mut self, entry: &ManifestEntry) -> BackupResult<Self::State>;
+    fn write_chunk(&mut self, state: &mut Self::State, chunk: &[u8]) -> BackupResult<()>;
+    fn finish_entry(&mut self, state: Self::State, entry: &ManifestEntry) -> BackupResult<()>;
+}
+
+struct NoopSink;
+
+impl ArchiveEntrySink for NoopSink {
+    type State = ();
+
+    fn begin_entry(&mut self, _entry: &ManifestEntry) -> BackupResult<Self::State> {
+        Ok(())
+    }
+
+    fn write_chunk(&mut self, _state: &mut Self::State, _chunk: &[u8]) -> BackupResult<()> {
+        Ok(())
+    }
+
+    fn finish_entry(&mut self, _state: Self::State, _entry: &ManifestEntry) -> BackupResult<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct CollectSink {
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+#[cfg(test)]
+impl CollectSink {
+    fn new() -> Self {
+        Self {
+            files: BTreeMap::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl ArchiveEntrySink for CollectSink {
+    type State = Vec<u8>;
+
+    fn begin_entry(&mut self, entry: &ManifestEntry) -> BackupResult<Self::State> {
+        let capacity = usize::try_from(entry.size).map_err(|_| {
+            BackupError::IntegrityError(format!("entry too large for memory: {}", entry.path))
+        })?;
+        Ok(Vec::with_capacity(capacity))
+    }
+
+    fn write_chunk(&mut self, state: &mut Self::State, chunk: &[u8]) -> BackupResult<()> {
+        state.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    fn finish_entry(&mut self, state: Self::State, entry: &ManifestEntry) -> BackupResult<()> {
+        self.files.insert(entry.path.clone(), state);
+        Ok(())
+    }
+}
+
+struct RestoreSink {
+    stage_root: PathBuf,
+}
+
+struct RestoreEntryState {
+    file: fs::File,
+    target: PathBuf,
+}
+
+impl RestoreSink {
+    fn new(stage_root: &Path) -> Self {
+        Self {
+            stage_root: stage_root.to_path_buf(),
+        }
+    }
+}
+
+impl ArchiveEntrySink for RestoreSink {
+    type State = RestoreEntryState;
+
+    fn begin_entry(&mut self, entry: &ManifestEntry) -> BackupResult<Self::State> {
+        let sanitized = sanitize_entry_path(&entry.path)?;
+        let target = self.stage_root.join(&sanitized);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = fs::File::create(&target)?;
+        Ok(RestoreEntryState { file, target })
+    }
+
+    fn write_chunk(&mut self, state: &mut Self::State, chunk: &[u8]) -> BackupResult<()> {
+        state.file.write_all(chunk)?;
+        Ok(())
+    }
+
+    fn finish_entry(&mut self, mut state: Self::State, entry: &ManifestEntry) -> BackupResult<()> {
+        state.file.flush()?;
+        state.file.sync_all()?;
+        drop(state.file);
+
+        if entry.path.starts_with("data/") && entry.path.ends_with(".db") {
+            verify_sqlite_snapshot(&state.target, &state.target)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn read_archive(
     archive_path: &Path,
     passphrase: &str,
 ) -> BackupResult<(BackupManifest, BTreeMap<String, Vec<u8>>)> {
     let passphrase = require_passphrase(passphrase)?;
     let encrypted = fs::read(archive_path)?;
-    let raw = decrypt_archive(&encrypted, passphrase)?;
-    parse_archive_bytes(&raw)
+    with_decrypted_archive_reader(&encrypted, passphrase, |reader| {
+        let mut sink = CollectSink::new();
+        let manifest = process_archive_reader(reader, &mut sink)?;
+        Ok((manifest, sink.files))
+    })
 }
 
-pub(crate) fn decrypt_archive(data: &[u8], passphrase: &str) -> BackupResult<Vec<u8>> {
-    let decryptor = Decryptor::new(data).map_err(|error| {
+fn with_decrypted_archive_reader<T>(
+    encrypted: &[u8],
+    passphrase: &str,
+    f: impl FnOnce(&mut dyn Read) -> BackupResult<T>,
+) -> BackupResult<T> {
+    let decryptor = Decryptor::new(encrypted).map_err(|error| {
         BackupError::UnsupportedArchive(format!("invalid age envelope: {error}"))
     })?;
     if !decryptor.is_scrypt() {
@@ -124,37 +241,39 @@ pub(crate) fn decrypt_archive(data: &[u8], passphrase: &str) -> BackupResult<Vec
     let mut reader = decryptor
         .decrypt(identities.into_iter())
         .map_err(|error| BackupError::EncryptionError(error.to_string()))?;
-
-    let mut plaintext = Vec::new();
-    reader
-        .read_to_end(&mut plaintext)
-        .map_err(|error| BackupError::EncryptionError(error.to_string()))?;
-    Ok(plaintext)
+    f(&mut reader)
 }
 
-pub(crate) fn parse_archive_bytes(
-    raw: &[u8],
-) -> BackupResult<(BackupManifest, BTreeMap<String, Vec<u8>>)> {
-    if raw.len() < ARCHIVE_MAGIC.len() + 8 {
-        return Err(BackupError::IntegrityError("archive too small".to_string()));
-    }
-    if &raw[..ARCHIVE_MAGIC.len()] != ARCHIVE_MAGIC {
+fn process_archive_reader<S: ArchiveEntrySink>(
+    reader: &mut dyn Read,
+    sink: &mut S,
+) -> BackupResult<BackupManifest> {
+    let mut magic = vec![0u8; ARCHIVE_MAGIC.len()];
+    reader.read_exact(&mut magic).map_err(|error| {
+        BackupError::IntegrityError(format!("archive truncated while reading header: {error}"))
+    })?;
+    if magic != ARCHIVE_MAGIC {
         return Err(BackupError::UnsupportedArchive(
             "legacy or unknown backup archive format".to_string(),
         ));
     }
 
-    let mut cursor = ARCHIVE_MAGIC.len();
-    let manifest_len = read_u64(raw, &mut cursor)? as usize;
-    if raw.len() < cursor + manifest_len {
-        return Err(BackupError::IntegrityError(
-            "manifest truncated".to_string(),
-        ));
+    let manifest_len = read_u64_from_reader(reader)?;
+    let manifest_len = usize::try_from(manifest_len)
+        .map_err(|_| BackupError::IntegrityError("manifest too large".to_string()))?;
+    if manifest_len > MAX_MANIFEST_BYTES {
+        return Err(BackupError::IntegrityError(format!(
+            "manifest exceeds {} bytes",
+            MAX_MANIFEST_BYTES
+        )));
     }
 
-    let manifest: BackupManifest = serde_json::from_slice(&raw[cursor..cursor + manifest_len])
+    let mut manifest_json = vec![0u8; manifest_len];
+    reader
+        .read_exact(&mut manifest_json)
+        .map_err(|error| BackupError::IntegrityError(format!("manifest truncated: {error}")))?;
+    let manifest: BackupManifest = serde_json::from_slice(&manifest_json)
         .map_err(|error| BackupError::IntegrityError(format!("manifest parse: {error}")))?;
-    cursor += manifest_len;
 
     if manifest.version != CURRENT_BACKUP_FORMAT_VERSION {
         return Err(BackupError::VersionMismatch {
@@ -164,7 +283,8 @@ pub(crate) fn parse_archive_bytes(
     }
 
     let mut seen_paths = BTreeSet::new();
-    let mut data = BTreeMap::new();
+    let mut buffer = vec![0u8; STREAM_BUFFER_BYTES];
+
     for entry in &manifest.entries {
         if !seen_paths.insert(entry.path.clone()) {
             return Err(BackupError::IntegrityError(format!(
@@ -173,26 +293,36 @@ pub(crate) fn parse_archive_bytes(
             )));
         }
 
-        let file_len = read_u64(raw, &mut cursor)? as usize;
-        if raw.len() < cursor + file_len {
-            return Err(BackupError::IntegrityError(format!(
-                "file data truncated for {}",
-                entry.path
-            )));
-        }
-
-        let file_data = raw[cursor..cursor + file_len].to_vec();
-        cursor += file_len;
-
-        if entry.size != file_data.len() as u64 {
+        let file_len = read_u64_from_reader(reader)?;
+        if file_len != entry.size {
             return Err(BackupError::IntegrityError(format!(
                 "size mismatch for {}: manifest={}, actual={}",
-                entry.path,
-                entry.size,
-                file_data.len()
+                entry.path, entry.size, file_len
             )));
         }
-        let hash = blake3::hash(&file_data).to_hex().to_string();
+
+        let mut sink_state = sink.begin_entry(entry)?;
+        let mut remaining = usize::try_from(file_len)
+            .map_err(|_| BackupError::IntegrityError(format!("entry too large: {}", entry.path)))?;
+        let mut hasher = blake3::Hasher::new();
+
+        while remaining > 0 {
+            let chunk_len = remaining.min(buffer.len());
+            reader
+                .read_exact(&mut buffer[..chunk_len])
+                .map_err(|error| {
+                    BackupError::IntegrityError(format!(
+                        "file data truncated for {}: {error}",
+                        entry.path
+                    ))
+                })?;
+            let chunk = &buffer[..chunk_len];
+            hasher.update(chunk);
+            sink.write_chunk(&mut sink_state, chunk)?;
+            remaining -= chunk_len;
+        }
+
+        let hash = hasher.finalize().to_hex().to_string();
         if hash != entry.blake3_hash {
             return Err(BackupError::IntegrityError(format!(
                 "hash mismatch for {}",
@@ -200,27 +330,38 @@ pub(crate) fn parse_archive_bytes(
             )));
         }
 
-        data.insert(entry.path.clone(), file_data);
+        sink.finish_entry(sink_state, entry)?;
     }
 
-    if cursor != raw.len() {
+    let mut trailing = [0u8; 1];
+    if reader
+        .read(&mut trailing)
+        .map_err(|error| BackupError::IntegrityError(format!("archive trailing read: {error}")))?
+        != 0
+    {
         return Err(BackupError::IntegrityError(
             "archive contains unexpected trailing data".to_string(),
         ));
     }
 
-    Ok((manifest, data))
+    Ok(manifest)
 }
 
-fn read_u64(raw: &[u8], cursor: &mut usize) -> BackupResult<u64> {
-    if raw.len() < *cursor + 8 {
-        return Err(BackupError::IntegrityError(
-            "archive truncated while reading length".to_string(),
-        ));
-    }
+#[cfg(test)]
+pub(crate) fn parse_archive_bytes(
+    raw: &[u8],
+) -> BackupResult<(BackupManifest, BTreeMap<String, Vec<u8>>)> {
+    let mut cursor = Cursor::new(raw);
+    let mut sink = CollectSink::new();
+    let manifest = process_archive_reader(&mut cursor, &mut sink)?;
+    Ok((manifest, sink.files))
+}
+
+fn read_u64_from_reader(reader: &mut dyn Read) -> BackupResult<u64> {
     let mut len_bytes = [0u8; 8];
-    len_bytes.copy_from_slice(&raw[*cursor..*cursor + 8]);
-    *cursor += 8;
+    reader.read_exact(&mut len_bytes).map_err(|error| {
+        BackupError::IntegrityError(format!("archive truncated while reading length: {error}"))
+    })?;
     Ok(u64::from_le_bytes(len_bytes))
 }
 
@@ -268,12 +409,10 @@ fn sanitize_entry_path(path: &str) -> BackupResult<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
 
     use tempfile::TempDir;
 
     use crate::export::{encode_archive, encrypt_archive};
-    use crate::ManifestEntry;
 
     fn manifest_for(path: &str, data: &[u8]) -> BackupManifest {
         BackupManifest {
@@ -310,6 +449,27 @@ mod tests {
         let mut files = BTreeMap::new();
         files.insert("../escape.txt".to_string(), payload.to_vec());
         let manifest = manifest_for("../escape.txt", payload);
+        let raw = encode_archive(&manifest, &files).unwrap();
+        let encrypted = encrypt_archive(&raw, "test-pass").unwrap();
+        fs::write(&archive, encrypted).unwrap();
+
+        let error = BackupImporter::new(&restore_target)
+            .import(&archive, "test-pass")
+            .unwrap_err();
+        assert!(matches!(error, BackupError::IntegrityError(_)));
+        assert!(!restore_target.exists());
+    }
+
+    #[test]
+    fn import_rejects_invalid_sqlite_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let archive = tmp.path().join("bad-sqlite.ghost-backup");
+        let restore_target = tmp.path().join("restore-target");
+
+        let payload = b"not a sqlite database";
+        let mut files = BTreeMap::new();
+        files.insert("data/ghost.db".to_string(), payload.to_vec());
+        let manifest = manifest_for("data/ghost.db", payload);
         let raw = encode_archive(&manifest, &files).unwrap();
         let encrypted = encrypt_archive(&raw, "test-pass").unwrap();
         fs::write(&archive, encrypted).unwrap();

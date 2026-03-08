@@ -119,10 +119,10 @@ fn merkle_single_leaf_root_equals_leaf() {
 fn merkle_two_leaves_inclusion_proof() {
     let leaves: Vec<[u8; 32]> = (0..2).map(|i| [i as u8; 32]).collect();
     let tree = MerkleTree::from_chain(&leaves);
-    for i in 0..2 {
+    for (i, leaf) in leaves.iter().enumerate().take(2) {
         let proof = tree.inclusion_proof(i);
         assert!(
-            MerkleTree::verify_proof(&tree.root, &leaves[i], &proof, i),
+            MerkleTree::verify_proof(&tree.root, leaf, &proof, i),
             "proof failed for leaf {}",
             i
         );
@@ -200,7 +200,7 @@ mod proptests {
         fn tamper_single_byte_detected(
             len in 2usize..100,
             tamper_idx in 0usize..100,
-            byte_idx in 0usize..32,
+            _byte_idx in 0usize..32,
         ) {
             let mut chain = make_chain(len);
             let tamper_idx = tamper_idx % len;

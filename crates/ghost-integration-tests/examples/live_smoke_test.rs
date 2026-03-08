@@ -206,7 +206,7 @@ async fn test_simple_text() {
     println!("TEST 1: Simple text response");
     println!("{}", "=".repeat(60));
 
-    let runner = build_runner();
+    let mut runner = build_runner();
     let mut chain = build_chain(Scenario::SimpleText);
     let agent_id = smoke_agent_id();
     let session_id = Uuid::now_v7();
@@ -631,7 +631,7 @@ async fn test_tool_dispatch_live() {
     println!("TEST 12: Live tool dispatch (filesystem + shell)");
     println!("{}", "=".repeat(60));
 
-    let mut runner = build_runner();
+    let runner = build_runner();
 
     // Test read_file tool directly
     let call = LLMToolCall {

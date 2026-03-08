@@ -42,6 +42,8 @@ pub mod v053_stream_event_log_unscoped;
 pub mod v054_operation_journal_ownership;
 pub mod v055_external_skill_pipeline;
 pub mod v056_workflow_execution_contract;
+pub mod v057_live_execution_contract;
+pub mod v058_rate_limit_buckets;
 
 use std::path::{Path, PathBuf};
 
@@ -51,14 +53,14 @@ use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
 use rusqlite::{Connection, DatabaseName};
 
-pub const LATEST_VERSION: u32 = 56;
+pub const LATEST_VERSION: u32 = 58;
 
 /// Maximum number of migration backup files to retain.
 const MAX_MIGRATION_BACKUPS: usize = 3;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 41] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 43] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -144,6 +146,12 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 41] = [
         "workflow_execution_contract",
         v056_workflow_execution_contract::migrate,
     ),
+    (
+        57,
+        "live_execution_contract",
+        v057_live_execution_contract::migrate,
+    ),
+    (58, "rate_limit_buckets", v058_rate_limit_buckets::migrate),
 ];
 
 /// Query the current schema version from the database.
@@ -299,6 +307,19 @@ fn ensure_schema_version_table(conn: &Connection) -> CortexResult<()> {
         );",
     )
     .map_err(|error| to_storage_err(error.to_string()))
+}
+
+pub(crate) fn materialize_latest_schema_reference(conn: &Connection) -> CortexResult<()> {
+    ensure_schema_version_table(conn)?;
+    for (version, name, migrate_fn) in &MIGRATIONS {
+        migrate_fn(conn)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version, name) VALUES (?1, ?2)",
+            rusqlite::params![version, name],
+        )
+        .map_err(|error| to_storage_err(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn has_schema_version_table(conn: &Connection) -> CortexResult<bool> {

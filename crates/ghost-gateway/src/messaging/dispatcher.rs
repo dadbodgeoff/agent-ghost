@@ -1,6 +1,6 @@
 //! Message dispatcher: 3-gate verification pipeline (Req 19 AC4-AC7, AC12-AC13).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use cortex_core::safety::trigger::TriggerEvent;
@@ -12,6 +12,8 @@ use super::protocol::AgentMessage;
 const RATE_LIMIT_PER_AGENT_PER_HOUR: u32 = 60;
 const RATE_LIMIT_PER_PAIR_PER_HOUR: u32 = 30;
 const REPLAY_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
+const MAX_TRACKED_REPLAY_NONCES: usize = 16_384;
+const MAX_TRACKED_SENDERS: usize = 4_096;
 const ANOMALY_WINDOW: Duration = Duration::from_secs(300); // 5 minutes
 const ANOMALY_THRESHOLD: u32 = 3;
 /// Hourly reset interval for rate limit counters.
@@ -33,10 +35,18 @@ pub enum VerifyResult {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SenderNonceState {
+    nonce: Uuid,
+    seen_at: Instant,
+}
+
 /// Message dispatcher with 3-gate pipeline.
 pub struct MessageDispatcher {
     /// Seen nonces for replay prevention.
     seen_nonces: BTreeMap<Uuid, Instant>,
+    /// Replay nonces ordered by first-seen time for pruning and capacity eviction.
+    seen_nonce_order: BTreeSet<(Instant, Uuid)>,
     /// Per-agent message counts for rate limiting.
     agent_counts: BTreeMap<Uuid, u32>,
     /// Per-pair message counts.
@@ -50,7 +60,9 @@ pub struct MessageDispatcher {
     /// Last rate limit counter reset time.
     last_rate_reset: Instant,
     /// Per-sender last seen UUIDv7 nonce for monotonicity check (AC4).
-    last_nonce: BTreeMap<Uuid, (Uuid, Instant)>,
+    last_nonce: BTreeMap<Uuid, SenderNonceState>,
+    /// Sender monotonicity states ordered by last-seen time.
+    last_nonce_order: BTreeSet<(Instant, Uuid)>,
     /// Registered sender verifying keys.
     verifying_keys: BTreeMap<Uuid, ghost_signing::VerifyingKey>,
 }
@@ -59,6 +71,7 @@ impl MessageDispatcher {
     pub fn new() -> Self {
         Self {
             seen_nonces: BTreeMap::new(),
+            seen_nonce_order: BTreeSet::new(),
             agent_counts: BTreeMap::new(),
             pair_counts: BTreeMap::new(),
             sig_failures: BTreeMap::new(),
@@ -66,6 +79,7 @@ impl MessageDispatcher {
             _grace_keys: BTreeMap::new(),
             last_rate_reset: Instant::now(),
             last_nonce: BTreeMap::new(),
+            last_nonce_order: BTreeSet::new(),
             verifying_keys: BTreeMap::new(),
         }
     }
@@ -168,21 +182,22 @@ impl MessageDispatcher {
         // greater than the last seen nonce from this sender. UUIDv7
         // encodes a timestamp in the high bits, so lexicographic
         // comparison enforces temporal monotonicity.
-        if let Some((last, _seen_at)) = self.last_nonce.get(&msg.sender) {
-            if msg.nonce <= *last {
+        if let Some(last_state) = self.last_nonce.get(&msg.sender) {
+            if msg.nonce <= last_state.nonce {
                 tracing::warn!(
                     sender = %msg.sender,
                     nonce = %msg.nonce,
-                    last_nonce = %last,
+                    last_nonce = %last_state.nonce,
                     "UUIDv7 monotonicity violation — replay rejected"
                 );
                 return false;
             }
         }
         let now = Instant::now();
-        self.last_nonce.insert(msg.sender, (msg.nonce, now));
-
-        self.seen_nonces.insert(msg.nonce, now);
+        self.track_sender_nonce(msg.sender, msg.nonce, now);
+        self.track_seen_nonce(msg.nonce, now);
+        self.evict_seen_nonces_over_capacity();
+        self.evict_sender_nonces_over_capacity();
         true
     }
 
@@ -213,10 +228,65 @@ impl MessageDispatcher {
     }
 
     fn prune_replay_state(&mut self) {
-        self.seen_nonces
-            .retain(|_, seen_at| seen_at.elapsed() < REPLAY_WINDOW);
-        self.last_nonce
-            .retain(|_, (_, seen_at)| seen_at.elapsed() < REPLAY_WINDOW);
+        self.prune_expired_seen_nonces();
+        self.prune_expired_sender_nonces();
+        self.evict_seen_nonces_over_capacity();
+        self.evict_sender_nonces_over_capacity();
+    }
+
+    fn track_seen_nonce(&mut self, nonce: Uuid, seen_at: Instant) {
+        self.seen_nonces.insert(nonce, seen_at);
+        self.seen_nonce_order.insert((seen_at, nonce));
+    }
+
+    fn track_sender_nonce(&mut self, sender: Uuid, nonce: Uuid, seen_at: Instant) {
+        if let Some(previous) = self
+            .last_nonce
+            .insert(sender, SenderNonceState { nonce, seen_at })
+        {
+            self.last_nonce_order.remove(&(previous.seen_at, sender));
+        }
+        self.last_nonce_order.insert((seen_at, sender));
+    }
+
+    fn prune_expired_seen_nonces(&mut self) {
+        while let Some((seen_at, nonce)) = self.seen_nonce_order.iter().next().copied() {
+            if seen_at.elapsed() < REPLAY_WINDOW {
+                break;
+            }
+            self.seen_nonce_order.remove(&(seen_at, nonce));
+            self.seen_nonces.remove(&nonce);
+        }
+    }
+
+    fn prune_expired_sender_nonces(&mut self) {
+        while let Some((seen_at, sender)) = self.last_nonce_order.iter().next().copied() {
+            if seen_at.elapsed() < REPLAY_WINDOW {
+                break;
+            }
+            self.last_nonce_order.remove(&(seen_at, sender));
+            self.last_nonce.remove(&sender);
+        }
+    }
+
+    fn evict_seen_nonces_over_capacity(&mut self) {
+        while self.seen_nonces.len() > MAX_TRACKED_REPLAY_NONCES {
+            let Some((seen_at, nonce)) = self.seen_nonce_order.iter().next().copied() else {
+                break;
+            };
+            self.seen_nonce_order.remove(&(seen_at, nonce));
+            self.seen_nonces.remove(&nonce);
+        }
+    }
+
+    fn evict_sender_nonces_over_capacity(&mut self) {
+        while self.last_nonce.len() > MAX_TRACKED_SENDERS {
+            let Some((seen_at, sender)) = self.last_nonce_order.iter().next().copied() else {
+                break;
+            };
+            self.last_nonce_order.remove(&(seen_at, sender));
+            self.last_nonce.remove(&sender);
+        }
     }
 
     /// Record a signature failure and check anomaly threshold (AC6).
@@ -318,6 +388,11 @@ impl MessageDispatcher {
             .get(&agent_id)
             .map(|f| f.iter().filter(|t| t.elapsed() < ANOMALY_WINDOW).count())
             .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    fn replay_cache_sizes(&self) -> (usize, usize) {
+        (self.seen_nonces.len(), self.last_nonce.len())
     }
 }
 
@@ -432,5 +507,48 @@ mod tests {
             dispatcher.verify(&original),
             VerifyResult::RejectedReplay(_)
         ));
+    }
+
+    #[test]
+    fn replay_cache_is_bounded_for_many_unique_messages() {
+        let mut dispatcher = MessageDispatcher::new();
+        let recipient = Uuid::now_v7();
+        let (signing_key, _) = ghost_signing::generate_keypair();
+
+        for _ in 0..(MAX_TRACKED_REPLAY_NONCES + 256) {
+            let sender = Uuid::now_v7();
+            let msg = signed_message(&mut dispatcher, &signing_key, sender, recipient);
+            assert!(matches!(dispatcher.verify(&msg), VerifyResult::Accepted));
+        }
+
+        let (seen_nonces, last_nonce) = dispatcher.replay_cache_sizes();
+        assert!(seen_nonces <= MAX_TRACKED_REPLAY_NONCES);
+        assert!(last_nonce <= MAX_TRACKED_SENDERS);
+        assert_eq!(dispatcher.seen_nonce_order.len(), seen_nonces);
+        assert_eq!(dispatcher.last_nonce_order.len(), last_nonce);
+    }
+
+    #[test]
+    fn replay_cache_order_does_not_grow_for_repeated_sender() {
+        let mut dispatcher = MessageDispatcher::new();
+        let sender = Uuid::now_v7();
+        let recipient = Uuid::now_v7();
+        let (signing_key, _) = ghost_signing::generate_keypair();
+
+        for i in 0..512 {
+            dispatcher.last_rate_reset = Instant::now() - RATE_LIMIT_RESET_INTERVAL;
+            let mut msg = signed_message(&mut dispatcher, &signing_key, sender, recipient);
+            msg.payload = crate::messaging::protocol::MessagePayload::Notification {
+                message: i.to_string(),
+            };
+            msg.content_hash = msg.compute_content_hash();
+            msg.sign(&signing_key);
+            assert!(matches!(dispatcher.verify(&msg), VerifyResult::Accepted));
+        }
+
+        let (seen_nonces, last_nonce) = dispatcher.replay_cache_sizes();
+        assert_eq!(dispatcher.last_nonce_order.len(), 1);
+        assert_eq!(last_nonce, 1);
+        assert_eq!(seen_nonces, 512);
     }
 }

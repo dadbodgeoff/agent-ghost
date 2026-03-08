@@ -140,7 +140,7 @@ impl RetrievalScorer {
         }
 
         // Check how many query terms appear in the memory's summary + content
-        let haystack = format!("{} {}", memory.summary, memory.content.to_string()).to_lowercase();
+        let haystack = format!("{} {}", memory.summary, memory.content).to_lowercase();
 
         let matches = query_terms
             .iter()

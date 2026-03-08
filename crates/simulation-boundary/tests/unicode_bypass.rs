@@ -145,6 +145,6 @@ fn very_long_string_no_panic() {
 #[test]
 fn only_zero_width_chars_no_panic() {
     let text = "\u{200B}\u{200C}\u{200D}\u{FEFF}\u{00AD}\u{2060}";
-    let matches = scan(&text);
+    let matches = scan(text);
     assert!(matches.is_empty());
 }

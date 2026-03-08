@@ -70,10 +70,8 @@ impl FilesystemTool {
         let entries = std::fs::read_dir(&path).map_err(|e| FsError::ReadFailed(e.to_string()))?;
 
         let mut names = Vec::new();
-        for entry in entries {
-            if let Ok(entry) = entry {
-                names.push(entry.file_name().to_string_lossy().to_string());
-            }
+        for entry in entries.flatten() {
+            names.push(entry.file_name().to_string_lossy().to_string());
         }
         Ok(names)
     }

@@ -59,7 +59,7 @@ impl GatewayBootstrap {
 
         let kill_state_path = crate::api::safety::persisted_safety_state_path();
         let restored_safety_state = if std::path::Path::new(&kill_state_path).exists() {
-            match crate::api::safety::load_persisted_safety_state(std::path::Path::new(
+            match crate::api::safety::load_persisted_runtime_safety_state(std::path::Path::new(
                 &kill_state_path,
             )) {
                 Ok(Some(state)) => {
@@ -80,7 +80,10 @@ impl GatewayBootstrap {
                     fallback.platform_level = crate::safety::kill_switch::KillLevel::KillAll;
                     fallback.activated_at = Some(chrono::Utc::now());
                     fallback.trigger = Some("persisted safety state unreadable on startup".into());
-                    Some(fallback)
+                    Some(crate::api::safety::RestoredSafetyRuntimeState {
+                        state: fallback,
+                        distributed_gate: None,
+                    })
                 }
             }
         } else {
@@ -234,18 +237,31 @@ impl GatewayBootstrap {
         }
 
         // Build distributed kill gate bridge only when the feature gate is on.
+        let restored_gate_state = restored_safety_state
+            .as_ref()
+            .and_then(|state| state.distributed_gate.clone());
         let kill_gate = if crate::runtime_status::should_enable_distributed_kill(
             config.mesh.enabled,
             config.mesh.distributed_kill_enabled,
         ) {
-            let node_id = uuid::Uuid::now_v7();
             let gate_config = ghost_kill_gates::config::KillGateConfig::default();
-            let bridge = crate::safety::kill_gate_bridge::KillGateBridge::new(
-                node_id,
-                Arc::clone(&kill_switch),
-                gate_config,
+            let bridge = if let Some(persisted) = restored_gate_state {
+                crate::safety::kill_gate_bridge::KillGateBridge::from_persisted_state(
+                    Arc::clone(&kill_switch),
+                    gate_config,
+                    persisted,
+                )
+            } else {
+                crate::safety::kill_gate_bridge::KillGateBridge::new(
+                    uuid::Uuid::now_v7(),
+                    Arc::clone(&kill_switch),
+                    gate_config,
+                )
+            };
+            tracing::info!(
+                node_id = %bridge.node_id(),
+                "Distributed kill gate bridge initialized"
             );
-            tracing::info!(node_id = %node_id, "Distributed kill gate bridge initialized");
             Some(Arc::new(RwLock::new(bridge)))
         } else {
             if config.mesh.enabled {
@@ -257,7 +273,7 @@ impl GatewayBootstrap {
         };
 
         if let Some(restored) = restored_safety_state {
-            kill_switch.restore_state(restored);
+            kill_switch.restore_state(restored.state);
         }
 
         // Build OAuthBroker with token store. Requires its own SecretProvider instance
@@ -349,6 +365,12 @@ impl GatewayBootstrap {
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: config.gateway.session_ttl_days,
         });
+
+        if app_state.kill_gate.is_some() {
+            crate::api::safety::persist_current_safety_state(&app_state).map_err(|error| {
+                BootstrapError::ApiServer(format!("persist safety state: {error}"))
+            })?;
+        }
 
         // Step 5: Start API server
         Self::step5_start_api(&config)?;
@@ -776,7 +798,7 @@ impl GatewayBootstrap {
             .merge(operator_routes)
             .merge(admin_routes)
             .merge(superadmin_routes)
-            .with_state(app_state);
+            .with_state(Arc::clone(&app_state));
 
         // Mount mesh router (/.well-known/agent.json, /a2a) if mesh is enabled.
         if let Some(mesh) = mesh_router {
@@ -794,7 +816,10 @@ impl GatewayBootstrap {
         let cors = Self::build_cors_layer(config);
 
         // Rate limiting state.
-        let rate_limit_state = std::sync::Arc::new(crate::api::rate_limit::RateLimitState::new());
+        let rate_limit_state = std::sync::Arc::new(crate::api::rate_limit::RateLimitState::new(
+            Arc::clone(&app_state.db),
+            config.gateway.rate_limit_scope,
+        ));
 
         let ws_tracker = Arc::new(crate::api::websocket::WsConnectionTracker::new());
 

@@ -1,9 +1,8 @@
 //! Adversarial: Kill gate quorum race.
 //!
-//! Can a sufficiently fast Sybil cluster submit enough resume votes before
-//! signature failure trust degradation fires? The QuorumTracker deduplicates
-//! by node_id (BTreeSet), so the question is whether an attacker can
-//! register enough distinct node_ids to reach quorum.
+//! Distributed resume now fails closed unless authenticated cluster membership
+//! is configured. These tests verify the disabled-by-default guard and keep
+//! one authenticated positive control so the quorum path still has coverage.
 
 use chrono::Utc;
 use ghost_kill_gates::config::KillGateConfig;
@@ -54,13 +53,10 @@ fn quorum_requires_distinct_nodes() {
 
 // ── Sybil quorum attack: attacker creates fake node_ids ─────────────────
 
-/// Attacker generates N fake node_ids and submits resume votes.
-/// If N >= quorum threshold, the gate reopens.
-///
-/// KEY FINDING: QuorumTracker does NOT verify that node_ids correspond
-/// to real cluster members. Any UUID is accepted as a vote.
+/// Fake node IDs are rejected outright while authenticated cluster membership
+/// is disabled. This keeps the old Sybil path fail-closed by default.
 #[test]
-fn sybil_fake_node_ids_can_reach_quorum() {
+fn sybil_fake_node_ids_cannot_reach_quorum_without_authenticated_membership() {
     let gate = KillGate::new(Uuid::new_v4(), KillGateConfig::default());
     gate.close("sybil test".into());
 
@@ -74,14 +70,11 @@ fn sybil_fake_node_ids_can_reach_quorum() {
         reached = gate.cast_resume_vote(make_vote(fake), cluster_size);
     }
 
-    // This SUCCEEDS — the gate reopens because QuorumTracker accepts any UUID.
-    // This is the vulnerability: no membership verification on resume votes.
     assert!(
-        reached,
-        "KNOWN VULNERABILITY: fake node_ids reached quorum — \
-         QuorumTracker does not verify cluster membership"
+        !reached,
+        "resume must stay disabled until authenticated cluster membership is configured"
     );
-    assert_eq!(gate.state(), GateState::Normal);
+    assert_eq!(gate.state(), GateState::GateClosed);
 }
 
 // ── Mitigation: quorum with known cluster members ───────────────────────
@@ -109,11 +102,10 @@ fn filtered_quorum_rejects_unknown_nodes() {
 
 // ── Race condition: votes vs trust degradation ──────────────────────────
 
-/// The attack window: time between gate close and trust degradation
-/// propagating to all nodes. If sybil votes arrive before trust
-/// degradation fires, the gate reopens.
+/// The propagation race no longer matters while resume votes are disabled
+/// without authenticated cluster membership.
 #[test]
-fn race_window_between_close_and_trust_degradation() {
+fn race_window_cannot_bypass_disabled_resume_guard() {
     let gate = KillGate::new(Uuid::new_v4(), KillGateConfig::default());
     gate.close("race test".into());
 
@@ -126,13 +118,10 @@ fn race_window_between_close_and_trust_degradation() {
     );
 
     // The race window is at most max_propagation (500ms).
-    // If sybil votes arrive within this window, they can reach quorum
-    // before the gate is confirmed across the cluster.
-
     // Verify the gate is in GateClosed state (not yet Confirmed)
     assert_eq!(gate.state(), GateState::GateClosed);
 
-    // Sybil votes can arrive before confirmation
+    // Sybil votes still fail closed before confirmation.
     let cluster_size = 3; // quorum = 2
     let sybil_a = Uuid::new_v4();
     let sybil_b = Uuid::new_v4();
@@ -141,9 +130,10 @@ fn race_window_between_close_and_trust_degradation() {
     let reached = gate.cast_resume_vote(make_vote(sybil_b), cluster_size);
 
     assert!(
-        reached,
-        "sybil votes during propagation window can reach quorum"
+        !reached,
+        "resume votes must stay rejected during the propagation window when membership is unauthenticated"
     );
+    assert_eq!(gate.state(), GateState::GateClosed);
 }
 
 // ── Effective quorum calculation ────────────────────────────────────────
@@ -211,22 +201,33 @@ fn gate_transitions_through_expected_states() {
 // ── Chain integrity after resume ────────────────────────────────────────
 
 #[test]
-fn chain_records_close_and_resume_events() {
-    let gate = KillGate::new(Uuid::new_v4(), KillGateConfig::default());
+fn authenticated_quorum_records_close_and_resume_events() {
+    let mut config = KillGateConfig::default();
+    config.authenticated_cluster_membership = true;
+    let gate = KillGate::new(Uuid::new_v4(), config);
 
     gate.close("chain test".into());
     let chain_after_close = gate.chain().len();
     assert!(chain_after_close >= 1);
 
-    // Resume via quorum (2-node cluster, quorum=2, but we use cluster_size=1 for simplicity)
-    let voter = Uuid::new_v4();
-    gate.cast_resume_vote(make_vote(voter), 1);
+    let voter_a = Uuid::new_v4();
+    let voter_b = Uuid::new_v4();
+    assert!(!gate.cast_resume_vote(make_vote(voter_a), 3));
+    assert!(gate.cast_resume_vote(make_vote(voter_b), 3));
 
-    let chain_after_resume = gate.chain().len();
+    let chain_after_resume = gate.chain();
     assert!(
-        chain_after_resume > chain_after_close,
+        chain_after_resume.len() > chain_after_close,
         "resume should add events to the chain"
     );
+    assert!(
+        chain_after_resume.iter().any(|event| matches!(
+            event.event_type,
+            ghost_kill_gates::chain::GateEventType::ResumeConfirmed
+        )),
+        "authenticated quorum resume should record a ResumeConfirmed event"
+    );
+    assert_eq!(gate.state(), GateState::Normal);
 }
 
 // ── Duplicate ack from same peer ────────────────────────────────────────

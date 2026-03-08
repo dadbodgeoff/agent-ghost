@@ -44,9 +44,11 @@ pub struct RegisteredSkill {
 }
 
 /// Skill registry.
+type ManifestVerifier = Arc<dyn Fn(&SkillManifest) -> bool + Send + Sync>;
+
 pub struct SkillRegistry {
     skills: BTreeMap<String, RegisteredSkill>,
-    manifest_verifier: Option<Arc<dyn Fn(&SkillManifest) -> bool + Send + Sync>>,
+    manifest_verifier: Option<ManifestVerifier>,
 }
 
 impl SkillRegistry {

@@ -6,8 +6,6 @@
 //!
 //! Requires the "Accessibility" permission in System Settings > Privacy.
 
-#![cfg(target_os = "macos")]
-
 use std::process::Command;
 
 use crate::platform::accessibility_backend::{AccessibilityBackend, AccessibilityNode};
@@ -125,8 +123,8 @@ impl AccessibilityBackend for MacOsAccessibilityBackend {
 
         let output = run_osascript(&script)?;
 
-        if output.starts_with("ERROR:") {
-            return Err(output[6..].trim().to_string());
+        if let Some(error) = output.strip_prefix("ERROR:") {
+            return Err(error.trim().to_string());
         }
 
         let mut nodes = Vec::new();
@@ -149,15 +147,15 @@ impl AccessibilityBackend for MacOsAccessibilityBackend {
                     let matches = node
                         .name
                         .as_ref()
-                        .map_or(false, |n| n.to_lowercase().contains(&q_lower))
+                        .is_some_and(|n| n.to_lowercase().contains(&q_lower))
                         || node
                             .title
                             .as_ref()
-                            .map_or(false, |t| t.to_lowercase().contains(&q_lower))
+                            .is_some_and(|t| t.to_lowercase().contains(&q_lower))
                         || node
                             .value
                             .as_ref()
-                            .map_or(false, |v| v.to_lowercase().contains(&q_lower));
+                            .is_some_and(|v| v.to_lowercase().contains(&q_lower));
                     if !matches {
                         continue;
                     }

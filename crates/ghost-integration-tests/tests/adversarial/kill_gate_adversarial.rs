@@ -3,13 +3,10 @@
 //! Split-brain scenarios, single-node resume attempts, chain tampering,
 //! and race conditions.
 
-use std::sync::Arc;
-
 use chrono::Utc;
 use ghost_kill_gates::config::KillGateConfig;
 use ghost_kill_gates::gate::{GateState, KillGate};
 use ghost_kill_gates::quorum::ResumeVote;
-use ghost_kill_gates::relay::{KillGateRelay, PeerNode};
 use uuid::Uuid;
 
 // ── Single-node resume must fail (INV-KG-03) ───────────────────────────

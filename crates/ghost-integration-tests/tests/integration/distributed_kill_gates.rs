@@ -10,7 +10,7 @@ use ghost_kill_gates::chain::{compute_gate_event_hash, GateEventType, GENESIS_HA
 use ghost_kill_gates::config::KillGateConfig;
 use ghost_kill_gates::gate::{GateState, KillGate};
 use ghost_kill_gates::quorum::{QuorumTracker, ResumeVote};
-use ghost_kill_gates::relay::{GateRelayMessage, KillGateRelay, PeerNode};
+use ghost_kill_gates::relay::{KillGateRelay, PeerNode};
 use uuid::Uuid;
 
 // ── Gate state machine ──────────────────────────────────────────────────
@@ -120,7 +120,9 @@ fn duplicate_votes_not_double_counted() {
 
 #[test]
 fn gate_resume_via_quorum() {
-    let gate = KillGate::new(Uuid::now_v7(), KillGateConfig::default());
+    let mut config = KillGateConfig::default();
+    config.authenticated_cluster_membership = true;
+    let gate = KillGate::new(Uuid::now_v7(), config);
     gate.close("resume test".into());
 
     let cluster_size = 3;

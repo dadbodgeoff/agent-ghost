@@ -71,6 +71,10 @@ impl SkillIngestService {
         self.config.enabled
     }
 
+    pub fn execution_enabled(&self) -> bool {
+        self.config.enabled && self.config.execution_enabled
+    }
+
     pub fn managed_storage_root(&self) -> PathBuf {
         PathBuf::from(shellexpand_tilde(&self.config.managed_storage_path))
     }

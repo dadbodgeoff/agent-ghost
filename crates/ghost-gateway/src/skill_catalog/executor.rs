@@ -1,12 +1,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use ghost_agent_loop::tools::skill_bridge::{ExecutionContext, SkillHandlerEnvironment};
 use ghost_policy::context::{PolicyContext, ToolCall};
 use ghost_policy::engine::{CorpPolicy, PolicyDecision, PolicyEngine};
+use ghost_skills::sandbox::native_sandbox::{NativeContainmentMode, NativeSandbox};
 use rusqlite::Connection;
 
 use super::dto::ExecuteSkillResponseDto;
-use super::service::{SkillCatalogError, SkillCatalogService};
+use super::service::{
+    ResolvedSkill, ResolvedSkillMetadata, SkillCatalogError, SkillCatalogService,
+};
 use crate::db_pool::DbPool;
 use crate::runtime_safety::ResolvedRuntimeAgent;
 
@@ -22,6 +26,8 @@ pub enum SkillCatalogExecutionError {
     PolicyDenied(String),
     #[error("policy escalation required: {0}")]
     PolicyEscalation(String),
+    #[error("native sandbox denied execution: {0}")]
+    NativeSandbox(String),
     #[error(transparent)]
     Skill(#[from] ghost_skills::skill::SkillError),
 }
@@ -53,14 +59,38 @@ impl SkillCatalogExecutor {
         session_id: uuid::Uuid,
         input: &serde_json::Value,
     ) -> Result<ExecuteSkillResponseDto, SkillCatalogExecutionError> {
-        let db = self
+        let resolved = self.catalog.resolve_for_execute(skill_name, agent)?;
+        self.ensure_policy_permitted(
+            &resolved.metadata.policy_capability,
+            skill_name,
+            agent,
+            session_id,
+            input,
+        )?;
+        let native_sandbox = self.ensure_native_sandbox(&resolved.metadata, skill_name)?;
+
+        if resolved.compiled_skill.is_some()
+            && native_sandbox
+                .as_ref()
+                .is_some_and(|sandbox| sandbox.mode() == NativeContainmentMode::ReadOnly)
+        {
+            let conn = self
+                .db
+                .read()
+                .map_err(|error| SkillCatalogExecutionError::DbPool(error.to_string()))?;
+            return self.execute_resolved_with_connection(
+                &conn, skill_name, agent, session_id, input, resolved,
+            );
+        }
+
+        let legacy = self
             .db
             .legacy_connection()
             .map_err(|e| SkillCatalogExecutionError::DbPool(e.to_string()))?;
-        let db = db
+        let conn = legacy
             .lock()
             .map_err(|_| SkillCatalogExecutionError::DbLockPoisoned)?;
-        self.execute_with_connection(&db, skill_name, agent, session_id, input)
+        self.execute_resolved_with_connection(&conn, skill_name, agent, session_id, input, resolved)
     }
 
     pub fn execute_with_connection(
@@ -73,34 +103,77 @@ impl SkillCatalogExecutor {
     ) -> Result<ExecuteSkillResponseDto, SkillCatalogExecutionError> {
         let resolved = self.catalog.resolve_for_execute(skill_name, agent)?;
         self.ensure_policy_permitted(
-            &resolved.definition.policy_capability,
+            &resolved.metadata.policy_capability,
             skill_name,
             agent,
             session_id,
             input,
         )?;
+        self.ensure_native_sandbox(&resolved.metadata, skill_name)?;
+        self.execute_resolved_with_connection(conn, skill_name, agent, session_id, input, resolved)
+    }
 
-        let ctx = self.skill_context(conn, agent.id, session_id);
-
-        let result = resolved.skill.execute(&ctx, input)?;
+    fn execute_resolved_with_connection(
+        &self,
+        conn: &Connection,
+        skill_name: &str,
+        agent: &ResolvedRuntimeAgent,
+        session_id: uuid::Uuid,
+        input: &serde_json::Value,
+        resolved: ResolvedSkill,
+    ) -> Result<ExecuteSkillResponseDto, SkillCatalogExecutionError> {
+        let result = if let Some(skill) = resolved.compiled_skill {
+            let ctx = ghost_skills::skill::SkillContext {
+                db: conn,
+                agent_id: agent.id,
+                session_id,
+                convergence_profile: &self.convergence_profile,
+            };
+            skill.execute(&ctx, input)?
+        } else {
+            let environment = SkillHandlerEnvironment {
+                db: self
+                    .db
+                    .legacy_connection()
+                    .map_err(|e| SkillCatalogExecutionError::DbPool(e.to_string()))?,
+                convergence_profile: self.convergence_profile.clone(),
+            };
+            let exec_ctx = ExecutionContext {
+                agent_id: agent.id,
+                session_id,
+                intervention_level: 0,
+                session_duration: Duration::ZERO,
+                session_reflection_count: 0,
+                is_compaction_flush: false,
+            };
+            resolved.handler.execute(&environment, input, &exec_ctx)?
+        };
         Ok(ExecuteSkillResponseDto {
             skill: skill_name.to_string(),
             result,
         })
     }
 
-    fn skill_context<'a>(
-        &'a self,
-        db: &'a Connection,
-        agent_id: uuid::Uuid,
-        session_id: uuid::Uuid,
-    ) -> ghost_skills::skill::SkillContext<'a> {
-        ghost_skills::skill::SkillContext {
-            db,
-            agent_id,
-            session_id,
-            convergence_profile: &self.convergence_profile,
-        }
+    fn ensure_native_sandbox(
+        &self,
+        metadata: &ResolvedSkillMetadata,
+        skill_name: &str,
+    ) -> Result<Option<NativeSandbox>, SkillCatalogExecutionError> {
+        let Some(profile) = metadata.native_containment.as_ref() else {
+            return Ok(None);
+        };
+
+        let sandbox = NativeSandbox::from_profile(profile)
+            .map_err(|error| SkillCatalogExecutionError::NativeSandbox(error.to_string()))?;
+        let required_capability = match profile.mode {
+            NativeContainmentMode::ReadOnly => "db_read",
+            NativeContainmentMode::Transactional => "db_write",
+            NativeContainmentMode::HostInteraction => "host_interaction",
+        };
+        sandbox
+            .validate_tool_call(skill_name, required_capability)
+            .map_err(|error| SkillCatalogExecutionError::NativeSandbox(error.to_string()))?;
+        Ok(Some(sandbox))
     }
 
     fn ensure_policy_permitted(

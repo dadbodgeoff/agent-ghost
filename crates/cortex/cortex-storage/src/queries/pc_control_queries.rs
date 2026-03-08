@@ -25,6 +25,7 @@ pub struct PcControlActionRow {
 }
 
 /// Insert a PC control action record.
+#[allow(clippy::too_many_arguments)]
 pub fn insert_action(
     conn: &Connection,
     id: &str,

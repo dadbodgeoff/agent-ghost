@@ -5,10 +5,27 @@
 //! Exercises ghost-gateway messaging subsystem with 3-gate verification
 //! pipeline (signature → replay → policy).
 
-use chrono::Utc;
 use ghost_gateway::messaging::dispatcher::{MessageDispatcher, VerifyResult};
 use ghost_gateway::messaging::protocol::AgentMessage;
 use uuid::Uuid;
+
+fn register_sender(dispatcher: &mut MessageDispatcher, sender: Uuid) -> ghost_signing::SigningKey {
+    let (signing_key, verifying_key) = ghost_signing::generate_keypair();
+    dispatcher.register_verifying_key(sender, verifying_key);
+    signing_key
+}
+
+fn signed_message(
+    sender: Uuid,
+    recipient: Uuid,
+    payload_type: &str,
+    payload_data: serde_json::Value,
+    signing_key: &ghost_signing::SigningKey,
+) -> AgentMessage {
+    let mut msg = AgentMessage::new(sender, recipient, payload_type.into(), payload_data);
+    msg.sign(signing_key);
+    msg
+}
 
 // ── Message Composition + Verification ──────────────────────────────────
 
@@ -16,11 +33,15 @@ use uuid::Uuid;
 #[test]
 fn valid_message_accepted() {
     let mut dispatcher = MessageDispatcher::new();
-    let msg = AgentMessage::new(
-        Uuid::now_v7(),
-        Uuid::now_v7(),
-        "TaskRequest".into(),
+    let sender = Uuid::now_v7();
+    let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
+    let msg = signed_message(
+        sender,
+        recipient,
+        "TaskRequest",
         serde_json::json!({"task": "analyze data"}),
+        &signing_key,
     );
 
     let result = dispatcher.verify(&msg);
@@ -35,11 +56,15 @@ fn valid_message_accepted() {
 #[test]
 fn tampered_content_hash_rejected() {
     let mut dispatcher = MessageDispatcher::new();
-    let mut msg = AgentMessage::new(
-        Uuid::now_v7(),
-        Uuid::now_v7(),
-        "TaskRequest".into(),
+    let sender = Uuid::now_v7();
+    let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
+    let mut msg = signed_message(
+        sender,
+        recipient,
+        "TaskRequest",
         serde_json::json!({"task": "analyze data"}),
+        &signing_key,
     );
 
     // Tamper with content hash
@@ -59,12 +84,14 @@ fn duplicate_nonce_rejected() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
-    let msg1 = AgentMessage::new(
+    let msg1 = signed_message(
         sender,
         recipient,
-        "TaskRequest".into(),
+        "TaskRequest",
         serde_json::json!({"task": "first"}),
+        &signing_key,
     );
 
     // First message accepted
@@ -85,14 +112,16 @@ fn duplicate_nonce_rejected() {
 fn rate_limiting_per_agent() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     // Send 60 messages to different recipients (to avoid per-pair limit of 30)
     for _ in 0..60 {
-        let msg = AgentMessage::new(
+        let msg = signed_message(
             sender,
             Uuid::now_v7(), // different recipient each time
-            "Notification".into(),
-            serde_json::json!({"data": "ping"}),
+            "Notification",
+            serde_json::json!({"message": "ping"}),
+            &signing_key,
         );
         let result = dispatcher.verify(&msg);
         assert!(
@@ -102,11 +131,12 @@ fn rate_limiting_per_agent() {
     }
 
     // 61st message → rate limited
-    let msg = AgentMessage::new(
+    let msg = signed_message(
         sender,
         Uuid::now_v7(),
-        "Notification".into(),
-        serde_json::json!({"data": "one too many"}),
+        "Notification",
+        serde_json::json!({"message": "one too many"}),
+        &signing_key,
     );
     let result = dispatcher.verify(&msg);
     assert!(
@@ -122,24 +152,27 @@ fn rate_limiting_per_pair() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
     let recipient = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     // Send 30 messages to same pair
     for _ in 0..30 {
-        let msg = AgentMessage::new(
+        let msg = signed_message(
             sender,
             recipient,
-            "Notification".into(),
-            serde_json::json!({"data": "ping"}),
+            "Notification",
+            serde_json::json!({"message": "ping"}),
+            &signing_key,
         );
         dispatcher.verify(&msg);
     }
 
     // 31st to same pair → rate limited
-    let msg = AgentMessage::new(
+    let msg = signed_message(
         sender,
         recipient,
-        "Notification".into(),
-        serde_json::json!({"data": "too many to same pair"}),
+        "Notification",
+        serde_json::json!({"message": "too many to same pair"}),
+        &signing_key,
     );
     let result = dispatcher.verify(&msg);
     assert!(
@@ -182,14 +215,16 @@ fn offline_queue_delivery() {
 fn signature_failure_anomaly_detection() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     // Send 3 messages with tampered hashes
     for _ in 0..3 {
-        let mut msg = AgentMessage::new(
+        let mut msg = signed_message(
             sender,
             Uuid::now_v7(),
-            "TaskRequest".into(),
+            "TaskRequest",
             serde_json::json!({"task": "test"}),
+            &signing_key,
         );
         msg.content_hash = [0xFFu8; 32];
         let _ = dispatcher.verify(&msg);
@@ -207,13 +242,15 @@ fn signature_failure_anomaly_detection() {
 fn two_failures_no_anomaly() {
     let mut dispatcher = MessageDispatcher::new();
     let sender = Uuid::now_v7();
+    let signing_key = register_sender(&mut dispatcher, sender);
 
     for _ in 0..2 {
-        let mut msg = AgentMessage::new(
+        let mut msg = signed_message(
             sender,
             Uuid::now_v7(),
-            "TaskRequest".into(),
+            "TaskRequest",
             serde_json::json!({"task": "test"}),
+            &signing_key,
         );
         msg.content_hash = [0xFFu8; 32];
         let _ = dispatcher.verify(&msg);
@@ -251,14 +288,19 @@ fn canonical_bytes_btreemap_deterministic() {
     context2.insert("a_key".to_string(), serde_json::json!("a_value"));
     context2.insert("z_key".to_string(), serde_json::json!("z_value"));
 
-    let msg1 = AgentMessage::new(
+    let mut msg1 = AgentMessage::new(
         Uuid::now_v7(),
         Uuid::now_v7(),
         "TaskRequest".into(),
-        serde_json::Value::Object(context1.into_iter().collect()),
+        serde_json::json!({"task": "context-check"}),
     );
+    msg1.context = context1;
+    let mut msg2 = msg1.clone();
+    msg2.context = context2;
 
     // BTreeMap ensures deterministic ordering
-    let bytes = msg1.canonical_bytes();
-    assert!(!bytes.is_empty());
+    let bytes1 = msg1.canonical_bytes();
+    let bytes2 = msg2.canonical_bytes();
+    assert!(!bytes1.is_empty());
+    assert_eq!(bytes1, bytes2);
 }

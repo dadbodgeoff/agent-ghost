@@ -94,6 +94,8 @@ pub struct GatewayConfig {
     pub port: u16,
     #[serde(default = "default_db_path")]
     pub db_path: String,
+    #[serde(default)]
+    pub rate_limit_scope: RateLimitScope,
     /// WP7-B: WebSocket broadcast channel capacity.
     #[serde(default = "default_ws_broadcast_capacity")]
     pub ws_broadcast_capacity: usize,
@@ -115,12 +117,21 @@ impl Default for GatewayConfig {
             bind: default_bind(),
             port: default_port(),
             db_path: default_db_path(),
+            rate_limit_scope: RateLimitScope::default(),
             ws_broadcast_capacity: default_ws_broadcast_capacity(),
             ws_replay_buffer_size: default_ws_replay_buffer_size(),
             ws_ticket_auth_only: false,
             session_ttl_days: default_session_ttl_days(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitScope {
+    Process,
+    #[default]
+    Database,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

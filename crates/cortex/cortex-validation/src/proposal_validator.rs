@@ -42,21 +42,21 @@ impl ProposalValidator {
         let mut flags = Vec::new();
 
         // Pre-check: platform-restricted type from non-Platform caller (AC9)
-        if proposal.target_type.is_platform_restricted() {
-            if !matches!(ctx.caller, CallerType::Platform) {
-                return ValidationResult {
-                    proposal_id: proposal.id,
-                    decision: ProposalDecision::AutoRejected,
-                    base_score: 0.0,
-                    d5_scope: None,
-                    d6_self_ref: None,
-                    d7_emulation: None,
-                    flags: vec![format!(
-                        "Restricted type {:?} from non-platform caller",
-                        proposal.target_type
-                    )],
-                };
-            }
+        if proposal.target_type.is_platform_restricted()
+            && !matches!(ctx.caller, CallerType::Platform)
+        {
+            return ValidationResult {
+                proposal_id: proposal.id,
+                decision: ProposalDecision::AutoRejected,
+                base_score: 0.0,
+                d5_scope: None,
+                d6_self_ref: None,
+                d7_emulation: None,
+                flags: vec![format!(
+                    "Restricted type {:?} from non-platform caller",
+                    proposal.target_type
+                )],
+            };
         }
 
         // D1-D4: Base validation (stub — returns configurable score)
@@ -137,7 +137,7 @@ impl ProposalValidator {
         let d6 = self_reference::compute(&cited_ids, &agent_ids, ctx.convergence_level);
 
         // Decision logic
-        let d5_failed = d5.as_ref().map_or(false, |r| !r.passed);
+        let d5_failed = d5.as_ref().is_some_and(|r| !r.passed);
         let d6_failed = !d6.passed;
 
         if d5_failed {

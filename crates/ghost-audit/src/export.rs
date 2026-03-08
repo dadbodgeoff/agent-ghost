@@ -31,8 +31,7 @@ impl AuditExporter {
     }
 
     fn export_json<W: Write>(entries: &[AuditEntry], writer: &mut W) -> Result<(), std::io::Error> {
-        let json = serde_json::to_string_pretty(entries)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(entries).map_err(std::io::Error::other)?;
         writer.write_all(json.as_bytes())
     }
 
@@ -63,8 +62,7 @@ impl AuditExporter {
         writer: &mut W,
     ) -> Result<(), std::io::Error> {
         for entry in entries {
-            let line = serde_json::to_string(entry)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            let line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
             writeln!(writer, "{}", line)?;
         }
         Ok(())

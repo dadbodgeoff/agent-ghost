@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use ghost_kill_gates::config::KillGateConfig;
-use ghost_kill_gates::gate::KillGate;
+use ghost_kill_gates::gate::{KillGate, PersistedGateState};
 use ghost_kill_gates::relay::{KillGateRelay, PeerNode};
 use uuid::Uuid;
 
@@ -24,6 +24,20 @@ impl KillGateBridge {
     /// Create a new bridge with the given node ID and config.
     pub fn new(node_id: Uuid, kill_switch: Arc<KillSwitch>, config: KillGateConfig) -> Self {
         let gate = Arc::new(KillGate::new(node_id, config));
+        let relay = KillGateRelay::new(Arc::clone(&gate));
+        Self {
+            kill_switch,
+            gate,
+            relay,
+        }
+    }
+
+    pub fn from_persisted_state(
+        kill_switch: Arc<KillSwitch>,
+        config: KillGateConfig,
+        persisted: PersistedGateState,
+    ) -> Self {
+        let gate = Arc::new(KillGate::from_persisted_state(config, persisted));
         let relay = KillGateRelay::new(Arc::clone(&gate));
         Self {
             kill_switch,
@@ -56,5 +70,17 @@ impl KillGateBridge {
     /// Cluster size (peers + self).
     pub fn cluster_size(&self) -> usize {
         self.relay.cluster_size()
+    }
+
+    pub fn persisted_state(&self) -> PersistedGateState {
+        self.gate.persisted_state()
+    }
+
+    pub fn restore_persisted_state(&mut self, persisted: PersistedGateState) {
+        self.gate.restore_persisted_state(persisted);
+    }
+
+    pub fn node_id(&self) -> Uuid {
+        self.gate.node_id()
     }
 }

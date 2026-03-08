@@ -29,26 +29,31 @@ impl TestGateway {
     ///
     /// Returns once the `/api/health` endpoint responds with 200.
     pub async fn start() -> Self {
-        Self::start_internal(100, false, false).await
+        Self::start_internal(100, false, false, false).await
     }
 
     pub async fn start_with_compiled_skills() -> Self {
-        Self::start_internal(100, true, false).await
+        Self::start_internal(100, true, false, false).await
+    }
+
+    pub async fn start_with_external_skill_runtime() -> Self {
+        Self::start_internal(100, false, false, true).await
     }
 
     /// Boot a gateway with a custom WebSocket replay buffer capacity.
     pub async fn start_with_replay_capacity(replay_capacity: usize) -> Self {
-        Self::start_internal(replay_capacity, false, false).await
+        Self::start_internal(replay_capacity, false, false, false).await
     }
 
     pub async fn start_with_ws_ticket_auth_only(ws_ticket_auth_only: bool) -> Self {
-        Self::start_internal(100, false, ws_ticket_auth_only).await
+        Self::start_internal(100, false, ws_ticket_auth_only, false).await
     }
 
     async fn start_internal(
         replay_capacity: usize,
         include_compiled_skills: bool,
         ws_ticket_auth_only: bool,
+        enable_external_skill_runtime: bool,
     ) -> Self {
         // Find an available port.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -63,6 +68,12 @@ impl TestGateway {
         // Build a minimal test config.
         let mut config = ghost_gateway::config::GhostConfig::test_config(port, &db_path_str);
         config.gateway.ws_ticket_auth_only = ws_ticket_auth_only;
+        if enable_external_skill_runtime {
+            config.external_skills.enabled = true;
+            config.external_skills.execution_enabled = true;
+            config.external_skills.managed_storage_path =
+                tmp_dir.path().join("managed").display().to_string();
+        }
 
         // Create database pool and run migrations.
         let db =
@@ -100,9 +111,15 @@ impl TestGateway {
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
 
-        let skill_catalog = if include_compiled_skills {
-            let definitions =
-                ghost_gateway::skill_catalog::build_compiled_skill_definitions(&config).definitions;
+        let definitions = if include_compiled_skills {
+            ghost_gateway::skill_catalog::build_compiled_skill_definitions(&config).definitions
+        } else {
+            Vec::new()
+        };
+        let skill_catalog = if include_compiled_skills
+            || enable_external_skill_runtime
+            || config.external_skills.enabled
+        {
             Arc::new(
                 ghost_gateway::skill_catalog::SkillCatalogService::new(
                     definitions,
@@ -110,7 +127,7 @@ impl TestGateway {
                     config.external_skills.clone(),
                 )
                 .await
-                .expect("compiled test skill catalog"),
+                .expect("test skill catalog"),
             )
         } else {
             Arc::new(
@@ -239,6 +256,10 @@ impl TestGateway {
     /// Build a URL for the given path (e.g., "/api/health").
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+
+    pub fn temp_dir(&self) -> &std::path::Path {
+        self._tmp_dir.path()
     }
 
     /// Gracefully stop the test gateway.

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use rusqlite::{Connection, OptionalExtension};
 use thiserror::Error;
@@ -97,6 +98,7 @@ pub enum SchemaContractError {
     Query(String),
 }
 
+#[allow(dead_code)]
 struct TableRequirement {
     name: &'static str,
     required_columns: &'static [&'static str],
@@ -112,6 +114,17 @@ struct IndexSqlRequirement {
     index: &'static str,
     description: &'static str,
     pattern: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct DerivedTableRequirement {
+    name: String,
+    required_columns: BTreeMap<String, ColumnAffinity>,
+}
+
+#[derive(Debug, Clone)]
+struct DerivedSchema {
+    tables: Vec<DerivedTableRequirement>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,12 +149,14 @@ impl ColumnAffinity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 struct ColumnTypeRequirement {
     table: &'static str,
     column: &'static str,
     affinity: ColumnAffinity,
 }
 
+#[allow(dead_code)]
 const REQUIRED_TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "schema_version",
@@ -584,6 +599,7 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
             "operation_id",
             "route_kind",
             "actor_key",
+            "state_version",
             "status",
             "state_json",
             "created_at",
@@ -636,6 +652,86 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
         ],
     },
 ];
+
+fn expected_schema() -> Result<&'static DerivedSchema, SchemaContractError> {
+    static EXPECTED_SCHEMA: OnceLock<Result<DerivedSchema, String>> = OnceLock::new();
+    match EXPECTED_SCHEMA.get_or_init(|| build_expected_schema().map_err(|error| error.to_string()))
+    {
+        Ok(schema) => Ok(schema),
+        Err(error) => Err(SchemaContractError::Query(error.clone())),
+    }
+}
+
+fn build_expected_schema() -> Result<DerivedSchema, SchemaContractError> {
+    let conn = Connection::open_in_memory()
+        .map_err(|error| SchemaContractError::Query(error.to_string()))?;
+    crate::migrations::materialize_latest_schema_reference(&conn).map_err(|error| {
+        SchemaContractError::Query(format!("materialize reference schema: {error}"))
+    })?;
+
+    Ok(DerivedSchema {
+        tables: load_reference_tables(&conn)?,
+    })
+}
+
+fn load_reference_tables(
+    conn: &Connection,
+) -> Result<Vec<DerivedTableRequirement>, SchemaContractError> {
+    let entries = load_explicit_table_sql(conn)?;
+    let virtual_table_prefixes = entries
+        .iter()
+        .filter_map(|(name, sql)| {
+            normalize_schema_sql(sql)
+                .starts_with("create virtual table")
+                .then_some(name.clone())
+        })
+        .collect::<Vec<_>>();
+
+    let mut tables = Vec::new();
+    for (name, _sql) in entries {
+        if name.starts_with("sqlite_") {
+            continue;
+        }
+        if virtual_table_prefixes.iter().any(|prefix| {
+            let shadow_prefix = format!("{prefix}_");
+            name != *prefix && name.starts_with(&shadow_prefix)
+        }) {
+            continue;
+        }
+
+        let required_columns = load_table_columns(conn, &name)?
+            .into_iter()
+            .map(|(column, declared_type)| (column, normalize_declared_type(&declared_type)))
+            .collect();
+        tables.push(DerivedTableRequirement {
+            name,
+            required_columns,
+        });
+    }
+    tables.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(tables)
+}
+
+fn load_explicit_table_sql(
+    conn: &Connection,
+) -> Result<Vec<(String, String)>, SchemaContractError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, sql
+             FROM sqlite_master
+             WHERE type = 'table' AND sql IS NOT NULL
+             ORDER BY name",
+        )
+        .map_err(|error| SchemaContractError::Query(error.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| SchemaContractError::Query(error.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| SchemaContractError::Query(error.to_string()))?;
+    Ok(rows)
+}
 
 const REQUIRED_INDEXES: &[&str] = &[
     "idx_memory_events_memory_id",
@@ -800,6 +896,11 @@ const REQUIRED_TABLE_SQL_PATTERNS: &[TableSqlRequirement] = &[
         pattern: "CHECK(status IN ('accepted', 'running', 'completed', 'recovery_required'))",
     },
     TableSqlRequirement {
+        table: "live_execution_records",
+        description: "live execution state version contract",
+        pattern: "state_version INTEGER NOT NULL DEFAULT 0 CHECK(state_version >= 0)",
+    },
+    TableSqlRequirement {
         table: "workflow_executions",
         description: "workflow state default json contract",
         pattern: "state TEXT NOT NULL DEFAULT '{}'",
@@ -832,6 +933,7 @@ const REQUIRED_INDEX_SQL_PATTERNS: &[IndexSqlRequirement] = &[
     },
 ];
 
+#[allow(dead_code)]
 const REQUIRED_COLUMN_TYPES: &[ColumnTypeRequirement] = &[
     ColumnTypeRequirement {
         table: "schema_version",
@@ -1034,6 +1136,11 @@ const REQUIRED_COLUMN_TYPES: &[ColumnTypeRequirement] = &[
         affinity: ColumnAffinity::Integer,
     },
     ColumnTypeRequirement {
+        table: "live_execution_records",
+        column: "state_version",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
         table: "workflow_executions",
         column: "state_version",
         affinity: ColumnAffinity::Integer,
@@ -1082,36 +1189,32 @@ pub fn require_schema_ready(
     let tables = load_named_objects(conn, "table")?;
     let indexes = load_named_objects(conn, "index")?;
     let triggers = load_named_objects(conn, "trigger")?;
+    let expected_schema = expected_schema()?;
 
     let mut problems = Vec::new();
 
-    for requirement in REQUIRED_TABLES {
-        if !tables.contains(requirement.name) {
-            problems.push(SchemaProblem::missing_table(requirement.name));
+    for requirement in &expected_schema.tables {
+        if !tables.contains(requirement.name.as_str()) {
+            problems.push(SchemaProblem::missing_table(&requirement.name));
             continue;
         }
 
-        let columns = load_table_columns(conn, requirement.name)?;
-        for column in requirement.required_columns {
-            if !columns.contains_key(*column) {
-                problems.push(SchemaProblem::missing_column(requirement.name, column));
+        let columns = load_table_columns(conn, &requirement.name)?;
+        for (column, expected_affinity) in &requirement.required_columns {
+            let Some(actual_type) = columns.get(column.as_str()) else {
+                problems.push(SchemaProblem::missing_column(&requirement.name, column));
+                continue;
+            };
+
+            let actual_affinity = normalize_declared_type(actual_type);
+            if actual_affinity != *expected_affinity {
+                problems.push(SchemaProblem::column_type_mismatch(
+                    &requirement.name,
+                    column,
+                    *expected_affinity,
+                    actual_affinity,
+                ));
             }
-        }
-    }
-
-    for requirement in REQUIRED_COLUMN_TYPES {
-        let columns = load_table_columns(conn, requirement.table)?;
-        let Some(actual) = columns.get(requirement.column) else {
-            continue;
-        };
-        let actual_affinity = normalize_declared_type(actual);
-        if actual_affinity != requirement.affinity {
-            problems.push(SchemaProblem::column_type_mismatch(
-                requirement.table,
-                requirement.column,
-                requirement.affinity,
-                actual_affinity,
-            ));
         }
     }
 

@@ -334,7 +334,7 @@ impl DriftService {
         }
 
         // Score all symbols by cosine similarity
-        let mut scored: Vec<(f32, &str, &str, &str, i64, &Option<String>)> = symbols
+        let mut scored: Vec<_> = symbols
             .iter()
             .map(|(file, name, kind, line, sig, embed_bytes)| {
                 let embed = similarity::from_bytes(embed_bytes);

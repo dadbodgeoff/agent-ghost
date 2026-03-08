@@ -101,13 +101,13 @@ impl AccessibilityBackend for MockAccessibilityBackend {
                         let q_lower = q.to_lowercase();
                         n.name
                             .as_ref()
-                            .map_or(false, |name| name.to_lowercase().contains(&q_lower))
+                            .is_some_and(|name| name.to_lowercase().contains(&q_lower))
                             || n.title
                                 .as_ref()
-                                .map_or(false, |t| t.to_lowercase().contains(&q_lower))
+                                .is_some_and(|t| t.to_lowercase().contains(&q_lower))
                             || n.value
                                 .as_ref()
-                                .map_or(false, |v| v.to_lowercase().contains(&q_lower))
+                                .is_some_and(|v| v.to_lowercase().contains(&q_lower))
                     })
             })
             .cloned()

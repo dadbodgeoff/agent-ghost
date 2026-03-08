@@ -3,7 +3,7 @@
 use cortex_core::memory::types::MemoryType;
 use cortex_core::memory::{BaseMemory, Importance};
 use cortex_decay::factors::convergence::convergence_factor;
-use cortex_decay::factors::{DecayBreakdown, DecayContext};
+use cortex_decay::factors::DecayContext;
 use cortex_decay::formula;
 
 // ── Unit tests ──────────────────────────────────────────────────────────

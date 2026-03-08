@@ -11,6 +11,7 @@ pub struct LiveExecutionRecord {
     pub operation_id: String,
     pub route_kind: String,
     pub actor_key: String,
+    pub state_version: i64,
     pub status: String,
     pub state_json: String,
     pub created_at: String,
@@ -23,6 +24,7 @@ pub struct NewLiveExecutionRecord<'a> {
     pub operation_id: &'a str,
     pub route_kind: &'a str,
     pub actor_key: &'a str,
+    pub state_version: i64,
     pub status: &'a str,
     pub state_json: &'a str,
 }
@@ -30,14 +32,15 @@ pub struct NewLiveExecutionRecord<'a> {
 pub fn insert(conn: &Connection, record: &NewLiveExecutionRecord<'_>) -> CortexResult<()> {
     conn.execute(
         "INSERT INTO live_execution_records (
-            id, journal_id, operation_id, route_kind, actor_key, status, state_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            id, journal_id, operation_id, route_kind, actor_key, state_version, status, state_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             record.id,
             record.journal_id,
             record.operation_id,
             record.route_kind,
             record.actor_key,
+            record.state_version,
             record.status,
             record.state_json,
         ],
@@ -52,7 +55,7 @@ pub fn get_by_journal_id(
 ) -> CortexResult<Option<LiveExecutionRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, journal_id, operation_id, route_kind, actor_key, status, state_json, created_at, updated_at
+            "SELECT id, journal_id, operation_id, route_kind, actor_key, state_version, status, state_json, created_at, updated_at
              FROM live_execution_records
              WHERE journal_id = ?1",
         )
@@ -75,7 +78,7 @@ pub fn get_by_operation_id(
 ) -> CortexResult<Option<LiveExecutionRecord>> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, journal_id, operation_id, route_kind, actor_key, status, state_json, created_at, updated_at
+            "SELECT id, journal_id, operation_id, route_kind, actor_key, state_version, status, state_json, created_at, updated_at
              FROM live_execution_records
              WHERE operation_id = ?1",
         )
@@ -94,7 +97,7 @@ pub fn get_by_operation_id(
 
 pub fn get_by_id(conn: &Connection, id: &str) -> CortexResult<Option<LiveExecutionRecord>> {
     conn.query_row(
-        "SELECT id, journal_id, operation_id, route_kind, actor_key, status, state_json, created_at, updated_at
+        "SELECT id, journal_id, operation_id, route_kind, actor_key, state_version, status, state_json, created_at, updated_at
          FROM live_execution_records
          WHERE id = ?1",
         params![id],
@@ -107,14 +110,15 @@ pub fn get_by_id(conn: &Connection, id: &str) -> CortexResult<Option<LiveExecuti
 pub fn update_status_and_state(
     conn: &Connection,
     id: &str,
+    state_version: i64,
     status: &str,
     state_json: &str,
 ) -> CortexResult<()> {
     conn.execute(
         "UPDATE live_execution_records
-         SET status = ?2, state_json = ?3, updated_at = datetime('now')
+         SET state_version = ?2, status = ?3, state_json = ?4, updated_at = datetime('now')
          WHERE id = ?1",
-        params![id, status, state_json],
+        params![id, state_version, status, state_json],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())
@@ -127,9 +131,10 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LiveExecutionRecord> {
         operation_id: row.get(2)?,
         route_kind: row.get(3)?,
         actor_key: row.get(4)?,
-        status: row.get(5)?,
-        state_json: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
+        state_version: row.get(5)?,
+        status: row.get(6)?,
+        state_json: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
