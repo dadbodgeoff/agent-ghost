@@ -1,297 +1,456 @@
-# Production Audit Remediation
+# Studio Pipeline Alignment Task
 
-## Objective
+Status: March 8, 2026
 
-Close the verified production-risk gaps in idempotency, crash recovery, workflow durability, backup integrity, messaging authenticity, distributed kill-gate coordination, skill-catalog mutation safety, and persisted-state/schema contracts.
+Objective: bring the live Studio pipeline up to a strict production-grade bar with no contract drift, no duplicate execution semantics, no misleading safety state, no silent fallback behavior, and no UI/runtime disagreement about what the system is doing.
 
-## Implementation Status
+This task plan is based on the live code paths, not on the older architecture docs.
 
-Updated March 8, 2026 against the checked-in code, not the original comments.
+Authoritative spec: `STUDIO_MASTER_REMEDIATION_SPEC.md`
 
-Completed and enforced in code:
-- `operation_journal` ownership is now lease/CAS-based with durable `owner_token` and `lease_epoch`. Stale owners cannot commit after takeover, and aborted rows are retained as audit history instead of being silently deleted.
-- Agent chat stream replay is durably journaled before replayable events are emitted. Persistence failures now fail closed into recovery-required semantics instead of pretending replay safety.
-- Workflow executions now persist a typed/versioned durable snapshot of the exact node graph, order, outputs, and active step, bound to operation-journal ownership. Resume and duplicate retries continue from the last durably committed step, reuse the same execution id, and fail closed into explicit `recovery_required` when a crash left a non-retry-safe node in flight. Unknown/skipped/invalid workflow nodes still fail execution instead of reporting `completed`.
-- Saved workflow definitions are now validated as real graph arrays with explicit node ids/types and known edge endpoints. Corrupt persisted workflow rows fail closed on read instead of defaulting to empty graphs or disappearing from list results.
-- Distributed kill-gate resume votes now fail closed unless authenticated cluster membership is configured. Unauthenticated resume quorum is no longer accepted.
-- Inter-agent message verification now rejects missing signatures, forged signatures, unknown sender keys, replayed nonces inside the replay window, and any message marked `encrypted`. The old replay-cache hourly reset hole is closed by timestamped eviction instead of wholesale nonce clearing.
-- Skill install/uninstall and transactional skill execution now run under the operation journal with durable mutation audit and caller-supplied idempotency keys. Explicitly non-idempotent external side-effect skills are rejected instead of being executed under a false retry-safe contract, and installed external-skill catalog entries now surface truthfully in list/install/execute paths.
-- Schema verification now checks recovery-critical columns, indexes, triggers, and constraints for `operation_journal`, `live_execution_records`, `stream_event_log`, and `workflow_executions`. "Schema verified" now means those contract elements were actually present.
-- Backup archives now use explicit format `v2`, authenticated `age` passphrase encryption, exact archive framing, path traversal rejection, tamper detection, and SQLite backup snapshots for `data/ghost.db`. Scheduler-backed exports now fail closed when no non-empty backup passphrase is configured.
+This file is the execution tracker for that spec. If this file conflicts with the master spec on contract ownership, semantics, or exit criteria, the master spec wins.
 
-Intentionally gated or still fail-closed:
-- Workflow resume is only automatic for durably safe progress. If a crash happens mid-step on a non-retry-safe node, the execution is marked `recovery_required` and further automatic resume is blocked instead of rerunning side effects.
-- Workflow `tool_exec` nodes are still not implemented under the durable runtime path. They continue to fail as unknown node types instead of bypassing safety or journaling.
-- Inter-agent authenticated encryption is not implemented. Messages marked `encrypted` are rejected instead of passing through as plaintext.
-- Runtime bootstrap no longer claims key registration it does not perform. The dispatcher hardening is real, but any consumer must explicitly wire verifying keys into its acceptance path.
-- Backup import only restores into a fresh target directory. In-place overwrite restore remains disabled because the repo does not yet have a crash-safe whole-tree swap contract for an active existing target.
+## Engineering Standard
 
-## Scope
+This work is held to the following bar:
 
-Primary code paths:
-- `crates/ghost-backup`
-- `crates/ghost-gateway/src/messaging`
+- No undocumented contracts.
+- No duplicated critical-path logic without a single owning abstraction.
+- No silent compatibility shims in production paths unless they are tested and time-bounded.
+- No UI state derived from assumptions that are not emitted by the backend.
+- No persistence rows that disagree with the corresponding audit truth.
+- No retry, replay, pagination, or streaming behavior that is only “best effort” while presented as deterministic.
+- No rollout without adversarial tests and explicit migration/backward-compatibility handling.
+
+## Authoritative Scope
+
+Primary sources of truth for this task:
+
+- `dashboard/src/routes/studio/+page.svelte`
+- `dashboard/src/lib/stores/studioChat.svelte.ts`
+- `dashboard/src/lib/stores/websocket.svelte.ts`
+- `packages/sdk/src/sessions.ts`
+- `packages/sdk/src/chat.ts`
+- `packages/sdk/src/websocket.ts`
+- `crates/ghost-gateway/src/api/studio_sessions.rs`
 - `crates/ghost-gateway/src/api/agent_chat.rs`
-- `crates/ghost-gateway/src/api/workflows.rs`
-- `crates/ghost-gateway/src/api/skills.rs`
-- `crates/ghost-gateway/src/api/skill_execute.rs`
-- `crates/ghost-gateway/src/skill_catalog`
-- `crates/cortex/cortex-storage`
-- `crates/ghost-kill-gates`
-- `crates/ghost-gateway/src/safety`
+- `crates/ghost-gateway/src/api/websocket.rs`
+- `crates/ghost-gateway/src/route_sets.rs`
+- `crates/ghost-gateway/src/runtime_safety.rs`
+- `crates/ghost-gateway/src/provider_runtime.rs`
+- `crates/ghost-agent-loop/src/runner.rs`
+- `crates/ghost-agent-loop/src/context/prompt_compiler.rs`
 
-Related contracts:
-- operation journal
-- live execution records
-- stream event log
-- workflow execution persistence
-- migration/schema verification
-- distributed kill-gate quorum/resume
+## Confirmed Red Flags
 
-## Constraints
+1. Route parity is green while Studio payload contracts still drift.
+   - existing parity gate proves mounted-path coverage, not parameter or payload-shape parity.
+   - consequence: the project can report "no OpenAPI drift" while Studio contracts are already forked.
 
-- Fail closed on persistence, auth, ownership, schema, and replay uncertainty.
-- No placeholders in production paths for encryption, signatures, or quorum trust.
-- No silent defaulting for persisted recovery state.
-- No replayable API or stream event may be emitted before durable persistence succeeds.
-- Mixed-version deploys must have an explicit compatibility plan or a temporary feature gate.
-- Every remediation task must land with adversarial tests, not only happy-path tests.
+2. Studio OpenAPI/generated types are stale and the SDK has forked around them.
+   - Studio routes are still modeled with `inline(serde_json::Value)` and missing query params.
+   - generated types expose `query?: never` where the SDK manually accepts params.
+   - consequence: OpenAPI is not authoritative for Studio.
 
-## Findings Summary
+3. Studio session pagination contract is broken.
+   - SDK/frontend send `before`.
+   - backend accepts `active_since` and `offset`, not `before`.
+   - consequence: load-more semantics are undefined and likely incorrect.
 
-1. Operation-journal lease takeover is unsafe: stale owners can still commit after takeover and overwrite the winning result.
-2. Agent chat stream replay durability is false in the live SSE path: event persistence writes through read-only connections and failures are silently ignored.
-3. Workflow durability/recovery is largely fake: resume reruns from scratch, persist failures are ignored, corrupt JSON silently defaults, and unknown/skipped nodes can still produce `"completed"`.
-4. Backup export/import ships security placeholders and restore integrity holes: XOR “encryption”, unsigned archives, path traversal restore, extra-entry restore, non-atomic restore, and no SQLite-consistent snapshot.
-5. Inter-agent messaging authenticity/confidentiality is fake: unsigned messages are accepted, “encryption” is plaintext pass-through, and key registration is only claimed in comments/logs.
-6. Distributed kill-gate quorum is unauthenticated and fail-open: any UUID can count as a resume vote, and the bridge still contains transport placeholders.
-7. Messaging replay prevention has an hourly-reset replay hole that re-admits recent messages across the reset boundary.
-8. Skill-catalog install/uninstall/execute routes mutate state without the operation journal, durable provenance, or retry-safe contracts.
-9. Persisted recovery state and schema verification are under-specified: recovery-critical JSON is unversioned and migration “schema verified” only proves table existence for several critical tables.
+4. Stream recovery contract is inconsistent.
+   - SDK makes `after_seq` optional.
+   - backend requires it.
+   - recovery JSON returns durable event names instead of the live SSE names.
+   - consequence: replay is not a single canonical public contract.
 
-## Phased Implementation Plan
+5. User message safety status is persisted incorrectly.
+   - input inspection computes `warning` / `blocked`.
+   - Studio message rows are still persisted as `clean`.
+   - consequence: persisted message state disagrees with safety audit state.
+
+6. SSE warning/error contract is drifting.
+   - frontend expects structured fields like `warning_type`, `error_type`, `provider_unavailable`, `auth_failed`.
+   - backend emits different warning shape and does not consistently emit the structured provider error contract the UI expects.
+   - consequence: operator-facing resilience and safety UI is partially false.
+
+7. Studio timestamps are not a safe public contract.
+   - backend returns SQLite datetime strings.
+   - frontend parses them as though they were RFC3339/ISO timestamps.
+   - consequence: timezone and parsing behavior are ambiguous.
+
+8. The SDK WebSocket event union is behind the backend and dashboard.
+   - backend emits more event variants than the SDK types represent.
+   - consequence: compile-time protection is incomplete for real-time contracts.
+
+9. Studio and generic agent-chat execution paths are duplicated and already diverge.
+   - they do not handle output inspection, persistence failure, and recovery semantics the same way.
+   - consequence: high-probability future regressions, conflicting fixes, and audit inconsistency.
+
+## Program Goals
+
+### Goal 1: Contract Authority
+
+Every Studio-facing transport contract must have one owner and one machine-verifiable shape.
+
+### Goal 2: Execution Path Unification
+
+There must be one canonical path for “run a live agent turn with streaming, tools, safety, providers, and persistence,” with Studio and generic agent chat as thin adapters, not competing implementations.
+
+### Goal 3: Persistence Truthfulness
+
+Persisted rows, audit rows, transport events, and UI state must agree on safety status, turn state, replay state, and failure state.
+
+### Goal 4: Fail-Closed Runtime Semantics
+
+If persistence, replay, contract parsing, stream recovery, or transport synchronization is uncertain, the system must surface explicit degraded or failed state, not pretend everything is healthy.
+
+## Non-Negotiable Constraints
+
+- No changes that rely on frontend-only fixes for backend truth problems.
+- No changes that preserve drift by adding more compatibility branches.
+- No transport contract changes without shared typed definitions and tests.
+- No merge of Studio and agent-chat logic unless replay and persistence semantics stay explicit and testable.
+- No “TODO” placeholders in critical path code after this work lands.
+
+## Workstreams
+
+## Workstream A: Contract Inventory and Authority
+
+Goal: define the canonical transport and persistence contracts for Studio.
+
+Tasks:
+
+1. Enumerate all Studio contracts:
+   - session list
+   - create/delete session
+   - send message blocking
+   - send message streaming
+   - stream recovery
+   - websocket events that Studio consumes
+   - client heartbeat/liveness contract
+
+2. For each contract, define:
+   - owning module
+   - schema owner
+   - backward-compatibility story
+   - replay/retry semantics
+   - failure semantics
+
+3. Generate or centralize shared types for:
+   - session list query params
+   - SSE warning payloads
+   - SSE error payloads
+   - stream terminal payloads
+   - websocket events consumed by Studio
+
+4. Remove any frontend expectation that is not emitted by the backend.
+
+Acceptance criteria:
+
+- There is one typed definition per Studio transport payload shape.
+- UI, SDK, and backend all compile against the same semantic contract.
+- Any incompatible contract change is explicit and versioned.
+
+## Workstream B: Session List and Pagination Correctness
+
+Goal: make Studio session list semantics deterministic and truthful.
+
+Tasks:
+
+1. Choose one pagination contract:
+   - offset-based only, or
+   - cursor/time-based only.
+
+2. Remove the unused alternative from the SDK/UI/backend.
+
+3. If cursor/time-based:
+   - implement `before` or equivalent in the backend.
+   - define sort order and tie-break behavior.
+
+4. If offset-based:
+   - remove `before` from SDK and frontend store.
+   - ensure stable ordering across updates.
+
+5. Add explicit duplicate/skip protection in tests.
+
+Acceptance criteria:
+
+- “Load more sessions” never returns duplicate rows for a stable DB snapshot.
+- “Load more sessions” never skips rows under the documented ordering contract.
+- SDK params exactly match backend query params.
+
+## Workstream C: Safety State Integrity
+
+Goal: make message rows, audits, and UI all reflect the same safety truth.
+
+Tasks:
+
+1. Fix Studio user-message persistence so the message row stores the actual computed safety status.
+
+2. Verify the same correction in:
+   - blocking Studio path
+   - streaming Studio path
+   - any shared helper path
+
+3. Audit assistant-message persistence for the same category of mismatch.
+
+4. Add invariants:
+   - if an input scan produced `warning` or `blocked`, persisted message state cannot be `clean`.
+   - if a turn is rejected pre-execution, no conflicting assistant state can exist.
+
+5. Add repair/migration handling for already persisted bad rows if needed.
+
+Acceptance criteria:
+
+- Persisted message safety state matches the corresponding scan result.
+- Audit query, session reload, and replay all show the same safety outcome.
+- Historical inconsistency is either migrated or explicitly detectable.
+
+## Workstream D: SSE Contract Hardening
+
+Goal: make Studio streaming semantically exact and machine-consistent.
+
+Tasks:
+
+1. Define canonical SSE event payloads for:
+   - `stream_start`
+   - `text_delta`
+   - `tool_use`
+   - `tool_result`
+   - `heartbeat`
+   - `warning`
+   - `error`
+   - `stream_end`
+
+2. Standardize warning payloads.
+   - stop emitting ad hoc `code` objects if the client expects typed warning fields.
+   - or update client and shared types to consume the real server contract.
+
+3. Standardize provider failure payloads.
+   - explicit typed provider failure event or structured `error`.
+   - include fallback/terminal semantics explicitly.
+
+4. Ensure every emitted event is parseable by the shared client type layer.
+
+5. Verify event-id semantics.
+   - replay ids
+   - persisted ids
+   - terminal id behavior
+   - any synthetic start event behavior
+
+6. Eliminate duplicate or ambiguous stream-start semantics if present.
+
+Acceptance criteria:
+
+- Frontend never depends on fields the backend does not emit.
+- Backend never emits fields not described in the shared contract.
+- Stream recovery and live streaming produce semantically equivalent event sequences.
+
+## Workstream E: Stream Liveness and Heartbeat Ownership
+
+Goal: separate “works today” from a deliberate stream-liveness contract.
+
+Tasks:
+
+1. Decide whether Studio heartbeat belongs to:
+   - dedicated Studio session heartbeat route, or
+   - generic runtime session heartbeat route.
+
+2. If Studio-specific:
+   - create a dedicated endpoint and storage namespace.
+   - remove cross-domain leakage from runtime sessions.
+
+3. If generic:
+   - document and enforce that Studio session ids are valid heartbeat keys.
+   - validate session existence and ownership explicitly.
+
+4. Make backpressure behavior explicit:
+   - stale threshold
+   - recovery threshold
+   - UI behavior on stale heartbeat
+
+Acceptance criteria:
+
+- Stream liveness behavior is intentional, documented, and validated.
+- Heartbeat writes cannot silently succeed for an invalid or wrong session domain.
+- Backpressure behavior is observable and testable.
+
+## Workstream F: Canonical Live Turn Runtime
+
+Goal: remove duplicate critical-path orchestration between Studio and agent chat.
+
+Tasks:
+
+1. Identify the common execution pipeline:
+   - runtime agent resolution
+   - availability checks
+   - conversation history load/build
+   - runtime safety context build
+   - runner construction
+   - provider fallback ordering
+   - stream event production
+   - final persistence
+   - websocket side effects
+
+2. Extract a canonical service/module for live turn execution.
+
+3. Keep Studio-specific concerns as adapters only:
+   - Studio session persistence model
+   - Studio SSE acceptance path
+   - Studio websocket topics
+
+4. Keep generic agent-chat-specific concerns as adapters only:
+   - API session identity model
+   - non-Studio response envelopes
+
+5. Remove duplicated fallback/provider/stream logic from both endpoints.
+
+Acceptance criteria:
+
+- There is one canonical implementation of live turn execution.
+- Studio and `agent_chat` differ only at the transport/persistence boundary.
+- A provider fallback fix or safety fix lands once, not twice.
+
+## Workstream G: Replay and Recovery Truthfulness
+
+Goal: recovery must be deterministic, not aspirational.
+
+Tasks:
+
+1. Verify that every replayable event is durably persisted before it is treated as replay-safe.
+
+2. Define exact recovery semantics for:
+   - dropped SSE after partial text
+   - dropped SSE during tool run
+   - dropped SSE after final persistence but before terminal event delivery
+   - DB degradation during stream-event persistence
+
+3. Ensure the UI’s incomplete/recovered/error states map exactly to backend states.
+
+4. Ensure replay fallback from final assistant message is documented and only used intentionally.
+
+5. Add explicit degraded state when replay safety is lost.
+
+Acceptance criteria:
+
+- Recovery path never pretends to be exact when it is reconstructed.
+- Replay-safe vs reconstructed output is explicit in code and behavior.
+- UI does not mark a response complete unless backend semantics justify it.
+
+## Workstream H: Observability and Operator Truth
+
+Goal: the operator should see what the system is actually doing, especially under failure.
+
+Tasks:
+
+1. Add structured logs/metrics for:
+   - contract parse failures
+   - replay fallback usage
+   - stream persistence degradation
+   - heartbeat staleness
+   - provider fallback transitions
+   - duplicate-event suppression
+   - session pagination anomalies
+
+2. Surface critical Studio degradation states into observability dashboards and audit surfaces.
+
+3. Ensure warning/error event types are visible in both logs and UI.
+
+Acceptance criteria:
+
+- A failing or degraded Studio stream is diagnosable without reading raw source.
+- Silent failure classes are removed from the Studio control plane.
+
+## Required Test Matrix
+
+### Contract tests
+
+- SDK query params exactly match accepted backend params.
+- SSE event payloads round-trip through shared types.
+- websocket payloads consumed by Studio parse exactly as emitted.
+
+### Pagination tests
+
+- stable ordering under repeated list/load-more calls
+- duplicate prevention under concurrent new-session creation
+- no silent ignore of cursor params
+
+### Safety integrity tests
+
+- input warning persists as warning on message row
+- input blocked persists as blocked on message row and matching audit row
+- assistant output warning/blocked persists consistently
+
+### Streaming tests
+
+- warning payload shape matches frontend contract
+- provider error payload shape matches frontend contract
+- tool-use/result events survive replay
+- dropped SSE after partial text recovers deterministically
+- dropped SSE after terminal persistence returns truthful final state
+
+### Liveness tests
+
+- heartbeat against wrong session domain fails
+- stale heartbeat triggers backpressure exactly as specified
+- recovered heartbeat resumes normal streaming behavior
+
+### Unification tests
+
+- Studio and `agent_chat` share the same canonical execution service
+- provider fallback behavior is identical across both entry points
+- safety gate ordering is identical across both entry points
+
+## Rollout Plan
 
 ### Phase 0: Containment
 
-Goal: stop claiming guarantees the code does not provide.
+- Freeze further Studio contract additions until shared contract ownership exists.
+- Fail obviously mismatched cases loudly rather than tolerating drift silently.
 
-1. Gate or disable unsafe resume/replay surfaces until they are truthful.
-   Dependencies: none.
-   Tasks:
-   - Return `409`/`501` for workflow resume until real step-level resume exists.
-   - Return explicit recovery-required/error on stream persistence failure instead of silently continuing.
-   - Disable distributed kill-gate resume unless authenticated cluster membership is enforced.
-   Acceptance criteria:
-   - `/api/workflows/:id/resume/:execution_id` no longer reruns from scratch under the name “resume”.
-   - SSE replay contract is either real or explicitly refused.
-   - Distributed resume cannot reopen the gate with unauthenticated votes.
+### Phase 1: Contract Fixes
 
-### Phase 1: Ownership, Idempotency, and Crash-Recovery Correctness
+- Fix pagination contract.
+- Fix safety status persistence.
+- Fix SSE warning/error payload contracts.
 
-Goal: exactly-once semantics under retries, contention, slow execution, and restart.
+### Phase 2: Runtime Unification
 
-2. Harden `operation_journal` ownership and lease semantics.
-   Dependencies: Phase 0.
-   Tasks:
-   - Add durable owner token / lease epoch to `operation_journal`.
-   - Make takeover, commit, and abort compare-and-set on `(id, owner_token, status='in_progress')`.
-   - Add lease renewal/heartbeat for long-running mutations.
-   - Treat ownership loss as a hard error; stale owners must not commit.
-   Acceptance criteria:
-   - A worker that loses ownership cannot commit or delete the row.
-   - A long-running request that is still healthy renews its lease and is not spuriously taken over.
-   - Concurrent retries produce one committed response body and one authoritative audit trail.
+- Extract canonical live turn execution service.
+- Migrate Studio and `agent_chat` onto it behind feature flags if needed.
 
-3. Make agent chat stream replay durable and fail closed.
-   Dependencies: task 2.
-   Tasks:
-   - Persist replayable stream events with a write-capable connection.
-   - Persist before emitting replayable SSE events or broadcasting replay-relevant websocket sequence numbers.
-   - Record durable terminal/recovery-required state for the stream route.
-   - Remove `unwrap_or(0)` sequence-number fallback for persisted stream events.
-   Acceptance criteria:
-   - Restart replay returns `stream_start`, all persisted text/tool events, and terminal event without provider re-execution.
-   - Persistence failure produces an explicit recovery-required contract, not silent live-only delivery.
-   - No live event with replay semantics is emitted without durable storage success.
+### Phase 3: Recovery and Liveness Hardening
 
-4. Replace fake workflow durability with real resumable execution state.
-   Dependencies: tasks 2-3.
-   Tasks:
-   - Introduce typed/versioned execution records with step-level durable progress and outcome state.
-   - Link workflow execution state to operation-journal ownership.
-   - Resume from the last durably committed step only; do not rerun completed side effects.
-   - Route workflow agent/tool execution through the same runtime-safety and provider construction path as live chat/studio execution.
-   - Treat unknown node types, missing providers, skipped critical nodes, and state-persist failures as execution failure, not `"completed"`.
-   Acceptance criteria:
-   - Crash after step N resumes at step N+1 when safe, or returns explicit manual-recovery requirement when not safe.
-   - Duplicate retry does not rerun completed steps or duplicate side effects.
-   - Workflow status cannot be `"completed"` if any required node was skipped, unknown, or semantically invalid.
+- Finalize heartbeat ownership.
+- Finalize replay/degraded-state semantics.
+- add observability hooks and dashboards.
 
-### Phase 2: Security Truthfulness
+### Phase 4: Cleanup
 
-Goal: no fake crypto, no fake signatures, no unauthenticated coordination.
+- Remove obsolete adapters, dead compatibility branches, and duplicate logic.
+- Update docs to match code, not the reverse.
 
-5. Replace backup placeholders with authenticated, crash-safe backup/restore.
-   Dependencies: none.
-   Tasks:
-   - Define backup format v2 with explicit versioning and authenticated encryption.
-   - Refuse empty-passphrase/unsigned production backups.
-   - Validate exact manifest/data set equality.
-   - Constrain restore paths to a staged subtree and atomically swap into place.
-   - Use SQLite backup API or equivalent consistent snapshot for live DB state.
-   Acceptance criteria:
-   - Tampered archive fails before restore.
-   - Path traversal and extra archive entries are rejected.
-   - Restore either completes fully or leaves the original state untouched.
+## Exit Criteria
 
-6. Make inter-agent messaging actually authenticated and confidential.
-   Dependencies: none.
-   Tasks:
-   - Require valid signatures for accepted messages; reject empty signatures.
-   - Implement real key registration/loading instead of bootstrap-only log messages.
-   - Replace plaintext “encryption” with AEAD or remove the encrypted flag until real crypto exists.
-   - Bind replay protection to authenticated sender identity.
-   Acceptance criteria:
-   - Unsigned, forged, and tampered messages are rejected.
-   - “Encrypted” messages are not plaintext and fail to decrypt on tamper.
-   - Bootstrap/runtime key registry is exercised by tests, not only comments.
+This effort is not done until all of the following are true:
 
-7. Fix distributed kill-gate quorum and transport trust.
-   Dependencies: none.
-   Tasks:
-   - Enforce cluster membership validation for acks and resume votes.
-   - Authenticate relay messages and bind votes to known node identities.
-   - Remove or gate code paths that only build relay messages without transport delivery.
-   - Define partition/rejoin behavior and chain verification requirements for resume.
-   Acceptance criteria:
-   - Fake node IDs cannot reach quorum.
-   - Duplicate votes and unknown peers do not affect quorum.
-   - Resume requires authenticated votes from current cluster members only.
+- Studio transport contracts are shared, typed, and tested.
+- Session pagination semantics are deterministic and correct.
+- Message safety state is persisted truthfully.
+- Warning/error SSE payloads and UI expectations are aligned.
+- Stream heartbeat ownership is explicit and validated.
+- Studio and `agent_chat` no longer duplicate critical live-turn orchestration.
+- Replay/degraded-state semantics are explicit and operator-visible.
+- Documentation reflects the live runtime after the code lands.
 
-8. Close the dispatcher replay hole.
-   Dependencies: task 6.
-   Tasks:
-   - Replace hourly wholesale nonce reset with timestamped eviction bounded by replay window.
-   - Separate replay cache cleanup from rate-limit counter cleanup.
-   Acceptance criteria:
-   - A message accepted immediately before the cleanup boundary is still rejected on replay immediately after the boundary if it remains inside the replay window.
+## Deliverables
 
-### Phase 3: Contracted Mutation Surfaces and Persisted-State Compatibility
-
-Goal: retry-safe APIs, versioned recovery state, and migrations that actually verify the contract.
-
-9. Put skill-catalog mutations/execution under the same mutation contract as other write paths.
-   Dependencies: task 2.
-   Tasks:
-   - Require operation context for install/uninstall/execute routes.
-   - Journal and audit skill-catalog mutations and write-capable executions.
-   - Define which skills require client-generated ids or explicit idempotency keys for side effects.
-   Acceptance criteria:
-   - Retried install/uninstall requests replay the same response instead of mutating twice.
-   - Retried write-capable skill execution is exactly-once or explicitly rejected as non-idempotent.
-   - Audit records reconstruct actor, request, operation, and idempotency provenance.
-
-10. Version persisted recovery state and strengthen schema verification.
-    Dependencies: tasks 2-4.
-    Tasks:
-    - Add `state_version` or typed columns for `workflow_executions` and `live_execution_records`.
-    - Reject unknown state versions/shapes instead of silently defaulting.
-    - Expand schema contract checks for `workflows`, `stream_event_log`, `workflow_executions`, `operation_journal`, and `live_execution_records` to verify required columns, indexes, and constraints.
-    - Make migration receipts truthful: “schema verified” must mean the recovery contract is actually present.
-    Acceptance criteria:
-    - Corrupt or unknown persisted state fails closed with explicit diagnostics.
-    - A database missing a critical recovery column/index fails schema verification.
-    - Mixed-version fixtures either migrate cleanly or are explicitly rejected with actionable errors.
-
-### Phase 4: Rollout and Verification
-
-Goal: land high-risk fixes without corrupting existing state or breaking mixed-version deployments.
-
-11. Execute staged rollout with migration and recovery drills.
-    Dependencies: tasks 2-10.
-    Tasks:
-    - Add forward-compatible migrations first, then flip enforcement behind feature flags.
-    - Run canary with metrics on takeover conflicts, replay failures, recovery-required transitions, backup verify failures, signature reject counts, and quorum vote rejects.
-    - Perform crash/restart drills and mixed-version upgrade tests before broad rollout.
-    Acceptance criteria:
-    - No canary duplicate execution under forced retry/timeout scenarios.
-    - Recovery drills produce deterministic post-restart state.
-    - Feature flags allow rapid fail-closed rollback of new contracts if verification fails.
-
-## Test Matrix
-
-- Operation journal:
-  - stale owner commit after takeover
-  - lease renewal during >30s execution
-  - crash after side effect before journal commit
-  - crash after journal commit before HTTP response
-  - concurrent retries from two workers
-- Agent chat stream:
-  - read-only/write failure during event append
-  - crash after `stream_start`, mid-text, mid-tool event, and before terminal event
-  - replay after restart with no provider re-execution
-  - websocket sequence numbers remain monotonic and persisted
-- Workflows:
-  - crash between steps
-  - resume from prior execution id
-  - unknown node type
-  - missing API key/provider
-  - corrupt stored JSON
-  - mixed-version stored state fixture
-- Backup:
-  - tampered ciphertext
-  - wrong passphrase
-  - extra data entries
-  - `../` traversal path
-  - restore interrupted mid-run
-  - live SQLite/WAL writes during backup
-- Messaging:
-  - unsigned message
-  - wrong-key signature
-  - ciphertext tamper
-  - replay across cleanup boundary
-  - future-dated and expired messages
-- Kill gate:
-  - fake node IDs
-  - duplicate vote from same node
-  - unknown peer ack
-  - partition then rejoin
-  - resume with stale membership view
-- Skill catalog:
-  - duplicate install retry
-  - duplicate uninstall retry
-  - write-capable execute retry
-  - audit provenance presence
-- Migrations/schema:
-  - missing critical columns/indexes
-  - upgrade from pre-v051/v052/v053 states
-  - migration receipt emitted only after full contract verification
-
-## Migration and Rollout Notes
-
-- `operation_journal` changes require additive migration first. Do not remove legacy columns until all writers compare-and-set on the new ownership fields.
-- `workflow_executions` now use typed/versioned state columns and migration `v056` marks legacy rows `recovery_required` instead of silently resuming them. `live_execution_records` still need the same explicit state-versioning treatment.
-- Backup format change should be versioned. Keep legacy import behind an explicit compatibility flag and never restore legacy archives silently.
-- Distributed kill-gate resume must remain disabled unless authenticated cluster membership is configured and verified.
-- Skill route enforcement can roll out in two steps:
-  - accept missing idempotency headers with warnings for existing clients
-  - switch to hard enforcement once clients are updated
-
-## Open Questions
-
-- Is `ghost-backup` currently reachable in production deployments or only via operator tooling? The code must still be fixed before treating exported archives as trustworthy.
-- Do any external clients rely on the current broken behavior of workflow “resume”? If yes, they need a compatibility notice before the route is changed or gated.
-- What is the authoritative cluster-membership source for distributed kill-gate quorum? The current code has no trusted membership binding.
-- Which skill executions are intended to be replay-safe, and which require caller-supplied ids for exactly-once writes?
-
-## Do Not Regress
-
-- No stale owner may commit after lease takeover.
-- No replayable stream event may be emitted before durable append succeeds.
-- No workflow may report `"completed"` when a required node failed, was skipped, or was unknown.
-- No backup restore may write outside the staged ghost root.
-- No unsigned or forged inter-agent message may be accepted.
-- No unauthenticated node ID may count toward kill-gate quorum.
-- No mutating skill route may bypass operation journal and mutation audit.
-- No recovery-critical persisted JSON may silently default on parse/version mismatch.
-- No migration receipt may claim schema verification without verifying the recovery-critical columns and indexes.
+1. Corrected runtime code.
+2. Shared Studio contract types and tests.
+3. Updated observability for Studio degraded modes.
+4. Updated architecture/system map docs.
+5. A short remediation report listing:
+   - what changed
+   - which incompatible contracts changed
+   - what was migrated
+   - what remains intentionally deferred

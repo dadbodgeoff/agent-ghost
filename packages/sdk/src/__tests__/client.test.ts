@@ -261,12 +261,33 @@ describe('SessionsAPI', () => {
   });
 
   it('lists sessions', async () => {
-    const sessions = [{ id: 's1' }, { id: 's2' }];
+    const sessions = {
+      sessions: [{ id: 's1' }, { id: 's2' }],
+      next_cursor: 'cursor-2',
+      has_more: true,
+    };
     const fetch = mockFetch(jsonResponse(sessions));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
     const result = await client.sessions.list();
     expect(result).toEqual(sessions);
+  });
+
+  it('lists sessions with a cursor', async () => {
+    const sessions = {
+      sessions: [{ id: 's3' }],
+      next_cursor: null,
+      has_more: false,
+    };
+    const fetch = mockFetch(jsonResponse(sessions));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    await client.sessions.list({ limit: 25, cursor: 'cursor-2' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/studio/sessions?limit=25&cursor=cursor-2',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('gets a session with messages', async () => {

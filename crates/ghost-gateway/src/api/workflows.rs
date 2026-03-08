@@ -871,7 +871,7 @@ fn topological_sort(
 enum WorkflowExecutionBootstrap {
     Drive {
         binding: WorkflowExecutionBinding,
-        state: WorkflowExecutionState,
+        state: Box<WorkflowExecutionState>,
     },
     Ready {
         binding: WorkflowExecutionBinding,
@@ -1141,7 +1141,7 @@ async fn persist_workflow_execution_state(
     let final_response_body = state
         .final_response_body
         .as_ref()
-        .map(|body| serde_json::to_string(body))
+        .map(serde_json::to_string)
         .transpose()
         .map_err(|error| ApiError::internal(error.to_string()))?;
     let row_status = if state.recovery_required {
@@ -1298,7 +1298,7 @@ async fn bootstrap_workflow_execution_for_execute(
         };
         return Ok(WorkflowExecutionBootstrap::Drive {
             binding,
-            state: parsed,
+            state: Box::new(parsed),
         });
     }
 
@@ -1364,7 +1364,7 @@ async fn bootstrap_workflow_execution_for_execute(
 
     Ok(WorkflowExecutionBootstrap::Drive {
         binding: workflow_bootstrap_binding(execution_id, lease, operation_id),
-        state: execution_state,
+        state: Box::new(execution_state),
     })
 }
 
@@ -1458,7 +1458,7 @@ async fn bootstrap_workflow_execution_for_resume(
     };
     Ok(WorkflowExecutionBootstrap::Drive {
         binding,
-        state: parsed,
+        state: Box::new(parsed),
     })
 }
 
@@ -1709,7 +1709,7 @@ async fn execute_workflow_inner(
         WorkflowExecutionBootstrap::Drive {
             binding,
             state: execution_state,
-        } => drive_workflow_execution(state, binding, execution_state).await,
+        } => drive_workflow_execution(state, binding, *execution_state).await,
         WorkflowExecutionBootstrap::Ready {
             binding: _binding,
             status,
@@ -1737,7 +1737,7 @@ async fn resume_workflow_execution_inner(
         WorkflowExecutionBootstrap::Drive {
             binding,
             state: execution_state,
-        } => drive_workflow_execution(state, binding, execution_state).await,
+        } => drive_workflow_execution(state, binding, *execution_state).await,
         WorkflowExecutionBootstrap::Ready {
             binding: _binding,
             status,

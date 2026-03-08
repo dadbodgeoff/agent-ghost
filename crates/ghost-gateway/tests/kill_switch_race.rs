@@ -111,7 +111,7 @@ fn audit_entries_match_trigger_count() {
     let ks = KillSwitch::new();
     let agent = Uuid::now_v7();
 
-    let triggers = vec![
+    let triggers = [
         TriggerEvent::ManualPause {
             agent_id: agent,
             reason: "t1".into(),

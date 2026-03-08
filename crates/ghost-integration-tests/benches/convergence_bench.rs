@@ -188,6 +188,7 @@ fn bench_signal_computation(c: &mut Criterion) {
         human_message_count: 25,
         agent_message_count: 25,
         human_initiated_count: 15,
+        tool_call_names: vec![],
         total_message_count: 50,
         exit_signals_detected: 2,
         exit_signals_ignored: 1,

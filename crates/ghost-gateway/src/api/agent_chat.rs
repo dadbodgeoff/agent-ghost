@@ -14,7 +14,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use ghost_agent_loop::runner::{AgentRunner, AgentStreamEvent};
+use ghost_agent_loop::runner::{AgentStreamErrorType, AgentStreamEvent};
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ErrorResponse};
@@ -27,12 +27,13 @@ use crate::api::mutation::{
     write_mutation_audit_entry,
 };
 use crate::api::operation_context::{IdempotencyStatus, OperationContext};
-use crate::api::websocket::WsEvent;
-use crate::provider_runtime;
-use crate::runtime_safety::{
-    RunnerBuildOptions, RuntimeSafetyBuilder, RuntimeSafetyContext, RuntimeSafetyError,
-    API_SYNTHETIC_AGENT_NAME,
+use crate::api::runtime_execution::{
+    execute_blocking_turn, map_runner_error, pre_loop_blocking_turn,
+    prepare_requested_runtime_execution, PreparedRuntimeExecution,
 };
+use crate::api::stream_runtime::execute_streaming_turn;
+use crate::api::websocket::WsEvent;
+use crate::runtime_safety::{RunnerBuildOptions, RuntimeSafetyBuilder, API_SYNTHETIC_AGENT_NAME};
 use crate::state::AppState;
 
 const AGENT_CHAT_ROUTE_TEMPLATE: &str = "/api/agent/chat";
@@ -89,13 +90,6 @@ struct AgentStreamExecutionState {
     recovery_required: bool,
     terminal_event_type: Option<String>,
     terminal_payload: Option<serde_json::Value>,
-}
-
-struct PreparedAgentRuntime {
-    agent_id: String,
-    runtime_ctx: RuntimeSafetyContext,
-    runner: AgentRunner,
-    providers: Vec<crate::config::ProviderConfig>,
 }
 
 /// POST /api/agent/chat
@@ -300,11 +294,13 @@ pub async fn agent_chat(
                 }
             }
 
-            let prepared_runtime = match prepare_agent_runtime(
+            let prepared_runtime = match prepare_requested_runtime_execution(
                 &state,
                 req.agent_id.as_deref(),
+                API_SYNTHETIC_AGENT_NAME,
                 req.session_id
                     .unwrap_or_else(|| parse_execution_session_id(&execution_state)),
+                RunnerBuildOptions::default(),
             ) {
                 Ok(prepared_runtime) => prepared_runtime,
                 Err(error) => {
@@ -324,22 +320,39 @@ pub async fn agent_chat(
                 }
             };
 
-            let PreparedAgentRuntime {
+            let PreparedRuntimeExecution {
                 agent_id,
                 runtime_ctx,
                 mut runner,
                 providers,
             } = prepared_runtime;
 
-            let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
-            let mut ctx = match runner
-                .pre_loop(
-                    runtime_ctx.agent.id,
-                    runtime_ctx.session_id,
-                    "api",
-                    &req.message,
+            if providers.is_empty() {
+                let (status, body) = api_error_status_and_body(ApiError::bad_request(
+                    "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
+                ));
+                return finalize_agent_chat_terminal_response(
+                    &state,
+                    &lease,
+                    &operation_context,
+                    &agent_id,
+                    actor,
+                    &execution_id,
+                    execution_state,
+                    status,
+                    body,
                 )
-                .await
+                .await;
+            }
+
+            let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
+            let mut ctx = match pre_loop_blocking_turn(
+                &mut runner,
+                &runtime_ctx,
+                "api",
+                &req.message,
+            )
+            .await
             {
                 Ok(ctx) => ctx,
                 Err(error) => {
@@ -370,39 +383,24 @@ pub async fn agent_chat(
                 return error_response_with_idempotency(error);
             }
 
-            let mut fallback_chain = provider_runtime::build_fallback_chain(&providers);
-            match runner
-                .run_turn(&mut ctx, &mut fallback_chain, &req.message)
-                .await
+            let result = match execute_blocking_turn(
+                &mut runner,
+                &mut ctx,
+                &req.message,
+                &providers,
+            )
+            .await
             {
                 Ok(result) => {
                     if let Err(error) = heartbeat.stop().await {
                         return error_response_with_idempotency(error);
                     }
-                    let body = serde_json::to_value(AgentChatResponse {
-                        content: result.output.unwrap_or_default(),
-                        session_id: runtime_ctx.session_id.to_string(),
-                        tool_calls_made: result.tool_calls_made,
-                        total_tokens: result.total_tokens,
-                        total_cost: result.total_cost,
-                    })
-                    .unwrap_or(serde_json::Value::Null);
-                    finalize_agent_chat_terminal_response(
-                        &state,
-                        &lease,
-                        &operation_context,
-                        &agent_id,
-                        actor,
-                        &execution_id,
-                        execution_state,
-                        StatusCode::OK,
-                        body,
-                    )
-                    .await
+                    result
                 }
                 Err(error) => {
-                    if let Err(heartbeat_error) = heartbeat.stop().await {
-                        return error_response_with_idempotency(heartbeat_error);
+                    let heartbeat_result = heartbeat.stop().await;
+                    if let Err(error) = heartbeat_result {
+                        return error_response_with_idempotency(error);
                     }
                     let recovery_body = agent_chat_recovery_body(&execution_state);
                     tracing::warn!(
@@ -411,7 +409,7 @@ pub async fn agent_chat(
                         error = %error,
                         "agent chat execution entered recovery-required state"
                     );
-                    finalize_agent_chat_recovery_response(
+                    return finalize_agent_chat_recovery_response(
                         &state,
                         &lease,
                         &operation_context,
@@ -421,9 +419,30 @@ pub async fn agent_chat(
                         execution_state,
                         recovery_body,
                     )
-                    .await
+                    .await;
                 }
-            }
+            };
+
+            let body = serde_json::to_value(AgentChatResponse {
+                content: result.output.unwrap_or_default(),
+                session_id: runtime_ctx.session_id.to_string(),
+                tool_calls_made: result.tool_calls_made,
+                total_tokens: result.total_tokens,
+                total_cost: result.total_cost,
+            })
+            .unwrap_or(serde_json::Value::Null);
+            finalize_agent_chat_terminal_response(
+                &state,
+                &lease,
+                &operation_context,
+                &agent_id,
+                actor,
+                &execution_id,
+                execution_state,
+                StatusCode::OK,
+                body,
+            )
+            .await
         }
         Err(error) => error_response_with_idempotency(error),
     }
@@ -598,29 +617,29 @@ pub async fn agent_chat_stream(
                         }
                     }
                     Ok(None) => {
-                        let agent = match RuntimeSafetyBuilder::new(&state)
-                            .resolve_agent(requested_agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
-                            .map_err(map_runtime_safety_error)
-                        {
-                            Ok(agent) => agent,
+                        let session_id_uuid = req.session_id.unwrap_or_else(Uuid::now_v7);
+                        let prepared_runtime = match prepare_requested_runtime_execution(
+                            &state,
+                            requested_agent_id.as_deref(),
+                            API_SYNTHETIC_AGENT_NAME,
+                            session_id_uuid,
+                            RunnerBuildOptions::default(),
+                        ) {
+                            Ok(prepared_runtime) => prepared_runtime,
                             Err(error) => {
                                 let _ =
                                     abort_prepared_json_operation(&db, &operation_context, &lease);
                                 return error_response_with_idempotency(error);
                             }
                         };
-                        if let Err(error) = ensure_agent_available(&state, agent.id) {
-                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
-                            return error_response_with_idempotency(error);
-                        }
-                        if provider_runtime::ordered_provider_configs(&state).is_empty() {
+                        if prepared_runtime.providers.is_empty() {
                             let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                             return error_response_with_idempotency(ApiError::bad_request(
                                 "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
                             ));
                         }
 
-                        let session_id = req.session_id.unwrap_or_else(Uuid::now_v7).to_string();
+                        let session_id = session_id_uuid.to_string();
                         let message_id = Uuid::now_v7().to_string();
                         let start_payload = serde_json::json!({
                             "session_id": session_id,
@@ -649,7 +668,7 @@ pub async fn agent_chat_stream(
                             };
                         let execution_state = agent_stream_execution_state(
                             &session_id,
-                            &agent.id.to_string(),
+                            &prepared_runtime.agent_id,
                             &message_id,
                             start_seq,
                         );
@@ -671,7 +690,7 @@ pub async fn agent_chat_stream(
 
                         let accepted_body = agent_stream_accepted_body(
                             &session_id,
-                            &agent.id.to_string(),
+                            &prepared_runtime.agent_id,
                             &message_id,
                             start_seq,
                         );
@@ -1042,40 +1061,6 @@ fn agent_chat_audit_details(body: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-fn prepare_agent_runtime(
-    state: &AppState,
-    requested_agent_id: Option<&str>,
-    session_id: Uuid,
-) -> Result<PreparedAgentRuntime, ApiError> {
-    let builder = RuntimeSafetyBuilder::new(state);
-    let agent = builder
-        .resolve_agent(requested_agent_id, API_SYNTHETIC_AGENT_NAME)
-        .map_err(map_runtime_safety_error)?;
-    ensure_agent_available(state, agent.id)?;
-
-    let runtime_ctx = RuntimeSafetyContext::from_state(state, agent.clone(), session_id, None);
-    runtime_ctx
-        .ensure_execution_permitted()
-        .map_err(map_runner_error)?;
-
-    let runner = builder
-        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
-        .map_err(map_runtime_safety_error)?;
-    let providers = provider_runtime::ordered_provider_configs(state);
-    if providers.is_empty() {
-        return Err(ApiError::bad_request(
-            "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
-        ));
-    }
-
-    Ok(PreparedAgentRuntime {
-        agent_id: agent.id.to_string(),
-        runtime_ctx,
-        runner,
-        providers,
-    })
-}
-
 fn agent_stream_accepted_body(
     session_id: &str,
     agent_id: &str,
@@ -1241,6 +1226,33 @@ fn agent_stream_recovery_payload(message: impl Into<String>) -> serde_json::Valu
         "message": message.into(),
         "recovery_required": true,
     })
+}
+
+fn agent_stream_error_payload(
+    message: &str,
+    error_type: Option<AgentStreamErrorType>,
+    provider: Option<&str>,
+    fallback: bool,
+    terminal: bool,
+    recovery_required: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({ "message": message });
+    if let Some(error_type) = error_type {
+        payload["error_type"] = serde_json::json!(error_type);
+    }
+    if let Some(provider) = provider {
+        payload["provider"] = serde_json::json!(provider);
+    }
+    if fallback {
+        payload["fallback"] = serde_json::json!(true);
+    }
+    if !terminal {
+        payload["terminal"] = serde_json::json!(false);
+    }
+    if recovery_required {
+        payload["recovery_required"] = serde_json::json!(true);
+    }
+    payload
 }
 
 async fn persist_stream_event_durable(
@@ -1532,8 +1544,27 @@ fn agent_live_stream_response(
                     stream_ended = true;
                     break;
                 }
-                AgentStreamEvent::Error { message } => {
-                    let payload = agent_stream_recovery_payload(message);
+                AgentStreamEvent::Error {
+                    message,
+                    error_type,
+                    provider,
+                    fallback,
+                    terminal,
+                } => {
+                    let payload = agent_stream_error_payload(
+                        &message,
+                        error_type,
+                        provider.as_deref(),
+                        fallback,
+                        terminal,
+                        terminal,
+                    );
+
+                    if !terminal {
+                        yield Ok(Event::default().event("error").data(payload.to_string()));
+                        continue;
+                    }
+
                     let seq = persist_stream_event_durable(
                         &db_for_stream,
                         &session_id_sse,
@@ -1600,170 +1631,54 @@ fn spawn_agent_chat_stream_execution(
     let state_for_task = Arc::clone(&state);
     let handle = tokio::spawn(async move {
         let runtime_session_id = Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::now_v7());
-        let prepared_runtime = match prepare_agent_runtime(
+        let prepared_runtime = match prepare_requested_runtime_execution(
             &state_for_task,
             requested_agent_id.as_deref(),
+            API_SYNTHETIC_AGENT_NAME,
             runtime_session_id,
+            RunnerBuildOptions::default(),
         ) {
             Ok(prepared_runtime) => prepared_runtime,
             Err(error) => {
                 let _ = tx
-                    .send(AgentStreamEvent::Error {
-                        message: error.to_string(),
-                    })
+                    .send(AgentStreamEvent::terminal_error(error.to_string()))
                     .await;
                 return;
             }
         };
 
-        let PreparedAgentRuntime {
+        let PreparedRuntimeExecution {
             runtime_ctx,
             mut runner,
             providers,
             ..
         } = prepared_runtime;
 
-        let tx_timeout = tx.clone();
-        let turn_result = tokio::time::timeout(std::time::Duration::from_secs(300), async move {
-            let mut ctx = match runner
-                .pre_loop(
-                    runtime_ctx.agent.id,
-                    runtime_ctx.session_id,
-                    "api",
-                    &user_message,
-                )
-                .await
-            {
-                Ok(ctx) => ctx,
-                Err(error) => {
-                    let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!("agent pre-loop failed: {error}"),
-                        })
-                        .await;
-                    return;
-                }
+        if let Some(run_result) = execute_streaming_turn(
+            &tx,
+            &mut runner,
+            &runtime_ctx,
+            "api",
+            &user_message,
+            &providers,
+            "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
+            &format!("Agent turn timed out after 5 minutes for message {message_id}"),
+        )
+        .await
+        {
+            let safety_status = if run_result.output.as_deref().unwrap_or_default().is_empty() {
+                "unknown"
+            } else {
+                "clean"
             };
-
-            let mut result = Err(ghost_agent_loop::runner::RunError::LLMError(
-                "no providers configured".into(),
-            ));
-            for provider_config in &providers {
-                let provider = provider_config.clone();
-                let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
-                                       tools: Vec<ghost_llm::provider::ToolSchema>|
-                      -> ghost_llm::streaming::StreamChunkStream {
-                    provider_runtime::build_provider_stream(&provider, messages, tools)
-                };
-                match runner
-                    .run_turn_streaming(&mut ctx, &user_message, tx.clone(), get_stream)
-                    .await
-                {
-                    Ok(run_result) => {
-                        result = Ok(run_result);
-                        break;
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            provider = %provider_config.name,
-                            error = %error,
-                            "streaming provider failed, trying next"
-                        );
-                        ctx.recursion_depth = 0;
-                        result = Err(error);
-                    }
-                }
-            }
-
-            match result {
-                Ok(run_result) => {
-                    let safety_status =
-                        if run_result.output.as_deref().unwrap_or_default().is_empty() {
-                            "unknown"
-                        } else {
-                            "clean"
-                        };
-                    let _ = tx
-                        .send(AgentStreamEvent::TurnComplete {
-                            token_count: run_result.total_tokens,
-                            safety_status: safety_status.to_string(),
-                        })
-                        .await;
-                }
-                Err(error) => {
-                    let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!("agent run failed: {error}"),
-                        })
-                        .await;
-                }
-            }
-        })
-        .await;
-
-        if turn_result.is_err() {
-            let _ = tx_timeout
-                .send(AgentStreamEvent::Error {
-                    message: format!(
-                        "Agent turn timed out after 5 minutes for message {message_id}"
-                    ),
+            let _ = tx
+                .send(AgentStreamEvent::TurnComplete {
+                    token_count: run_result.total_tokens,
+                    safety_status: safety_status.to_string(),
                 })
                 .await;
         }
     });
 
     (rx, handle)
-}
-
-fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
-    match error {
-        RuntimeSafetyError::AgentNotFound(message) => ApiError::bad_request(message),
-        _ => ApiError::internal(error.to_string()),
-    }
-}
-
-fn ensure_agent_available(state: &AppState, agent_id: Uuid) -> Result<(), ApiError> {
-    match state.kill_switch.check(agent_id) {
-        crate::safety::kill_switch::KillCheckResult::Ok => Ok(()),
-        crate::safety::kill_switch::KillCheckResult::AgentPaused(_) => Err(ApiError::custom(
-            StatusCode::LOCKED,
-            "AGENT_PAUSED",
-            "Agent is paused",
-        )),
-        crate::safety::kill_switch::KillCheckResult::AgentQuarantined(_) => Err(ApiError::custom(
-            StatusCode::LOCKED,
-            "AGENT_QUARANTINED",
-            "Agent is quarantined",
-        )),
-        crate::safety::kill_switch::KillCheckResult::PlatformKilled => {
-            Err(ApiError::KillSwitchActive)
-        }
-    }
-}
-
-fn map_runner_error(error: ghost_agent_loop::runner::RunError) -> ApiError {
-    match error {
-        ghost_agent_loop::runner::RunError::AgentPaused => {
-            ApiError::custom(StatusCode::LOCKED, "AGENT_PAUSED", "Agent is paused")
-        }
-        ghost_agent_loop::runner::RunError::AgentQuarantined => ApiError::custom(
-            StatusCode::LOCKED,
-            "AGENT_QUARANTINED",
-            "Agent is quarantined",
-        ),
-        ghost_agent_loop::runner::RunError::PlatformKilled => ApiError::KillSwitchActive,
-        ghost_agent_loop::runner::RunError::KillGateClosed => ApiError::custom(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "DISTRIBUTED_KILL_GATE_CLOSED",
-            "Distributed kill gate is closed",
-        ),
-        ghost_agent_loop::runner::RunError::ConvergenceProtectionDegraded(status) => {
-            ApiError::custom(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "CONVERGENCE_PROTECTION_DEGRADED",
-                format!("Convergence protection is {status}"),
-            )
-        }
-        other => ApiError::internal(format!("agent run failed: {other}")),
-    }
 }

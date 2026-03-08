@@ -45,10 +45,11 @@ pub fn run_set(args: SecretSetArgs, provider: &dyn SecretProvider) -> Result<(),
     provider
         .set_secret(&args.key, value)
         .map_err(|e| match &e {
-            ghost_secrets::SecretsError::StorageUnavailable(_) => CliError::Config(format!(
+            ghost_secrets::SecretsError::StorageUnavailable(_) => CliError::Config(
                 "cannot write secrets with the current provider (env is read-only). \
                      Configure `secrets.provider: keychain` in ghost.yml."
-            )),
+                    .to_string(),
+            ),
             _ => CliError::Internal(format!("failed to set secret: {e}")),
         })?;
 

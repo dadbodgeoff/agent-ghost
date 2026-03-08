@@ -76,10 +76,12 @@ impl GatewayBootstrap {
                         error = %error,
                         "Persisted safety state is unreadable. Entering kill-all safe mode."
                     );
-                    let mut fallback = crate::safety::kill_switch::KillSwitchState::default();
-                    fallback.platform_level = crate::safety::kill_switch::KillLevel::KillAll;
-                    fallback.activated_at = Some(chrono::Utc::now());
-                    fallback.trigger = Some("persisted safety state unreadable on startup".into());
+                    let fallback = crate::safety::kill_switch::KillSwitchState {
+                        platform_level: crate::safety::kill_switch::KillLevel::KillAll,
+                        activated_at: Some(chrono::Utc::now()),
+                        trigger: Some("persisted safety state unreadable on startup".into()),
+                        ..Default::default()
+                    };
                     Some(crate::api::safety::RestoredSafetyRuntimeState {
                         state: fallback,
                         distributed_gate: None,
@@ -607,20 +609,20 @@ impl GatewayBootstrap {
                     let ok = checker.check_once().await;
                     monitor_flag.store(ok, Ordering::Relaxed);
 
-                    if ok && gateway_shared.current_state() == GatewayState::Degraded {
-                        if gateway_shared
+                    if ok
+                        && gateway_shared.current_state() == GatewayState::Degraded
+                        && gateway_shared
                             .transition_to(GatewayState::Recovering)
                             .is_ok()
-                        {
-                            tracing::info!("Monitor recovered — initiating recovery sequence");
-                            let coord = RecoveryCoordinator {
-                                shared_state: Arc::clone(&gateway_shared),
-                                monitor_address: monitor_addr.clone(),
-                            };
-                            tokio::spawn(async move {
-                                let _ = coord.attempt_recovery().await;
-                            });
-                        }
+                    {
+                        tracing::info!("Monitor recovered — initiating recovery sequence");
+                        let coord = RecoveryCoordinator {
+                            shared_state: Arc::clone(&gateway_shared),
+                            monitor_address: monitor_addr.clone(),
+                        };
+                        tokio::spawn(async move {
+                            let _ = coord.attempt_recovery().await;
+                        });
                     }
                 }
             });

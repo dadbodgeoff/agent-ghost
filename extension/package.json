@@ -12,8 +12,11 @@
     "clean": "rm -rf dist/"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.3",
     "@types/chrome": "^0.0.268",
     "eslint": "^9.0.0",
+    "globals": "^17.4.0",
+    "typescript-eslint": "^8.56.1",
     "typescript": "^5.5.0"
   },
   "engines": {

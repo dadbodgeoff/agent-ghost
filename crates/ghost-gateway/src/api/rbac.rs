@@ -16,6 +16,8 @@
 //!     .route_layer(axum::middleware::from_fn(rbac::admin));
 //! ```
 
+use std::str::FromStr;
+
 use axum::{extract::Request, middleware::Next, response::Response};
 
 use crate::api::error::ApiError;
@@ -29,21 +31,23 @@ pub enum Role {
     SuperAdmin = 3,
 }
 
-impl Role {
+impl FromStr for Role {
+    type Err = ();
+
     /// Parse a role string (as stored in JWT claims) into a `Role`.
     ///
     /// Recognized values: `"viewer"`, `"operator"`, `"admin"`, `"superadmin"`.
     /// The special `"dev"` role (used in no-auth dev mode) maps to `Operator`
     /// so that unauthenticated local development can still create agents and
     /// run sessions, but cannot access safety or admin endpoints.
-    pub fn from_str(s: &str) -> Option<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "viewer" => Some(Role::Viewer),
-            "operator" => Some(Role::Operator),
-            "dev" => Some(Role::Operator),
-            "admin" => Some(Role::Admin),
-            "superadmin" => Some(Role::SuperAdmin),
-            _ => None,
+            "viewer" => Ok(Role::Viewer),
+            "operator" => Ok(Role::Operator),
+            "dev" => Ok(Role::Operator),
+            "admin" => Ok(Role::Admin),
+            "superadmin" => Ok(Role::SuperAdmin),
+            _ => Err(()),
         }
     }
 }
@@ -56,9 +60,9 @@ async fn require_role(minimum: Role, req: Request, next: Next) -> Result<Respons
     let claims = req.extensions().get::<crate::api::auth::Claims>();
 
     let user_role = match claims {
-        Some(c) => match Role::from_str(&c.role) {
-            Some(role) => role,
-            None => {
+        Some(c) => match c.role.parse::<Role>() {
+            Ok(role) => role,
+            Err(()) => {
                 tracing::warn!(
                     role = %c.role,
                     "Unrecognized role in JWT claims — defaulting to Viewer"
@@ -132,21 +136,21 @@ mod tests {
 
     #[test]
     fn role_from_str_known() {
-        assert_eq!(Role::from_str("viewer"), Some(Role::Viewer));
-        assert_eq!(Role::from_str("operator"), Some(Role::Operator));
-        assert_eq!(Role::from_str("admin"), Some(Role::Admin));
-        assert_eq!(Role::from_str("superadmin"), Some(Role::SuperAdmin));
+        assert_eq!("viewer".parse::<Role>(), Ok(Role::Viewer));
+        assert_eq!("operator".parse::<Role>(), Ok(Role::Operator));
+        assert_eq!("admin".parse::<Role>(), Ok(Role::Admin));
+        assert_eq!("superadmin".parse::<Role>(), Ok(Role::SuperAdmin));
     }
 
     #[test]
     fn role_from_str_dev_maps_to_operator() {
-        assert_eq!(Role::from_str("dev"), Some(Role::Operator));
+        assert_eq!("dev".parse::<Role>(), Ok(Role::Operator));
     }
 
     #[test]
     fn role_from_str_unknown() {
-        assert_eq!(Role::from_str("unknown"), None);
-        assert_eq!(Role::from_str(""), None);
+        assert_eq!("unknown".parse::<Role>(), Err(()));
+        assert_eq!("".parse::<Role>(), Err(()));
     }
 
     #[test]

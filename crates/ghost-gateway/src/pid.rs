@@ -66,8 +66,7 @@ pub fn write_pid_file(port: u16) -> std::io::Result<()> {
         port,
         started_at: chrono::Utc::now().to_rfc3339(),
     };
-    let json = serde_json::to_string_pretty(&info)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(&info).map_err(std::io::Error::other)?;
 
     let tmp_path = path.with_extension("pid.tmp");
     std::fs::write(&tmp_path, &json)?;

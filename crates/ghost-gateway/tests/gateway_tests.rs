@@ -481,7 +481,7 @@ mod kill_switch {
         ks.activate_kill_all(&trigger);
         assert_eq!(ks.current_state().platform_level, KillLevel::KillAll);
         let entries = ks.audit_entries();
-        assert!(entries.len() >= 1);
+        assert!(!entries.is_empty());
         reset_platform_killed();
     }
 

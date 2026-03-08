@@ -43,8 +43,8 @@ impl TableDisplay for AuditQueryResult {
             return;
         }
         println!(
-            "{:<26}  {:<12}  {:<8}  {:<20}  {}",
-            "TIMESTAMP", "SEVERITY", "AGENT", "EVENT TYPE", "DETAILS"
+            "{:<26}  {:<12}  {:<8}  {:<20}  DETAILS",
+            "TIMESTAMP", "SEVERITY", "AGENT", "EVENT TYPE"
         );
         println!("{}", "─".repeat(100));
         for e in &self.entries {

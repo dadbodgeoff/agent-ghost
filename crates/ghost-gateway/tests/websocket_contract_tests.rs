@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+
 mod common;
 
 use std::sync::{Mutex, OnceLock};
@@ -240,9 +242,7 @@ async fn websocket_replays_events_after_last_seq() {
     let (mut second_socket, _) = connect_async(&ws_url).await.unwrap();
     second_socket
         .send(Message::Text(
-            serde_json::json!({ "last_seq": first_event.seq })
-                .to_string()
-                .into(),
+            serde_json::json!({ "last_seq": first_event.seq }).to_string(),
         ))
         .await
         .unwrap();
@@ -304,8 +304,7 @@ async fn websocket_reconnect_replays_only_subscribed_topics() {
                 "last_seq": first_event.seq,
                 "topics": ["agent:alpha"],
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .unwrap();
@@ -373,9 +372,7 @@ async fn websocket_sends_resync_when_replay_gap_is_too_large() {
     let (mut second_socket, _) = connect_async(&ws_url).await.unwrap();
     second_socket
         .send(Message::Text(
-            serde_json::json!({ "last_seq": first_event.seq })
-                .to_string()
-                .into(),
+            serde_json::json!({ "last_seq": first_event.seq }).to_string(),
         ))
         .await
         .unwrap();

@@ -20,7 +20,7 @@ use cortex_validation::proposal_validator::ProposalValidator;
 use ghost_agent_loop::circuit_breaker::{CircuitBreaker, CircuitBreakerState};
 use ghost_agent_loop::damage_counter::DamageCounter;
 use ghost_agent_loop::output_inspector::OutputInspector;
-use ghost_gateway::gateway::{GatewaySharedState, GatewayState};
+use ghost_gateway::gateway::GatewayState;
 use ghost_gateway::messaging::dispatcher::MessageDispatcher;
 use ghost_gateway::messaging::protocol::AgentMessage;
 use ghost_gateway::safety::kill_switch::{KillLevel, KillSwitch, PLATFORM_KILLED};
@@ -423,7 +423,7 @@ fn convergence_negative_infinity_clamped() {
     let scorer = CompositeScorer::default();
     let score = scorer.compute(&[f64::NEG_INFINITY; 7]);
     assert!(
-        score >= 0.0 && score <= 1.0,
+        (0.0..=1.0).contains(&score),
         "NEG_INFINITY produced out-of-bounds score: {}",
         score
     );
@@ -435,7 +435,7 @@ fn convergence_positive_infinity_clamped() {
     let scorer = CompositeScorer::default();
     let score = scorer.compute(&[f64::INFINITY; 7]);
     assert!(
-        score >= 0.0 && score <= 1.0,
+        (0.0..=1.0).contains(&score),
         "INFINITY produced out-of-bounds score: {}",
         score
     );
@@ -827,7 +827,7 @@ fn output_inspector_base64_encoded_credential() {
 fn output_inspector_split_credential() {
     let inspector = OutputInspector::new();
     let text = "The key starts with sk-\n1234567890abcdefghijklmnop";
-    let result = inspector.scan(&text, Uuid::now_v7());
+    let result = inspector.scan(text, Uuid::now_v7());
     if matches!(
         result,
         ghost_agent_loop::output_inspector::InspectionResult::Clean
@@ -842,7 +842,7 @@ fn output_inspector_known_credential_triggers_kill() {
     let mut inspector = OutputInspector::new();
     inspector.register_credential("sk-real".into());
     let text = "Here is the API key: sk-realABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let result = inspector.scan(&text, Uuid::now_v7());
+    let result = inspector.scan(text, Uuid::now_v7());
     assert!(
         matches!(
             result,
@@ -857,7 +857,7 @@ fn output_inspector_known_credential_triggers_kill() {
 fn output_inspector_unknown_credential_redacted() {
     let inspector = OutputInspector::new();
     let text = "My OpenAI key is sk-abcdefghijklmnopqrstuvwxyz1234";
-    let result = inspector.scan(&text, Uuid::now_v7());
+    let result = inspector.scan(text, Uuid::now_v7());
     assert!(
         !matches!(
             result,

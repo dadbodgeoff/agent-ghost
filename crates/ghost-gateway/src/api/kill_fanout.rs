@@ -124,7 +124,7 @@ pub fn propagate_kill(state: &Arc<AppState>, level: &str, reason: &str, agent_id
 
                 let client = reqwest::Client::new();
                 let mut req = client
-                    .post(&format!("{}/a2a", peer_url.trim_end_matches('/')))
+                    .post(format!("{}/a2a", peer_url.trim_end_matches('/')))
                     .header("Content-Type", "application/json")
                     .timeout(std::time::Duration::from_secs(5));
 

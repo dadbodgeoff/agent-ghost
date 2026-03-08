@@ -164,30 +164,22 @@ pub async fn send_task(
                 &operation_context,
                 &IdempotencyStatus::Replayed,
             );
-            return json_response_with_idempotency(
-                stored.status,
-                stored.body,
-                IdempotencyStatus::Replayed,
-            );
+            json_response_with_idempotency(stored.status, stored.body, IdempotencyStatus::Replayed)
         }
-        Ok(PreparedOperation::Mismatch) => {
-            return error_response_with_idempotency(ApiError::with_details(
-                StatusCode::CONFLICT,
-                "IDEMPOTENCY_KEY_REUSED",
-                "Idempotency key was reused with a different request payload",
-                serde_json::json!({
-                    "route_template": SEND_TASK_ROUTE_TEMPLATE,
-                    "method": "POST",
-                }),
-            ));
-        }
-        Ok(PreparedOperation::InProgress) => {
-            return error_response_with_idempotency(ApiError::custom(
-                StatusCode::CONFLICT,
-                "IDEMPOTENCY_IN_PROGRESS",
-                "An equivalent request is already in progress",
-            ));
-        }
+        Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency key was reused with a different request payload",
+            serde_json::json!({
+                "route_template": SEND_TASK_ROUTE_TEMPLATE,
+                "method": "POST",
+            }),
+        )),
+        Ok(PreparedOperation::InProgress) => error_response_with_idempotency(ApiError::custom(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "An equivalent request is already in progress",
+        )),
         Ok(PreparedOperation::Acquired { lease }) => {
             let input_str = serde_json::to_string(&req.input).unwrap_or_else(|_| "null".into());
             {
@@ -309,19 +301,19 @@ pub async fn send_task(
                         &operation_context,
                         &outcome.idempotency_status,
                     );
-                    return json_response_with_idempotency(
+                    json_response_with_idempotency(
                         outcome.status,
                         outcome.body,
                         outcome.idempotency_status,
-                    );
+                    )
                 }
                 Err(error) => {
                     let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
-                    return error_response_with_idempotency(error);
+                    error_response_with_idempotency(error)
                 }
             }
         }
-        Err(error) => return error_response_with_idempotency(error),
+        Err(error) => error_response_with_idempotency(error),
     }
 }
 
@@ -443,7 +435,7 @@ pub async fn stream_task(
                     tracing::debug!(task_id = %task_id_owned, "SSE stream timed out after 5 minutes of inactivity");
                     yield Ok(Event::default()
                         .event("timeout")
-                        .data(r#"{"reason":"inactivity_timeout","timeout_seconds":300}"#.to_string()));
+                        .data(r#"{"reason":"inactivity_timeout","timeout_seconds":300}"#));
                     break;
                 }
             }

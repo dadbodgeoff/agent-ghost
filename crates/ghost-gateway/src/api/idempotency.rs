@@ -343,31 +343,25 @@ where
     F: FnOnce(&rusqlite::Connection) -> Result<(StatusCode, Value), ApiError>,
 {
     match prepare_json_operation(conn, context, actor_key, method, route_template, body)? {
-        PreparedOperation::Replay(stored) => {
-            return Ok(ExecutedJsonMutation {
-                status: stored.status,
-                body: stored.body,
-                idempotency_status: IdempotencyStatus::Replayed,
-            });
-        }
-        PreparedOperation::Mismatch => {
-            return Err(ApiError::with_details(
-                StatusCode::CONFLICT,
-                "IDEMPOTENCY_KEY_REUSED",
-                "Idempotency key was reused with a different request payload",
-                serde_json::json!({
-                    "route_template": route_template,
-                    "method": method,
-                }),
-            ));
-        }
-        PreparedOperation::InProgress => {
-            return Err(ApiError::custom(
-                StatusCode::CONFLICT,
-                "IDEMPOTENCY_IN_PROGRESS",
-                "An equivalent request is already in progress",
-            ));
-        }
+        PreparedOperation::Replay(stored) => Ok(ExecutedJsonMutation {
+            status: stored.status,
+            body: stored.body,
+            idempotency_status: IdempotencyStatus::Replayed,
+        }),
+        PreparedOperation::Mismatch => Err(ApiError::with_details(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency key was reused with a different request payload",
+            serde_json::json!({
+                "route_template": route_template,
+                "method": method,
+            }),
+        )),
+        PreparedOperation::InProgress => Err(ApiError::custom(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "An equivalent request is already in progress",
+        )),
         PreparedOperation::Acquired { lease } => {
             conn.execute_batch("BEGIN IMMEDIATE")
                 .map_err(|e| ApiError::db_error("operation_execute_begin", e))?;

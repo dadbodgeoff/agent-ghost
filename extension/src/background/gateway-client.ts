@@ -18,10 +18,12 @@ export interface GatewayHealth {
   version?: string;
 }
 
+type JsonObject = Record<string, unknown>;
+
 /**
  * Make an authenticated request to the gateway.
  */
-async function request(path: string, options: RequestInit = {}): Promise<any> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const auth = getAuthState();
   if (!auth.authenticated || !auth.token) {
     throw new Error('Not authenticated with gateway');
@@ -41,29 +43,29 @@ async function request(path: string, options: RequestInit = {}): Promise<any> {
     throw new Error(`Gateway ${resp.status}: ${resp.statusText}`);
   }
 
-  return resp.json();
+  return (await resp.json()) as T;
 }
 
 /**
  * Get gateway health status.
  */
 export async function getHealth(): Promise<GatewayHealth> {
-  return request('/api/health');
+  return request<GatewayHealth>('/api/health');
 }
 
 /**
  * Get list of agents.
  */
 export async function getAgents(): Promise<AgentSummary[]> {
-  const data = await request('/api/agents');
+  const data = await request<{ agents?: AgentSummary[] }>('/api/agents');
   return data.agents || [];
 }
 
 /**
  * Get convergence scores.
  */
-export async function getScores(): Promise<any> {
-  return request('/api/convergence/scores');
+export async function getScores(): Promise<JsonObject> {
+  return request<JsonObject>('/api/convergence/scores');
 }
 
 /**
@@ -73,9 +75,9 @@ export async function forwardObservation(observation: {
   platform: string;
   signal_type: string;
   value: number;
-  metadata?: Record<string, any>;
+  metadata?: JsonObject;
 }): Promise<void> {
-  await request('/api/memory', {
+  await request<void>('/api/memory', {
     method: 'POST',
     body: JSON.stringify({
       type: 'observation',

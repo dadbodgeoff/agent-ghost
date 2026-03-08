@@ -678,12 +678,7 @@ impl ConvergenceMonitor {
                             self.cooldown.threshold_floor
                         ),
                     }
-                } else if self.cooldown.pending_dual_key_change.is_some() {
-                    let pending = self
-                        .cooldown
-                        .pending_dual_key_change
-                        .as_ref()
-                        .expect("pending change checked above");
+                } else if let Some(pending) = self.cooldown.pending_dual_key_change.as_ref() {
                     ThresholdChangeResult::AlreadyPending {
                         intended_action: pending.intended_action.clone(),
                         expires_in_secs: (pending.expires_at - chrono::Utc::now())
@@ -1162,7 +1157,7 @@ impl ConvergenceMonitor {
             signal_scores: signals,
             consecutive_normal: intervention_state.map_or(0, |s| s.consecutive_normal),
             cooldown_until: intervention_state.and_then(|s| s.cooldown_until),
-            ack_required: intervention_state.map_or(false, |s| s.ack_required),
+            ack_required: intervention_state.is_some_and(|s| s.ack_required),
             updated_at: Utc::now(),
         };
 
@@ -1690,10 +1685,11 @@ mod tests {
 
     fn test_config(db_path: std::path::PathBuf, state_dir: std::path::PathBuf) -> MonitorConfig {
         prepare_monitor_db(&db_path);
-        let mut config = MonitorConfig::default();
-        config.db_path = db_path;
-        config.state_dir = state_dir;
-        config
+        MonitorConfig {
+            db_path,
+            state_dir,
+            ..Default::default()
+        }
     }
 
     #[test]

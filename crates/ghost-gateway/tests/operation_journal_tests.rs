@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+
 mod common;
 
 use std::net::TcpListener;
@@ -4049,7 +4051,7 @@ async fn live_execution_status_hides_other_actor_records() {
     )
     .await;
 
-    let response = fetch_live_execution(&gateway.client, &gateway.base_url, &execution_id).await;
+    let response = fetch_live_execution(&gateway.client, &gateway.base_url, execution_id).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     gateway.stop().await;
 }
@@ -4778,7 +4780,7 @@ async fn studio_message_retry_after_accepted_takeover_executes_once() {
     assert_eq!(response_body["assistant_message"]["content"], "Hello world");
     assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
 
-    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, &execution_id).await;
+    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, execution_id).await;
     assert_eq!(execution.status(), StatusCode::OK);
     let execution_body = json_body(execution).await;
     assert_eq!(execution_body["route_kind"], "studio_send_message");
@@ -4907,7 +4909,7 @@ async fn studio_message_running_takeover_fails_closed_without_refiring_provider(
     assert_eq!(body["execution_id"], execution_id);
     assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
 
-    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, &execution_id).await;
+    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, execution_id).await;
     assert_eq!(execution.status(), StatusCode::OK);
     let execution_body = json_body(execution).await;
     assert_eq!(execution_body["route_kind"], "studio_send_message");
@@ -5249,7 +5251,7 @@ async fn agent_chat_retry_after_accepted_takeover_executes_once() {
     assert_eq!(json_body(response).await["content"], "Hello world");
     assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
 
-    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, &execution_id).await;
+    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, execution_id).await;
     assert_eq!(execution.status(), StatusCode::OK);
     let execution_body = json_body(execution).await;
     assert_eq!(execution_body["route_kind"], "agent_chat");
@@ -5349,7 +5351,7 @@ async fn agent_chat_running_takeover_fails_closed_without_refiring_provider() {
     assert_eq!(body["execution_id"], execution_id);
     assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
 
-    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, &execution_id).await;
+    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, execution_id).await;
     assert_eq!(execution.status(), StatusCode::OK);
     let execution_body = json_body(execution).await;
     assert_eq!(execution_body["route_kind"], "agent_chat");

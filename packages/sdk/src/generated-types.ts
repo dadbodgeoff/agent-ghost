@@ -2255,6 +2255,91 @@ export interface components {
         };
         /** @enum {string} */
         SkillVerificationStatusDto: "not_applicable" | "verified" | "validation_failed" | "digest_mismatch" | "missing_signature" | "invalid_signature" | "unknown_signer" | "revoked_signer" | "unsupported_capability" | "unsupported_execution_mode";
+        StudioCreateSessionRequestSchema: {
+            agent_id?: string | null;
+            /** Format: int64 */
+            max_tokens?: number | null;
+            model?: string | null;
+            system_prompt?: string | null;
+            /** Format: double */
+            temperature?: number | null;
+            title?: string | null;
+        };
+        StudioDeleteSessionResponseSchema: {
+            deleted: boolean;
+        };
+        StudioMessageAcceptedResponseSchema: {
+            assistant_message_id: string;
+            execution_id: string;
+            recovery_required?: boolean | null;
+            session_id: string;
+            status: string;
+            user_message_id: string;
+        };
+        StudioMessageSchema: {
+            content: string;
+            created_at: string;
+            id: string;
+            role: string;
+            safety_status: string;
+            /** Format: int64 */
+            token_count: number;
+        };
+        StudioRecoverStreamEventSchema: {
+            created_at: string;
+            event_type: string;
+            payload: unknown;
+            /** Format: int64 */
+            seq: number;
+        };
+        StudioRecoverStreamResponseSchema: {
+            events: components["schemas"]["StudioRecoverStreamEventSchema"][];
+        };
+        StudioSendMessageRequestSchema: {
+            content: string;
+            /** Format: int64 */
+            max_tokens?: number | null;
+            model?: string | null;
+            /** Format: double */
+            temperature?: number | null;
+        };
+        StudioSendMessageResponseSchema: {
+            assistant_message: components["schemas"]["StudioMessageSchema"];
+            safety_status: string;
+            user_message: components["schemas"]["StudioMessageSchema"];
+        };
+        StudioSessionListResponseSchema: {
+            has_more: boolean;
+            next_cursor?: string | null;
+            sessions: components["schemas"]["StudioSessionSchema"][];
+        };
+        StudioSessionSchema: {
+            agent_id: string;
+            created_at: string;
+            id: string;
+            /** Format: int64 */
+            max_tokens: number;
+            model: string;
+            system_prompt: string;
+            /** Format: double */
+            temperature: number;
+            title: string;
+            updated_at: string;
+        };
+        StudioSessionWithMessagesResponseSchema: {
+            agent_id: string;
+            created_at: string;
+            id: string;
+            /** Format: int64 */
+            max_tokens: number;
+            messages: components["schemas"]["StudioMessageSchema"][];
+            model: string;
+            system_prompt: string;
+            /** Format: double */
+            temperature: number;
+            title: string;
+            updated_at: string;
+        };
         WebhookSchema: {
             active: boolean;
             events: string[];
@@ -6294,7 +6379,12 @@ export interface operations {
     };
     list_studio_sessions: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Opaque cursor from the previous Studio session page */
+                cursor?: string;
+                /** @description Items per page (default 50, max 200) */
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6307,7 +6397,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["StudioSessionListResponseSchema"];
                 };
             };
             /** @description Internal error */
@@ -6330,7 +6420,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["StudioCreateSessionRequestSchema"];
             };
         };
         responses: {
@@ -6339,7 +6429,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["StudioSessionSchema"];
+                };
             };
             /** @description Invalid request */
             400: {
@@ -6370,7 +6462,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["StudioSessionWithMessagesResponseSchema"];
                 };
             };
             /** @description Studio session not found */
@@ -6401,7 +6493,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["StudioDeleteSessionResponseSchema"];
+                };
             };
             /** @description Studio session not found */
             404: {
@@ -6426,7 +6520,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["StudioSendMessageRequestSchema"];
             };
         };
         responses: {
@@ -6436,7 +6530,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["StudioSendMessageResponseSchema"];
                 };
             };
             /** @description Studio message accepted and requires recovery polling */
@@ -6445,7 +6539,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["StudioMessageAcceptedResponseSchema"];
                 };
             };
             /** @description Studio session not found */
@@ -6471,7 +6565,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["StudioSendMessageRequestSchema"];
             };
         };
         responses: {
@@ -6495,7 +6589,12 @@ export interface operations {
     };
     recover_studio_stream: {
         parameters: {
-            query?: never;
+            query: {
+                /** @description Assistant message id for the stream being recovered */
+                message_id: string;
+                /** @description Replay events strictly after this sequence number */
+                after_seq?: number;
+            };
             header?: never;
             path: {
                 /** @description Studio session ID */
@@ -6511,7 +6610,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["StudioRecoverStreamResponseSchema"];
                 };
             };
             /** @description Studio session not found */

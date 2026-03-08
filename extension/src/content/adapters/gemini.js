@@ -21,7 +21,6 @@ export class GeminiAdapter extends BasePlatformAdapter {
   }
 
   parseMessage(element) {
-    const tag = element.tagName?.toLowerCase() || "";
     const classes = element.className || "";
     let role = null;
 

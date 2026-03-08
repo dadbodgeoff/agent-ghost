@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::intervention::actions::InterventionAction;
 
 /// Per-agent intervention state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentInterventionState {
     /// Current intervention level (0–4).
     pub level: u8,
@@ -29,19 +29,6 @@ pub struct AgentInterventionState {
     pub hysteresis_count: u8,
     /// De-escalation credits needed per level transition.
     pub de_escalation_credits: u32,
-}
-
-impl Default for AgentInterventionState {
-    fn default() -> Self {
-        Self {
-            level: 0,
-            consecutive_normal: 0,
-            cooldown_until: None,
-            ack_required: false,
-            hysteresis_count: 0,
-            de_escalation_credits: 0,
-        }
-    }
 }
 
 /// Composite scoring result.

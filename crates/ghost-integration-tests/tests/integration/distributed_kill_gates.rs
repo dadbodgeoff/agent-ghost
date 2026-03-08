@@ -120,8 +120,10 @@ fn duplicate_votes_not_double_counted() {
 
 #[test]
 fn gate_resume_via_quorum() {
-    let mut config = KillGateConfig::default();
-    config.authenticated_cluster_membership = true;
+    let config = KillGateConfig {
+        authenticated_cluster_membership: true,
+        ..Default::default()
+    };
     let gate = KillGate::new(Uuid::now_v7(), config);
     gate.close("resume test".into());
 

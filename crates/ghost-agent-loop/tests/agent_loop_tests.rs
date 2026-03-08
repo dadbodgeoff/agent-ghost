@@ -448,27 +448,6 @@ fn prompt_compiler_truncation_order_l8_first() {
 }
 
 #[test]
-fn prompt_compiler_tool_schemas_level_0_all_tools() {
-    let schemas = "shell\nfilesystem\nweb_search\nmemory\nproactive\nheartbeat\npersonal";
-    let filtered = PromptCompiler::filter_tool_schemas(schemas, 0);
-    assert_eq!(filtered, schemas);
-}
-
-#[test]
-fn prompt_compiler_tool_schemas_level_4_minimal() {
-    let schemas =
-        "shell\nfilesystem\nweb_search\nmemory\nproactive\nheartbeat\npersonal\nread_file\nsearch";
-    let filtered = PromptCompiler::filter_tool_schemas(schemas, 4);
-    assert!(filtered.contains("shell"));
-    assert!(filtered.contains("read_file"));
-    assert!(filtered.contains("search"));
-    assert!(filtered.contains("filesystem"));
-    assert!(!filtered.contains("proactive"));
-    assert!(!filtered.contains("heartbeat"));
-    assert!(!filtered.contains("personal"));
-}
-
-#[test]
 fn prompt_compiler_tiny_context_window_preserves_l0_l1_l9() {
     let compiler = PromptCompiler::new(100); // Very small
     let input = PromptInput {

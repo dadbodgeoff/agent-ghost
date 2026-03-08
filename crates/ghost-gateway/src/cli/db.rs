@@ -195,7 +195,7 @@ pub fn run_verify(args: DbVerifyArgs, backend: &CliBackend) -> Result<(), CliErr
             row.content_hash.as_deref().unwrap_or(""),
             &row.previous_hash,
         );
-        if expected.to_ascii_uppercase() != row.event_hash.to_ascii_uppercase() {
+        if !expected.eq_ignore_ascii_case(&row.event_hash) {
             breaks += 1;
         }
     }
@@ -467,7 +467,10 @@ mod tests {
     fn direct_backend(db_path: &std::path::Path) -> CliBackend {
         let config = crate::config::GhostConfig::test_config(39780, db_path.to_str().unwrap());
         let pool = crate::db_pool::create_existing_pool(db_path.to_path_buf()).unwrap();
-        CliBackend::Direct { config, db: pool }
+        CliBackend::Direct {
+            config: Box::new(config),
+            db: pool,
+        }
     }
 
     #[test]

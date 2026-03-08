@@ -9,7 +9,7 @@ export class BasePlatformAdapter {
    * @param {string} url
    * @returns {boolean} Whether this adapter handles the given URL
    */
-  static matches(url) { throw new Error("Not implemented"); }
+  static matches(_url) { throw new Error("Not implemented"); }
 
   /**
    * @returns {Element|null} The DOM element containing the message list
@@ -20,11 +20,11 @@ export class BasePlatformAdapter {
    * @param {Element} container
    * @returns {Element[]} Existing message elements in the container
    */
-  getExistingMessages(container) { return []; }
+  getExistingMessages(_container) { return []; }
 
   /**
    * @param {Element} element A DOM element that may be a message
    * @returns {{ role: string, content: string }|null} Parsed message or null
    */
-  parseMessage(element) { return null; }
+  parseMessage(_element) { return null; }
 }

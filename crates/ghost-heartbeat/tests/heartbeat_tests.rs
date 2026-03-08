@@ -1,7 +1,7 @@
 //! Phase 5 tests for ghost-heartbeat (Task 5.9).
 //! Updated for Task 20.4: tiered heartbeat with interval_for_state().
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,9 +14,7 @@ use uuid::Uuid;
 
 mod heartbeat {
     use super::*;
-    use ghost_heartbeat::heartbeat::{
-        heartbeat_session_key, HeartbeatConfig, HeartbeatEngine, HEARTBEAT_MESSAGE,
-    };
+    use ghost_heartbeat::heartbeat::{heartbeat_session_key, HeartbeatConfig, HeartbeatEngine};
     use ghost_heartbeat::tiers::interval_for_state;
 
     fn make_engine() -> HeartbeatEngine {

@@ -36,8 +36,7 @@ export interface CreateSessionParams {
 
 export interface ListSessionsParams {
   limit?: number;
-  offset?: number;
-  before?: string;
+  cursor?: string;
 }
 
 export interface RecoverStreamEvent {
@@ -49,6 +48,12 @@ export interface RecoverStreamEvent {
 
 export interface RecoverStreamResult {
   events: RecoverStreamEvent[];
+}
+
+export interface ListSessionsResult {
+  sessions: StudioSession[];
+  next_cursor: string | null;
+  has_more: boolean;
 }
 
 // ── API ──
@@ -65,13 +70,12 @@ export class SessionsAPI {
   }
 
   /** List studio chat sessions. */
-  async list(params?: ListSessionsParams): Promise<{ sessions: StudioSession[] }> {
+  async list(params?: ListSessionsParams): Promise<ListSessionsResult> {
     const query = new URLSearchParams();
     if (params?.limit !== undefined) query.set('limit', String(params.limit));
-    if (params?.offset !== undefined) query.set('offset', String(params.offset));
-    if (params?.before) query.set('before', params.before);
+    if (params?.cursor) query.set('cursor', params.cursor);
     const qs = query.toString();
-    return this.request<{ sessions: StudioSession[] }>(
+    return this.request<ListSessionsResult>(
       'GET',
       `/api/studio/sessions${qs ? `?${qs}` : ''}`,
     );

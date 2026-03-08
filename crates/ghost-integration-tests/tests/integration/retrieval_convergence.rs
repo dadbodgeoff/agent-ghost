@@ -101,7 +101,7 @@ fn scores_bounded() {
             Importance::High,
             Importance::Critical,
         ] {
-            let memory = make_memory(mt.clone(), imp);
+            let memory = make_memory(*mt, imp);
             for conv in [0.0, 0.25, 0.5, 0.75, 1.0] {
                 let score = scorer.score(&memory, conv);
                 assert!(

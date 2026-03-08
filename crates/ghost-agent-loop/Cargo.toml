@@ -36,7 +36,6 @@ once_cell = { workspace = true }
 blake3 = { workspace = true }
 cortex-convergence = { workspace = true }
 async-trait = "0.1"
-dirs = "5"
 reqwest = { workspace = true }
 futures = "0.3"
 async-stream = "0.3"

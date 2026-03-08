@@ -289,13 +289,11 @@ fn empty_export_produces_zero_baseline() {
     let analyzer = ExportAnalyzer::new();
     let result = analyzer.analyze(&path);
     // Either error or zero-session result
-    match result {
-        Ok(r) => {
-            assert_eq!(r.total_sessions, 0);
-            assert_eq!(r.recommended_level, 0);
-        }
-        Err(_) => {} // unsupported format is also acceptable
+    if let Ok(r) = result {
+        assert_eq!(r.total_sessions, 0);
+        assert_eq!(r.recommended_level, 0);
     }
+    // Unsupported format is also acceptable.
 }
 
 #[test]

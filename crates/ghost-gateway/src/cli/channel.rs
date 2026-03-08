@@ -37,8 +37,8 @@ impl TableDisplay for ChannelList {
             return;
         }
         println!(
-            "{:<12}  {:<16}  {:<12}  {:<9}  {:<7}  {}",
-            "CHANNEL", "AGENT", "MODE", "STREAMING", "EDITING", "CREDENTIALS"
+            "{:<12}  {:<16}  {:<12}  {:<9}  {:<7}  CREDENTIALS",
+            "CHANNEL", "AGENT", "MODE", "STREAMING", "EDITING"
         );
         println!("{}", "─".repeat(80));
         for c in &self.channels {

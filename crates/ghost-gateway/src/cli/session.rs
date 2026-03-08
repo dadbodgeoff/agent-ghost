@@ -35,8 +35,8 @@ impl TableDisplay for SessionList {
             return;
         }
         println!(
-            "{:<36}  {:<26}  {:>6}  {}",
-            "SESSION ID", "STARTED", "EVENTS", "AGENT(S)"
+            "{:<36}  {:<26}  {:>6}  AGENT(S)",
+            "SESSION ID", "STARTED", "EVENTS"
         );
         println!("{}", "─".repeat(100));
         for s in &self.sessions {
@@ -122,8 +122,8 @@ impl TableDisplay for SessionDetail {
             return;
         }
         println!(
-            "{:>4}  {:<26}  {:<22}  {:<12}  {:>6}  {}",
-            "SEQ", "TIMESTAMP", "TYPE", "SENDER", "TOKENS", "HASH"
+            "{:>4}  {:<26}  {:<22}  {:<12}  {:>6}  HASH",
+            "SEQ", "TIMESTAMP", "TYPE", "SENDER", "TOKENS"
         );
         println!("{}", "─".repeat(100));
         for e in &self.events {

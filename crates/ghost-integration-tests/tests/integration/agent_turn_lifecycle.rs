@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ghost_agent_loop::circuit_breaker::{CircuitBreaker, CircuitBreakerState};
 use ghost_agent_loop::context::prompt_compiler::{PromptCompiler, PromptInput};
-use ghost_agent_loop::context::token_budget::{Budget, TokenBudgetAllocator};
+use ghost_agent_loop::context::token_budget::TokenBudgetAllocator;
 use ghost_agent_loop::damage_counter::DamageCounter;
 use ghost_agent_loop::itp_emitter::ITPEmitter;
 use ghost_agent_loop::output_inspector::OutputInspector;

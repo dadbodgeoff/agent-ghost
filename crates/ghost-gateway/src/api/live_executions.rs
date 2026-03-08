@@ -25,8 +25,8 @@ fn can_view_execution(
         return false;
     };
 
-    match Role::from_str(&claims.role) {
-        Some(Role::Admin) | Some(Role::SuperAdmin) => true,
+    match claims.role.parse::<Role>() {
+        Ok(Role::Admin) | Ok(Role::SuperAdmin) => true,
         _ => record.actor_key == claims.sub,
     }
 }

@@ -22,9 +22,16 @@ export interface SendMessageResult {
   safety_status: 'clean' | 'warning' | 'blocked';
 }
 
+export type StreamErrorType =
+  | 'provider_unavailable'
+  | 'auth_failed'
+  | 'runtime_error';
+
+export type StreamWarningType = 'persistence_degraded';
+
 /** SSE event types emitted during streaming. */
 export type StreamEvent =
-  | { type: 'stream_start'; session_id: string; message_id: string }
+  | { type: 'stream_start'; message_id: string; session_id?: string }
   | { type: 'text_delta'; content: string }
   | { type: 'tool_use'; tool: string; tool_id: string; status: string }
   | { type: 'tool_result'; tool: string; tool_id: string; status: string; preview?: string }
@@ -35,7 +42,20 @@ export type StreamEvent =
       token_count: number;
       safety_status: 'clean' | 'warning' | 'blocked';
     }
-  | { type: 'error'; message: string };
+  | {
+      type: 'error';
+      message: string;
+      error_type?: StreamErrorType;
+      provider?: string;
+      fallback?: boolean;
+      terminal?: boolean;
+    }
+  | {
+      type: 'warning';
+      warning_type: StreamWarningType;
+      code?: string;
+      message: string;
+    };
 
 export type ChatStreamEventHandler = (
   eventType: string,

@@ -511,8 +511,10 @@ mod tests {
 
     #[test]
     fn authenticated_resume_votes_can_reach_quorum() {
-        let mut config = KillGateConfig::default();
-        config.authenticated_cluster_membership = true;
+        let config = KillGateConfig {
+            authenticated_cluster_membership: true,
+            ..Default::default()
+        };
         let gate = KillGate::new(Uuid::now_v7(), config);
         gate.close("test".into());
 

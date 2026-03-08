@@ -368,6 +368,7 @@ pub async fn rate_limit_middleware(request: Request<Body>, next: Next) -> Respon
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use tempfile::TempDir;
 

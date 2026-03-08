@@ -14,8 +14,14 @@ interface PendingEvent {
   id: number;
   timestamp: number;
   type: string;
-  payload: any;
+  payload: unknown;
   synced: boolean;
+}
+
+interface NavigatorWithConnection extends Navigator {
+  connection?: {
+    addEventListener(type: 'change', listener: () => void): void;
+  };
 }
 
 /**
@@ -40,7 +46,7 @@ function openDB(): Promise<IDBDatabase> {
 /**
  * Queue an event for sync.
  */
-export async function queueEvent(type: string, payload: any): Promise<void> {
+export async function queueEvent(type: string, payload: unknown): Promise<void> {
   const db = await openDB();
   const tx = db.transaction(PENDING_STORE, 'readwrite');
   tx.objectStore(PENDING_STORE).add({
@@ -146,7 +152,7 @@ export function initAutoSync(): void {
 
   // If the Network Information API is available, also listen for
   // connection-type changes (e.g. switching from cellular to wifi).
-  const nav = navigator as any;
+  const nav = navigator as NavigatorWithConnection;
   if (nav.connection) {
     nav.connection.addEventListener('change', async () => {
       if (navigator.onLine) {

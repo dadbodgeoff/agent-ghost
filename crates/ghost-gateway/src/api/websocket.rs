@@ -699,10 +699,10 @@ fn prune_expired_ws_tickets(state: &AppState, now: chrono::DateTime<chrono::Utc>
 fn consume_ws_ticket(state: &AppState, ticket: &str) -> bool {
     let now = chrono::Utc::now();
     prune_expired_ws_tickets(state, now);
-    match state.websocket_auth_tickets.remove(&hash_ws_ticket(ticket)) {
-        Some((_, metadata)) if metadata.expires_at > now => true,
-        _ => false,
-    }
+    matches!(
+        state.websocket_auth_tickets.remove(&hash_ws_ticket(ticket)),
+        Some((_, metadata)) if metadata.expires_at > now
+    )
 }
 
 /// Push an event to a WebSocket client (wrapped in envelope).

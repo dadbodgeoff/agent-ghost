@@ -15,7 +15,7 @@ export interface AuthState {
   lastValidated: number;
 }
 
-let currentState: AuthState = {
+const currentState: AuthState = {
   authenticated: false,
   gatewayUrl: 'http://localhost:39780',
   token: null,

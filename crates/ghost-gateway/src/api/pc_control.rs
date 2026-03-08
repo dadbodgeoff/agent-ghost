@@ -589,6 +589,7 @@ pub async fn update_safe_zones(
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
 

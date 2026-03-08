@@ -110,6 +110,7 @@ pub struct PruneResult {
 }
 
 /// Session compactor.
+#[derive(Default)]
 pub struct SessionCompactor {
     config: CompactionConfig,
     /// Injected FlushExecutor to break circular dependency (A34 Gap 2).
@@ -320,9 +321,7 @@ impl SessionCompactor {
             match serde_json::from_str::<serde_json::Value>(msg) {
                 Ok(val) => {
                     // Prune if the message is a JSON object with type == "tool_result"
-                    val.get("type")
-                        .and_then(|t| t.as_str())
-                        .map_or(true, |t| t != "tool_result")
+                    val.get("type").and_then(|t| t.as_str()) != Some("tool_result")
                 }
                 // Not valid JSON — keep it (could be plain text message)
                 Err(_) => true,
@@ -334,15 +333,6 @@ impl SessionCompactor {
             results_pruned: (original_len - history.len()) as u32,
             tokens_freed: original_tokens - new_tokens,
             new_total: new_tokens,
-        }
-    }
-}
-
-impl Default for SessionCompactor {
-    fn default() -> Self {
-        Self {
-            config: CompactionConfig::default(),
-            _flush_executor: None,
         }
     }
 }

@@ -23,8 +23,8 @@ export class ITPEmitter {
   private tryConnectNative(): void {
     try {
       this.nativePort = chrome.runtime.connectNative('dev.ghost.monitor');
-      this.nativePort.onMessage.addListener((msg: any) => {
-        if (msg.score !== undefined) {
+      this.nativePort.onMessage.addListener((msg: { score?: number }) => {
+        if (typeof msg.score === 'number') {
           this.latestScore = msg.score;
         }
       });

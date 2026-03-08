@@ -295,7 +295,7 @@ fn create_pool_internal(
     let num_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let pool_size = num_cpus.min(8).max(2);
+    let pool_size = num_cpus.clamp(2, 8);
     let pool = if create_if_missing {
         DbPool::open(db_path, pool_size)?
     } else {

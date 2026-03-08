@@ -89,7 +89,7 @@ pub fn signal_array_strategy() -> impl Strategy<Value = [f64; 8]> {
 
 /// Random valid UUID (v4).
 fn uuid_strategy() -> impl Strategy<Value = Uuid> {
-    any::<[u8; 16]>().prop_map(|bytes| Uuid::from_bytes(bytes))
+    any::<[u8; 16]>().prop_map(Uuid::from_bytes)
 }
 
 /// Random DateTime<Utc> within a reasonable range (2024–2027).

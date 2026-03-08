@@ -63,8 +63,8 @@ impl TableDisplay for SkillListResponse {
         if !self.installed.is_empty() {
             println!("Installed Skills ({}):", self.installed.len());
             println!(
-                "  {:<20}  {:<10}  {:<10}  {:<12}  {}",
-                "NAME", "VERSION", "STATE", "VERIFY", "POLICY"
+                "  {:<20}  {:<10}  {:<10}  {:<12}  POLICY",
+                "NAME", "VERSION", "STATE", "VERIFY"
             );
             println!("  {}", "─".repeat(92));
             for s in &self.installed {
@@ -95,8 +95,8 @@ impl TableDisplay for SkillListResponse {
             }
             println!("Available Skills ({}):", self.available.len());
             println!(
-                "  {:<20}  {:<10}  {:<10}  {:<12}  {}",
-                "NAME", "VERSION", "STATE", "VERIFY", "DESCRIPTION"
+                "  {:<20}  {:<10}  {:<10}  {:<12}  DESCRIPTION",
+                "NAME", "VERSION", "STATE", "VERIFY"
             );
             println!("  {}", "─".repeat(84));
             for s in &self.available {
@@ -490,7 +490,7 @@ mod tests {
         let tmp_dir = tempfile::tempdir().unwrap();
         let db = crate::db_pool::create_pool(tmp_dir.path().join("cli-skill.db")).unwrap();
         CliBackend::Direct {
-            config: crate::config::GhostConfig::default(),
+            config: Box::new(crate::config::GhostConfig::default()),
             db,
         }
     }

@@ -86,12 +86,10 @@ fn soft_mode_returns_original_text() {
     let result = enforcer.scan_output(text, EnforcementMode::Soft);
     if !result.violations.is_empty() {
         let enforcement = enforcer.enforce(text, &result);
-        match enforcement {
-            EnforcementResult::Flagged { text: returned, .. } => {
-                assert_eq!(returned, text, "Soft mode should return original text");
-            }
-            _ => {} // Clean is also acceptable if patterns don't match
+        if let EnforcementResult::Flagged { text: returned, .. } = enforcement {
+            assert_eq!(returned, text, "Soft mode should return original text");
         }
+        // Clean is also acceptable if patterns don't match.
     }
 }
 
@@ -104,11 +102,8 @@ fn medium_mode_rewrites_text() {
     let result = enforcer.scan_output(text, EnforcementMode::Medium);
     if !result.violations.is_empty() {
         let enforcement = enforcer.enforce(text, &result);
-        match enforcement {
-            EnforcementResult::Reframed { text: reframed, .. } => {
-                assert_ne!(reframed, text, "Medium mode should rewrite text");
-            }
-            _ => {}
+        if let EnforcementResult::Reframed { text: reframed, .. } = enforcement {
+            assert_ne!(reframed, text, "Medium mode should rewrite text");
         }
     }
 }

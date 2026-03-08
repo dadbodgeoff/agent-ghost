@@ -4,7 +4,6 @@
 
 use cortex_temporal::anchoring::merkle::MerkleTree;
 use cortex_temporal::hash_chain::{compute_event_hash, verify_chain, ChainEvent, GENESIS_HASH};
-use uuid::Uuid;
 
 /// Full hash chain lifecycle: create events → compute hashes → verify chain → build Merkle tree.
 #[test]

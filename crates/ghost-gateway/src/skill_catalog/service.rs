@@ -101,7 +101,7 @@ enum CatalogLookup {
         definition: Arc<SkillDefinition>,
         install_state: Option<SkillInstallState>,
     },
-    External(ExternalCatalogEntry),
+    External(Box<ExternalCatalogEntry>),
 }
 
 #[derive(Debug, Clone)]
@@ -233,7 +233,7 @@ impl SkillCatalogService {
                 definition,
                 install_state,
             } => self.install_compiled_with_conn(conn, &definition, install_state, actor),
-            CatalogLookup::External(entry) => self.install_external_with_conn(conn, entry, actor),
+            CatalogLookup::External(entry) => self.install_external_with_conn(conn, *entry, actor),
         }
     }
 
@@ -250,7 +250,9 @@ impl SkillCatalogService {
                 definition,
                 install_state,
             } => self.uninstall_compiled_with_conn(conn, &definition, install_state, actor),
-            CatalogLookup::External(entry) => self.uninstall_external_with_conn(conn, entry, actor),
+            CatalogLookup::External(entry) => {
+                self.uninstall_external_with_conn(conn, *entry, actor)
+            }
         }
     }
 
@@ -746,7 +748,7 @@ impl SkillCatalogService {
             .find(|entry| entry.artifact.artifact_digest == identifier)
             .cloned()
         {
-            return Ok(CatalogLookup::External(entry));
+            return Ok(CatalogLookup::External(Box::new(entry)));
         }
 
         let mut matches = external
@@ -754,7 +756,7 @@ impl SkillCatalogService {
             .filter(|entry| entry.artifact.skill_name == identifier)
             .cloned();
         match (matches.next(), matches.next()) {
-            (Some(entry), None) => Ok(CatalogLookup::External(entry)),
+            (Some(entry), None) => Ok(CatalogLookup::External(Box::new(entry))),
             (Some(_), Some(_)) => Err(SkillCatalogError::AmbiguousSkillIdentifier(
                 identifier.to_string(),
             )),

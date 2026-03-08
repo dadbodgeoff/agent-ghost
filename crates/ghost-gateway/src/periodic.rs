@@ -14,6 +14,9 @@ use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 
+type PeriodicTaskFuture = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send>>;
+type PeriodicTaskFn = dyn Fn() -> PeriodicTaskFuture + Send + Sync;
+
 /// Health status for a periodic task.
 #[derive(Debug, Clone)]
 pub struct TaskHealth {
@@ -36,9 +39,7 @@ pub enum TaskStatus {
 pub struct PeriodicTask {
     pub name: String,
     pub interval: Duration,
-    pub task_fn: Box<
-        dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send>> + Send + Sync,
-    >,
+    pub task_fn: Box<PeriodicTaskFn>,
     pub last_run: Option<Instant>,
     pub consecutive_failures: u32,
     pub max_failures: u32,

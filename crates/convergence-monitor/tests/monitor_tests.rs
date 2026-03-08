@@ -406,10 +406,8 @@ fn config_unlocked_during_cooldown_accepts_lowering() {
 
     let allowed = if proposed >= current {
         true
-    } else if config_locked {
-        false
     } else {
-        true
+        !config_locked
     };
 
     assert!(
@@ -592,7 +590,7 @@ fn session_start_without_prior_end_creates_synthetic_end() {
     let mut active_sessions: Vec<Uuid> = vec![session_1];
 
     // New session arrives
-    let closed: Vec<Uuid> = active_sessions.drain(..).collect();
+    let closed: Vec<Uuid> = std::mem::take(&mut active_sessions);
     active_sessions.push(session_2);
 
     assert_eq!(

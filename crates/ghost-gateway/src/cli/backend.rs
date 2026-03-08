@@ -15,7 +15,7 @@ pub enum CliBackend {
     Http { client: GhostHttpClient },
     /// Open the database directly (gateway not required).
     Direct {
-        config: GhostConfig,
+        config: Box<GhostConfig>,
         db: Arc<DbPool>,
     },
 }
@@ -69,7 +69,7 @@ impl CliBackend {
             .map_err(|e| CliError::Database(format!("open db pool: {e}")))?;
 
         Ok(Self::Direct {
-            config: config.clone(),
+            config: Box::new(config.clone()),
             db: pool,
         })
     }

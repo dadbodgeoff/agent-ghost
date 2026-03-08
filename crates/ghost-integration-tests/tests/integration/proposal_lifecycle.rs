@@ -187,7 +187,7 @@ fn d7_simulation_framing_not_flagged() {
         && result
             .d7_emulation
             .as_ref()
-            .map_or(false, |d| d.max_severity >= 0.8);
+            .is_some_and(|d| d.max_severity >= 0.8);
     assert!(
         !d7_rejected,
         "Simulation-framed content should not be D7 rejected"

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// mTLS configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MtlsConfig {
     /// Whether mTLS is enabled (default: false).
     pub enabled: bool,
@@ -14,16 +14,6 @@ pub struct MtlsConfig {
     pub ca_cert_path: Option<String>,
     /// Whether to require client certificates (vs optional).
     pub require_client_cert: bool,
-}
-
-impl Default for MtlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            ca_cert_path: None,
-            require_client_cert: false,
-        }
-    }
 }
 
 /// Result of mTLS client certificate verification.

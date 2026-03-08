@@ -157,14 +157,14 @@ impl HeartbeatEngine {
         let score_delta = self
             .tiered_state
             .last_score
-            .and_then(|_last| {
+            .map(|_| {
                 // Use the stored consecutive_stable to infer recent delta behavior.
                 // If consecutive_stable > 0, last deltas were < 0.01.
                 // If consecutive_stable == 0, last delta was >= 0.01.
                 if self.tiered_state.consecutive_stable > 0 {
-                    Some(0.005) // Small delta — reflects recent stability
+                    0.005 // Small delta — reflects recent stability
                 } else {
-                    Some(0.05) // Non-trivial delta — reflects recent activity
+                    0.05 // Non-trivial delta — reflects recent activity
                 }
             })
             .unwrap_or(0.0);

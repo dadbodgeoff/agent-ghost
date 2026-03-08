@@ -158,7 +158,7 @@ impl SessionRegistry {
             .iter()
             .filter(|(_, sids)| {
                 sids.iter()
-                    .any(|sid| self.sessions.get(sid).map_or(false, |s| s.is_active))
+                    .any(|sid| self.sessions.get(sid).is_some_and(|s| s.is_active))
             })
             .map(|(agent_id, _)| *agent_id)
             .collect()

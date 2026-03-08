@@ -670,7 +670,7 @@ fn read_artifact_bytes_no_follow(path: &Path) -> Result<Vec<u8>, SkillIngestErro
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         file.read_to_end(&mut bytes)
             .map_err(|e| SkillIngestError::Io(e.to_string()))?;
-        return Ok(bytes);
+        Ok(bytes)
     }
 
     #[cfg(not(unix))]
@@ -715,7 +715,7 @@ fn collect_artifacts_in_root(
         .map_err(|e| SkillIngestError::Io(e.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| SkillIngestError::Io(e.to_string()))?;
-    entries.sort_by(|left, right| left.path().cmp(&right.path()));
+    entries.sort_by_key(|left| left.path());
 
     for entry in entries {
         let path = entry.path();

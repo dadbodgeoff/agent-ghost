@@ -53,6 +53,7 @@ type ToolUseEvent = Extract<StreamEvent, { type: 'tool_use' }>;
 type ToolResultEvent = Extract<StreamEvent, { type: 'tool_result' }>;
 type StreamEndEvent = Extract<StreamEvent, { type: 'stream_end' }>;
 type ErrorEvent = Extract<StreamEvent, { type: 'error' }>;
+type WarningEvent = Extract<StreamEvent, { type: 'warning' }>;
 type SafetyStatus = StudioMessage['safety_status'];
 
 interface RecoverTextChunkPayload {
@@ -86,15 +87,22 @@ function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function readBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
 function readSafetyStatus(value: unknown): SafetyStatus | null {
   return value === 'clean' || value === 'warning' || value === 'blocked' ? value : null;
 }
 
 function parseStreamStartEvent(data: Record<string, unknown>): StreamStartEvent | null {
-  const session_id = readString(data.session_id);
   const message_id = readString(data.message_id);
-  if (!session_id || !message_id) return null;
-  return { type: 'stream_start', session_id, message_id };
+  if (!message_id) return null;
+  return {
+    type: 'stream_start',
+    message_id,
+    session_id: readString(data.session_id) ?? undefined,
+  };
 }
 
 function parseTextDeltaEvent(data: Record<string, unknown>): TextDeltaEvent | null {
@@ -129,7 +137,34 @@ function parseStreamEndEvent(data: Record<string, unknown>): StreamEndEvent | nu
 
 function parseErrorEvent(data: Record<string, unknown>): ErrorEvent | null {
   const message = readString(data.message);
-  return message !== null ? { type: 'error', message } : null;
+  if (message === null) return null;
+
+  const error_type = readString(data.error_type);
+  return {
+    type: 'error',
+    message,
+    error_type:
+      error_type === 'provider_unavailable' ||
+      error_type === 'auth_failed' ||
+      error_type === 'runtime_error'
+        ? error_type
+        : undefined,
+    provider: readString(data.provider) ?? undefined,
+    fallback: readBoolean(data.fallback) ?? undefined,
+    terminal: readBoolean(data.terminal) ?? undefined,
+  };
+}
+
+function parseWarningEvent(data: Record<string, unknown>): WarningEvent | null {
+  const message = readString(data.message);
+  const warning_type = readString(data.warning_type);
+  if (message === null || warning_type !== 'persistence_degraded') return null;
+  return {
+    type: 'warning',
+    warning_type,
+    code: readString(data.code) ?? undefined,
+    message,
+  };
 }
 
 function parseRecoverTextChunkPayload(payload: Record<string, unknown>): RecoverTextChunkPayload | null {
@@ -166,6 +201,8 @@ class StudioChatStore {
   error = $state('');
   /** WP5-E: Whether more sessions exist beyond current page. */
   hasMoreSessions = $state(false);
+  /** Opaque cursor for loading the next Studio session page. */
+  nextSessionsCursor = $state<string | null>(null);
   /** WP9-G: Persistence degradation warning from backend. */
   persistenceWarning = $state('');
   /** WP9-G: Provider error details for frontend display. */
@@ -199,7 +236,8 @@ class StudioChatStore {
       const data = await client.sessions.list({ limit: 50 });
       const loaded = (data.sessions ?? []).map((s: ApiStudioSession) => toStudioSession(s));
       this.sessions = loaded;
-      this.hasMoreSessions = loaded.length >= 50;
+      this.hasMoreSessions = data.has_more ?? false;
+      this.nextSessionsCursor = data.next_cursor ?? null;
 
       const savedId =
         typeof localStorage !== 'undefined'
@@ -237,7 +275,8 @@ class StudioChatStore {
                 toStudioSession(s),
               );
               this.sessions = refreshed;
-              this.hasMoreSessions = refreshed.length >= 50;
+              this.hasMoreSessions = data.has_more ?? false;
+              this.nextSessionsCursor = data.next_cursor ?? null;
               // Refresh the active session's messages if one is selected.
               if (this.activeSessionId) {
                 await this.loadSession(this.activeSessionId);
@@ -353,18 +392,22 @@ class StudioChatStore {
 
   /** WP5-E: Load next page of sessions (cursor-based). */
   async loadMoreSessions() {
-    if (!this.hasMoreSessions) return;
+    if (!this.hasMoreSessions || !this.nextSessionsCursor) return;
     this.error = '';
     try {
-      const lastSession = this.sessions[this.sessions.length - 1];
       const client = await getGhostClient();
       const data = await client.sessions.list({
         limit: 50,
-        before: lastSession?.updated_at,
+        cursor: this.nextSessionsCursor,
       });
       const more = (data.sessions ?? []).map((s: ApiStudioSession) => toStudioSession(s));
-      this.sessions = [...this.sessions, ...more];
-      this.hasMoreSessions = more.length >= 50;
+      const existingIds = new Set(this.sessions.map((session) => session.id));
+      this.sessions = [
+        ...this.sessions,
+        ...more.filter((session) => !existingIds.has(session.id)),
+      ];
+      this.hasMoreSessions = data.has_more ?? false;
+      this.nextSessionsCursor = data.next_cursor ?? null;
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load more sessions';
     }
@@ -462,7 +505,7 @@ class StudioChatStore {
           }
 
           // Reset activity timer on any meaningful event.
-          if (['text_delta', 'tool_use', 'tool_result', 'heartbeat', 'stream_start', 'stream_end'].includes(eventType)) {
+          if (['text_delta', 'tool_use', 'tool_result', 'heartbeat', 'stream_start', 'stream_end', 'warning', 'error'].includes(eventType)) {
             lastActivity = Date.now();
           }
 
@@ -481,6 +524,7 @@ class StudioChatStore {
             case 'text_delta': {
               const event = parseTextDeltaEvent(data);
               if (!event) break;
+              this.providerError = '';
               this.streamingContent += event.content;
               session.messages[assistantMsgIndex] = {
                 ...session.messages[assistantMsgIndex],
@@ -492,6 +536,7 @@ class StudioChatStore {
             case 'tool_use': {
               const event = parseToolUseEvent(data);
               if (!event) break;
+              this.providerError = '';
               this.activeToolCall = { tool: event.tool, toolId: event.tool_id };
               const msg = session.messages[assistantMsgIndex];
               const calls = msg.toolCalls ?? [];
@@ -518,6 +563,7 @@ class StudioChatStore {
             case 'tool_result': {
               const event = parseToolResultEvent(data);
               if (!event) break;
+              this.providerError = '';
               this.activeToolCall = null;
               if (this.toolTimeoutId) { clearTimeout(this.toolTimeoutId); this.toolTimeoutId = null; }
               const msg2 = session.messages[assistantMsgIndex];
@@ -540,6 +586,7 @@ class StudioChatStore {
               const event = parseStreamEndEvent(data);
               if (!event) break;
               receivedStreamEnd = true;
+              this.providerError = '';
               session.messages[assistantMsgIndex] = {
                 ...session.messages[assistantMsgIndex],
                 content: this.streamingContent,
@@ -554,23 +601,40 @@ class StudioChatStore {
 
             case 'error': {
               const event = parseErrorEvent(data);
-              // WP9-G: Parse structured error events for provider/auth display.
-              const errType = (data as Record<string, unknown>).error_type as string | undefined;
-              if (errType === 'provider_unavailable') {
-                this.providerError = `Provider ${(data as Record<string, unknown>).provider ?? 'unknown'} unavailable${(data as Record<string, unknown>).fallback ? ' — trying fallback...' : ''}`;
-              } else if (errType === 'auth_failed') {
-                this.providerError = `API key invalid for ${(data as Record<string, unknown>).provider ?? 'provider'}`;
-              } else if (event) {
-                this.error = event.message;
+              if (!event) break;
+
+              if (event.terminal === false) {
+                if (event.error_type === 'provider_unavailable') {
+                  this.providerError = `Provider ${event.provider ?? 'unknown'} unavailable${event.fallback ? ' - trying fallback...' : ''}`;
+                } else if (event.error_type === 'auth_failed') {
+                  this.providerError = `Provider ${event.provider ?? 'provider'} authentication failed${event.fallback ? ' - trying fallback...' : ''}`;
+                } else {
+                  this.providerError = event.message;
+                }
+                break;
               }
+
+              if (event.error_type === 'provider_unavailable') {
+                this.providerError = `Provider ${event.provider ?? 'unknown'} unavailable`;
+              } else if (event.error_type === 'auth_failed') {
+                this.providerError = `Provider ${event.provider ?? 'provider'} authentication failed`;
+              }
+
+              this.error = event.message;
+              session.messages[assistantMsgIndex] = {
+                ...session.messages[assistantMsgIndex],
+                content: this.streamingContent,
+                status: 'error',
+              };
+              session.messages = [...session.messages];
               break;
             }
 
             case 'warning': {
-              // WP9-G/WP2-C: Persistence degradation warning.
-              const warnType = (data as Record<string, unknown>).warning_type as string | undefined;
-              if (warnType === 'persistence_degraded') {
-                this.persistenceWarning = 'Messages may not be saved — database contention detected';
+              const event = parseWarningEvent(data);
+              if (!event) break;
+              if (event.warning_type === 'persistence_degraded') {
+                this.persistenceWarning = 'Messages may not be saved - database contention detected';
               }
               break;
             }
@@ -592,7 +656,12 @@ class StudioChatStore {
       clearInterval(heartbeatInterval);
 
       // Detect incomplete stream: no stream_end received but we have content.
-      if (!receivedStreamEnd && !this.cancelledByUser && this.streamingContent.length > 0) {
+      if (
+        !receivedStreamEnd &&
+        !this.cancelledByUser &&
+        this.streamingContent.length > 0 &&
+        session.messages[assistantMsgIndex]?.status !== 'error'
+      ) {
         // Try recovery from event log first.
         const realMsgId = session.messages[assistantMsgIndex]?.id;
         if (realMsgId && !realMsgId.startsWith('_pending_')) {
@@ -719,7 +788,7 @@ class StudioChatStore {
         const payload = event.payload;
 
         switch (event.event_type) {
-          case 'text_chunk': {
+          case 'text_delta': {
             const parsed = parseRecoverTextChunkPayload(payload);
             if (parsed) {
               this.streamingContent += parsed.content;
@@ -758,7 +827,7 @@ class StudioChatStore {
             break;
           }
 
-          case 'turn_complete': {
+          case 'stream_end': {
             const parsed = parseRecoverTurnCompletePayload(payload);
             session.messages[assistantMsgIndex] = {
               ...session.messages[assistantMsgIndex],

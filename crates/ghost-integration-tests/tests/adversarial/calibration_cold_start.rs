@@ -113,10 +113,12 @@ fn agent_cycling_attack_stays_in_calibration_forever() {
 
 #[test]
 fn provisional_tracking_limits_cycling_attack() {
-    assert!(
-        MAX_PROVISIONAL_SESSIONS < CALIBRATION_SESSIONS,
-        "provisional limit must be less than calibration window"
-    );
+    const {
+        assert!(
+            MAX_PROVISIONAL_SESSIONS < CALIBRATION_SESSIONS,
+            "provisional limit must be less than calibration window"
+        );
+    }
 
     let reduction = MAX_PROVISIONAL_SESSIONS as f64 / (CALIBRATION_SESSIONS - 1) as f64;
     assert!(

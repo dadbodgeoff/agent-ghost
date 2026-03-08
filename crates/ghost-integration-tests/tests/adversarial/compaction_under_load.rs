@@ -172,11 +172,10 @@ fn prune_preserves_non_tool_messages() {
     let original_non_tool_count = history
         .iter()
         .filter(|m| {
-            serde_json::from_str::<serde_json::Value>(m)
+            !serde_json::from_str::<serde_json::Value>(m)
                 .ok()
                 .and_then(|v| v.get("type")?.as_str().map(|t| t == "tool_result"))
                 .unwrap_or(false)
-                == false
         })
         .count();
     SessionCompactor::prune_tool_results(&mut history);

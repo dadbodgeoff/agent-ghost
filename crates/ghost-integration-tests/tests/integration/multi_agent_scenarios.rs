@@ -7,7 +7,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use cortex_core::safety::trigger::TriggerEvent;
 use ghost_gateway::safety::auto_triggers::AutoTriggerEvaluator;
-use ghost_gateway::safety::kill_switch::{KillCheckResult, KillLevel, KillSwitch, PLATFORM_KILLED};
+use ghost_gateway::safety::kill_switch::{KillCheckResult, KillSwitch, PLATFORM_KILLED};
 use uuid::Uuid;
 
 fn reset_platform_killed() {

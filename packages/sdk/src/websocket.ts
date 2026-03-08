@@ -2,8 +2,8 @@ import { createTimeoutSignal, type GhostClientOptions } from './client.js';
 
 // ── Types ──
 
-/** All possible server-to-client WebSocket events. */
-export type WsEvent =
+/** Canonical server-to-client WebSocket events. */
+export type KnownWsEvent =
   | {
       type: 'ScoreUpdate';
       agent_id: string;
@@ -35,6 +35,40 @@ export type WsEvent =
       new_state: string;
     }
   | {
+      type: 'AgentConfigChange';
+      agent_id: string;
+      changed_fields: string[];
+    }
+  | {
+      type: 'TraceUpdate';
+      session_id: string;
+      trace_id: string;
+      span_count: number;
+    }
+  | {
+      type: 'BackupComplete';
+      backup_id: string;
+      status: string;
+      size_bytes: number;
+    }
+  | {
+      type: 'WebhookFired';
+      webhook_id: string;
+      event_type: string;
+      status_code: number;
+    }
+  | {
+      type: 'SkillChange';
+      skill_name: string;
+      action: string;
+    }
+  | {
+      type: 'A2ATaskUpdate';
+      task_id: string;
+      status: string;
+      agent_name: string;
+    }
+  | {
       type: 'SessionEvent';
       session_id: string;
       event_id: string;
@@ -53,8 +87,15 @@ export type WsEvent =
   | { type: 'SystemWarning'; message: string }
   | { type: 'ContextTruncated'; layer: string; removed_tokens: number }
   | { type: 'Ping' }
-  | { type: 'Resync'; missed_events: number }
-  | { type: string; [key: string]: unknown };
+  | { type: 'Resync'; missed_events: number };
+
+export interface UnknownWsEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+export type WsEvent = KnownWsEvent | UnknownWsEvent;
+export type WsEventType = KnownWsEvent['type'];
 
 export interface GhostWebSocketOptions {
   /** Topics to subscribe to on connect. */

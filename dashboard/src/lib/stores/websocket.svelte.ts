@@ -7,7 +7,7 @@
  * and event handler registration for view state.
  */
 
-import { GhostWebSocket } from '@ghost/sdk';
+import { GhostWebSocket, type WsEventType } from '@ghost/sdk';
 import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
 
 export type ConnectionState =
@@ -17,27 +17,8 @@ export type ConnectionState =
   | 'reconnecting'
   | 'follower';
 
-export type WsEventType =
-  | 'ScoreUpdate'
-  | 'InterventionChange'
-  | 'KillSwitchActivation'
-  | 'ProposalDecision'
-  | 'AgentStateChange'
-  | 'AgentConfigChange'
-  | 'TraceUpdate'
-  | 'BackupComplete'
-  | 'WebhookFired'
-  | 'SkillChange'
-  | 'A2ATaskUpdate'
-  | 'SessionEvent'
-  | 'ChatMessage'
-  | 'SystemWarning'
-  | 'ContextTruncated'
-  | 'Resync'
-  | 'Ping';
-
 export interface WsMessage {
-  type: WsEventType;
+  type: string;
   [key: string]: unknown;
 }
 
@@ -265,7 +246,7 @@ class WebSocketStore {
       this.notifyResync();
     }
 
-    const typeHandlers = this.handlers.get(msg.type);
+    const typeHandlers = this.handlers.get(msg.type as WsEventType);
     if (!typeHandlers) return;
 
     for (const handler of typeHandlers) {

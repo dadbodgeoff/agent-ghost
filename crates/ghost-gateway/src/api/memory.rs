@@ -384,7 +384,7 @@ pub async fn search_memories(
     }
 
     // Try FTS5 path first (v031+), fall back to LIKE.
-    let use_fts = params.q.as_ref().map_or(false, |q| !q.trim().is_empty())
+    let use_fts = params.q.as_ref().is_some_and(|q| !q.trim().is_empty())
         && cortex_storage::queries::fts_queries::fts_available(&db);
 
     let raw_results = if use_fts {
@@ -557,6 +557,7 @@ fn query_graph_rows(
             .map_err(|e| ApiError::db_error("memory_graph_query", e))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ApiError::db_error("memory_graph_collect", e))?;
+        drop(stmt);
         collected
     } else {
         let sql = format!(
@@ -588,6 +589,7 @@ fn query_graph_rows(
             .map_err(|e| ApiError::db_error("memory_graph_query", e))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ApiError::db_error("memory_graph_collect", e))?;
+        drop(stmt);
         collected
     };
 

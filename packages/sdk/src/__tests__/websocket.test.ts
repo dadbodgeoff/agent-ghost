@@ -219,6 +219,36 @@ describe('GhostWebSocket', () => {
     socket.disconnect();
   });
 
+  it('dispatches backend websocket event variants added after the original SDK union', async () => {
+    const handler = vi.fn();
+    const socket = new GhostWebSocket({ baseUrl: 'http://test:39780' });
+    socket.on('SkillChange', handler);
+    socket.connect();
+    await flushAsyncWork();
+
+    const transport = MockWebSocket.instances[0];
+    transport.open();
+    transport.emitMessage(
+      JSON.stringify({
+        seq: 21,
+        timestamp: '2026-03-08T12:00:00Z',
+        event: {
+          type: 'SkillChange',
+          skill_name: 'studio-audit',
+          action: 'installed',
+        },
+      }),
+    );
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'SkillChange',
+      skill_name: 'studio-audit',
+      action: 'installed',
+    });
+
+    socket.disconnect();
+  });
+
   it('does not retry when websocket ticket minting is unauthorized', async () => {
     vi.useFakeTimers();
     const errors: string[] = [];

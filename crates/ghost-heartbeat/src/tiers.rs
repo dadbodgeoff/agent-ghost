@@ -226,11 +226,9 @@ impl TieredHeartbeatState {
         let score_changed = self
             .last_score
             .map_or(true, |s| (s - current_score).abs() > f64::EPSILON);
-        let goals_changed = self.last_active_goals.map_or(true, |g| g != active_goals);
-        let duration_changed = self
-            .last_session_duration
-            .map_or(true, |d| d != session_duration);
-        let errors_changed = self.last_error_count.map_or(true, |e| e != error_count);
+        let goals_changed = self.last_active_goals != Some(active_goals);
+        let duration_changed = self.last_session_duration != Some(session_duration);
+        let errors_changed = self.last_error_count != Some(error_count);
 
         // Update last known state
         self.last_score = Some(current_score);

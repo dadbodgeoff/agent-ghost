@@ -27,6 +27,7 @@ export type {
   StudioSessionWithMessages,
   CreateSessionParams,
   ListSessionsParams,
+  ListSessionsResult,
   RecoverStreamEvent,
   RecoverStreamResult,
 } from './sessions.js';
@@ -37,6 +38,8 @@ export type {
   SendMessageParams,
   SendMessageResult,
   StreamEvent,
+  StreamErrorType,
+  StreamWarningType,
   ChatStreamEventHandler,
 } from './chat.js';
 
@@ -300,7 +303,12 @@ export type {
 
 // ── WebSocket ──
 export { GhostWebSocket } from './websocket.js';
-export type { WsEvent, GhostWebSocketOptions } from './websocket.js';
+export type {
+  GhostWebSocketOptions,
+  KnownWsEvent,
+  WsEvent,
+  WsEventType,
+} from './websocket.js';
 
 // Generated OpenAPI types are intentionally not exported from the public SDK
 // surface until the schema/codegen loop is treated as a separately governed

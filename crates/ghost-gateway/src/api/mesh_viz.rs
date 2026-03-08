@@ -45,7 +45,7 @@ pub async fn trust_graph(State(state): State<Arc<AppState>>) -> ApiResult<TrustG
     let db = state
         .db
         .read()
-        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("db pool: {e}")))?;
 
     let all = agents.all_agents();
     let mut nodes = Vec::with_capacity(all.len());
@@ -120,7 +120,7 @@ pub async fn consensus_state(State(state): State<Arc<AppState>>) -> ApiResult<Co
     let db = state
         .db
         .read()
-        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("db pool: {e}")))?;
 
     // Query recent proposals with vote counts from dimension_scores.
     // dimension_scores is JSON; non-null indicates a proposal that went through consensus.
@@ -191,7 +191,7 @@ pub async fn delegations(State(state): State<Arc<AppState>>) -> ApiResult<Delega
     let db = state
         .db
         .read()
-        .map_err(|e| ApiError::internal(&format!("db pool: {e}")))?;
+        .map_err(|e| ApiError::internal(format!("db pool: {e}")))?;
 
     let mut stmt = db
         .prepare(

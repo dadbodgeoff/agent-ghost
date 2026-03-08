@@ -367,7 +367,7 @@ mod dead_write_path_tests {
         .unwrap();
         let proposals =
             cortex_storage::queries::goal_proposal_queries::query_pending(&conn).unwrap();
-        assert!(proposals.len() >= 1);
+        assert!(!proposals.is_empty());
 
         // delegation_state: write + read
         cortex_storage::queries::delegation_state_queries::insert_delegation(

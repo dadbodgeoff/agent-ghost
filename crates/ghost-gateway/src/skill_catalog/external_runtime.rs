@@ -315,7 +315,7 @@ fn read_no_follow(path: &Path) -> Result<Vec<u8>, String> {
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
         file.read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
-        return Ok(bytes);
+        Ok(bytes)
     }
 
     #[cfg(not(unix))]

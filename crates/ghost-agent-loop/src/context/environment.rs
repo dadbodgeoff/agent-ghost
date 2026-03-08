@@ -8,7 +8,7 @@
 //!
 //! Output is kept compact (target ≤200 tokens) for L4's fixed budget.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Build the L4 environment context string from the current workspace.
 ///
@@ -55,7 +55,7 @@ pub fn build_environment_context(workspace_root: Option<&Path>) -> String {
     }
 
     // GHOST-specific
-    let ghost_home = dirs::home_dir()
+    let ghost_home = user_home_dir()
         .map(|h| h.join(".ghost"))
         .filter(|p| p.exists());
     if let Some(ref gh) = ghost_home {
@@ -151,6 +151,25 @@ fn shorten_git_url(url: &str) -> String {
         format!("{}...", &url[..47])
     } else {
         url.to_string()
+    }
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(home));
+    }
+
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(profile));
+    }
+
+    match (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH")) {
+        (Some(drive), Some(path)) => {
+            let mut home = PathBuf::from(drive);
+            home.push(path);
+            Some(home)
+        }
+        _ => None,
     }
 }
 

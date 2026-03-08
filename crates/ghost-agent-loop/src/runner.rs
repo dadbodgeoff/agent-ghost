@@ -66,10 +66,29 @@ pub enum RunError {
     ConvergenceProtectionDegraded(String),
     #[error("session boundary violation")]
     SessionBoundaryViolation,
-    #[error("LLM error: {0}")]
-    LLMError(String),
+    #[error("LLM error: {message}")]
+    LLMError {
+        message: String,
+        partial_output: bool,
+    },
     #[error("credential exfiltration detected — KILL ALL")]
     CredentialExfiltration,
+}
+
+impl RunError {
+    pub fn llm_error(message: impl Into<String>) -> Self {
+        Self::LLMError {
+            message: message.into(),
+            partial_output: false,
+        }
+    }
+
+    pub fn streaming_llm_error(message: impl Into<String>, partial_output: bool) -> Self {
+        Self::LLMError {
+            message: message.into(),
+            partial_output,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +153,26 @@ pub struct GateCheckLog {
     pub checks: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStreamErrorType {
+    ProviderUnavailable,
+    AuthFailed,
+    RuntimeError,
+}
+
+fn bool_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Events emitted during a streaming agent turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentStreamEvent {
@@ -160,9 +199,47 @@ pub enum AgentStreamEvent {
         safety_status: String,
     },
     /// An error occurred.
-    Error { message: String },
+    Error {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_type: Option<AgentStreamErrorType>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        fallback: bool,
+        #[serde(default = "bool_true", skip_serializing_if = "is_true")]
+        terminal: bool,
+    },
     /// Heartbeat — agent is alive, transitioning between phases.
     Heartbeat { phase: String },
+}
+
+impl AgentStreamEvent {
+    pub fn terminal_error(message: impl Into<String>) -> Self {
+        Self::Error {
+            message: message.into(),
+            error_type: Some(AgentStreamErrorType::RuntimeError),
+            provider: None,
+            fallback: false,
+            terminal: true,
+        }
+    }
+
+    pub fn structured_error(
+        message: impl Into<String>,
+        error_type: AgentStreamErrorType,
+        provider: Option<String>,
+        fallback: bool,
+        terminal: bool,
+    ) -> Self {
+        Self::Error {
+            message: message.into(),
+            error_type: Some(error_type),
+            provider,
+            fallback,
+            terminal,
+        }
+    }
 }
 
 /// The core agent runner.
@@ -888,7 +965,7 @@ impl AgentRunner {
                     let error_str = e.to_string();
                     let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
                     self.circuit_breaker.record_classified_failure(failure_type);
-                    RunError::LLMError(error_str)
+                    RunError::llm_error(error_str)
                 })?;
 
             // Record success + update context.
@@ -1359,14 +1436,17 @@ impl AgentRunner {
             let mut segment_tool_call_args: std::collections::HashMap<String, (String, String)> =
                 std::collections::HashMap::new(); // id -> (name, accumulated_args)
             let mut segment_usage = ghost_llm::provider::UsageStats::default();
+            let mut partial_output_emitted = false;
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
                     Ok(StreamChunk::TextDelta(text)) => {
+                        partial_output_emitted = true;
                         segment_text.push_str(&text);
                         let _ = tx.send(AgentStreamEvent::TextDelta { content: text }).await;
                     }
                     Ok(StreamChunk::ToolCallStart { id, name }) => {
+                        partial_output_emitted = true;
                         segment_tool_call_args.insert(id.clone(), (name.clone(), String::new()));
                         let _ = tx
                             .send(AgentStreamEvent::ToolUse {
@@ -1389,25 +1469,18 @@ impl AgentRunner {
                         break;
                     }
                     Ok(StreamChunk::Error(msg)) => {
-                        let _ = tx
-                            .send(AgentStreamEvent::Error {
-                                message: msg.clone(),
-                            })
-                            .await;
                         let failure_type = crate::circuit_breaker::classify_llm_error(&msg);
                         self.circuit_breaker.record_classified_failure(failure_type);
-                        return Err(RunError::LLMError(msg));
+                        return Err(RunError::streaming_llm_error(msg, partial_output_emitted));
                     }
                     Err(e) => {
                         let error_str = e.to_string();
-                        let _ = tx
-                            .send(AgentStreamEvent::Error {
-                                message: error_str.clone(),
-                            })
-                            .await;
                         let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
                         self.circuit_breaker.record_classified_failure(failure_type);
-                        return Err(RunError::LLMError(error_str));
+                        return Err(RunError::streaming_llm_error(
+                            error_str,
+                            partial_output_emitted,
+                        ));
                     }
                 }
             }

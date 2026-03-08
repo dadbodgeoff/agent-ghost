@@ -85,7 +85,7 @@ fn timestamp_tampering_invalidates_signature() {
     };
 
     let mut signed = sign_delta(delta, author, &key);
-    signed.timestamp = signed.timestamp - chrono::Duration::hours(1);
+    signed.timestamp -= chrono::Duration::hours(1);
 
     assert!(
         !verify_delta(&signed, &verifying),

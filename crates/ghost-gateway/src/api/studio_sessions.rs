@@ -19,12 +19,14 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::Extension;
 use axum::Json;
+use base64::Engine;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
 use ghost_agent_loop::output_inspector::{InspectionResult, OutputInspector};
-use ghost_agent_loop::runner::AgentStreamEvent;
+use ghost_agent_loop::runner::{AgentStreamErrorType, AgentStreamEvent};
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult, ErrorResponse};
@@ -38,11 +40,14 @@ use crate::api::mutation::{
     write_mutation_audit_entry,
 };
 use crate::api::operation_context::{IdempotencyStatus, OperationContext};
+use crate::api::runtime_execution::{
+    execute_blocking_turn, map_runner_error, map_runtime_safety_error, pre_loop_blocking_turn,
+    prepare_stored_runtime_execution, PreparedRuntimeExecution,
+};
+use crate::api::stream_runtime::execute_streaming_turn;
 use crate::api::websocket::WsEvent;
-use crate::provider_runtime;
 use crate::runtime_safety::{
-    parse_or_stable_uuid, RunnerBuildOptions, RuntimeSafetyBuilder, RuntimeSafetyContext,
-    RuntimeSafetyError, STUDIO_SYNTHETIC_AGENT_NAME,
+    parse_or_stable_uuid, RunnerBuildOptions, RuntimeSafetyBuilder, STUDIO_SYNTHETIC_AGENT_NAME,
 };
 use crate::state::AppState;
 
@@ -115,15 +120,18 @@ pub struct SendMessageResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct ListSessionsQuery {
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
-    /// WP9-D: Only return sessions active since this datetime (ISO 8601).
+    /// Optional lower bound on `last_activity_at`.
     pub active_since: Option<String>,
+    /// Opaque cursor returned from a previous session-list page.
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SessionListResponse {
     pub sessions: Vec<SessionResponse>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
 }
 
 // ── Stream recovery types ────────────────────────────────────────
@@ -131,7 +139,7 @@ pub struct SessionListResponse {
 #[derive(Debug, Deserialize)]
 pub struct RecoverStreamQuery {
     pub message_id: String,
-    pub after_seq: i64,
+    pub after_seq: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -179,6 +187,7 @@ pub async fn create_session(
     let system_prompt = req.system_prompt.unwrap_or_default();
     let temperature = req.temperature.unwrap_or(0.5);
     let max_tokens = req.max_tokens.unwrap_or(4096);
+    let now = Utc::now().to_rfc3339();
     let db = state.db.write().await;
 
     match execute_idempotent_json_mutation(
@@ -211,8 +220,8 @@ pub async fn create_session(
                     system_prompt: system_prompt.clone(),
                     temperature,
                     max_tokens,
-                    created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                    updated_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
                 })
                 .unwrap_or(serde_json::Value::Null),
             ))
@@ -246,27 +255,57 @@ pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListSessionsQuery>,
 ) -> ApiResult<SessionListResponse> {
-    let limit = params.limit.unwrap_or(50);
-    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(50).min(200);
+    let active_since = params.active_since.as_deref();
+    if active_since.is_some() && params.cursor.is_some() {
+        return Err(ApiError::bad_request(
+            "active_since cannot be combined with cursor pagination",
+        ));
+    }
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(parse_session_list_cursor)
+        .transpose()?;
 
-    let sessions = {
+    let mut sessions = {
         let db = state
             .db
             .read()
             .map_err(|e| ApiError::db_error("list_sessions", e))?;
-        if let Some(ref since) = params.active_since {
+        if let Some(active_since) = active_since {
             cortex_storage::queries::studio_chat_queries::list_sessions_active_since(
-                &db, since, limit, offset,
+                &db,
+                active_since,
+                limit.saturating_add(1),
+                0,
             )
             .map_err(|e| ApiError::db_error("list_sessions", e))?
         } else {
-            cortex_storage::queries::studio_chat_queries::list_sessions(&db, limit, offset)
-                .map_err(|e| ApiError::db_error("list_sessions", e))?
+            cortex_storage::queries::studio_chat_queries::list_sessions_cursor(
+                &db,
+                limit.saturating_add(1),
+                cursor.as_ref().map(|value| value.updated_at.as_str()),
+                cursor.as_ref().map(|value| value.id.as_str()),
+            )
+            .map_err(|e| ApiError::db_error("list_sessions", e))?
         }
+    };
+
+    let has_more = sessions.len() > limit as usize;
+    if has_more {
+        sessions.truncate(limit as usize);
+    }
+    let next_cursor = if has_more && active_since.is_none() {
+        sessions.last().map(encode_session_list_cursor)
+    } else {
+        None
     };
 
     Ok(Json(SessionListResponse {
         sessions: sessions.into_iter().map(session_row_to_response).collect(),
+        next_cursor,
+        has_more,
     }))
 }
 
@@ -349,6 +388,7 @@ pub async fn recover_stream(
     Path(session_id): Path<String>,
     Query(params): Query<RecoverStreamQuery>,
 ) -> ApiResult<RecoverStreamResponse> {
+    let after_seq = params.after_seq.unwrap_or(0);
     let db = state
         .db
         .read()
@@ -358,17 +398,20 @@ pub async fn recover_stream(
         &db,
         &session_id,
         &params.message_id,
-        params.after_seq,
+        after_seq,
     )
     .map_err(|e| ApiError::db_error("recover_stream", e))?;
 
     let api_events = events
         .into_iter()
-        .map(|row| StreamEventApiResponse {
-            seq: row.id,
-            event_type: row.event_type,
-            payload: serde_json::from_str(&row.payload).unwrap_or(serde_json::json!({})),
-            created_at: row.created_at,
+        .filter_map(|row| {
+            let event_type = public_stream_event_type(&row.event_type)?;
+            Some(StreamEventApiResponse {
+                seq: row.id,
+                event_type: event_type.to_string(),
+                payload: serde_json::from_str(&row.payload).unwrap_or(serde_json::json!({})),
+                created_at: normalize_public_timestamp(&row.created_at),
+            })
         })
         .collect();
 
@@ -506,31 +549,6 @@ pub async fn send_message(
                     }
                 };
 
-                let agent = match RuntimeSafetyBuilder::new(&state)
-                    .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
-                    .map_err(map_runtime_safety_error)
-                {
-                    Ok(agent) => agent,
-                    Err(error) => {
-                        let db = state.db.write().await;
-                        let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
-                        return error_response_with_idempotency(error);
-                    }
-                };
-                if let Err(error) = ensure_agent_available(&state, agent.id) {
-                    let db = state.db.write().await;
-                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
-                    return error_response_with_idempotency(error);
-                }
-
-                let inspector = OutputInspector::new();
-                let input_inspection = inspector.scan(&req.content, agent.id);
-                let user_safety_status = match &input_inspection {
-                    InspectionResult::Clean => "clean",
-                    InspectionResult::Warning { .. } => "warning",
-                    InspectionResult::KillAll { .. } => "blocked",
-                };
-
                 let history = {
                     let db = match state.db.read() {
                         Ok(db) => db,
@@ -559,35 +577,38 @@ pub async fn send_message(
                     }
                 };
 
-                let runtime_ctx = RuntimeSafetyContext::from_state(
+                let prepared_runtime = match prepare_stored_runtime_execution(
                     &state,
-                    agent.clone(),
+                    &session.agent_id,
+                    STUDIO_SYNTHETIC_AGENT_NAME,
                     parse_or_stable_uuid(&session_id, "studio-session"),
-                    None,
-                );
-                if let Err(error) = runtime_ctx
-                    .ensure_execution_permitted()
-                    .map_err(map_runner_error)
-                {
-                    let db = state.db.write().await;
-                    let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
-                    return error_response_with_idempotency(error);
-                }
-
-                let mut runner = match RuntimeSafetyBuilder::new(&state).build_live_runner(
-                    &runtime_ctx,
                     RunnerBuildOptions {
                         system_prompt: Some(session.system_prompt.clone()),
                         conversation_history: build_conversation_history(&history),
                         skill_allowlist: None,
                     },
                 ) {
-                    Ok(runner) => runner,
+                    Ok(prepared_runtime) => prepared_runtime,
                     Err(error) => {
                         let db = state.db.write().await;
                         let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
-                        return error_response_with_idempotency(map_runtime_safety_error(error));
+                        return error_response_with_idempotency(error);
                     }
+                };
+
+                let PreparedRuntimeExecution {
+                    runtime_ctx,
+                    mut runner,
+                    providers,
+                    ..
+                } = prepared_runtime;
+
+                let inspector = OutputInspector::new();
+                let input_inspection = inspector.scan(&req.content, runtime_ctx.agent.id);
+                let user_safety_status = match &input_inspection {
+                    InspectionResult::Clean => "clean",
+                    InspectionResult::Warning { .. } => "warning",
+                    InspectionResult::KillAll { .. } => "blocked",
                 };
 
                 let pre_loop_ctx = runner
@@ -643,7 +664,7 @@ pub async fn send_message(
                         "user",
                         &req.content,
                         0,
-                        "clean",
+                        user_safety_status,
                     ) {
                         let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
                         return error_response_with_idempotency(ApiError::db_error(
@@ -701,7 +722,6 @@ pub async fn send_message(
                     .await;
                 }
 
-                let providers = provider_runtime::ordered_provider_configs(&state);
                 if providers.is_empty() {
                     let response_body = validation_error_body(
                         "No model providers configured. Add provider config to ghost.yml.",
@@ -858,17 +878,6 @@ pub async fn send_message(
                 }
             };
 
-            let agent = match RuntimeSafetyBuilder::new(&state)
-                .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
-                .map_err(map_runtime_safety_error)
-            {
-                Ok(agent) => agent,
-                Err(error) => return error_response_with_idempotency(error),
-            };
-            if let Err(error) = ensure_agent_available(&state, agent.id) {
-                return error_response_with_idempotency(error);
-            }
-
             let history = {
                 let db = match state.db.read() {
                     Ok(db) => db,
@@ -902,34 +911,28 @@ pub async fn send_message(
                 history
             };
 
-            let runtime_ctx = RuntimeSafetyContext::from_state(
+            let prepared_runtime = match prepare_stored_runtime_execution(
                 &state,
-                agent.clone(),
+                &session.agent_id,
+                STUDIO_SYNTHETIC_AGENT_NAME,
                 parse_or_stable_uuid(&execution_state.session_id, "studio-session"),
-                None,
-            );
-            if let Err(error) = runtime_ctx
-                .ensure_execution_permitted()
-                .map_err(map_runner_error)
-            {
-                return error_response_with_idempotency(error);
-            }
-
-            let mut runner = match RuntimeSafetyBuilder::new(&state).build_live_runner(
-                &runtime_ctx,
                 RunnerBuildOptions {
                     system_prompt: Some(session.system_prompt.clone()),
                     conversation_history: build_conversation_history(&history_cutoff),
                     skill_allowlist: None,
                 },
             ) {
-                Ok(runner) => runner,
-                Err(error) => {
-                    return error_response_with_idempotency(map_runtime_safety_error(error));
-                }
+                Ok(prepared_runtime) => prepared_runtime,
+                Err(error) => return error_response_with_idempotency(error),
             };
 
-            let providers = provider_runtime::ordered_provider_configs(&state);
+            let PreparedRuntimeExecution {
+                runtime_ctx,
+                mut runner,
+                providers,
+                ..
+            } = prepared_runtime;
+
             if providers.is_empty() {
                 let response_body = validation_error_body(
                     "No model providers configured. Add provider config to ghost.yml.",
@@ -949,24 +952,19 @@ pub async fn send_message(
             }
 
             let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
-            let mut ctx = match runner
-                .pre_loop(
-                    runtime_ctx.agent.id,
-                    runtime_ctx.session_id,
-                    "studio",
-                    &req.content,
-                )
-                .await
-            {
-                Ok(ctx) => ctx,
-                Err(error) => {
-                    let heartbeat_result = heartbeat.stop().await;
-                    if let Err(error) = heartbeat_result {
-                        return error_response_with_idempotency(error);
+            let mut ctx =
+                match pre_loop_blocking_turn(&mut runner, &runtime_ctx, "studio", &req.content)
+                    .await
+                {
+                    Ok(ctx) => ctx,
+                    Err(error) => {
+                        let heartbeat_result = heartbeat.stop().await;
+                        if let Err(error) = heartbeat_result {
+                            return error_response_with_idempotency(error);
+                        }
+                        return error_response_with_idempotency(map_runner_error(error));
                     }
-                    return error_response_with_idempotency(map_runner_error(error));
-                }
-            };
+                };
 
             {
                 let db = state.db.write().await;
@@ -980,12 +978,14 @@ pub async fn send_message(
                 }
             }
 
-            let mut fallback_chain = provider_runtime::build_fallback_chain(&providers);
-            let result = runner
-                .run_turn(&mut ctx, &mut fallback_chain, &req.content)
-                .await;
-
-            let result = match result {
+            let result = match execute_blocking_turn(
+                &mut runner,
+                &mut ctx,
+                &req.content,
+                &providers,
+            )
+            .await
+            {
                 Ok(result) => {
                     if let Err(error) = heartbeat.stop().await {
                         return error_response_with_idempotency(error);
@@ -993,8 +993,9 @@ pub async fn send_message(
                     result
                 }
                 Err(error) => {
-                    if let Err(heartbeat_error) = heartbeat.stop().await {
-                        return error_response_with_idempotency(heartbeat_error);
+                    let heartbeat_result = heartbeat.stop().await;
+                    if let Err(error) = heartbeat_result {
+                        return error_response_with_idempotency(error);
                     }
                     let response_body = studio_message_recovery_body(&execution_state);
                     let response = finalize_studio_message_recovery_response(
@@ -1429,13 +1430,17 @@ pub async fn send_message_stream(
                             ApiError::not_found(format!("session {session_id} not found"))
                         })?;
 
-                let agent = RuntimeSafetyBuilder::new(&state)
-                    .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
-                    .map_err(map_runtime_safety_error)?;
-                ensure_agent_available(&state, agent.id)?;
+                let prepared_runtime = prepare_stored_runtime_execution(
+                    &state,
+                    &session.agent_id,
+                    STUDIO_SYNTHETIC_AGENT_NAME,
+                    parse_or_stable_uuid(&session_id, "studio-session"),
+                    RunnerBuildOptions::default(),
+                )?;
 
                 let inspector = OutputInspector::new();
-                let input_inspection = inspector.scan(&user_content, agent.id);
+                let input_inspection =
+                    inspector.scan(&user_content, prepared_runtime.runtime_ctx.agent.id);
                 let user_safety_status = match &input_inspection {
                     InspectionResult::Clean => "clean",
                     InspectionResult::Warning { .. } => "warning",
@@ -1457,7 +1462,7 @@ pub async fn send_message_stream(
                     "user",
                     &user_content,
                     0,
-                    "clean",
+                    user_safety_status,
                 )
                 .map_err(|e| ApiError::db_error("insert_user_message", e))?;
                 cortex_storage::queries::studio_chat_queries::insert_safety_audit(
@@ -1480,7 +1485,7 @@ pub async fn send_message_stream(
                     ));
                 }
 
-                if provider_runtime::ordered_provider_configs(&state).is_empty() {
+                if prepared_runtime.providers.is_empty() {
                     return Ok((
                         StatusCode::UNPROCESSABLE_ENTITY,
                         validation_error_body(
@@ -1959,6 +1964,7 @@ fn studio_live_stream_response(
                         yield Ok(Event::default()
                             .event("warning")
                             .data(serde_json::json!({
+                                "warning_type": "persistence_degraded",
                                 "code": "db_persistence_degraded",
                                 "message": format!("{} consecutive DB persistence failures — stream events may not be recoverable on reconnect", consecutive_persist_failures),
                             }).to_string()));
@@ -1992,6 +1998,7 @@ fn studio_live_stream_response(
                         yield Ok(Event::default()
                             .event("warning")
                             .data(serde_json::json!({
+                                "warning_type": "persistence_degraded",
                                 "code": "db_persistence_degraded",
                                 "message": format!("{} consecutive DB persistence failures — stream events may not be recoverable on reconnect", consecutive_persist_failures),
                             }).to_string()));
@@ -2038,10 +2045,30 @@ fn studio_live_stream_response(
                     stream_ended = true;
                     break;
                 }
-                AgentStreamEvent::Error { message } => {
+                AgentStreamEvent::Error {
+                    message,
+                    error_type,
+                    provider,
+                    fallback,
+                    terminal,
+                } => {
+                    let payload = studio_stream_error_payload(
+                        &message,
+                        error_type,
+                        provider.as_deref(),
+                        fallback,
+                        terminal,
+                    );
+
+                    if !terminal {
+                        yield Ok(Event::default()
+                            .event("error")
+                            .data(payload.to_string()));
+                        continue;
+                    }
+
                     flush_text(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, &mut text_buffer, &mut consecutive_persist_failures);
 
-                    let payload = serde_json::json!({ "message": message });
                     let seq = persist_event(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, "error", &payload, &mut consecutive_persist_failures);
 
                     let mut ev = Event::default()
@@ -2098,12 +2125,10 @@ fn spawn_studio_stream_execution(
                 Ok(db) => db,
                 Err(error) => {
                     let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!(
-                                "failed to load session: {}",
-                                ApiError::db_error("get_session", error)
-                            ),
-                        })
+                        .send(AgentStreamEvent::terminal_error(format!(
+                            "failed to load session: {}",
+                            ApiError::db_error("get_session", error)
+                        )))
                         .await;
                     return;
                 }
@@ -2112,60 +2137,33 @@ fn spawn_studio_stream_execution(
                 Ok(Some(session)) => session,
                 Ok(None) => {
                     let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!("session {session_id} not found"),
-                        })
+                        .send(AgentStreamEvent::terminal_error(format!(
+                            "session {session_id} not found"
+                        )))
                         .await;
                     return;
                 }
                 Err(error) => {
                     let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!(
-                                "failed to load session: {}",
-                                ApiError::db_error("get_session", error)
-                            ),
-                        })
+                        .send(AgentStreamEvent::terminal_error(format!(
+                            "failed to load session: {}",
+                            ApiError::db_error("get_session", error)
+                        )))
                         .await;
                     return;
                 }
             }
         };
-
-        let agent = match RuntimeSafetyBuilder::new(&state_for_task)
-            .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
-            .map_err(map_runtime_safety_error)
-        {
-            Ok(agent) => agent,
-            Err(error) => {
-                let _ = tx
-                    .send(AgentStreamEvent::Error {
-                        message: error.to_string(),
-                    })
-                    .await;
-                return;
-            }
-        };
-        if let Err(error) = ensure_agent_available(&state_for_task, agent.id) {
-            let _ = tx
-                .send(AgentStreamEvent::Error {
-                    message: error.to_string(),
-                })
-                .await;
-            return;
-        }
 
         let history = {
             let db = match state_for_task.db.read() {
                 Ok(db) => db,
                 Err(error) => {
                     let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!(
-                                "failed to load history: {}",
-                                ApiError::db_error("list_messages", error)
-                            ),
-                        })
+                        .send(AgentStreamEvent::terminal_error(format!(
+                            "failed to load history: {}",
+                            ApiError::db_error("list_messages", error)
+                        )))
                         .await;
                     return;
                 }
@@ -2174,12 +2172,10 @@ fn spawn_studio_stream_execution(
                 Ok(history) => history,
                 Err(error) => {
                     let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!(
-                                "failed to load history: {}",
-                                ApiError::db_error("list_messages", error)
-                            ),
-                        })
+                        .send(AgentStreamEvent::terminal_error(format!(
+                            "failed to load history: {}",
+                            ApiError::db_error("list_messages", error)
+                        )))
                         .await;
                     return;
                 }
@@ -2194,54 +2190,32 @@ fn spawn_studio_stream_execution(
             history
         };
 
-        let runtime_session_id = parse_or_stable_uuid(&session_id, "studio-session");
-        let runtime_ctx = RuntimeSafetyContext::from_state(
+        let prepared_runtime = match prepare_stored_runtime_execution(
             &state_for_task,
-            agent.clone(),
-            runtime_session_id,
-            None,
-        );
-        if let Err(error) = runtime_ctx
-            .ensure_execution_permitted()
-            .map_err(map_runner_error)
-        {
-            let _ = tx
-                .send(AgentStreamEvent::Error {
-                    message: error.to_string(),
-                })
-                .await;
-            return;
-        }
-
-        let mut runner = match RuntimeSafetyBuilder::new(&state_for_task).build_live_runner(
-            &runtime_ctx,
+            &session.agent_id,
+            STUDIO_SYNTHETIC_AGENT_NAME,
+            parse_or_stable_uuid(&session_id, "studio-session"),
             RunnerBuildOptions {
                 system_prompt: Some(session.system_prompt.clone()),
                 conversation_history: build_conversation_history(&history_cutoff),
                 skill_allowlist: None,
             },
         ) {
-            Ok(runner) => runner,
+            Ok(prepared_runtime) => prepared_runtime,
             Err(error) => {
                 let _ = tx
-                    .send(AgentStreamEvent::Error {
-                        message: map_runtime_safety_error(error).to_string(),
-                    })
+                    .send(AgentStreamEvent::terminal_error(error.to_string()))
                     .await;
                 return;
             }
         };
 
-        let all_providers = provider_runtime::ordered_provider_configs(&state_for_task);
-        if all_providers.is_empty() {
-            let _ = tx
-                .send(AgentStreamEvent::Error {
-                    message: "No model providers configured. Add provider config to ghost.yml."
-                        .into(),
-                })
-                .await;
-            return;
-        }
+        let PreparedRuntimeExecution {
+            runtime_ctx,
+            mut runner,
+            providers: all_providers,
+            ..
+        } = prepared_runtime;
 
         let session_id_clone = session_id.clone();
         let assistant_msg_id_clone = assistant_msg_id.clone();
@@ -2249,164 +2223,81 @@ fn spawn_studio_stream_execution(
         let db_clone = Arc::clone(&state_for_task.db);
         let state_clone = Arc::clone(&state_for_task);
         let user_content_for_title = user_content.clone();
-        let tx_timeout = tx.clone();
-
-        let turn_result = tokio::time::timeout(std::time::Duration::from_secs(300), async move {
-            let mut ctx = match runner
-                .pre_loop(
-                    runtime_ctx.agent.id,
-                    runtime_ctx.session_id,
-                    "studio",
-                    &user_content,
-                )
-                .await
-            {
-                Ok(ctx) => ctx,
-                Err(error) => {
-                    let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!("agent pre-loop failed: {error}"),
-                        })
-                        .await;
-                    return;
-                }
+        if let Some(run_result) = execute_streaming_turn(
+            &tx,
+            &mut runner,
+            &runtime_ctx,
+            "studio",
+            &user_content,
+            &all_providers,
+            "No model providers configured. Add provider config to ghost.yml.",
+            "Agent turn timed out after 5 minutes",
+        )
+        .await
+        {
+            let response_content = run_result.output.unwrap_or_default();
+            let token_count = run_result.total_tokens as i64;
+            let inspector = OutputInspector::new();
+            let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
+            let output_safety_status = match &output_inspection {
+                InspectionResult::Clean => "clean",
+                InspectionResult::Warning { .. } => "warning",
+                InspectionResult::KillAll { .. } => "blocked",
             };
 
-            let mut result = Err(ghost_agent_loop::runner::RunError::LLMError(
-                "no providers configured".into(),
-            ));
-
-            for (provider_idx, provider_config) in all_providers.iter().enumerate() {
-                let provider = provider_config.clone();
-                let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
-                                       tools: Vec<ghost_llm::provider::ToolSchema>|
-                      -> ghost_llm::streaming::StreamChunkStream {
-                    provider_runtime::build_provider_stream(&provider, messages, tools)
-                };
-
-                tracing::info!(
-                    provider = %provider_config.name,
-                    index = provider_idx,
-                    "attempting streaming with provider"
+            {
+                let db = db_clone.write().await;
+                let _ = cortex_storage::queries::studio_chat_queries::insert_message(
+                    &db,
+                    &assistant_msg_id_clone,
+                    &session_id_clone,
+                    "assistant",
+                    &response_content,
+                    token_count,
+                    output_safety_status,
                 );
 
-                match runner
-                    .run_turn_streaming(&mut ctx, &user_content, tx.clone(), get_stream)
-                    .await
-                {
-                    Ok(run_result) => {
-                        if provider_idx > 0 {
-                            tracing::info!(
-                                provider = %provider_config.name,
-                                index = provider_idx,
-                                "streaming succeeded via fallback provider"
-                            );
-                        }
-                        result = Ok(run_result);
-                        break;
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            provider = %provider_config.name,
-                            index = provider_idx,
-                            error = %error,
-                            "provider failed, trying next"
-                        );
-                        ctx.recursion_depth = 0;
-                        result = Err(error);
-                    }
-                }
-            }
+                let audit_id = Uuid::now_v7().to_string();
+                let detail = match &output_inspection {
+                    InspectionResult::Warning { pattern_name, .. } => Some(pattern_name.as_str()),
+                    InspectionResult::KillAll { pattern_name, .. } => Some(pattern_name.as_str()),
+                    InspectionResult::Clean => None,
+                };
+                let _ = cortex_storage::queries::studio_chat_queries::insert_safety_audit(
+                    &db,
+                    &audit_id,
+                    &session_id_clone,
+                    &assistant_msg_id_clone,
+                    "output_scan",
+                    output_safety_status,
+                    detail,
+                );
 
-            match result {
-                Ok(run_result) => {
-                    let response_content = run_result.output.unwrap_or_default();
-                    let token_count = run_result.total_tokens as i64;
-                    let inspector = OutputInspector::new();
-                    let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
-                    let output_safety_status = match &output_inspection {
-                        InspectionResult::Clean => "clean",
-                        InspectionResult::Warning { .. } => "warning",
-                        InspectionResult::KillAll { .. } => "blocked",
-                    };
-
-                    {
-                        let db = db_clone.write().await;
-                        let _ = cortex_storage::queries::studio_chat_queries::insert_message(
-                            &db,
-                            &assistant_msg_id_clone,
-                            &session_id_clone,
-                            "assistant",
-                            &response_content,
-                            token_count,
-                            output_safety_status,
-                        );
-
-                        let audit_id = Uuid::now_v7().to_string();
-                        let detail = match &output_inspection {
-                            InspectionResult::Warning { pattern_name, .. } => {
-                                Some(pattern_name.as_str())
-                            }
-                            InspectionResult::KillAll { pattern_name, .. } => {
-                                Some(pattern_name.as_str())
-                            }
-                            InspectionResult::Clean => None,
-                        };
-                        let _ = cortex_storage::queries::studio_chat_queries::insert_safety_audit(
-                            &db,
-                            &audit_id,
-                            &session_id_clone,
-                            &assistant_msg_id_clone,
-                            "output_scan",
-                            output_safety_status,
-                            detail,
-                        );
-
-                        if session_title == "New Chat" {
-                            let title = truncate_for_title(&user_content_for_title);
-                            let _ =
-                                cortex_storage::queries::studio_chat_queries::update_session_title(
-                                    &db,
-                                    &session_id_clone,
-                                    &title,
-                                );
-                        }
-                    }
-
-                    crate::api::websocket::broadcast_event(
-                        &state_clone,
-                        WsEvent::ChatMessage {
-                            session_id: session_id_clone.clone(),
-                            message_id: assistant_msg_id_clone.clone(),
-                            role: "assistant".into(),
-                            content: truncate_preview(&response_content, 200),
-                            safety_status: output_safety_status.into(),
-                        },
+                if session_title == "New Chat" {
+                    let title = truncate_for_title(&user_content_for_title);
+                    let _ = cortex_storage::queries::studio_chat_queries::update_session_title(
+                        &db,
+                        &session_id_clone,
+                        &title,
                     );
-
-                    let _ = tx
-                        .send(AgentStreamEvent::TurnComplete {
-                            token_count: run_result.total_tokens,
-                            safety_status: output_safety_status.to_string(),
-                        })
-                        .await;
-                }
-                Err(error) => {
-                    let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!("agent run failed: {error}"),
-                        })
-                        .await;
                 }
             }
-        })
-        .await;
 
-        if turn_result.is_err() {
-            tracing::warn!("Agent turn timed out after 5 minutes");
-            let _ = tx_timeout
-                .send(AgentStreamEvent::Error {
-                    message: "Agent turn timed out after 5 minutes".into(),
+            crate::api::websocket::broadcast_event(
+                &state_clone,
+                WsEvent::ChatMessage {
+                    session_id: session_id_clone.clone(),
+                    message_id: assistant_msg_id_clone.clone(),
+                    role: "assistant".into(),
+                    content: truncate_preview(&response_content, 200),
+                    safety_status: output_safety_status.into(),
+                },
+            );
+
+            let _ = tx
+                .send(AgentStreamEvent::TurnComplete {
+                    token_count: run_result.total_tokens,
+                    safety_status: output_safety_status.to_string(),
                 })
                 .await;
         }
@@ -2428,8 +2319,8 @@ fn session_row_to_response(
         system_prompt: row.system_prompt,
         temperature: row.temperature,
         max_tokens: row.max_tokens,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
+        created_at: normalize_public_timestamp(&row.created_at),
+        updated_at: normalize_public_timestamp(&row.updated_at),
     }
 }
 
@@ -2442,8 +2333,78 @@ fn message_row_to_response(
         content: row.content,
         token_count: row.token_count,
         safety_status: row.safety_status,
-        created_at: row.created_at,
+        created_at: normalize_public_timestamp(&row.created_at),
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SessionListCursor {
+    updated_at: String,
+    id: String,
+}
+
+fn parse_session_list_cursor(value: &str) -> Result<SessionListCursor, ApiError> {
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| ApiError::bad_request("invalid studio session cursor"))?;
+    serde_json::from_slice::<SessionListCursor>(&decoded)
+        .map_err(|_| ApiError::bad_request("invalid studio session cursor"))
+}
+
+fn encode_session_list_cursor(
+    row: &cortex_storage::queries::studio_chat_queries::StudioSessionRow,
+) -> String {
+    let cursor = SessionListCursor {
+        updated_at: row.updated_at.clone(),
+        id: row.id.clone(),
+    };
+    let encoded = serde_json::to_vec(&cursor).unwrap_or_default();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(encoded)
+}
+
+fn public_stream_event_type(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "stream_start" => Some("stream_start"),
+        "text_chunk" => Some("text_delta"),
+        "tool_use" => Some("tool_use"),
+        "tool_result" => Some("tool_result"),
+        "turn_complete" => Some("stream_end"),
+        "error" => Some("error"),
+        _ => None,
+    }
+}
+
+fn studio_stream_error_payload(
+    message: &str,
+    error_type: Option<AgentStreamErrorType>,
+    provider: Option<&str>,
+    fallback: bool,
+    terminal: bool,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({ "message": message });
+    if let Some(error_type) = error_type {
+        payload["error_type"] = serde_json::json!(error_type);
+    }
+    if let Some(provider) = provider {
+        payload["provider"] = serde_json::json!(provider);
+    }
+    if fallback {
+        payload["fallback"] = serde_json::json!(true);
+    }
+    if !terminal {
+        payload["terminal"] = serde_json::json!(false);
+    }
+    payload
+}
+
+fn normalize_public_timestamp(value: &str) -> String {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return parsed.with_timezone(&Utc).to_rfc3339();
+    }
+    if let Ok(parsed) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return parsed.and_utc().to_rfc3339();
+    }
+    value.to_string()
 }
 
 fn build_conversation_history(
@@ -2463,59 +2424,6 @@ fn build_conversation_history(
             tool_call_id: None,
         })
         .collect()
-}
-
-fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
-    match error {
-        RuntimeSafetyError::AgentNotFound(message) => ApiError::bad_request(message),
-        _ => ApiError::internal(error.to_string()),
-    }
-}
-
-fn ensure_agent_available(state: &AppState, agent_id: Uuid) -> Result<(), ApiError> {
-    match state.kill_switch.check(agent_id) {
-        crate::safety::kill_switch::KillCheckResult::Ok => Ok(()),
-        crate::safety::kill_switch::KillCheckResult::AgentPaused(_) => Err(ApiError::custom(
-            StatusCode::LOCKED,
-            "AGENT_PAUSED",
-            "Agent is paused",
-        )),
-        crate::safety::kill_switch::KillCheckResult::AgentQuarantined(_) => Err(ApiError::custom(
-            StatusCode::LOCKED,
-            "AGENT_QUARANTINED",
-            "Agent is quarantined",
-        )),
-        crate::safety::kill_switch::KillCheckResult::PlatformKilled => {
-            Err(ApiError::KillSwitchActive)
-        }
-    }
-}
-
-fn map_runner_error(error: ghost_agent_loop::runner::RunError) -> ApiError {
-    match error {
-        ghost_agent_loop::runner::RunError::AgentPaused => {
-            ApiError::custom(StatusCode::LOCKED, "AGENT_PAUSED", "Agent is paused")
-        }
-        ghost_agent_loop::runner::RunError::AgentQuarantined => ApiError::custom(
-            StatusCode::LOCKED,
-            "AGENT_QUARANTINED",
-            "Agent is quarantined",
-        ),
-        ghost_agent_loop::runner::RunError::PlatformKilled => ApiError::KillSwitchActive,
-        ghost_agent_loop::runner::RunError::KillGateClosed => ApiError::custom(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "DISTRIBUTED_KILL_GATE_CLOSED",
-            "Distributed kill gate is closed",
-        ),
-        ghost_agent_loop::runner::RunError::ConvergenceProtectionDegraded(status) => {
-            ApiError::custom(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "CONVERGENCE_PROTECTION_DEGRADED",
-                format!("Convergence protection is {status}"),
-            )
-        }
-        other => ApiError::internal(format!("agent run failed: {other}")),
-    }
 }
 
 /// Truncate user message to create a session title (max 60 chars).
@@ -2624,6 +2532,39 @@ mod tests {
                 .to_string()
                 .contains("unsupported studio execution state version"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn session_cursor_round_trips_storage_sort_keys() {
+        let row = cortex_storage::queries::studio_chat_queries::StudioSessionRow {
+            id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            title: "Session".to_string(),
+            model: "qwen3.5:9b".to_string(),
+            system_prompt: String::new(),
+            temperature: 0.5,
+            max_tokens: 4096,
+            created_at: "2026-03-08 12:00:00".to_string(),
+            updated_at: "2026-03-08 12:05:00".to_string(),
+        };
+
+        let encoded = encode_session_list_cursor(&row);
+        let decoded = parse_session_list_cursor(&encoded).expect("cursor should decode");
+
+        assert_eq!(decoded.id, row.id);
+        assert_eq!(decoded.updated_at, row.updated_at);
+    }
+
+    #[test]
+    fn normalize_public_timestamp_converts_sqlite_datetime_to_rfc3339() {
+        assert_eq!(
+            normalize_public_timestamp("2026-03-08 12:05:00"),
+            "2026-03-08T12:05:00+00:00"
+        );
+        assert_eq!(
+            normalize_public_timestamp("2026-03-08T12:05:00Z"),
+            "2026-03-08T12:05:00+00:00"
         );
     }
 }

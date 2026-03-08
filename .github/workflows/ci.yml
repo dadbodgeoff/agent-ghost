@@ -100,18 +100,19 @@ jobs:
   extension-lint:
     name: Extension Lint
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: extension
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
       - run: |
-          if [ -f package.json ]; then
-            npm ci
-            npm run lint --if-present
+          if [ -f extension/package.json ]; then
+            pnpm --dir extension lint --if-present
           else
             echo "No package.json in extension/ — skipping"
           fi

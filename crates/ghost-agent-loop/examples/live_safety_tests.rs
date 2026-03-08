@@ -755,7 +755,7 @@ fn convergence_scorer_tests(passed: &mut u32, failed: &mut u32) {
     print_test("convergence: score clamped to [0.0, 1.0]");
     let score_high = scorer.compute(&[2.0, 3.0, 5.0, 10.0, 1.0, 1.0, 1.0]);
     let score_neg = scorer.compute(&[-1.0, -5.0, -0.5, 0.0, 0.0, 0.0, 0.0]);
-    if score_high >= 0.0 && score_high <= 1.0 && score_neg >= 0.0 && score_neg <= 1.0 {
+    if (0.0..=1.0).contains(&score_high) && (0.0..=1.0).contains(&score_neg) {
         ok(passed);
     } else {
         fail(failed, &format!("high={}, neg={}", score_high, score_neg));
@@ -764,7 +764,7 @@ fn convergence_scorer_tests(passed: &mut u32, failed: &mut u32) {
     // 50. NaN signals treated as 0.0
     print_test("convergence: NaN signals → 0.0");
     let score = scorer.compute(&[f64::NAN, f64::NAN, 0.0, 0.0, 0.0, 0.0, 0.0]);
-    if score >= 0.0 && score <= 1.0 && !score.is_nan() {
+    if (0.0..=1.0).contains(&score) {
         ok(passed);
     } else {
         fail(failed, &format!("score={}", score));

@@ -72,7 +72,7 @@ pub fn list_sessions(
             "SELECT id, agent_id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
              FROM studio_chat_sessions
              WHERE deleted_at IS NULL
-             ORDER BY updated_at DESC
+             ORDER BY updated_at DESC, id DESC
              LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| to_storage_err(e.to_string()))?;
@@ -82,6 +82,44 @@ pub fn list_sessions(
         .map_err(|e| to_storage_err(e.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| to_storage_err(e.to_string()))?;
+
+    Ok(rows)
+}
+
+pub fn list_sessions_cursor(
+    conn: &Connection,
+    limit: u32,
+    cursor_updated_at: Option<&str>,
+    cursor_id: Option<&str>,
+) -> CortexResult<Vec<StudioSessionRow>> {
+    let mut stmt = if cursor_updated_at.is_some() && cursor_id.is_some() {
+        conn.prepare(
+            "SELECT id, agent_id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
+             FROM studio_chat_sessions
+             WHERE deleted_at IS NULL
+               AND (updated_at < ?1 OR (updated_at = ?1 AND id < ?2))
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?3",
+        )
+    } else {
+        conn.prepare(
+            "SELECT id, agent_id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
+             FROM studio_chat_sessions
+             WHERE deleted_at IS NULL
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?1",
+        )
+    }
+    .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let rows = if let (Some(updated_at), Some(id)) = (cursor_updated_at, cursor_id) {
+        stmt.query_map(params![updated_at, id, limit], map_session_row)
+    } else {
+        stmt.query_map(params![limit], map_session_row)
+    }
+    .map_err(|e| to_storage_err(e.to_string()))?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| to_storage_err(e.to_string()))?;
 
     Ok(rows)
 }
@@ -148,7 +186,7 @@ pub fn list_sessions_active_since(
             "SELECT id, agent_id, title, model, system_prompt, temperature, max_tokens, created_at, updated_at
              FROM studio_chat_sessions
              WHERE deleted_at IS NULL AND last_activity_at >= ?1
-             ORDER BY last_activity_at DESC
+             ORDER BY last_activity_at DESC, id DESC
              LIMIT ?2 OFFSET ?3",
         )
         .map_err(|e| to_storage_err(e.to_string()))?;

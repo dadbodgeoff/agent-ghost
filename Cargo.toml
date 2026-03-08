@@ -181,7 +181,7 @@ clap_complete = "4"
 clap_mangen = "0.2"
 
 # WASM sandbox
-wasmtime = "27"
+wasmtime = { version = "41.0.4", default-features = false, features = ["cranelift", "runtime", "std"] }
 
 # Notifications
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }

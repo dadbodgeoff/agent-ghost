@@ -21,7 +21,7 @@ pub enum ConfigError {
 }
 
 /// Top-level ghost.yml configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GhostConfig {
     #[serde(default)]
     pub gateway: GatewayConfig,
@@ -515,21 +515,12 @@ impl Default for WebFetchToolConfig {
 }
 
 /// HTTP request tool config (maps to ghost_agent_loop HttpRequestConfig).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HttpRequestToolConfig {
     #[serde(default)]
     pub allow_http: bool,
     #[serde(default)]
     pub allowed_domains: Vec<String>,
-}
-
-impl Default for HttpRequestToolConfig {
-    fn default() -> Self {
-        Self {
-            allow_http: false,
-            allowed_domains: vec![],
-        }
-    }
 }
 
 /// Shell tool overrides.
@@ -868,25 +859,6 @@ impl GhostConfig {
             }
         }
         Ok(())
-    }
-}
-
-impl Default for GhostConfig {
-    fn default() -> Self {
-        Self {
-            gateway: GatewayConfig::default(),
-            agents: Vec::new(),
-            channels: Vec::new(),
-            convergence: ConvergenceGatewayConfig::default(),
-            security: SecurityConfig::default(),
-            models: ModelsConfig::default(),
-            secrets: SecretsConfig::default(),
-            mesh: MeshConfig::default(),
-            pc_control: ghost_pc_control::safety::PcControlConfig::default(),
-            tools: ToolsConfig::default(),
-            external_skills: ExternalSkillsConfig::default(),
-            otel: OtelConfig::default(),
-        }
     }
 }
 

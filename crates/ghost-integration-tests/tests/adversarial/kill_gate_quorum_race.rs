@@ -202,8 +202,10 @@ fn gate_transitions_through_expected_states() {
 
 #[test]
 fn authenticated_quorum_records_close_and_resume_events() {
-    let mut config = KillGateConfig::default();
-    config.authenticated_cluster_membership = true;
+    let config = KillGateConfig {
+        authenticated_cluster_membership: true,
+        ..Default::default()
+    };
     let gate = KillGate::new(Uuid::new_v4(), config);
 
     gate.close("chain test".into());

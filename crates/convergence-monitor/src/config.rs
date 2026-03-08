@@ -86,13 +86,14 @@ impl Default for MonitorConfig {
 impl MonitorConfig {
     pub fn load() -> anyhow::Result<Self> {
         let ghost_config = ghost_gateway::config::GhostConfig::load_default(None)?;
-        let mut config = Self::default();
-        config.db_path = PathBuf::from(ghost_gateway::bootstrap::shellexpand_tilde(
-            &ghost_config.gateway.db_path,
-        ));
-        config.http_port = parse_monitor_port(&ghost_config.convergence.monitor.address)?;
-        config.default_profile = ghost_config.convergence.profile;
-        Ok(config)
+        Ok(Self {
+            db_path: PathBuf::from(ghost_gateway::bootstrap::shellexpand_tilde(
+                &ghost_config.gateway.db_path,
+            )),
+            http_port: parse_monitor_port(&ghost_config.convergence.monitor.address)?,
+            default_profile: ghost_config.convergence.profile,
+            ..Default::default()
+        })
     }
 }
 
@@ -120,9 +121,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         let temp_dir = tempfile::tempdir().unwrap();
         let config_path = temp_dir.path().join("ghost.yml");
-        let yaml = format!(
-            "gateway:\n  db_path: \"~/.ghost/data/custom.db\"\nconvergence:\n  monitor:\n    address: \"127.0.0.1:28790\"\n"
-        );
+        let yaml = "gateway:\n  db_path: \"~/.ghost/data/custom.db\"\nconvergence:\n  monitor:\n    address: \"127.0.0.1:28790\"\n".to_string();
         std::fs::write(&config_path, yaml).unwrap();
 
         std::env::set_var("GHOST_HOME", temp_dir.path());

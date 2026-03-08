@@ -35,8 +35,8 @@ impl TableDisplay for ConvergenceScoreList {
             return;
         }
         println!(
-            "{:<12}  {:<20}  {:>7}  {:>5}  {:<16}  {}",
-            "AGENT", "NAME", "SCORE", "LEVEL", "PROFILE", "COMPUTED"
+            "{:<12}  {:<20}  {:>7}  {:>5}  {:<16}  COMPUTED",
+            "AGENT", "NAME", "SCORE", "LEVEL", "PROFILE"
         );
         println!("{}", "─".repeat(90));
         for s in &self.scores {

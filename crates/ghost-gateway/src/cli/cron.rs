@@ -35,8 +35,8 @@ impl TableDisplay for CronJobList {
             return;
         }
         println!(
-            "{:<12}  {:<16}  {:<12}  {:<26}  {:<26}  {}",
-            "ID", "SCHEDULE", "AGENT", "LAST RUN", "NEXT RUN", "STATUS"
+            "{:<12}  {:<16}  {:<12}  {:<26}  {:<26}  STATUS",
+            "ID", "SCHEDULE", "AGENT", "LAST RUN", "NEXT RUN"
         );
         println!("{}", "─".repeat(100));
         for j in &self.jobs {

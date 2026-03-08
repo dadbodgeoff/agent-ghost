@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OPENAPI = ROOT / "crates/ghost-gateway/src/api/openapi.rs"
 POLICY = ROOT / "schemas/openapi_parity_policy.json"
 ROUTE_SOURCES = [
-    ROOT / "crates/ghost-gateway/src/bootstrap.rs",
+    ROOT / "crates/ghost-gateway/src/route_sets.rs",
     ROOT / "crates/ghost-gateway/src/api/push_routes.rs",
     ROOT / "crates/ghost-gateway/src/api/mesh_routes.rs",
 ]

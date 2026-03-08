@@ -220,10 +220,12 @@ pub(crate) fn load_persisted_runtime_safety_state(
                 .map(|level| level.eq_ignore_ascii_case("killall"))
                 .unwrap_or(false);
         if is_kill_all {
-            let mut restored = crate::safety::kill_switch::KillSwitchState::default();
-            restored.platform_level = KillLevel::KillAll;
-            restored.activated_at = Some(chrono::Utc::now());
-            restored.trigger = Some("legacy kill_state.json found on startup".into());
+            let restored = crate::safety::kill_switch::KillSwitchState {
+                platform_level: KillLevel::KillAll,
+                activated_at: Some(chrono::Utc::now()),
+                trigger: Some("legacy kill_state.json found on startup".into()),
+                ..Default::default()
+            };
             return Ok(Some(RestoredSafetyRuntimeState {
                 state: restored,
                 distributed_gate: None,
@@ -234,10 +236,12 @@ pub(crate) fn load_persisted_runtime_safety_state(
     let fallback: Value = serde_json::from_str(&raw)
         .map_err(|error| format!("parse persisted safety state: {error}"))?;
     if fallback["active"].as_bool() == Some(true) {
-        let mut restored = crate::safety::kill_switch::KillSwitchState::default();
-        restored.platform_level = KillLevel::KillAll;
-        restored.activated_at = Some(chrono::Utc::now());
-        restored.trigger = Some("legacy kill_state.json found on startup".into());
+        let restored = crate::safety::kill_switch::KillSwitchState {
+            platform_level: KillLevel::KillAll,
+            activated_at: Some(chrono::Utc::now()),
+            trigger: Some("legacy kill_state.json found on startup".into()),
+            ..Default::default()
+        };
         return Ok(Some(RestoredSafetyRuntimeState {
             state: restored,
             distributed_gate: None,
@@ -984,6 +988,7 @@ pub struct ResumeRequest {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
 

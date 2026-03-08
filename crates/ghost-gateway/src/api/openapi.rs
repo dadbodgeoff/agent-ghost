@@ -189,6 +189,17 @@ use utoipa::OpenApi;
             LiveExecutionSchema,
             ChannelSchema,
             ItpEventSchema,
+            StudioSessionSchema,
+            StudioMessageSchema,
+            StudioSessionWithMessagesResponseSchema,
+            StudioSessionListResponseSchema,
+            StudioCreateSessionRequestSchema,
+            StudioDeleteSessionResponseSchema,
+            StudioSendMessageRequestSchema,
+            StudioSendMessageResponseSchema,
+            StudioMessageAcceptedResponseSchema,
+            StudioRecoverStreamEventSchema,
+            StudioRecoverStreamResponseSchema,
             OAuthProviderSchema,
             OAuthConnectionSchema,
             ProfileSchema,
@@ -415,6 +426,104 @@ pub struct ItpEventSchema {
     pub session_id: String,
     pub timestamp: String,
     pub source: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioSessionSchema {
+    pub id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub model: String,
+    pub system_prompt: String,
+    pub temperature: f64,
+    pub max_tokens: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioMessageSchema {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub token_count: i64,
+    pub safety_status: String,
+    pub created_at: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioSessionWithMessagesResponseSchema {
+    pub id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub model: String,
+    pub system_prompt: String,
+    pub temperature: f64,
+    pub max_tokens: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub messages: Vec<StudioMessageSchema>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioSessionListResponseSchema {
+    pub sessions: Vec<StudioSessionSchema>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(utoipa::ToSchema, serde::Deserialize)]
+pub struct StudioCreateSessionRequestSchema {
+    pub agent_id: Option<String>,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<i64>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioDeleteSessionResponseSchema {
+    pub deleted: bool,
+}
+
+#[derive(utoipa::ToSchema, serde::Deserialize)]
+pub struct StudioSendMessageRequestSchema {
+    pub content: String,
+    pub model: Option<String>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<i64>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioSendMessageResponseSchema {
+    pub user_message: StudioMessageSchema,
+    pub assistant_message: StudioMessageSchema,
+    pub safety_status: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioMessageAcceptedResponseSchema {
+    pub status: String,
+    pub session_id: String,
+    pub user_message_id: String,
+    pub assistant_message_id: String,
+    pub execution_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_required: Option<bool>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioRecoverStreamEventSchema {
+    pub seq: i64,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct StudioRecoverStreamResponseSchema {
+    pub events: Vec<StudioRecoverStreamEventSchema>,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -1173,8 +1282,12 @@ async fn unarchive_memory() {}
 #[utoipa::path(
     get, path = "/api/studio/sessions",
     tag = "studio",
+    params(
+        ("cursor" = Option<String>, Query, description = "Opaque cursor from the previous Studio session page"),
+        ("limit" = Option<u32>, Query, description = "Items per page (default 50, max 200)")
+    ),
     responses(
-        (status = 200, description = "Studio session list", body = inline(serde_json::Value)),
+        (status = 200, description = "Studio session list", body = StudioSessionListResponseSchema),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1186,7 +1299,7 @@ async fn list_studio_sessions() {}
     tag = "studio",
     params(("id" = String, Path, description = "Studio session ID")),
     responses(
-        (status = 200, description = "Studio session detail", body = inline(serde_json::Value)),
+        (status = 200, description = "Studio session detail", body = StudioSessionWithMessagesResponseSchema),
         (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1196,9 +1309,9 @@ async fn get_studio_session() {}
 #[utoipa::path(
     post, path = "/api/studio/sessions",
     tag = "studio",
-    request_body = inline(serde_json::Value),
+    request_body = StudioCreateSessionRequestSchema,
     responses(
-        (status = 201, description = "Studio session created"),
+        (status = 201, description = "Studio session created", body = StudioSessionSchema),
         (status = 400, description = "Invalid request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1210,7 +1323,7 @@ async fn create_studio_session() {}
     tag = "studio",
     params(("id" = String, Path, description = "Studio session ID")),
     responses(
-        (status = 200, description = "Studio session deleted"),
+        (status = 200, description = "Studio session deleted", body = StudioDeleteSessionResponseSchema),
         (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1221,10 +1334,10 @@ async fn delete_studio_session() {}
     post, path = "/api/studio/sessions/{id}/messages",
     tag = "studio",
     params(("id" = String, Path, description = "Studio session ID")),
-    request_body = inline(serde_json::Value),
+    request_body = StudioSendMessageRequestSchema,
     responses(
-        (status = 200, description = "Studio message completed", body = inline(serde_json::Value)),
-        (status = 202, description = "Studio message accepted and requires recovery polling", body = inline(serde_json::Value)),
+        (status = 200, description = "Studio message completed", body = StudioSendMessageResponseSchema),
+        (status = 202, description = "Studio message accepted and requires recovery polling", body = StudioMessageAcceptedResponseSchema),
         (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1235,7 +1348,7 @@ async fn send_studio_message() {}
     post, path = "/api/studio/sessions/{id}/messages/stream",
     tag = "studio",
     params(("id" = String, Path, description = "Studio session ID")),
-    request_body = inline(serde_json::Value),
+    request_body = StudioSendMessageRequestSchema,
     responses(
         (status = 200, description = "Streaming studio message response"),
         (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
@@ -1247,9 +1360,13 @@ async fn stream_studio_message() {}
 #[utoipa::path(
     get, path = "/api/studio/sessions/{id}/stream/recover",
     tag = "studio",
-    params(("id" = String, Path, description = "Studio session ID")),
+    params(
+        ("id" = String, Path, description = "Studio session ID"),
+        ("message_id" = String, Query, description = "Assistant message id for the stream being recovered"),
+        ("after_seq" = Option<i64>, Query, description = "Replay events strictly after this sequence number")
+    ),
     responses(
-        (status = 200, description = "Recovered stream state", body = inline(serde_json::Value)),
+        (status = 200, description = "Recovered stream state", body = StudioRecoverStreamResponseSchema),
         (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))

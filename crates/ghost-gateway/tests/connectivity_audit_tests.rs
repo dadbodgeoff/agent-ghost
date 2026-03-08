@@ -775,8 +775,8 @@ mod adversarial_tests {
                 (i % 5) as i32,
                 "standard",
                 &format!("2026-02-28T12:{i:02}:00Z"),
-                &[i as u8; 32],
-                &[(i.wrapping_sub(1)) as u8; 32],
+                &[i; 32],
+                &[i.wrapping_sub(1); 32],
             )
             .unwrap();
         }
@@ -813,8 +813,8 @@ mod adversarial_tests {
                     "InteractionMessage",
                     "agent-rapid",
                     format!("2026-02-28T12:00:{:02}Z", i % 60),
-                    vec![i as u8; 32],
-                    vec![(i.wrapping_sub(1)) as u8; 32],
+                    vec![i; 32],
+                    vec![i.wrapping_sub(1); 32],
                 ],
             )
             .unwrap();

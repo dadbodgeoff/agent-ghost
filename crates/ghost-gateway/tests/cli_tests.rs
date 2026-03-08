@@ -6,7 +6,7 @@ use predicates::prelude::*;
 use std::path::Path;
 
 fn ghost_cmd() -> Command {
-    cargo_bin_cmd!("ghost").into()
+    cargo_bin_cmd!("ghost")
 }
 
 #[test]

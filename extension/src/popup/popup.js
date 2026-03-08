@@ -19,7 +19,6 @@ const LEVEL_LABELS = ["Level 0 — Normal", "Level 1 — Soft", "Level 2 — Act
 const LEVEL_CLASSES = ["level-0", "level-1", "level-2", "level-3", "level-4"];
 
 let sessionStartTime = null;
-let timerInterval = null;
 
 // --- Initialization ---
 
@@ -114,7 +113,7 @@ function renderSignalList() {
 function startSessionTimer() {
   sessionStartTime = Date.now();
   const el = document.getElementById("sessionDuration");
-  timerInterval = setInterval(() => {
+  setInterval(() => {
     const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
     const h = Math.floor(elapsed / 3600);
     const m = Math.floor((elapsed % 3600) / 60);
