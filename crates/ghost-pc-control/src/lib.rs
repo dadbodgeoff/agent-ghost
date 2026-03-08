@@ -68,13 +68,19 @@ use safety::config::PcControlConfig;
 ///
 /// * `config` — The `pc_control` section from `ghost.yml`.
 pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
+    all_pc_control_skills_with_circuit_breaker(config, config.circuit_breaker())
+}
+
+pub fn all_pc_control_skills_with_circuit_breaker(
+    config: &PcControlConfig,
+    circuit_breaker: Arc<Mutex<safety::circuit_breaker::PcControlCircuitBreaker>>,
+) -> Vec<Box<dyn Skill>> {
     if !config.enabled {
         tracing::info!("PC control disabled — no skills registered");
         return Vec::new();
     }
 
     let validator = config.input_validator();
-    let circuit_breaker = config.circuit_breaker();
 
     // Build the input backend. Falls back to a no-op if no display server.
     let backend: Arc<Mutex<dyn InputBackend>> = match EnigoBackend::try_new() {

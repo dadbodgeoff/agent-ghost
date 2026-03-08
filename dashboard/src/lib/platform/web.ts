@@ -1,6 +1,8 @@
 import type { RuntimePlatform } from './runtime';
 
 const TOKEN_KEY = 'ghost-token';
+const CLIENT_ID_KEY = 'ghost-client-id';
+const SESSION_EPOCH_KEY = 'ghost-session-epoch';
 const listeners = new Set<(token: string | null) => void>();
 
 function emitTokenChange(token: string | null) {
@@ -22,6 +24,22 @@ function resolveBaseUrl(): string {
   return 'http://127.0.0.1:39780';
 }
 
+function resolveReplayClientId(): string {
+  const existing = localStorage.getItem(CLIENT_ID_KEY);
+  if (existing) return existing;
+  const clientId = crypto.randomUUID();
+  localStorage.setItem(CLIENT_ID_KEY, clientId);
+  return clientId;
+}
+
+function resolveReplaySessionEpoch(): number {
+  const raw = localStorage.getItem(SESSION_EPOCH_KEY);
+  const epoch = raw ? Number.parseInt(raw, 10) : 1;
+  if (Number.isFinite(epoch) && epoch > 0) return epoch;
+  localStorage.setItem(SESSION_EPOCH_KEY, '1');
+  return 1;
+}
+
 export const webRuntime: RuntimePlatform = {
   kind: 'web',
   isDesktop: () => false,
@@ -38,6 +56,17 @@ export const webRuntime: RuntimePlatform = {
   async clearToken() {
     sessionStorage.removeItem(TOKEN_KEY);
     emitTokenChange(null);
+  },
+  async getReplayClientId() {
+    return resolveReplayClientId();
+  },
+  async getReplaySessionEpoch() {
+    return resolveReplaySessionEpoch();
+  },
+  async advanceReplaySessionEpoch() {
+    const next = resolveReplaySessionEpoch() + 1;
+    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    return next;
   },
   subscribeTokenChange(listener) {
     listeners.add(listener);
@@ -69,9 +98,6 @@ export const webRuntime: RuntimePlatform = {
   },
   async readKeybindings() {
     return [];
-  },
-  async getDefaultShell() {
-    return null;
   },
   async spawnTerminalPty() {
     return null;

@@ -8,15 +8,40 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use axum::Json;
 use chrono::{DateTime, Utc};
 use cortex_core::memory::types::MemoryType;
 use cortex_core::memory::{BaseMemory, Importance};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::execute_idempotent_json_mutation;
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::OperationContext;
 use crate::state::AppState;
+
+const WRITE_MEMORY_ROUTE_TEMPLATE: &str = "/api/memory";
+const ARCHIVE_MEMORY_ROUTE_TEMPLATE: &str = "/api/memory/:id/archive";
+const UNARCHIVE_MEMORY_ROUTE_TEMPLATE: &str = "/api/memory/:id/unarchive";
+
+fn memory_actor(claims: Option<&Claims>, fallback: Option<&str>) -> String {
+    claims
+        .and_then(|claims| {
+            let subject = claims.sub.trim();
+            if subject.is_empty() || subject == "anonymous" || subject == "unknown" {
+                None
+            } else {
+                Some(claims.sub.clone())
+            }
+        })
+        .or_else(|| fallback.map(ToOwned::to_owned))
+        .unwrap_or_else(|| "anonymous".to_string())
+}
 
 /// Query parameters for memory listing.
 #[derive(Debug, Deserialize)]
@@ -1081,7 +1106,7 @@ fn get_convergence_score(db: &rusqlite::Connection) -> f64 {
 }
 
 /// Request body for creating/updating a memory.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct WriteMemoryRequest {
     pub memory_id: String,
     pub event_type: String,
@@ -1097,90 +1122,123 @@ pub struct WriteMemoryRequest {
 /// closing the dead-write-path for all three tables.
 pub async fn write_memory(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Json(body): Json<WriteMemoryRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let db = state.db.write().await;
+    let actor = memory_actor(
+        claims.as_ref().map(|claims| &claims.0),
+        Some(body.actor_id.as_str()),
+    );
+    let request_body = serde_json::to_value(&body).unwrap_or(serde_json::Value::Null);
 
-    let event_hash = blake3::hash(body.memory_id.as_bytes());
-
-    // 1. Insert memory event.
-    if let Err(e) = cortex_storage::queries::memory_event_queries::insert_event(
+    match execute_idempotent_json_mutation(
         &db,
-        &body.memory_id,
-        &body.event_type,
-        &body.delta,
-        &body.actor_id,
-        event_hash.as_bytes(),
-        &[0u8; 32],
+        &operation_context,
+        &actor,
+        "POST",
+        WRITE_MEMORY_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let event_hash = blake3::hash(body.memory_id.as_bytes());
+
+            cortex_storage::queries::memory_event_queries::insert_event(
+                conn,
+                &body.memory_id,
+                &body.event_type,
+                &body.delta,
+                &body.actor_id,
+                event_hash.as_bytes(),
+                &[0u8; 32],
+            )
+            .map_err(|e| ApiError::internal(format!("memory event insert failed: {e}")))?;
+
+            if let Some(ref snapshot) = body.snapshot {
+                let state_hash = blake3::hash(snapshot.as_bytes());
+                cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+                    conn,
+                    &body.memory_id,
+                    snapshot,
+                    Some(state_hash.as_bytes()),
+                )
+                .map_err(|e| ApiError::internal(format!("snapshot insert failed: {e}")))?;
+            }
+
+            let details = format!("event_type={}, actor={}", body.event_type, body.actor_id);
+            cortex_storage::queries::memory_audit_queries::insert_audit(
+                conn,
+                &body.memory_id,
+                &body.event_type,
+                Some(&details),
+            )
+            .map_err(|e| ApiError::internal(format!("memory audit insert failed: {e}")))?;
+
+            Ok((
+                StatusCode::CREATED,
+                serde_json::json!({
+                    "status": "ok",
+                    "memory_id": body.memory_id,
+                    "event_type": body.event_type,
+                }),
+            ))
+        },
     ) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("memory event insert failed: {e}")})),
-        );
-    }
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "memory",
+                "memory_write",
+                "info",
+                &actor,
+                "ok",
+                serde_json::json!({
+                    "memory_id": body.memory_id,
+                    "event_type": body.event_type,
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
 
-    // 2. Insert snapshot if provided.
-    if let Some(ref snapshot) = body.snapshot {
-        let state_hash = blake3::hash(snapshot.as_bytes());
-        if let Err(e) = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-            &db,
-            &body.memory_id,
-            snapshot,
-            Some(state_hash.as_bytes()),
-        ) {
-            tracing::warn!(error = %e, memory_id = %body.memory_id, "snapshot insert failed (event was persisted)");
-        }
-    }
-
-    // 3. Audit log entry.
-    let details = format!("event_type={}, actor={}", body.event_type, body.actor_id);
-    if let Err(e) = cortex_storage::queries::memory_audit_queries::insert_audit(
-        &db,
-        &body.memory_id,
-        &body.event_type,
-        Some(&details),
-    ) {
-        tracing::warn!(error = %e, memory_id = %body.memory_id, "audit log insert failed");
-    }
-
-    // 4. Generate and store embedding if snapshot was provided.
-    if let Some(ref snapshot) = body.snapshot {
-        if let Ok(memory) = serde_json::from_str::<cortex_core::memory::BaseMemory>(snapshot) {
+            if outcome.idempotency_status
+                == crate::api::operation_context::IdempotencyStatus::Executed
             {
-                let mut engine = state.embedding_engine.lock().await;
-                let embedding = engine.embed_memory(&memory);
-                if cortex_storage::queries::embedding_queries::embeddings_available(&db) {
-                    if let Err(e) = cortex_storage::queries::embedding_queries::upsert_embedding(
-                        &db,
-                        &body.memory_id,
-                        &embedding,
-                        "tfidf",
-                    ) {
-                        tracing::warn!(
-                            error = %e,
-                            memory_id = %body.memory_id,
-                            "embedding storage failed"
-                        );
+                if let Some(ref snapshot) = body.snapshot {
+                    if let Ok(memory) =
+                        serde_json::from_str::<cortex_core::memory::BaseMemory>(snapshot)
+                    {
+                        let mut engine = state.embedding_engine.lock().await;
+                        let embedding = engine.embed_memory(&memory);
+                        if cortex_storage::queries::embedding_queries::embeddings_available(&db) {
+                            if let Err(error) =
+                                cortex_storage::queries::embedding_queries::upsert_embedding(
+                                    &db,
+                                    &body.memory_id,
+                                    &embedding,
+                                    "tfidf",
+                                )
+                            {
+                                tracing::warn!(
+                                    error = %error,
+                                    memory_id = %body.memory_id,
+                                    "embedding storage failed"
+                                );
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
 
-    (
-        StatusCode::CREATED,
-        Json(serde_json::json!({
-            "status": "ok",
-            "memory_id": body.memory_id,
-            "event_type": body.event_type,
-        })),
-    )
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 // ─── Archival endpoints ──────────────────────────────────────────────────
 
 /// Request body for archiving a memory.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ArchiveMemoryRequest {
     pub reason: String,
     #[serde(default)]
@@ -1195,104 +1253,184 @@ pub struct ArchiveMemoryRequest {
 /// GET /api/memory/:id but is excluded from list and search by default.
 pub async fn archive_memory(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(memory_id): Path<String>,
     Json(body): Json<ArchiveMemoryRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> Response {
     let db = state.db.write().await;
-
-    // Verify the memory exists.
-    let exists: bool = db
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM memory_snapshots WHERE memory_id = ?1",
-            [&memory_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| ApiError::db_error("archive_check", e))?;
-
-    if !exists {
-        return Err(ApiError::not_found(format!("memory {memory_id} not found")));
-    }
-
-    // Check if already archived.
-    if cortex_storage::queries::archival_queries::is_archived(&db, &memory_id)
-        .map_err(|e| ApiError::internal(e.to_string()))?
-    {
-        return Err(ApiError::bad_request(format!(
-            "memory {memory_id} is already archived"
-        )));
-    }
-
-    cortex_storage::queries::archival_queries::insert_archival_record(
-        &db,
-        &memory_id,
-        &body.reason,
-        body.decayed_confidence.unwrap_or(0.0),
-        body.original_confidence.unwrap_or(0.0),
-    )
-    .map_err(|e| ApiError::internal(e.to_string()))?;
-
-    // Insert a new snapshot with archived=true (append-only safe).
-    if let Ok(Some(latest)) =
-        cortex_storage::queries::memory_snapshot_queries::latest_by_memory(&db, &memory_id)
-    {
-        if let Ok(mut snapshot) = serde_json::from_str::<serde_json::Value>(&latest.snapshot) {
-            snapshot["archived"] = serde_json::json!(true);
-            let updated = serde_json::to_string(&snapshot).unwrap_or_default();
-            let state_hash = blake3::hash(updated.as_bytes());
-            let _ = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
-                &db,
-                &memory_id,
-                &updated,
-                Some(state_hash.as_bytes()),
-            );
-        }
-    }
-
-    Ok(Json(serde_json::json!({
-        "status": "archived",
+    let actor = memory_actor(claims.as_ref().map(|claims| &claims.0), None);
+    let request_body = serde_json::json!({
         "memory_id": memory_id,
-    })))
+        "reason": body.reason.clone(),
+        "decayed_confidence": body.decayed_confidence,
+        "original_confidence": body.original_confidence,
+    });
+
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        &actor,
+        "POST",
+        ARCHIVE_MEMORY_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM memory_snapshots WHERE memory_id = ?1",
+                    [&memory_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| ApiError::db_error("archive_check", e))?;
+
+            if !exists {
+                return Err(ApiError::not_found(format!("memory {memory_id} not found")));
+            }
+
+            if cortex_storage::queries::archival_queries::is_archived(conn, &memory_id)
+                .map_err(|e| ApiError::internal(e.to_string()))?
+            {
+                return Err(ApiError::bad_request(format!(
+                    "memory {memory_id} is already archived"
+                )));
+            }
+
+            cortex_storage::queries::archival_queries::insert_archival_record(
+                conn,
+                &memory_id,
+                &body.reason,
+                body.decayed_confidence.unwrap_or(0.0),
+                body.original_confidence.unwrap_or(0.0),
+            )
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+            if let Ok(Some(latest)) =
+                cortex_storage::queries::memory_snapshot_queries::latest_by_memory(conn, &memory_id)
+            {
+                if let Ok(mut snapshot) =
+                    serde_json::from_str::<serde_json::Value>(&latest.snapshot)
+                {
+                    snapshot["archived"] = serde_json::json!(true);
+                    let updated = serde_json::to_string(&snapshot).unwrap_or_default();
+                    let state_hash = blake3::hash(updated.as_bytes());
+                    cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+                        conn,
+                        &memory_id,
+                        &updated,
+                        Some(state_hash.as_bytes()),
+                    )
+                    .map_err(|e| {
+                        ApiError::internal(format!("archive snapshot insert failed: {e}"))
+                    })?;
+                }
+            }
+
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({
+                    "status": "archived",
+                    "memory_id": memory_id,
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "memory",
+                "memory_archive",
+                "info",
+                &actor,
+                "archived",
+                serde_json::json!({
+                    "memory_id": memory_id,
+                    "reason": body.reason,
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// POST /api/memory/:id/unarchive — restore an archived memory.
 pub async fn unarchive_memory(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(memory_id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> Response {
     let db = state.db.write().await;
+    let actor = memory_actor(claims.as_ref().map(|claims| &claims.0), None);
+    let request_body = serde_json::json!({ "memory_id": memory_id.clone() });
 
-    if !cortex_storage::queries::archival_queries::is_archived(&db, &memory_id)
-        .map_err(|e| ApiError::internal(e.to_string()))?
-    {
-        return Err(ApiError::bad_request(format!(
-            "memory {memory_id} is not archived"
-        )));
-    }
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        &actor,
+        "POST",
+        UNARCHIVE_MEMORY_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            if !cortex_storage::queries::archival_queries::is_archived(conn, &memory_id)
+                .map_err(|e| ApiError::internal(e.to_string()))?
+            {
+                return Err(ApiError::bad_request(format!(
+                    "memory {memory_id} is not archived"
+                )));
+            }
 
-    cortex_storage::queries::archival_queries::remove_archival_record(&db, &memory_id)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+            cortex_storage::queries::archival_queries::remove_archival_record(conn, &memory_id)
+                .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    // Insert a new snapshot with archived=false (append-only safe).
-    if let Ok(Some(latest)) =
-        cortex_storage::queries::memory_snapshot_queries::latest_by_memory(&db, &memory_id)
-    {
-        if let Ok(mut snapshot) = serde_json::from_str::<serde_json::Value>(&latest.snapshot) {
-            snapshot["archived"] = serde_json::json!(false);
-            let updated = serde_json::to_string(&snapshot).unwrap_or_default();
-            let state_hash = blake3::hash(updated.as_bytes());
-            let _ = cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+            if let Ok(Some(latest)) =
+                cortex_storage::queries::memory_snapshot_queries::latest_by_memory(conn, &memory_id)
+            {
+                if let Ok(mut snapshot) =
+                    serde_json::from_str::<serde_json::Value>(&latest.snapshot)
+                {
+                    snapshot["archived"] = serde_json::json!(false);
+                    let updated = serde_json::to_string(&snapshot).unwrap_or_default();
+                    let state_hash = blake3::hash(updated.as_bytes());
+                    cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+                        conn,
+                        &memory_id,
+                        &updated,
+                        Some(state_hash.as_bytes()),
+                    )
+                    .map_err(|e| {
+                        ApiError::internal(format!("unarchive snapshot insert failed: {e}"))
+                    })?;
+                }
+            }
+
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({
+                    "status": "unarchived",
+                    "memory_id": memory_id,
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
                 &db,
-                &memory_id,
-                &updated,
-                Some(state_hash.as_bytes()),
+                "memory",
+                "memory_unarchive",
+                "info",
+                &actor,
+                "unarchived",
+                serde_json::json!({ "memory_id": memory_id }),
+                &operation_context,
+                &outcome.idempotency_status,
             );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
         }
+        Err(error) => error_response_with_idempotency(error),
     }
-
-    Ok(Json(serde_json::json!({
-        "status": "unarchived",
-        "memory_id": memory_id,
-    })))
 }
 
 /// GET /api/memory/archived — list archived memories.

@@ -8,11 +8,28 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::response::Response;
+use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::{
+    abort_prepared_json_operation, commit_prepared_json_operation,
+    execute_idempotent_json_mutation, prepare_json_operation, PreparedOperation,
+};
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::state::AppState;
+
+const CREATE_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows";
+const UPDATE_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows/:id";
+const EXECUTE_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows/:id/execute";
+const RESUME_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows/:id/resume/:execution_id";
 
 /// Query parameters for workflow listing.
 #[derive(Debug, Deserialize)]
@@ -22,7 +39,7 @@ pub struct WorkflowListParams {
 }
 
 /// Request body for creating a workflow.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateWorkflowRequest {
     pub name: String,
     pub description: Option<String>,
@@ -31,7 +48,7 @@ pub struct CreateWorkflowRequest {
 }
 
 /// Request body for updating a workflow.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateWorkflowRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -40,7 +57,7 @@ pub struct UpdateWorkflowRequest {
 }
 
 /// Request body for executing a workflow.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ExecuteWorkflowRequest {
     /// Input payload for the first node.
     pub input: Option<serde_json::Value>,
@@ -57,6 +74,10 @@ pub struct WorkflowResponse {
     pub created_by: Option<String>,
     pub updated_at: String,
     pub created_at: String,
+}
+
+fn workflow_actor(claims: Option<&Claims>) -> &str {
+    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
 }
 
 /// GET /api/workflows — list saved workflows.
@@ -118,33 +139,76 @@ pub async fn list_workflows(
 /// POST /api/workflows — create a new workflow.
 pub async fn create_workflow(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Json(body): Json<CreateWorkflowRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> Response {
     if body.name.trim().is_empty() {
-        return Err(ApiError::bad_request("Workflow name is required"));
+        return error_response_with_idempotency(ApiError::bad_request(
+            "Workflow name is required",
+        ));
     }
 
-    let id = uuid::Uuid::now_v7().to_string();
-    let description = body.description.unwrap_or_default();
-    let nodes = serde_json::to_string(&body.nodes.unwrap_or(serde_json::Value::Array(vec![])))
-        .unwrap_or_else(|_| "[]".to_string());
-    let edges = serde_json::to_string(&body.edges.unwrap_or(serde_json::Value::Array(vec![])))
-        .unwrap_or_else(|_| "[]".to_string());
-
+    let actor = workflow_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::to_value(&body).unwrap_or(serde_json::Value::Null);
     let db = state.db.write().await;
 
-    db.execute(
-        "INSERT INTO workflows (id, name, description, nodes, edges) VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![id, body.name, description, nodes, edges],
-    )
-    .map_err(|e| ApiError::db_error("workflow_create", e))?;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        CREATE_WORKFLOW_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let id = operation_context
+                .operation_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+            let description = body.description.clone().unwrap_or_default();
+            let nodes =
+                serde_json::to_string(&body.nodes.clone().unwrap_or(serde_json::Value::Array(vec![])))
+                    .unwrap_or_else(|_| "[]".to_string());
+            let edges =
+                serde_json::to_string(&body.edges.clone().unwrap_or(serde_json::Value::Array(vec![])))
+                    .unwrap_or_else(|_| "[]".to_string());
 
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "name": body.name,
-        "description": description,
-        "status": "created",
-    })))
+            conn.execute(
+                "INSERT INTO workflows (id, name, description, nodes, edges, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, body.name, description, nodes, edges, actor],
+            )
+            .map_err(|e| ApiError::db_error("workflow_create", e))?;
+
+            Ok((
+                StatusCode::CREATED,
+                serde_json::json!({
+                    "id": id,
+                    "name": body.name,
+                    "description": description,
+                    "status": "created",
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "workflow",
+                "create_workflow",
+                "info",
+                actor,
+                "created",
+                serde_json::json!({
+                    "workflow_id": outcome.body["id"],
+                    "name": outcome.body["name"],
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// GET /api/workflows/:id — get a specific workflow.
@@ -192,72 +256,104 @@ pub async fn get_workflow(
 /// PUT /api/workflows/:id — update a workflow.
 pub async fn update_workflow(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(id): Path<String>,
     Json(body): Json<UpdateWorkflowRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> Response {
+    let actor = workflow_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({
+        "workflow_id": id,
+        "body": body,
+    });
     let db = state.db.write().await;
 
-    // Check existence first.
-    let exists: bool = db
-        .query_row(
-            "SELECT COUNT(*) FROM workflows WHERE id = ?1",
-            [&id],
-            |row| row.get::<_, u32>(0).map(|c| c > 0),
-        )
-        .map_err(|e| ApiError::db_error("workflow_update_check", e))?;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "PUT",
+        UPDATE_WORKFLOW_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM workflows WHERE id = ?1",
+                    [&id],
+                    |row| row.get::<_, u32>(0).map(|c| c > 0),
+                )
+                .map_err(|e| ApiError::db_error("workflow_update_check", e))?;
 
-    if !exists {
-        return Err(ApiError::not_found(format!("Workflow {id} not found")));
+            if !exists {
+                return Err(ApiError::not_found(format!("Workflow {id} not found")));
+            }
+
+            let mut sets = Vec::new();
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            let mut idx = 1u32;
+
+            if let Some(ref name) = body.name {
+                sets.push(format!("name = ?{idx}"));
+                params.push(Box::new(name.clone()));
+                idx += 1;
+            }
+            if let Some(ref desc) = body.description {
+                sets.push(format!("description = ?{idx}"));
+                params.push(Box::new(desc.clone()));
+                idx += 1;
+            }
+            if let Some(ref nodes) = body.nodes {
+                let json_str = serde_json::to_string(nodes).unwrap_or_else(|_| "[]".to_string());
+                sets.push(format!("nodes = ?{idx}"));
+                params.push(Box::new(json_str));
+                idx += 1;
+            }
+            if let Some(ref edges) = body.edges {
+                let json_str = serde_json::to_string(edges).unwrap_or_else(|_| "[]".to_string());
+                sets.push(format!("edges = ?{idx}"));
+                params.push(Box::new(json_str));
+                idx += 1;
+            }
+
+            if sets.is_empty() {
+                return Err(ApiError::bad_request("No fields to update"));
+            }
+
+            sets.push("updated_at = datetime('now')".to_string());
+            let query = format!("UPDATE workflows SET {} WHERE id = ?{idx}", sets.join(", "));
+            params.push(Box::new(id.clone()));
+
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+
+            conn.execute(&query, param_refs.as_slice())
+                .map_err(|e| ApiError::db_error("workflow_update", e))?;
+
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({
+                    "id": id,
+                    "status": "updated",
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "workflow",
+                "update_workflow",
+                "info",
+                actor,
+                "updated",
+                serde_json::json!({ "workflow_id": id }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
     }
-
-    // Build dynamic UPDATE — only set fields that are provided.
-    let mut sets = Vec::new();
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut idx = 1u32;
-
-    if let Some(ref name) = body.name {
-        sets.push(format!("name = ?{idx}"));
-        params.push(Box::new(name.clone()));
-        idx += 1;
-    }
-    if let Some(ref desc) = body.description {
-        sets.push(format!("description = ?{idx}"));
-        params.push(Box::new(desc.clone()));
-        idx += 1;
-    }
-    if let Some(ref nodes) = body.nodes {
-        let json_str = serde_json::to_string(nodes).unwrap_or_else(|_| "[]".to_string());
-        sets.push(format!("nodes = ?{idx}"));
-        params.push(Box::new(json_str));
-        idx += 1;
-    }
-    if let Some(ref edges) = body.edges {
-        let json_str = serde_json::to_string(edges).unwrap_or_else(|_| "[]".to_string());
-        sets.push(format!("edges = ?{idx}"));
-        params.push(Box::new(json_str));
-        idx += 1;
-    }
-
-    if sets.is_empty() {
-        return Err(ApiError::bad_request("No fields to update"));
-    }
-
-    // Always update updated_at.
-    sets.push(format!("updated_at = datetime('now')"));
-
-    // Add the WHERE id = ?N.
-    let query = format!("UPDATE workflows SET {} WHERE id = ?{idx}", sets.join(", "));
-    params.push(Box::new(id.clone()));
-
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
-    db.execute(&query, param_refs.as_slice())
-        .map_err(|e| ApiError::db_error("workflow_update", e))?;
-
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "status": "updated",
-    })))
 }
 
 /// Topological sort of workflow nodes using Kahn's algorithm.
@@ -288,7 +384,7 @@ fn topological_sort(
 
     let mut queue: VecDeque<&str> = in_degree
         .iter()
-        .filter(|(_, &deg)| deg == 0)
+        .filter(|(_, deg)| **deg == 0)
         .map(|(&id, _)| id)
         .collect();
 
@@ -333,15 +429,11 @@ async fn persist_execution_state(
     Ok(())
 }
 
-/// POST /api/workflows/:id/execute — execute a workflow DAG with durable state.
-///
-/// Phase 3: Full DAG execution with topological sort, per-node state persistence,
-/// crash recovery, and real-time WebSocket progress events.
-pub async fn execute_workflow(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<ExecuteWorkflowRequest>,
-) -> ApiResult<serde_json::Value> {
+async fn execute_workflow_inner(
+    state: Arc<AppState>,
+    id: String,
+    body: ExecuteWorkflowRequest,
+) -> Result<(StatusCode, serde_json::Value), ApiError> {
     let (nodes, edges, name, execution_id) = {
         let db = state
             .db
@@ -403,7 +495,6 @@ pub async fn execute_workflow(
         })
         .collect();
 
-    // Build predecessor map from edges.
     let mut predecessors: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for edge in &edges {
@@ -469,7 +560,6 @@ pub async fn execute_workflow(
             continue;
         }
 
-        // Collect input from predecessors.
         let input_val = if preds.len() == 1 {
             node_outputs.get(&preds[0]).cloned()
         } else if preds.len() > 1 {
@@ -621,7 +711,6 @@ pub async fn execute_workflow(
             }),
         );
 
-        // Persist checkpoint after each node for crash recovery.
         exec_state["node_states"] = serde_json::json!(node_states);
         let _ = persist_execution_state(&state.db, &exec_state).await;
 
@@ -663,17 +752,131 @@ pub async fn execute_workflow(
         })
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "execution_id": execution_id,
+    Ok((
+        StatusCode::OK,
+        serde_json::json!({
+            "execution_id": execution_id,
+            "workflow_id": id,
+            "workflow_name": name,
+            "status": final_status,
+            "mode": "dag",
+            "steps": steps,
+            "input": body.input,
+            "started_at": exec_state.get("started_at"),
+            "completed_at": exec_state.get("completed_at"),
+        }),
+    ))
+}
+
+/// POST /api/workflows/:id/execute — execute a workflow DAG with durable state.
+pub async fn execute_workflow(
+    State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+    Path(id): Path<String>,
+    Json(body): Json<ExecuteWorkflowRequest>,
+) -> Response {
+    let actor = workflow_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({
         "workflow_id": id,
-        "workflow_name": name,
-        "status": final_status,
-        "mode": "dag",
-        "steps": steps,
         "input": body.input,
-        "started_at": exec_state.get("started_at"),
-        "completed_at": exec_state.get("completed_at"),
-    })))
+    });
+
+    let prepared = {
+        let db = state.db.write().await;
+        prepare_json_operation(
+            &db,
+            &operation_context,
+            actor,
+            "POST",
+            EXECUTE_WORKFLOW_ROUTE_TEMPLATE,
+            &request_body,
+        )
+    };
+
+    match prepared {
+        Ok(PreparedOperation::Replay(stored)) => {
+            let db = state.db.write().await;
+            write_mutation_audit_entry(
+                &db,
+                &id,
+                "execute_workflow",
+                "medium",
+                actor,
+                "replayed",
+                serde_json::json!({
+                    "workflow_id": id,
+                    "execution_id": stored.body.get("execution_id"),
+                    "status": stored.body.get("status"),
+                }),
+                &operation_context,
+                &IdempotencyStatus::Replayed,
+            );
+            json_response_with_idempotency(
+                stored.status,
+                stored.body,
+                IdempotencyStatus::Replayed,
+            )
+        }
+        Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency key was reused with a different request payload",
+            serde_json::json!({
+                "route_template": EXECUTE_WORKFLOW_ROUTE_TEMPLATE,
+                "method": "POST",
+            }),
+        )),
+        Ok(PreparedOperation::InProgress) => error_response_with_idempotency(ApiError::custom(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "An equivalent request is already in progress",
+        )),
+        Ok(PreparedOperation::Acquired { journal_id }) => {
+            match execute_workflow_inner(Arc::clone(&state), id.clone(), body.clone()).await {
+                Ok((status, response_body)) => {
+                    let db = state.db.write().await;
+                    match commit_prepared_json_operation(
+                        &db,
+                        &operation_context,
+                        &journal_id,
+                        status,
+                        &response_body,
+                    ) {
+                        Ok(outcome) => {
+                            write_mutation_audit_entry(
+                                &db,
+                                &id,
+                                "execute_workflow",
+                                "medium",
+                                actor,
+                                "executed",
+                                serde_json::json!({
+                                    "workflow_id": id,
+                                    "execution_id": outcome.body["execution_id"],
+                                    "status": outcome.body["status"],
+                                }),
+                                &operation_context,
+                                &outcome.idempotency_status,
+                            );
+                            json_response_with_idempotency(
+                                outcome.status,
+                                outcome.body,
+                                outcome.idempotency_status,
+                            )
+                        }
+                        Err(error) => error_response_with_idempotency(error),
+                    }
+                }
+                Err(error) => {
+                    let db = state.db.write().await;
+                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    error_response_with_idempotency(error)
+                }
+            }
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// GET /api/workflows/:id/executions — list executions for a workflow.
@@ -720,9 +923,110 @@ pub async fn list_executions(
 /// POST /api/workflows/:id/resume/:execution_id — resume a failed execution.
 pub async fn resume_execution(
     State(state): State<Arc<AppState>>,
-    Path((workflow_id, _execution_id)): Path<(String, String)>,
-) -> ApiResult<serde_json::Value> {
-    // Re-trigger execution with the same workflow.
-    let body = ExecuteWorkflowRequest { input: None };
-    execute_workflow(State(state), Path(workflow_id), Json(body)).await
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+    Path((workflow_id, execution_id)): Path<(String, String)>,
+) -> Response {
+    let actor = workflow_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({
+        "workflow_id": workflow_id,
+        "resume_from_execution_id": execution_id,
+    });
+
+    let prepared = {
+        let db = state.db.write().await;
+        prepare_json_operation(
+            &db,
+            &operation_context,
+            actor,
+            "POST",
+            RESUME_WORKFLOW_ROUTE_TEMPLATE,
+            &request_body,
+        )
+    };
+
+    match prepared {
+        Ok(PreparedOperation::Replay(stored)) => {
+            let db = state.db.write().await;
+            write_mutation_audit_entry(
+                &db,
+                &workflow_id,
+                "resume_workflow_execution",
+                "medium",
+                actor,
+                "replayed",
+                serde_json::json!({
+                    "workflow_id": workflow_id,
+                    "resume_from_execution_id": execution_id,
+                    "execution_id": stored.body.get("execution_id"),
+                }),
+                &operation_context,
+                &IdempotencyStatus::Replayed,
+            );
+            json_response_with_idempotency(
+                stored.status,
+                stored.body,
+                IdempotencyStatus::Replayed,
+            )
+        }
+        Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency key was reused with a different request payload",
+            serde_json::json!({
+                "route_template": RESUME_WORKFLOW_ROUTE_TEMPLATE,
+                "method": "POST",
+            }),
+        )),
+        Ok(PreparedOperation::InProgress) => error_response_with_idempotency(ApiError::custom(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "An equivalent request is already in progress",
+        )),
+        Ok(PreparedOperation::Acquired { journal_id }) => {
+            let body = ExecuteWorkflowRequest { input: None };
+            match execute_workflow_inner(Arc::clone(&state), workflow_id.clone(), body).await {
+                Ok((status, response_body)) => {
+                    let db = state.db.write().await;
+                    match commit_prepared_json_operation(
+                        &db,
+                        &operation_context,
+                        &journal_id,
+                        status,
+                        &response_body,
+                    ) {
+                        Ok(outcome) => {
+                            write_mutation_audit_entry(
+                                &db,
+                                &workflow_id,
+                                "resume_workflow_execution",
+                                "medium",
+                                actor,
+                                "executed",
+                                serde_json::json!({
+                                    "workflow_id": workflow_id,
+                                    "resume_from_execution_id": execution_id,
+                                    "execution_id": outcome.body["execution_id"],
+                                }),
+                                &operation_context,
+                                &outcome.idempotency_status,
+                            );
+                            json_response_with_idempotency(
+                                outcome.status,
+                                outcome.body,
+                                outcome.idempotency_status,
+                            )
+                        }
+                        Err(error) => error_response_with_idempotency(error),
+                    }
+                }
+                Err(error) => {
+                    let db = state.db.write().await;
+                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    error_response_with_idempotency(error)
+                }
+            }
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }

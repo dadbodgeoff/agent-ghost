@@ -248,7 +248,7 @@
                 const runtime = await getRuntime();
                 await runtime.setToken(data.access_token);
                 invalidateAuthClientState();
-                await notifyAuthBoundary('ghost-auth-changed');
+                await notifyAuthBoundary('ghost-auth-session');
                 authExpiryWarning = false;
               }
             } catch { /* refresh failed */ }
@@ -310,12 +310,13 @@
             Stop
           </button>
         {:else}
-          <button
-            class="btn-primary"
-            disabled={studioChatStore.sending}
-            onclick={() => {
-              const val = studioInputRef?.getValue()?.trim();
-              if (val) { studioInputRef.clear(); handleSend(val); }
+            <button
+              class="btn-primary"
+              disabled={studioChatStore.sending}
+              onclick={() => {
+              const input = studioInputRef;
+              const val = input?.getValue()?.trim();
+              if (input && val) { input.clear(); handleSend(val); }
             }}
           >
             {studioChatStore.sending ? 'Sending...' : 'Send'}

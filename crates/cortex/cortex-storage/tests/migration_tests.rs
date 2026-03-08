@@ -1,11 +1,17 @@
-//! Integration tests for cortex-storage migrations v016 + v017.
-//! Tests append-only triggers, hash chain columns, goal_proposals UPDATE exception (AC10).
+//! Integration tests for cortex-storage migrations.
+//! Tests append-only triggers, goal proposal compatibility behavior, and W3 v2 invariants.
 
 use cortex_storage::{open_in_memory, run_all_migrations};
 use rusqlite::params;
 
 fn setup_db() -> rusqlite::Connection {
     let conn = open_in_memory().expect("open in-memory DB");
+    run_all_migrations(&conn).expect("run migrations");
+    conn
+}
+
+fn setup_db_at(path: &std::path::Path) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(path).expect("open sqlite DB");
     run_all_migrations(&conn).expect("run migrations");
     conn
 }
@@ -423,6 +429,388 @@ fn query_pending_proposals() {
     let pending = cortex_storage::queries::goal_proposal_queries::query_pending(&conn).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "p2");
+}
+
+#[test]
+fn v046_goal_proposal_v2_tables_created() {
+    let conn = setup_db();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    for expected in &[
+        "goal_proposals_v2",
+        "goal_proposal_transitions",
+        "goal_lineage_heads",
+    ] {
+        assert!(
+            tables.contains(&expected.to_string()),
+            "missing table: {}",
+            expected
+        );
+    }
+}
+
+#[test]
+fn superseding_pending_proposal_creates_v2_transition_and_updates_head() {
+    let conn = setup_db();
+
+    cortex_storage::queries::goal_proposal_queries::insert_proposal(
+        &conn,
+        "p1",
+        "a1",
+        "s1",
+        "Agent",
+        "GoalChange",
+        "AgentGoal",
+        "{\"goal_text\":\"Learn Rust\"}",
+        "[]",
+        "HumanReviewRequired",
+        &[1u8; 32],
+        &[0u8; 32],
+    )
+    .unwrap();
+    cortex_storage::queries::goal_proposal_queries::insert_proposal(
+        &conn,
+        "p2",
+        "a1",
+        "s1",
+        "Agent",
+        "GoalChange",
+        "AgentGoal",
+        "{\"goal_text\":\"Learn Rust\"}",
+        "[]",
+        "HumanReviewRequired",
+        &[2u8; 32],
+        &[1u8; 32],
+    )
+    .unwrap();
+
+    let p1_transitions: Vec<String> = conn
+        .prepare(
+            "SELECT to_state FROM goal_proposal_transitions
+             WHERE proposal_id = 'p1'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(p1_transitions, vec!["pending_review", "superseded"]);
+
+    let (head_id, head_state): (String, String) = conn
+        .query_row(
+            "SELECT head_proposal_id, head_state
+             FROM goal_lineage_heads
+             WHERE subject_type = 'AgentGoal' AND subject_key = 'legacy-goal-text:learn rust'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(head_id, "p2");
+    assert_eq!(head_state, "pending_review");
+
+    let (legacy_decision, legacy_resolved_at): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT decision, resolved_at FROM goal_proposals WHERE id = 'p1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(legacy_decision.as_deref(), Some("Superseded"));
+    assert!(legacy_resolved_at.is_some());
+}
+
+#[test]
+fn canonical_identity_and_supersession_survive_restart() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("w5-restart.db");
+
+    let conn = setup_db_at(&db_path);
+    let first =
+        cortex_storage::queries::goal_proposal_queries::insert_proposal_record_with_outcome(
+            &conn,
+            &cortex_storage::queries::goal_proposal_queries::NewProposalRecord {
+                id: "p1",
+                agent_id: "a1",
+                session_id: "s1",
+                proposer_type: "Agent",
+                operation: "GoalChange",
+                target_type: "AgentGoal",
+                content: "{\"goal_text\":\"Learn Rust\"}",
+                cited_memory_ids: "[]",
+                decision: "HumanReviewRequired",
+                event_hash: &[1u8; 32],
+                previous_hash: &[0u8; 32],
+                created_at: Some("2026-03-07T09:00:00Z"),
+                operation_id: None,
+                request_id: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(first.subject_key, "legacy-goal-text:learn rust");
+    assert_eq!(first.reviewed_revision, "legacy:unreviewed");
+    assert_eq!(
+        first.canonical_content["subject_key"].as_str(),
+        Some("legacy-goal-text:learn rust")
+    );
+    assert!(first.supersedes_proposal_id.is_none());
+    drop(conn);
+
+    let conn = setup_db_at(&db_path);
+    let second =
+        cortex_storage::queries::goal_proposal_queries::insert_proposal_record_with_outcome(
+            &conn,
+            &cortex_storage::queries::goal_proposal_queries::NewProposalRecord {
+                id: "p2",
+                agent_id: "a1",
+                session_id: "s1",
+                proposer_type: "Agent",
+                operation: "GoalChange",
+                target_type: "AgentGoal",
+                content: "{\"goal_text\":\"Learn Rust\"}",
+                cited_memory_ids: "[]",
+                decision: "HumanReviewRequired",
+                event_hash: &[2u8; 32],
+                previous_hash: &[1u8; 32],
+                created_at: Some("2026-03-07T10:00:00Z"),
+                operation_id: None,
+                request_id: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(second.subject_key, "legacy-goal-text:learn rust");
+    assert_eq!(second.supersedes_proposal_id.as_deref(), Some("p1"));
+    assert_eq!(
+        second.canonical_content["supersedes_proposal_id"].as_str(),
+        Some("p1")
+    );
+
+    let stored_content: String = conn
+        .query_row(
+            "SELECT content FROM goal_proposals_v2 WHERE id = 'p2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let stored_content: serde_json::Value = serde_json::from_str(&stored_content).unwrap();
+    assert_eq!(
+        stored_content["subject_key"].as_str(),
+        Some("legacy-goal-text:learn rust")
+    );
+    assert!(stored_content["lineage_id"].as_str().is_some());
+    assert_eq!(
+        stored_content["reviewed_revision"].as_str(),
+        Some("legacy:unreviewed")
+    );
+    assert_eq!(
+        stored_content["supersedes_proposal_id"].as_str(),
+        Some("p1")
+    );
+
+    let transitions: Vec<String> = conn
+        .prepare(
+            "SELECT to_state FROM goal_proposal_transitions
+             WHERE proposal_id = 'p1'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(transitions, vec!["pending_review", "superseded"]);
+
+    let head: (String, String) = conn
+        .query_row(
+            "SELECT head_proposal_id, head_state
+             FROM goal_lineage_heads
+             WHERE subject_type = 'AgentGoal' AND subject_key = 'legacy-goal-text:learn rust'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(head.0, "p2");
+    assert_eq!(head.1, "pending_review");
+}
+
+#[test]
+fn resolve_proposal_creates_single_terminal_transition_and_v2_facts_stay_immutable() {
+    let conn = setup_db();
+
+    cortex_storage::queries::goal_proposal_queries::insert_proposal(
+        &conn,
+        "p1",
+        "a1",
+        "s1",
+        "Agent",
+        "GoalChange",
+        "AgentGoal",
+        "{\"goal_text\":\"Ship W3\"}",
+        "[]",
+        "HumanReviewRequired",
+        &[1u8; 32],
+        &[0u8; 32],
+    )
+    .unwrap();
+
+    let resolved = cortex_storage::queries::goal_proposal_queries::resolve_proposal(
+        &conn,
+        "p1",
+        "approved",
+        "human-1",
+        "2026-03-07T12:00:00Z",
+    )
+    .unwrap();
+    assert!(resolved);
+
+    let second_resolve = cortex_storage::queries::goal_proposal_queries::resolve_proposal(
+        &conn,
+        "p1",
+        "rejected",
+        "human-2",
+        "2026-03-07T12:05:00Z",
+    )
+    .unwrap();
+    assert!(!second_resolve, "terminal state should be single-write");
+
+    let transitions: Vec<String> = conn
+        .prepare(
+            "SELECT to_state FROM goal_proposal_transitions
+             WHERE proposal_id = 'p1'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(transitions, vec!["pending_review", "approved"]);
+
+    let v2_update = conn.execute(
+        "UPDATE goal_proposals_v2 SET reviewed_revision = 'rev-999' WHERE id = 'p1'",
+        [],
+    );
+    assert!(v2_update.is_err(), "v2 fact rows must remain immutable");
+}
+
+#[test]
+fn timeout_is_recorded_as_transition_not_field_rewrite_only() {
+    let conn = setup_db();
+
+    cortex_storage::queries::goal_proposal_queries::insert_proposal(
+        &conn,
+        "p-timeout",
+        "a1",
+        "s1",
+        "Agent",
+        "GoalChange",
+        "AgentGoal",
+        "{\"goal_text\":\"Timeout me\"}",
+        "[]",
+        "HumanReviewRequired",
+        &[3u8; 32],
+        &[0u8; 32],
+    )
+    .unwrap();
+
+    let timed_out = cortex_storage::queries::goal_proposal_queries::time_out_proposal(
+        &conn,
+        "p-timeout",
+        "2026-03-07T13:00:00Z",
+    )
+    .unwrap();
+    assert!(timed_out);
+
+    let transitions: Vec<String> = conn
+        .prepare(
+            "SELECT to_state FROM goal_proposal_transitions
+             WHERE proposal_id = 'p-timeout'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(transitions, vec!["pending_review", "timed_out"]);
+
+    let legacy_decision: Option<String> = conn
+        .query_row(
+            "SELECT decision FROM goal_proposals WHERE id = 'p-timeout'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_decision.as_deref(), Some("TimedOut"));
+}
+
+#[test]
+fn v046_backfills_existing_legacy_goal_proposals() {
+    let conn = cortex_storage::open_in_memory().unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE goal_proposals (
+            id                  TEXT PRIMARY KEY,
+            agent_id            TEXT NOT NULL,
+            session_id          TEXT NOT NULL,
+            proposer_type       TEXT NOT NULL,
+            operation           TEXT NOT NULL,
+            target_type         TEXT NOT NULL,
+            content             TEXT NOT NULL,
+            cited_memory_ids    TEXT NOT NULL DEFAULT '[]',
+            decision            TEXT,
+            resolved_at         TEXT,
+            resolver            TEXT,
+            flags               TEXT DEFAULT '[]',
+            dimension_scores    TEXT DEFAULT '{}',
+            denial_reason       TEXT,
+            event_hash          BLOB NOT NULL,
+            previous_hash       BLOB NOT NULL,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        ",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO goal_proposals (
+            id, agent_id, session_id, proposer_type, operation, target_type,
+            content, cited_memory_ids, decision, resolved_at, resolver,
+            flags, dimension_scores, denial_reason, event_hash, previous_hash, created_at
+        ) VALUES (
+            'legacy-1', 'agent-1', 'session-1', 'Agent', 'GoalChange', 'AgentGoal',
+            '{\"goal_text\":\"Backfill me\"}', '[]', 'approved', '2026-03-06T10:00:00Z',
+            'human-1', '[]', '{}', NULL, x'01', x'00', '2026-03-06T09:00:00Z'
+        )",
+        [],
+    )
+    .unwrap();
+
+    cortex_storage::migrations::v046_goal_proposal_v2::migrate(&conn).unwrap();
+
+    let (subject_key, reviewed_revision): (String, String) = conn
+        .query_row(
+            "SELECT subject_key, reviewed_revision FROM goal_proposals_v2 WHERE id = 'legacy-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(subject_key, "legacy-goal-text:backfill me");
+    assert_eq!(reviewed_revision, "legacy:unreviewed");
+
+    let transition_state: String = conn
+        .query_row(
+            "SELECT to_state FROM goal_proposal_transitions WHERE proposal_id = 'legacy-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(transition_state, "approved");
 }
 
 // ── Adversarial tests ───────────────────────────────────────────────────

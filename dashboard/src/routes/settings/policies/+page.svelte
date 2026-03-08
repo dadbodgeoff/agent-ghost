@@ -163,7 +163,6 @@
   .policy-badge.enabled { background: var(--color-severity-normal); color: var(--color-text-inverse); }
   .policy-desc { font-size: var(--font-size-sm); color: var(--color-text-muted); }
 
-  .editable-section { }
   .config-row {
     display: grid;
     grid-template-columns: 200px 200px;

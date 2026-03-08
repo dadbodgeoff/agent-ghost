@@ -900,10 +900,10 @@ fn prompt_compiler_l6_contains_convergence_state() {
     assert!(layers[6].content.contains("level=2"));
 }
 
-// ── Task 4.5: Superseding — new proposal marks old as Superseded ────────
+// ── Task 4.5: Superseding — router mirrors durable supersession ──────────
 
 #[test]
-fn proposal_router_superseding_marks_old() {
+fn proposal_router_mark_superseded_marks_old() {
     use cortex_core::memory::types::MemoryType;
     use cortex_core::models::proposal::{ProposalDecision, ProposalOperation};
     use cortex_core::traits::convergence::{CallerType, Proposal};
@@ -924,9 +924,19 @@ fn proposal_router_superseding_marks_old() {
         timestamp: chrono::Utc::now(),
     };
     router.record_decision(p1.clone(), ProposalDecision::HumanReviewRequired, false);
-    router.check_superseding(&p1);
+    assert_eq!(
+        router.pending_decision(p1.id),
+        Some(ProposalDecision::HumanReviewRequired)
+    );
 
-    // Second proposal for same goal — should supersede
+    // Storage decides which pending proposal is superseded; the router mirrors that result.
+    router.mark_superseded(p1.id);
+    assert_eq!(
+        router.pending_decision(p1.id),
+        Some(ProposalDecision::Superseded)
+    );
+
+    // A new pending proposal for the same durable lineage stays pending until storage says otherwise.
     let p2 = Proposal {
         id: Uuid::now_v7(),
         proposer: CallerType::Agent { agent_id },
@@ -937,8 +947,11 @@ fn proposal_router_superseding_marks_old() {
         session_id,
         timestamp: chrono::Utc::now(),
     };
-    router.check_superseding(&p2);
-    // The old proposal should now be marked Superseded (verified by internal state)
+    router.record_decision(p2.clone(), ProposalDecision::HumanReviewRequired, false);
+    assert_eq!(
+        router.pending_decision(p2.id),
+        Some(ProposalDecision::HumanReviewRequired)
+    );
 }
 
 // ── Task 4.5: Reflection pre-check cooldown ─────────────────────────────
@@ -1027,18 +1040,25 @@ fn proposal_router_reflection_precheck_max_depth() {
 
 #[tokio::test]
 async fn tool_executor_enforces_timeout() {
+    use ghost_agent_loop::tools::builtin::shell::ShellToolConfig;
     use ghost_agent_loop::tools::executor::ToolExecutor;
     use ghost_policy::engine::{CorpPolicy, PolicyEngine};
 
     let mut executor = ToolExecutor::default();
     let mut registry = ToolRegistry::new();
     registry.register(RegisteredTool {
-        name: "slow_tool".into(),
+        name: "shell".into(),
         description: "A tool that would be slow".into(),
         schema: ToolSchema {
-            name: "slow_tool".into(),
+            name: "shell".into(),
             description: "slow".into(),
-            parameters: serde_json::json!({}),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" }
+                },
+                "required": ["command"]
+            }),
         },
         capability: "test".into(),
         hidden_at_level: 5,
@@ -1049,8 +1069,8 @@ async fn tool_executor_enforces_timeout() {
     // We verify the structure exists and the tool can be looked up.
     let call = ghost_llm::provider::LLMToolCall {
         id: "1".into(),
-        name: "slow_tool".into(),
-        arguments: serde_json::json!({}),
+        name: "shell".into(),
+        arguments: serde_json::json!({"command": "printf ok"}),
     };
 
     // Execute succeeds (stub returns immediately)
@@ -1065,6 +1085,10 @@ async fn tool_executor_enforces_timeout() {
     let mut policy = PolicyEngine::new(CorpPolicy::new());
     policy.grant_capability(exec_ctx.agent_id, "test".into());
     executor.set_policy_engine(policy);
+    executor.set_shell_config(ShellToolConfig {
+        allowed_prefixes: vec!["printf".into()],
+        ..ShellToolConfig::default()
+    });
     let result = executor.execute(&call, &registry, &exec_ctx).await;
     assert!(result.is_ok());
     assert!(result.unwrap().success);

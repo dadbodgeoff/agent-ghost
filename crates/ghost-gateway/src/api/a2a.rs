@@ -7,13 +7,27 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::Response;
 use axum::response::sse::{Event, Sse};
+use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::{
+    abort_prepared_json_operation, commit_prepared_json_operation, prepare_json_operation,
+    PreparedOperation,
+};
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::api::websocket::{WsEnvelope, WsEvent};
 use crate::state::AppState;
+
+const SEND_TASK_ROUTE_TEMPLATE: &str = "/api/a2a/tasks";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -29,7 +43,7 @@ pub struct A2ATask {
     pub output: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SendTaskRequest {
     pub target_url: String,
     pub target_agent: Option<String>,
@@ -58,27 +72,38 @@ pub struct DiscoverResponse {
     pub agents: Vec<DiscoveredAgent>,
 }
 
+fn a2a_actor(claims: Option<&Claims>) -> &str {
+    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+}
+
 // ── Handlers ───────────────────────────────────────────────────────
 
 /// POST /api/a2a/tasks — send a task to an external A2A agent.
 pub async fn send_task(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Json(req): Json<SendTaskRequest>,
-) -> ApiResult<A2ATask> {
+) -> Response {
     if req.target_url.trim().is_empty() {
-        return Err(ApiError::bad_request("target_url is required"));
+        return error_response_with_idempotency(ApiError::bad_request("target_url is required"));
     }
-    // T-5.5.2: Validate target URL against SSRF blocklist.
     if let Err(e) = crate::api::ssrf::validate_url(&req.target_url) {
-        return Err(ApiError::bad_request(format!(
+        return error_response_with_idempotency(ApiError::bad_request(format!(
             "A2A target URL blocked: {e}"
         )));
     }
 
-    let task_id = uuid::Uuid::now_v7().to_string();
-    let method = req.method.unwrap_or_else(|| "tasks/send".into());
+    let actor = a2a_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+    let method = req.method.clone().unwrap_or_else(|| "tasks/send".into());
+    let task_id = operation_context
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let agent_name = req.target_agent.clone().unwrap_or_else(|| "unknown".into());
+    let created_at = chrono::Utc::now().to_rfc3339();
 
-    // Build JSON-RPC 2.0 request.
     let jsonrpc_req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": task_id,
@@ -92,80 +117,190 @@ pub async fn send_task(
         }
     });
 
-    let agent_name = req.target_agent.unwrap_or_else(|| "unknown".into());
-    let created_at = chrono::Utc::now().to_rfc3339();
-
-    // T-5.10.1: Insert task as "pending" in DB BEFORE sending HTTP request.
-    // This prevents TOCTOU race: crash between response and DB write.
-    let input_str = serde_json::to_string(&req.input).unwrap_or_else(|_| "null".into());
-    {
+    let prepared = {
         let db = state.db.write().await;
-        db.execute(
-            "INSERT INTO a2a_tasks (id, target_agent, target_url, method, status, input, output, created_at) \
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, NULL, ?6)",
-            rusqlite::params![task_id, agent_name, req.target_url, method, input_str, created_at],
+        prepare_json_operation(
+            &db,
+            &operation_context,
+            actor,
+            "POST",
+            SEND_TASK_ROUTE_TEMPLATE,
+            &request_body,
         )
-        .map_err(|e| ApiError::db_error("insert a2a task", e))?;
-    }
-
-    // Send to target agent.
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&req.target_url)
-        .header("Content-Type", "application/json")
-        .timeout(std::time::Duration::from_secs(30))
-        .json(&jsonrpc_req)
-        .send()
-        .await
-        .map_err(|e| ApiError::internal(format!("A2A request failed: {e}")))?;
-
-    let status_code = resp.status();
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .unwrap_or_else(|_| serde_json::json!({"error": "failed to parse response"}));
-
-    let task_status = if status_code.is_success() {
-        "submitted"
-    } else {
-        "failed"
     };
 
-    // T-5.10.1: Update task status after HTTP response.
-    {
-        let db = state.db.write().await;
-        let _ = db.execute(
-            "UPDATE a2a_tasks SET status = ?1, output = ?2 WHERE id = ?3",
-            rusqlite::params![
-                task_status,
-                serde_json::to_string(&body).unwrap_or_default(),
-                task_id,
-            ],
-        );
+    match prepared {
+        Ok(PreparedOperation::Replay(stored)) => {
+            let db = state.db.write().await;
+            write_mutation_audit_entry(
+                &db,
+                "a2a",
+                "send_a2a_task",
+                "medium",
+                actor,
+                "replayed",
+                serde_json::json!({
+                    "task_id": stored.body.get("task_id"),
+                    "target_agent": stored.body.get("target_agent"),
+                }),
+                &operation_context,
+                &IdempotencyStatus::Replayed,
+            );
+            return json_response_with_idempotency(
+                stored.status,
+                stored.body,
+                IdempotencyStatus::Replayed,
+            );
+        }
+        Ok(PreparedOperation::Mismatch) => {
+            return error_response_with_idempotency(ApiError::with_details(
+                StatusCode::CONFLICT,
+                "IDEMPOTENCY_KEY_REUSED",
+                "Idempotency key was reused with a different request payload",
+                serde_json::json!({
+                    "route_template": SEND_TASK_ROUTE_TEMPLATE,
+                    "method": "POST",
+                }),
+            ));
+        }
+        Ok(PreparedOperation::InProgress) => {
+            return error_response_with_idempotency(ApiError::custom(
+                StatusCode::CONFLICT,
+                "IDEMPOTENCY_IN_PROGRESS",
+                "An equivalent request is already in progress",
+            ));
+        }
+        Ok(PreparedOperation::Acquired { journal_id }) => {
+            let input_str = serde_json::to_string(&req.input).unwrap_or_else(|_| "null".into());
+            {
+                let db = state.db.write().await;
+                if let Err(error) = db.execute(
+                    "INSERT INTO a2a_tasks (id, target_agent, target_url, method, status, input, output, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'pending', ?5, NULL, ?6)",
+                    rusqlite::params![
+                        task_id,
+                        agent_name,
+                        req.target_url,
+                        method,
+                        input_str,
+                        created_at
+                    ],
+                ) {
+                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    return error_response_with_idempotency(ApiError::db_error(
+                        "insert a2a task",
+                        error,
+                    ));
+                }
+            }
+    
+            let client = reqwest::Client::new();
+            let resp = match client
+                .post(&req.target_url)
+                .header("Content-Type", "application/json")
+                .timeout(std::time::Duration::from_secs(30))
+                .json(&jsonrpc_req)
+                .send()
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    let db = state.db.write().await;
+                    let _ = db.execute(
+                        "UPDATE a2a_tasks SET status = 'failed', output = ?1 WHERE id = ?2",
+                        rusqlite::params![
+                            serde_json::json!({"error": format!("A2A request failed: {error}")})
+                                .to_string(),
+                            task_id
+                        ],
+                    );
+                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    return error_response_with_idempotency(ApiError::internal(format!(
+                        "A2A request failed: {error}"
+                    )));
+                }
+            };
+
+            let status_code = resp.status();
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({"error": "failed to parse response"}));
+
+            let task_status = if status_code.is_success() {
+                "submitted"
+            } else {
+                "failed"
+            };
+
+            let task = A2ATask {
+                task_id: task_id.clone(),
+                target_agent: agent_name.clone(),
+                target_url: req.target_url.clone(),
+                method: method.clone(),
+                status: task_status.into(),
+                created_at: created_at.clone(),
+                input: req.input.clone(),
+                output: Some(body.clone()),
+            };
+
+            let response_body = serde_json::to_value(&task).unwrap_or(serde_json::Value::Null);
+            let db = state.db.write().await;
+            let _ = db.execute(
+                "UPDATE a2a_tasks SET status = ?1, output = ?2 WHERE id = ?3",
+                rusqlite::params![
+                    task_status,
+                    serde_json::to_string(&body).unwrap_or_default(),
+                    task_id,
+                ],
+            );
+
+            crate::api::websocket::broadcast_event(
+                &state,
+                WsEvent::A2ATaskUpdate {
+                    task_id: task_id.clone(),
+                    status: task_status.into(),
+                    agent_name: agent_name.clone(),
+                },
+            );
+
+            match commit_prepared_json_operation(
+                &db,
+                &operation_context,
+                &journal_id,
+                StatusCode::OK,
+                &response_body,
+            ) {
+                Ok(outcome) => {
+                    write_mutation_audit_entry(
+                        &db,
+                        "a2a",
+                        "send_a2a_task",
+                        "medium",
+                        actor,
+                        task_status,
+                        serde_json::json!({
+                            "task_id": task_id,
+                            "target_agent": agent_name,
+                            "target_url": req.target_url,
+                        }),
+                        &operation_context,
+                        &outcome.idempotency_status,
+                    );
+                    return json_response_with_idempotency(
+                        outcome.status,
+                        outcome.body,
+                        outcome.idempotency_status,
+                    );
+                }
+                Err(error) => {
+                    let _ = abort_prepared_json_operation(&db, &journal_id);
+                    return error_response_with_idempotency(error);
+                }
+            }
+        }
+        Err(error) => return error_response_with_idempotency(error),
     }
-
-    let task = A2ATask {
-        task_id: task_id.clone(),
-        target_agent: agent_name.clone(),
-        target_url: req.target_url,
-        method,
-        status: task_status.into(),
-        created_at,
-        input: req.input,
-        output: Some(body),
-    };
-
-    // Broadcast WS event.
-    crate::api::websocket::broadcast_event(
-        &state,
-        WsEvent::A2ATaskUpdate {
-            task_id: task_id.clone(),
-            status: task_status.into(),
-            agent_name,
-        },
-    );
-
-    Ok(Json(task))
 }
 
 /// GET /api/a2a/tasks/:task_id — check task status.

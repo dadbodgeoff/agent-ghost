@@ -1,23 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { RuntimePlatform, RuntimeTerminalPty } from './runtime';
 
-const TOKEN_KEY = 'ghost-token';
 const listeners = new Set<(token: string | null) => void>();
-
-let storePromise: Promise<{
-  get(key: string): Promise<unknown>;
-  set(key: string, value: unknown): Promise<void>;
-  delete(key: string): Promise<boolean>;
-  save(): Promise<void>;
-}> | null = null;
-
-async function getStore() {
-  if (!storePromise) {
-    storePromise = import('@tauri-apps/plugin-store').then(({ LazyStore }) => new LazyStore('auth.json'));
-  }
-
-  return storePromise;
-}
 
 function emitTokenChange(token: string | null) {
   for (const listener of listeners) {
@@ -33,6 +18,60 @@ async function resolvePort(): Promise<number> {
   }
 }
 
+async function getReplayState() {
+  return invoke<{ client_id: string; session_epoch: number }>('get_replay_state');
+}
+
+function createTauriTerminalPty(sessionId: number): RuntimeTerminalPty {
+  return {
+    onData(listener) {
+      let disposed = false;
+      const unlisten = listen<{ session_id: number; data: string }>(
+        `desktop-terminal-data:${sessionId}`,
+        (event) => {
+          if (!disposed) {
+            listener(event.payload.data);
+          }
+        },
+      );
+
+      return {
+        dispose() {
+          disposed = true;
+          void unlisten.then((unsubscribe) => unsubscribe());
+        },
+      };
+    },
+    write(data: string) {
+      void invoke('write_terminal_input', { sessionId, data });
+    },
+    resize(cols: number, rows: number) {
+      void invoke('resize_terminal_session', { sessionId, cols, rows });
+    },
+    onExit(listener) {
+      let disposed = false;
+      const unlisten = listen<{ session_id: number; exit_code: number }>(
+        `desktop-terminal-exit:${sessionId}`,
+        (event) => {
+          if (!disposed) {
+            listener({ exitCode: event.payload.exit_code });
+          }
+        },
+      );
+
+      return {
+        dispose() {
+          disposed = true;
+          void unlisten.then((unsubscribe) => unsubscribe());
+        },
+      };
+    },
+    async close() {
+      await invoke('close_terminal_session', { sessionId });
+    },
+  };
+}
+
 export const tauriRuntime: RuntimePlatform = {
   kind: 'tauri',
   isDesktop: () => true,
@@ -40,20 +79,24 @@ export const tauriRuntime: RuntimePlatform = {
     return `http://127.0.0.1:${await resolvePort()}`;
   },
   async getToken() {
-    const store = await getStore();
-    return (await store.get(TOKEN_KEY)) as string | null;
+    return invoke<string | null>('get_auth_token');
   },
   async setToken(token: string) {
-    const store = await getStore();
-    await store.set(TOKEN_KEY, token);
-    await store.save();
+    await invoke('set_auth_token', { token });
     emitTokenChange(token);
   },
   async clearToken() {
-    const store = await getStore();
-    await store.delete(TOKEN_KEY);
-    await store.save();
+    await invoke('clear_auth_token');
     emitTokenChange(null);
+  },
+  async getReplayClientId() {
+    return (await getReplayState()).client_id;
+  },
+  async getReplaySessionEpoch() {
+    return (await getReplayState()).session_epoch;
+  },
+  async advanceReplaySessionEpoch() {
+    return invoke<number>('advance_replay_session_epoch');
   },
   subscribeTokenChange(listener) {
     listeners.add(listener);
@@ -82,11 +125,8 @@ export const tauriRuntime: RuntimePlatform = {
   async readKeybindings() {
     return invoke<Array<{ key: string; command: string; when?: string }>>('read_keybindings');
   },
-  async getDefaultShell() {
-    return invoke<string>('default_shell');
-  },
-  async spawnTerminalPty(shell, options) {
-    const { spawn } = await import('tauri-pty');
-    return spawn(shell, [], options) as RuntimeTerminalPty;
+  async spawnTerminalPty(options) {
+    const sessionId = await invoke<number>('open_terminal_session', options);
+    return createTauriTerminalPty(sessionId);
   },
 };

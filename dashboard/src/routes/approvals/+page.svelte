@@ -8,6 +8,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
+  import { GhostAPIError, type GoalDecisionRequest } from '@ghost/sdk';
   import type { Proposal, ProposalDetail } from '@ghost/sdk';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
 
@@ -80,20 +81,22 @@
   async function approveProposal(id: string) {
     try {
       const client = await getGhostClient();
-      await client.goals.approve(id);
+      const detail = await client.goals.get(id);
+      await client.goals.approve(id, decisionRequest(detail));
       markProposalResolved(id, 'approved');
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to approve proposal';
+      error = decisionErrorMessage(e, 'approve');
     }
   }
 
   async function rejectProposal(id: string) {
     try {
       const client = await getGhostClient();
-      await client.goals.reject(id);
+      const detail = await client.goals.get(id);
+      await client.goals.reject(id, decisionRequest(detail));
       markProposalResolved(id, 'rejected');
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to reject proposal';
+      error = decisionErrorMessage(e, 'reject');
     }
   }
 
@@ -183,6 +186,32 @@
     return Object.entries(proposal.dimension_scores ?? {}).sort(([left], [right]) =>
       left.localeCompare(right),
     );
+  }
+
+  function decisionRequest(detail: ProposalDetail): GoalDecisionRequest {
+    if (
+      !detail.current_state ||
+      !detail.lineage_id ||
+      !detail.subject_key ||
+      !detail.reviewed_revision
+    ) {
+      throw new Error('Proposal detail is missing required lineage or revision fields');
+    }
+
+    return {
+      expectedState: detail.current_state,
+      expectedLineageId: detail.lineage_id,
+      expectedSubjectKey: detail.subject_key,
+      expectedReviewedRevision: detail.reviewed_revision,
+    };
+  }
+
+  function decisionErrorMessage(errorValue: unknown, action: 'approve' | 'reject'): string {
+    if (errorValue instanceof GhostAPIError && errorValue.code?.startsWith('STALE_DECISION_')) {
+      return `Failed to ${action} proposal: ${errorValue.message}`;
+    }
+
+    return errorValue instanceof Error ? errorValue.message : `Failed to ${action} proposal`;
   }
 </script>
 

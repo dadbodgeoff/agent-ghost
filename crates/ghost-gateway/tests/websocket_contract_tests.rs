@@ -84,6 +84,7 @@ async fn websocket_requires_auth_when_legacy_token_is_configured() {
     let _env = EnvVarGuard::set("GHOST_TOKEN", "ws-test-token");
 
     let gateway = TestGateway::start().await;
+    let client = reqwest::Client::new();
     let ws_url = format!("ws://127.0.0.1:{}/api/ws", gateway.port);
 
     let err = connect_async(&ws_url)
@@ -93,6 +94,43 @@ async fn websocket_requires_auth_when_legacy_token_is_configured() {
         tungstenite::Error::Http(response) => {
             assert_eq!(response.status(), 401);
         }
+        other => panic!("expected HTTP auth failure, got {other:?}"),
+    }
+
+    let ticket_response: serde_json::Value = client
+        .post(gateway.url("/api/ws/tickets"))
+        .bearer_auth("ws-test-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ticket = ticket_response["ticket"].as_str().unwrap();
+
+    let mut ticket_request = ws_url.clone().into_client_request().unwrap();
+    ticket_request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("ghost-ticket.{ticket}").parse().unwrap(),
+    );
+    let (mut ticket_socket, _) = connect_async(ticket_request)
+        .await
+        .expect("ticket websocket connection should succeed");
+
+    let envelope = read_envelope(&mut ticket_socket).await;
+    assert!(matches!(envelope.event, WsEvent::Ping));
+    let _ = ticket_socket.close(None).await;
+
+    let mut reused_ticket_request = ws_url.clone().into_client_request().unwrap();
+    reused_ticket_request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("ghost-ticket.{ticket}").parse().unwrap(),
+    );
+    let reused = connect_async(reused_ticket_request)
+        .await
+        .expect_err("reused websocket ticket should fail");
+    match reused {
+        tungstenite::Error::Http(response) => assert_eq!(response.status(), 401),
         other => panic!("expected HTTP auth failure, got {other:?}"),
     }
 

@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { getGhostClient } from '$lib/ghost-client';
+  import { GhostAPIError, type GoalDecisionRequest } from '@ghost/sdk';
   import type { ProposalDetail } from '@ghost/sdk';
   import ValidationMatrix from '../../../components/ValidationMatrix.svelte';
 
@@ -29,22 +30,45 @@
     actionLoading = true;
     try {
       const client = await getGhostClient();
+      const freshDetail = await client.goals.get(proposalId);
+      const request = decisionRequest(freshDetail);
       if (action === 'approve') {
-        await client.goals.approve(proposalId);
+        await client.goals.approve(proposalId, request);
       } else {
-        await client.goals.reject(proposalId);
+        await client.goals.reject(proposalId, request);
       }
       proposal = await client.goals.get(proposalId);
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message : `Failed to ${action} proposal`;
+      if (e instanceof GhostAPIError && e.code?.startsWith('STALE_DECISION_')) {
+        error = `Failed to ${action} proposal: ${e.message}`;
+      } else {
+        error = e instanceof Error ? e.message : `Failed to ${action} proposal`;
+      }
     }
     actionLoading = false;
   }
 
   let isPending = $derived.by(() => {
-    const d = proposal?.decision;
-    return !d || d === 'HumanReviewRequired';
+    return proposal?.current_state === 'pending_review';
   });
+
+  function decisionRequest(detail: ProposalDetail): GoalDecisionRequest {
+    if (
+      !detail.current_state ||
+      !detail.lineage_id ||
+      !detail.subject_key ||
+      !detail.reviewed_revision
+    ) {
+      throw new Error('Proposal detail is missing required lineage or revision fields');
+    }
+
+    return {
+      expectedState: detail.current_state,
+      expectedLineageId: detail.lineage_id,
+      expectedSubjectKey: detail.subject_key,
+      expectedReviewedRevision: detail.reviewed_revision,
+    };
+  }
 </script>
 
 {#if loading}
@@ -73,6 +97,10 @@
         <dt>Operation</dt><dd>{proposal.operation}</dd>
         <dt>Target</dt><dd>{proposal.target_type}</dd>
         <dt>Proposer</dt><dd>{proposal.proposer_type}</dd>
+        <dt>Current State</dt><dd>{proposal.current_state ?? 'unknown'}</dd>
+        <dt>Lineage</dt><dd class="mono">{proposal.lineage_id ?? 'unavailable'}</dd>
+        <dt>Subject Key</dt><dd class="mono">{proposal.subject_key ?? 'unavailable'}</dd>
+        <dt>Reviewed Revision</dt><dd class="mono">{proposal.reviewed_revision ?? 'unavailable'}</dd>
         <dt>Created</dt><dd>{new Date(proposal.created_at).toLocaleString()}</dd>
         {#if proposal.resolved_at}
           <dt>Resolved</dt><dd>{new Date(proposal.resolved_at).toLocaleString()}</dd>
@@ -117,6 +145,13 @@
             <li class="mono"><a href="/memory">{memId}</a></li>
           {/each}
         </ul>
+      </section>
+    {/if}
+
+    {#if proposal.transition_history && proposal.transition_history.length > 0}
+      <section class="card wide">
+        <h2>Transition History</h2>
+        <pre class="content-json">{JSON.stringify(proposal.transition_history, null, 2)}</pre>
       </section>
     {/if}
   </div>

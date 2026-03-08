@@ -33,6 +33,7 @@ pub enum MonitorRequest {
     },
     /// Propose a threshold change (T-6.4.2, CS§ dual-key).
     ThresholdChange {
+        initiator: String,
         current: f64,
         proposed: f64,
         reply: oneshot::Sender<ThresholdChangeResult>,
@@ -40,7 +41,8 @@ pub enum MonitorRequest {
     /// Confirm a dual-key threshold change (T-6.4.2).
     ThresholdConfirm {
         token: String,
-        reply: oneshot::Sender<bool>,
+        confirmer: String,
+        reply: oneshot::Sender<ThresholdConfirmResult>,
     },
 }
 
@@ -56,14 +58,32 @@ pub enum AckResult {
 }
 
 /// Result of a threshold change request.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ThresholdChangeResult {
     /// Change applied immediately (non-critical or allowed).
     Applied,
     /// Change rejected (config locked or below floor).
     Rejected { reason: String },
+    /// The caller's current value is stale.
+    CurrentMismatch { actual: f64 },
     /// Critical change — dual-key confirmation required.
-    DualKeyRequired { token: String },
+    DualKeyRequired { token: String, expires_in_secs: u64 },
+    /// Another critical change is already pending confirmation.
+    AlreadyPending {
+        intended_action: String,
+        expires_in_secs: u64,
+    },
+}
+
+/// Result of a threshold confirmation request.
+#[derive(Debug, PartialEq)]
+pub enum ThresholdConfirmResult {
+    Applied,
+    MissingPending,
+    InvalidToken,
+    Expired { intended_action: String },
+    SameActorRejected,
+    ApplyFailed { reason: String },
 }
 
 // ── Snapshot types (populated by monitor, read by handlers) ──────────
@@ -396,12 +416,14 @@ async fn acknowledge_handler(
 pub struct ThresholdChangeRequest {
     pub current: f64,
     pub proposed: f64,
+    pub initiator: String,
 }
 
 /// Threshold confirm request body.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ThresholdConfirmRequest {
     pub token: String,
+    pub confirmer: String,
 }
 
 /// T-6.4.2: Propose a threshold change (CS§ dual-key).
@@ -413,6 +435,13 @@ async fn threshold_change_handler(
     State(state): State<Arc<tokio::sync::RwLock<HttpApiState>>>,
     Json(req): Json<ThresholdChangeRequest>,
 ) -> impl IntoResponse {
+    if req.initiator.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "initiator is required"})),
+        );
+    }
+
     let (reply_tx, reply_rx) = oneshot::channel();
     let monitor_tx = {
         let state = state.read().await;
@@ -421,6 +450,7 @@ async fn threshold_change_handler(
 
     if monitor_tx
         .send(MonitorRequest::ThresholdChange {
+            initiator: req.initiator,
             current: req.current,
             proposed: req.proposed,
             reply: reply_tx,
@@ -443,12 +473,33 @@ async fn threshold_change_handler(
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": reason})),
         ),
-        Ok(ThresholdChangeResult::DualKeyRequired { token }) => (
+        Ok(ThresholdChangeResult::CurrentMismatch { actual }) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "current threshold does not match active monitor state",
+                "actual": actual,
+            })),
+        ),
+        Ok(ThresholdChangeResult::DualKeyRequired {
+            token,
+            expires_in_secs,
+        }) => (
             StatusCode::ACCEPTED,
             Json(serde_json::json!({
                 "status": "dual_key_required",
                 "token": token,
-                "expires_in_secs": 300,
+                "expires_in_secs": expires_in_secs,
+            })),
+        ),
+        Ok(ThresholdChangeResult::AlreadyPending {
+            intended_action,
+            expires_in_secs,
+        }) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "a critical change is already pending confirmation",
+                "intended_action": intended_action,
+                "expires_in_secs": expires_in_secs,
             })),
         ),
         Err(_) => (
@@ -461,11 +512,18 @@ async fn threshold_change_handler(
 /// T-6.4.2: Confirm a dual-key threshold change.
 ///
 /// Token must match the one returned by POST /config/threshold.
-/// Token expires after 5 minutes.
+/// Token expires according to the configured dual-key TTL.
 async fn threshold_confirm_handler(
     State(state): State<Arc<tokio::sync::RwLock<HttpApiState>>>,
     Json(req): Json<ThresholdConfirmRequest>,
 ) -> impl IntoResponse {
+    if req.confirmer.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "confirmer is required"})),
+        );
+    }
+
     let (reply_tx, reply_rx) = oneshot::channel();
     let monitor_tx = {
         let state = state.read().await;
@@ -475,6 +533,7 @@ async fn threshold_confirm_handler(
     if monitor_tx
         .send(MonitorRequest::ThresholdConfirm {
             token: req.token,
+            confirmer: req.confirmer,
             reply: reply_tx,
         })
         .await
@@ -487,13 +546,32 @@ async fn threshold_confirm_handler(
     }
 
     match reply_rx.await {
-        Ok(true) => (
+        Ok(ThresholdConfirmResult::Applied) => (
             StatusCode::OK,
             Json(serde_json::json!({"status": "confirmed and applied"})),
         ),
-        Ok(false) => (
+        Ok(ThresholdConfirmResult::MissingPending) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "no critical change is pending confirmation"})),
+        ),
+        Ok(ThresholdConfirmResult::InvalidToken) => (
             StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "invalid or expired token"})),
+            Json(serde_json::json!({"error": "invalid token"})),
+        ),
+        Ok(ThresholdConfirmResult::Expired { intended_action }) => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "token expired",
+                "intended_action": intended_action,
+            })),
+        ),
+        Ok(ThresholdConfirmResult::SameActorRejected) => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "second approval must come from a different actor"})),
+        ),
+        Ok(ThresholdConfirmResult::ApplyFailed { reason }) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": reason})),
         ),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,

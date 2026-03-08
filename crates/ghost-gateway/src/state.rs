@@ -63,6 +63,15 @@ pub struct AppState {
 
     /// Model provider configurations (Finding #19).
     pub model_providers: Vec<crate::config::ProviderConfig>,
+    /// Preferred provider name when multiple providers are configured.
+    pub default_model_provider: Option<String>,
+
+    /// Shared PC control circuit breaker instance used by registered skills.
+    pub pc_control_circuit_breaker:
+        Arc<std::sync::Mutex<ghost_pc_control::safety::PcControlCircuitBreaker>>,
+
+    /// Single-use WebSocket upgrade tickets keyed by a token hash.
+    pub websocket_auth_tickets: Arc<dashmap::DashMap<String, crate::api::websocket::WsAuthTicket>>,
 
     /// Tool configurations (web_search, web_fetch, http_request, shell).
     pub tools_config: crate::config::ToolsConfig,

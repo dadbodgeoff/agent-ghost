@@ -76,7 +76,7 @@
 
       if (healthData?.convergence_monitor) {
         monitorOnline = healthData.convergence_monitor.connected === true;
-        lastMonitorUpdate = healthData.convergence_monitor.last_update ?? null;
+        lastMonitorUpdate = null;
       }
 
       // Auto-select first agent if none selected

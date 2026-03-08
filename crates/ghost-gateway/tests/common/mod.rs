@@ -9,6 +9,7 @@ use reqwest::Client;
 use tokio_util::sync::CancellationToken;
 
 /// Test gateway harness -- boots a real gateway on a random port.
+#[allow(dead_code)]
 pub struct TestGateway {
     pub port: u16,
     pub client: Client,
@@ -19,6 +20,7 @@ pub struct TestGateway {
     _tmp_dir: tempfile::TempDir,
 }
 
+#[allow(dead_code)]
 impl TestGateway {
     /// Boot a gateway with a minimal config, temp database, and random port.
     ///
@@ -103,6 +105,10 @@ impl TestGateway {
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".to_string(),
             model_providers: Vec::new(),
+            default_model_provider: None,
+            pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
+                .circuit_breaker(),
+            websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
@@ -152,7 +158,20 @@ impl TestGateway {
                 .expect("test server error");
         });
 
-        let client = Client::new();
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            ghost_gateway::api::compatibility::CLIENT_NAME_HEADER,
+            reqwest::header::HeaderValue::from_static("sdk"),
+        );
+        default_headers.insert(
+            ghost_gateway::api::compatibility::CLIENT_VERSION_HEADER,
+            reqwest::header::HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
+        );
+
+        let client = Client::builder()
+            .default_headers(default_headers)
+            .build()
+            .expect("failed to build test client");
 
         // Wait for the health endpoint to become available.
         let health_url = format!("{}/api/health", &base_url);

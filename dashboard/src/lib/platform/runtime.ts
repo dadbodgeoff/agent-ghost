@@ -3,10 +3,11 @@ export interface RuntimeDisposable {
 }
 
 export interface RuntimeTerminalPty {
-  onData(listener: (data: Uint8Array) => void): RuntimeDisposable;
+  onData(listener: (data: string) => void): RuntimeDisposable;
   write(data: string): void;
   resize(cols: number, rows: number): void;
   onExit(listener: (event: { exitCode: number }) => void): RuntimeDisposable;
+  close(): Promise<void>;
 }
 
 export interface RuntimePlatform {
@@ -16,6 +17,9 @@ export interface RuntimePlatform {
   getToken(): Promise<string | null>;
   setToken(token: string): Promise<void>;
   clearToken(): Promise<void>;
+  getReplayClientId(): Promise<string>;
+  getReplaySessionEpoch(): Promise<number>;
+  advanceReplaySessionEpoch(): Promise<number>;
   subscribeTokenChange(listener: (token: string | null) => void): () => void;
   gatewayStatus(): Promise<string>;
   startGateway(): Promise<string>;
@@ -23,11 +27,7 @@ export interface RuntimePlatform {
   requestNotificationPermission(): Promise<boolean>;
   sendNotification(notification: { title: string; body?: string }): Promise<void>;
   readKeybindings(): Promise<Array<{ key: string; command: string; when?: string }>>;
-  getDefaultShell(): Promise<string | null>;
-  spawnTerminalPty(
-    shell: string,
-    options: { cols: number; rows: number },
-  ): Promise<RuntimeTerminalPty | null>;
+  spawnTerminalPty(options: { cols: number; rows: number }): Promise<RuntimeTerminalPty | null>;
 }
 
 let runtimePromise: Promise<RuntimePlatform> | null = null;

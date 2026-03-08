@@ -7,24 +7,24 @@ use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_focus();
             }
         }))
-        .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_log::Builder::new().build())
-        .plugin(tauri_plugin_pty::init())
         .invoke_handler(tauri::generate_handler![
             commands::desktop::read_keybindings,
-            commands::desktop::default_shell,
+            commands::desktop::get_auth_token,
+            commands::desktop::set_auth_token,
+            commands::desktop::clear_auth_token,
+            commands::desktop::get_replay_state,
+            commands::desktop::advance_replay_session_epoch,
+            commands::desktop::open_terminal_session,
+            commands::desktop::write_terminal_input,
+            commands::desktop::resize_terminal_session,
+            commands::desktop::close_terminal_session,
             commands::gateway::start_gateway,
             commands::gateway::stop_gateway,
             commands::gateway::gateway_status,
@@ -37,33 +37,13 @@ pub fn run() {
             // --- Menu (Tauri v2 API: build in setup, NOT .menu()) ---
             menu::create(app)?;
 
+            app.manage(commands::desktop::DesktopTerminalState::default());
+
             // --- Auto-start gateway sidecar ---
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = commands::gateway::auto_start(handle.clone()).await {
                     log::error!("Failed to start gateway: {e}");
-                }
-                // Inject the resolved port into the webview so the dashboard
-                // can connect to the correct gateway URL.
-                if let Some(port_state) = handle.try_state::<commands::gateway::GatewayPort>() {
-                    let port = port_state.0;
-                    if let Some(window) = handle.get_webview_window("main") {
-                        // Inject gateway port for dashboard API client.
-                        let _ = window.eval(&format!(
-                            "window.__GHOST_GATEWAY_PORT__ = {};",
-                            port
-                        ));
-                        // WP6-B: Inject tightened CSP now that the gateway port is known.
-                        let _ = window.eval(&format!(
-                            r#"{{
-                                const meta = document.createElement('meta');
-                                meta.httpEquiv = 'Content-Security-Policy';
-                                meta.content = "default-src 'self'; connect-src 'self' http://127.0.0.1:{port} ws://127.0.0.1:{port}; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'";
-                                document.head.appendChild(meta);
-                            }}"#,
-                            port = port
-                        ));
-                    }
                 }
             });
 

@@ -16,11 +16,23 @@
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
 
-  function decodeApplicationServerKey(key: string): Uint8Array {
+  function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
     const normalized = (key + padding).replace(/-/g, '+').replace(/_/g, '/');
     const raw = atob(normalized);
-    return Uint8Array.from(raw, (char) => char.charCodeAt(0));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) {
+      bytes[i] = raw.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  function pushSubscriptionToPayload(subscription: PushSubscriptionJSON) {
+    if (!subscription.endpoint) return null;
+    return {
+      endpoint: subscription.endpoint,
+      keys: subscription.keys,
+    };
   }
 
   onMount(async () => {
@@ -66,7 +78,9 @@
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
-      await client.push.subscribe(sub.toJSON());
+      const payload = pushSubscriptionToPayload(sub.toJSON());
+      if (!payload) return;
+      await client.push.subscribe(payload);
     } catch {
       // Push subscription failed.
     }
@@ -78,7 +92,10 @@
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
-        await client.push.unsubscribe(sub.toJSON());
+        const payload = pushSubscriptionToPayload(sub.toJSON());
+        if (payload) {
+          await client.push.unsubscribe(payload);
+        }
         await sub.unsubscribe();
       }
     } catch {

@@ -1,11 +1,12 @@
 //! CLI integration tests (Task 6.6 — §12, E.7, T-X.3, T-X.5).
 
+use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
 
 fn ghost_cmd() -> Command {
-    Command::cargo_bin("ghost").unwrap()
+    cargo_bin_cmd!("ghost").into()
 }
 
 #[test]

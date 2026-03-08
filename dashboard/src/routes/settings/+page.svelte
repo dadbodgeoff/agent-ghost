@@ -2,7 +2,12 @@
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
-  import { invalidateAuthClientState, isAuthResetError, notifyAuthBoundary } from '$lib/auth-boundary';
+  import {
+    invalidateAuthClientState,
+    isAuthResetError,
+    notifyAuthBoundary,
+    rotateAuthBoundarySession,
+  } from '$lib/auth-boundary';
 
   type ThemeChoice = 'dark' | 'light' | 'system';
 
@@ -52,6 +57,7 @@
     }
 
     const runtime = await getRuntime();
+    await rotateAuthBoundarySession();
     await runtime.clearToken();
     invalidateAuthClientState();
     await notifyAuthBoundary('ghost-auth-cleared');

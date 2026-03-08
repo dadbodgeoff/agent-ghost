@@ -50,6 +50,11 @@
 
   async function loadData() {
     try {
+      if (!agentId) {
+        error = 'Agent not found';
+        loading = false;
+        return;
+      }
       loading = true;
       error = '';
       const client = await getGhostClient();
@@ -94,6 +99,7 @@
   }
 
   async function executeAction(action: 'pause' | 'resume' | 'quarantine') {
+    if (!agentId) return;
     actionLoading = true;
     actionError = '';
     try {
@@ -145,8 +151,8 @@
   function getSessions(
     data: ListRuntimeSessionsPageResult | ListRuntimeSessionsCursorResult | { sessions?: RuntimeSession[] },
   ): RuntimeSession[] {
-    if ('sessions' in data) return data.sessions ?? [];
-    return data.data;
+    if ('data' in data) return data.data;
+    return data.sessions ?? [];
   }
 </script>
 
@@ -168,13 +174,13 @@
 
   <!-- Lifecycle Controls -->
   <div class="controls">
-    {#if agent.status !== 'Paused' && agent.status !== 'Quarantined'}
+    {#if agent.status !== 'Stopped' && agent.status !== 'Stopping'}
       <button class="btn btn-warning" onclick={() => confirmAction = 'pause'}>Pause</button>
     {/if}
-    {#if agent.status === 'Paused'}
+    {#if agent.status !== 'Running'}
       <button class="btn btn-success" onclick={() => confirmAction = 'resume'}>Resume</button>
     {/if}
-    {#if agent.status !== 'Quarantined'}
+    {#if agent.status !== 'Stopped'}
       <button class="btn btn-danger" onclick={() => confirmAction = 'quarantine'}>Quarantine</button>
     {/if}
     {#if actionError}

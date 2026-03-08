@@ -36,8 +36,6 @@ pub struct ProposalRouter {
     score_cache_ttl: Duration,
     /// Pending proposals by ID.
     pending: BTreeMap<Uuid, PendingProposal>,
-    /// Pending proposals by goal (for superseding).
-    pending_by_goal: BTreeMap<String, Uuid>,
     /// Rejection records for re-proposal guard.
     rejection_records: Vec<(Uuid, serde_json::Value)>,
     /// Timeout for pending proposals (default 24h).
@@ -58,7 +56,6 @@ impl ProposalRouter {
             score_cache: BTreeMap::new(),
             score_cache_ttl: Duration::from_secs(30),
             pending: BTreeMap::new(),
-            pending_by_goal: BTreeMap::new(),
             rejection_records: Vec::new(),
             proposal_timeout: Duration::from_secs(86400),
             denial_feedback: Vec::new(),
@@ -135,20 +132,12 @@ impl ProposalRouter {
         None
     }
 
-    /// Check for superseding: mark old pending proposal as Superseded (Req 33 AC3).
-    pub fn check_superseding(&mut self, proposal: &Proposal) {
-        if proposal.operation == ProposalOperation::GoalChange {
-            if let Some(goal_key) = proposal.content.get("goal_text").and_then(|v| v.as_str()) {
-                if let Some(old_id) = self.pending_by_goal.get(goal_key).copied() {
-                    if let Some(old) = self.pending.get_mut(&old_id) {
-                        if old.resolved_at.is_none() {
-                            old.decision = ProposalDecision::Superseded;
-                            old.resolved_at = Some(chrono::Utc::now());
-                        }
-                    }
-                }
-                self.pending_by_goal
-                    .insert(goal_key.to_string(), proposal.id);
+    /// Mirror a durable supersession outcome into the in-memory pending cache.
+    pub fn mark_superseded(&mut self, proposal_id: Uuid) {
+        if let Some(old) = self.pending.get_mut(&proposal_id) {
+            if old.resolved_at.is_none() {
+                old.decision = ProposalDecision::Superseded;
+                old.resolved_at = Some(chrono::Utc::now());
             }
         }
     }
@@ -240,6 +229,13 @@ impl ProposalRouter {
                 is_partial_run,
             },
         );
+    }
+
+    /// Current in-memory decision for a proposal, if present.
+    pub fn pending_decision(&self, proposal_id: Uuid) -> Option<ProposalDecision> {
+        self.pending
+            .get(&proposal_id)
+            .map(|pending| pending.decision)
     }
 
     /// Take denial feedback for next prompt inclusion (cleared after one use).

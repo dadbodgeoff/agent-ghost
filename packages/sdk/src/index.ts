@@ -1,6 +1,11 @@
 // ── Client ──
 export { GhostClient } from './client.js';
-export type { GhostClientOptions, GhostRequestFn } from './client.js';
+export type {
+  GhostClientOptions,
+  GhostRequestFn,
+  GhostRequestOptions,
+  GhostOperationEnvelope,
+} from './client.js';
 
 // ── Errors ──
 export {
@@ -48,6 +53,8 @@ export { GoalsAPI } from './goals.js';
 export type {
   Proposal,
   ProposalDetail,
+  GoalProposalTransition,
+  GoalDecisionRequest,
   ListGoalsParams,
   ListGoalsResult,
 } from './goals.js';
@@ -128,6 +135,8 @@ export type { TraceSpanRecord, TraceGroup, SessionTrace } from './traces.js';
 export { WorkflowsAPI } from './workflows.js';
 export type {
   Workflow,
+  WorkflowNode,
+  WorkflowEdge,
   ListWorkflowsParams,
   ListWorkflowsResult,
   CreateWorkflowParams,
@@ -212,6 +221,15 @@ export type {
   VerifyChainParams,
   VerifyChainResult,
 } from './integrity.js';
+
+// ── Compatibility ──
+export { CompatibilityAPI, assessGhostClientCompatibility } from './compatibility.js';
+export type {
+  GhostClientIdentity,
+  GhostCompatibilityRange,
+  GhostCompatibilityStatus,
+  GhostCompatibilityAssessment,
+} from './compatibility.js';
 
 // ── Mesh ──
 export { MeshAPI } from './mesh.js';

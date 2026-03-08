@@ -1,5 +1,6 @@
 import type { GhostClientOptions, GhostRequestFn } from './client.js';
-import { GhostAPIError, GhostNetworkError } from './errors.js';
+import { createTimeoutSignal } from './client.js';
+import { GhostAPIError, GhostNetworkError, GhostTimeoutError } from './errors.js';
 
 export interface AuditEntry {
   id: string;
@@ -93,8 +94,15 @@ export class AuditAPI {
 
     let response: Response;
     try {
-      response = await fetchFn(url, { method: 'GET', headers });
+      response = await fetchFn(url, {
+        method: 'GET',
+        headers,
+        signal: createTimeoutSignal(this.options.timeout),
+      });
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'TimeoutError') {
+        throw new GhostTimeoutError(this.options.timeout!);
+      }
       throw new GhostNetworkError(
         `Failed to connect to Ghost API at ${baseUrl}`,
         err instanceof Error ? err : undefined,

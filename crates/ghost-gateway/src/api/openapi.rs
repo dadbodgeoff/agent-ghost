@@ -132,6 +132,7 @@ use utoipa::OpenApi;
         update_pc_control_allowed_apps,
         update_pc_control_blocked_hotkeys,
         update_pc_control_safe_zones,
+        issue_ws_ticket,
         get_push_vapid_key,
         subscribe_push,
         unsubscribe_push,
@@ -327,11 +328,12 @@ pub struct SessionEventSchema {
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionBookmarkSchema {
     pub id: String,
-    pub eventIndex: i64,
+    pub event_index: i64,
     pub label: String,
-    pub createdAt: String,
+    pub created_at: String,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -477,8 +479,25 @@ pub struct PcControlStatusSchema {
     pub enabled: bool,
     pub action_budget: PcControlActionBudgetSchema,
     pub allowed_apps: Vec<String>,
+    pub safe_zone: Option<PcControlSafeZoneSchema>,
     pub safe_zones: Vec<PcControlSafeZoneSchema>,
     pub blocked_hotkeys: Vec<String>,
+    pub circuit_breaker_state: String,
+    pub persisted: PcControlPersistedStateSchema,
+    pub runtime: PcControlRuntimeStateSchema,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct PcControlPersistedStateSchema {
+    pub enabled: bool,
+    pub allowed_apps: Vec<String>,
+    pub safe_zone: Option<PcControlSafeZoneSchema>,
+    pub blocked_hotkeys: Vec<String>,
+    pub action_budget: PcControlActionBudgetSchema,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct PcControlRuntimeStateSchema {
     pub circuit_breaker_state: String,
 }
 
@@ -489,6 +508,21 @@ pub struct PcControlActionLogSchema {
     pub target: String,
     pub timestamp: String,
     pub result: String,
+    pub input_json: String,
+    pub result_json: String,
+    pub target_app: Option<String>,
+    pub coordinates: Option<String>,
+    pub blocked: bool,
+    pub block_reason: Option<String>,
+    pub agent_id: String,
+    pub session_id: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct WsAuthTicketResponseSchema {
+    pub ticket: String,
+    pub expires_at: String,
+    pub expires_in_secs: i64,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize, serde::Deserialize)]
@@ -1627,6 +1661,17 @@ async fn update_pc_control_blocked_hotkeys() {}
     security(("bearer_auth" = []))
 )]
 async fn update_pc_control_safe_zones() {}
+
+#[utoipa::path(
+    post, path = "/api/ws/tickets",
+    tag = "health",
+    responses(
+        (status = 200, description = "Short-lived WebSocket upgrade ticket", body = WsAuthTicketResponseSchema),
+        (status = 401, description = "Authentication required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn issue_ws_ticket() {}
 
 #[utoipa::path(
     get, path = "/api/push/vapid-key",

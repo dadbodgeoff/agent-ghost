@@ -11,10 +11,10 @@
   let error = $state('');
 
   const STATUS_LABELS: Record<string, string> = {
-    active: 'Active',
-    paused: 'Paused',
-    quarantined: 'Quarantined',
-    deleted: 'Deleted',
+    Starting: 'Starting',
+    Running: 'Running',
+    Stopping: 'Stopping',
+    Stopped: 'Stopped',
   };
 
   async function loadAgents() {
@@ -47,10 +47,10 @@
 
   function statusColor(status: string): string {
     switch (status) {
-      case 'active': return 'var(--color-severity-normal)';
-      case 'paused': return 'var(--color-severity-soft)';
-      case 'quarantined': return 'var(--color-severity-hard)';
-      case 'deleted': return 'var(--color-text-disabled)';
+      case 'Running': return 'var(--color-severity-normal)';
+      case 'Starting': return 'var(--color-severity-soft)';
+      case 'Stopping': return 'var(--color-severity-active)';
+      case 'Stopped': return 'var(--color-text-disabled)';
       default: return 'var(--color-text-muted)';
     }
   }
@@ -77,7 +77,7 @@
   <div class="grid">
     {#each agents as agent (agent.id)}
       {@const agentScore = getScore(agent.id)}
-      <a href="/agents/{agent.id}" class="agent-card" class:deleted={agent.status === 'deleted'}>
+      <a href="/agents/{agent.id}" class="agent-card" class:inactive={agent.status === 'Stopped'}>
         <div class="agent-header">
           <span class="agent-name">{agent.name}</span>
           <span class="status-badge" style="color: {statusColor(agent.status)}">
@@ -98,13 +98,6 @@
             <div class="meta-row">
               <span class="meta-label">Spending Cap</span>
               <span class="meta-value">${agent.spending_cap.toFixed(2)}</span>
-            </div>
-          {/if}
-          {#if agent.capabilities && agent.capabilities.length > 0}
-            <div class="capabilities">
-              {#each agent.capabilities as cap}
-                <span class="cap-badge">{cap}</span>
-              {/each}
             </div>
           {/if}
         </div>
@@ -141,9 +134,8 @@
     border-color: var(--color-border-strong);
   }
 
-  .agent-card.deleted {
+  .agent-card.inactive {
     opacity: 0.5;
-    text-decoration: line-through;
   }
 
   .agent-header {
@@ -195,21 +187,6 @@
   .meta-value {
     font-family: var(--font-family-mono);
     font-variant-numeric: tabular-nums;
-  }
-
-  .capabilities {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--spacing-1);
-    margin-top: var(--spacing-2);
-  }
-
-  .cap-badge {
-    font-size: var(--font-size-xs);
-    padding: var(--spacing-0-5) var(--spacing-2);
-    background: var(--color-brand-subtle);
-    color: var(--color-brand-primary);
-    border-radius: var(--radius-sm);
   }
 
   .skeleton {

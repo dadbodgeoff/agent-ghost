@@ -6,14 +6,9 @@
 //! NOTE: Tests that touch the global PLATFORM_KILLED static must acquire
 //! KILL_SWITCH_MUTEX to avoid parallel interference.
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
 
-use chrono::Utc;
 use once_cell::sync::Lazy;
-use uuid::Uuid;
 
 /// Global mutex for tests that read/write PLATFORM_KILLED.
 static KILL_SWITCH_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -390,7 +385,6 @@ mod shutdown {
 mod kill_switch {
     use std::sync::atomic::Ordering;
 
-    use chrono::Utc;
     use cortex_core::safety::trigger::TriggerEvent;
     use ghost_gateway::safety::kill_switch::{
         KillCheckResult, KillLevel, KillSwitch, PLATFORM_KILLED,
@@ -1370,7 +1364,7 @@ mod messaging {
 // ═══════════════════════════════════════════════════════════════════════
 
 mod compaction {
-    use ghost_gateway::session::compaction::{CompactionConfig, SessionCompactor};
+    use ghost_gateway::session::compaction::SessionCompactor;
 
     #[test]
     fn triggers_at_70_percent() {
@@ -1506,9 +1500,7 @@ mod itp_router {
 #[cfg(test)]
 mod property_tests {
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
 
-    use chrono::Utc;
     use cortex_core::safety::trigger::TriggerEvent;
     use ghost_gateway::gateway::GatewayState;
     use ghost_gateway::safety::kill_switch::{KillLevel, KillSwitch, PLATFORM_KILLED};

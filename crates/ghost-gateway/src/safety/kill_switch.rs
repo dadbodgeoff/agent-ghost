@@ -273,9 +273,7 @@ impl KillSwitch {
             }
         };
         *state = restored;
-        if state.platform_level == KillLevel::KillAll {
-            PLATFORM_KILLED.store(true, Ordering::SeqCst);
-        }
+        PLATFORM_KILLED.store(state.platform_level == KillLevel::KillAll, Ordering::SeqCst);
     }
 
     /// Get audit log entries.

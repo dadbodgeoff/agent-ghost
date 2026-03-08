@@ -12,10 +12,12 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::response::IntoResponse;
+use axum::Json;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-use crate::api::auth::{AuthConfig, RevocationSet};
+use crate::api::auth::{AuthConfig, Claims, RevocationSet};
 use crate::state::AppState;
 
 /// Global monotonic sequence counter for WS events.
@@ -95,6 +97,23 @@ pub fn broadcast_event(state: &crate::state::AppState, event: WsEvent) {
 pub struct WsQueryParams {
     pub token: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct WsAuthTicket {
+    pub subject: String,
+    pub role: String,
+    pub issued_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WsAuthTicketResponse {
+    pub ticket: String,
+    pub expires_at: String,
+    pub expires_in_secs: u64,
+}
+
+const WS_AUTH_TICKET_TTL_SECS: i64 = 30;
 
 /// Client-to-server messages (T-2.1.8).
 #[derive(Debug, Clone, Deserialize)]
@@ -198,6 +217,33 @@ pub enum WsEvent {
     },
 }
 
+pub async fn issue_ws_ticket(
+    State(state): State<Arc<AppState>>,
+    claims: Option<axum::Extension<Claims>>,
+) -> Json<WsAuthTicketResponse> {
+    let claims = claims
+        .map(|extension| extension.0)
+        .unwrap_or_else(Claims::no_auth_fallback);
+    let now = chrono::Utc::now();
+    let expires_at = now + chrono::Duration::seconds(WS_AUTH_TICKET_TTL_SECS);
+    let ticket = Uuid::new_v4().to_string();
+    prune_expired_ws_tickets(&state, now);
+    state.websocket_auth_tickets.insert(
+        hash_ws_ticket(&ticket),
+        WsAuthTicket {
+            subject: claims.sub,
+            role: claims.role,
+            issued_at: now,
+            expires_at,
+        },
+    );
+    Json(WsAuthTicketResponse {
+        ticket,
+        expires_at: expires_at.to_rfc3339(),
+        expires_in_secs: WS_AUTH_TICKET_TTL_SECS as u64,
+    })
+}
+
 impl WsEvent {
     /// Extract the topic key(s) this event matches (T-2.1.8).
     /// Used for per-client topic filtering. An empty list means
@@ -278,11 +324,11 @@ impl Default for WsConnectionTracker {
     }
 }
 
-/// GET /api/ws — WebSocket upgrade with dual-mode token auth via query param.
+/// GET /api/ws — WebSocket upgrade with ticket-based auth.
 ///
 /// Auth modes (same as REST middleware):
-/// 1. JWT mode: validate `?token=` as JWT when GHOST_JWT_SECRET is set
-/// 2. Legacy mode: validate `?token=` against GHOST_TOKEN
+/// 1. Preferred: validate a short-lived `ghost-ticket.<ticket>` subprotocol
+/// 2. Deprecated: validate `ghost-token.<jwt_or_legacy_token>` or `?token=`
 /// 3. No-auth mode: allow if neither is set
 ///
 /// Rate limiting: max 5 concurrent WebSocket connections per IP (T-1.1.5).
@@ -299,6 +345,7 @@ pub async fn ws_handler(
     let client_ip = connect_info
         .map(|ci| ci.0.ip())
         .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    let mut selected_protocol: Option<String> = None;
 
     // Rate limit: max concurrent WS connections per IP.
     if !ws_tracker.acquire(client_ip) {
@@ -310,63 +357,77 @@ pub async fn ws_handler(
     }
 
     if auth_config.auth_required() {
-        // T-5.1.3: Prefer token from Sec-WebSocket-Protocol header (standard WS auth pattern).
-        // Token is encoded as subprotocol "ghost-token.<TOKEN>" to avoid query param leakage
-        // in HTTP logs, proxy logs, and browser history.
-        // Fall back to query param with deprecation warning.
-        let token_from_header: Option<String> = headers
+        let protocols = headers
             .get("sec-websocket-protocol")
             .and_then(|v| v.to_str().ok())
-            .and_then(|protos| {
-                protos
-                    .split(',')
-                    .map(|s| s.trim())
-                    .find(|p| p.starts_with("ghost-token."))
-                    .and_then(|p| p.strip_prefix("ghost-token."))
-                    .map(|t| t.to_string())
-            });
+            .unwrap_or("");
 
-        let token_str;
-        if let Some(ref t) = token_from_header {
-            token_str = t.clone();
-        } else if let Some(ref t) = params.token {
-            tracing::warn!(
-                "WebSocket auth via query param is deprecated — use Sec-WebSocket-Protocol header"
-            );
-            token_str = t.clone();
+        let protocol_ticket = protocols
+            .split(',')
+            .map(|value| value.trim())
+            .find_map(|value| value.strip_prefix("ghost-ticket."));
+        let protocol_token = protocols
+            .split(',')
+            .map(|value| value.trim())
+            .find_map(|value| value.strip_prefix("ghost-token."));
+
+        if let Some(ticket) = protocol_ticket {
+            if !consume_ws_ticket(&state, ticket) {
+                ws_tracker.release(client_ip);
+                return axum::http::StatusCode::UNAUTHORIZED.into_response();
+            }
+            selected_protocol = Some(format!("ghost-ticket.{ticket}"));
         } else {
-            ws_tracker.release(client_ip);
-            return axum::http::StatusCode::UNAUTHORIZED.into_response();
-        }
-        let token = token_str.as_str();
+            let token = if let Some(token) = protocol_token {
+                selected_protocol = Some(format!("ghost-token.{token}"));
+                tracing::warn!(
+                    "WebSocket bearer auth via subprotocol is deprecated — use POST /api/ws/tickets"
+                );
+                token.to_string()
+            } else if let Some(ref token) = params.token {
+                tracing::warn!(
+                    "WebSocket auth via query param is deprecated — use POST /api/ws/tickets"
+                );
+                token.clone()
+            } else {
+                ws_tracker.release(client_ip);
+                return axum::http::StatusCode::UNAUTHORIZED.into_response();
+            };
 
-        // Try JWT validation first.
-        if let Some(ref secret) = auth_config.jwt_secret {
-            let key = jsonwebtoken::DecodingKey::from_secret(secret.as_bytes());
-            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
-            validation.validate_exp = true;
-            validation.leeway = 30;
-            match jsonwebtoken::decode::<crate::api::auth::Claims>(token, &key, &validation) {
-                Ok(data) => {
-                    // Check revocation.
-                    if !data.claims.jti.is_empty() && revocation_set.is_revoked(&data.claims.jti) {
+            // Try JWT validation first.
+            if let Some(ref secret) = auth_config.jwt_secret {
+                let key = jsonwebtoken::DecodingKey::from_secret(secret.as_bytes());
+                let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+                validation.validate_exp = true;
+                validation.leeway = 30;
+                match jsonwebtoken::decode::<crate::api::auth::Claims>(&token, &key, &validation) {
+                    Ok(data) => {
+                        if !data.claims.jti.is_empty()
+                            && revocation_set.is_revoked(&data.claims.jti)
+                        {
+                            ws_tracker.release(client_ip);
+                            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+                        }
+                    }
+                    Err(_) => {
                         ws_tracker.release(client_ip);
                         return axum::http::StatusCode::UNAUTHORIZED.into_response();
                     }
                 }
-                Err(_) => {
+            } else if let Some(ref _expected) = auth_config.legacy_token {
+                if !crate::auth::token_auth::validate_token(&token) {
                     ws_tracker.release(client_ip);
                     return axum::http::StatusCode::UNAUTHORIZED.into_response();
                 }
             }
-        } else if let Some(ref _expected) = auth_config.legacy_token {
-            // Legacy token: constant-time comparison.
-            if !crate::auth::token_auth::validate_token(token) {
-                ws_tracker.release(client_ip);
-                return axum::http::StatusCode::UNAUTHORIZED.into_response();
-            }
         }
     }
+
+    let ws = if let Some(protocol) = selected_protocol {
+        ws.protocols([protocol])
+    } else {
+        ws
+    };
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, ws_tracker, client_ip))
         .into_response()
@@ -570,6 +631,31 @@ async fn handle_socket(
 
     // Release connection slot on disconnect.
     ws_tracker.release(client_ip);
+}
+
+fn hash_ws_ticket(ticket: &str) -> String {
+    blake3::hash(ticket.as_bytes()).to_hex().to_string()
+}
+
+fn prune_expired_ws_tickets(state: &AppState, now: chrono::DateTime<chrono::Utc>) {
+    let expired: Vec<String> = state
+        .websocket_auth_tickets
+        .iter()
+        .filter(|entry| entry.value().expires_at <= now)
+        .map(|entry| entry.key().clone())
+        .collect();
+    for key in expired {
+        state.websocket_auth_tickets.remove(&key);
+    }
+}
+
+fn consume_ws_ticket(state: &AppState, ticket: &str) -> bool {
+    let now = chrono::Utc::now();
+    prune_expired_ws_tickets(state, now);
+    match state.websocket_auth_tickets.remove(&hash_ws_ticket(ticket)) {
+        Some((_, metadata)) if metadata.expires_at > now => true,
+        _ => false,
+    }
 }
 
 /// Push an event to a WebSocket client (wrapped in envelope).

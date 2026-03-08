@@ -1,4 +1,4 @@
-import type { GhostRequestFn } from './client.js';
+import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
 export interface RuntimeSession {
   session_id: string;
@@ -139,37 +139,48 @@ export class RuntimeSessionsAPI {
   async createBookmark(
     sessionId: string,
     params: CreateSessionBookmarkParams,
+    options?: GhostRequestOptions,
   ): Promise<CreateSessionBookmarkResult> {
     return this.request<CreateSessionBookmarkResult>(
       'POST',
       `/api/sessions/${encodeURIComponent(sessionId)}/bookmarks`,
       params,
+      options,
     );
   }
 
   async deleteBookmark(
     sessionId: string,
     bookmarkId: string,
+    options?: GhostRequestOptions,
   ): Promise<DeleteSessionBookmarkResult> {
     return this.request<DeleteSessionBookmarkResult>(
       'DELETE',
       `/api/sessions/${encodeURIComponent(sessionId)}/bookmarks/${encodeURIComponent(bookmarkId)}`,
+      undefined,
+      options,
     );
   }
 
-  async branch(sessionId: string, params: BranchSessionParams): Promise<BranchSessionResult> {
+  async branch(
+    sessionId: string,
+    params: BranchSessionParams,
+    options?: GhostRequestOptions,
+  ): Promise<BranchSessionResult> {
     return this.request<BranchSessionResult>(
       'POST',
       `/api/sessions/${encodeURIComponent(sessionId)}/branch`,
       params,
+      options,
     );
   }
 
-  async heartbeat(sessionId: string): Promise<void> {
+  async heartbeat(sessionId: string, options?: GhostRequestOptions): Promise<void> {
     await this.request<void>(
       'POST',
       `/api/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
       {},
+      options,
     );
   }
 }

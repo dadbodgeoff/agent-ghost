@@ -57,38 +57,35 @@ impl GatewayBootstrap {
     ) -> Result<(GatewayRuntime, GhostConfig), BootstrapError> {
         let shared_state = Arc::new(GatewaySharedState::new());
 
-        // Pre-step: Check kill_state.json on startup (AC13)
-        // If present, enter safe mode — previous KILL_ALL was not cleanly resolved.
-        // If the file exists but is corrupted/empty, still enter safe mode (conservative).
-        let kill_state_path = shellexpand_tilde("~/.ghost/data/kill_state.json");
-        let safe_mode = std::path::Path::new(&kill_state_path).exists();
-        if safe_mode {
-            // Validate the file is readable. If corrupted, log but still enter safe mode.
-            match std::fs::read_to_string(&kill_state_path) {
-                Ok(content) => {
-                    if serde_json::from_str::<serde_json::Value>(&content).is_err() {
-                        tracing::error!(
-                            path = %kill_state_path,
-                            "kill_state.json is corrupted (invalid JSON). Entering safe mode anyway."
-                        );
-                    }
+        let kill_state_path = crate::api::safety::persisted_safety_state_path();
+        let restored_safety_state = if std::path::Path::new(&kill_state_path).exists() {
+            match crate::api::safety::load_persisted_safety_state(std::path::Path::new(
+                &kill_state_path,
+            )) {
+                Ok(Some(state)) => {
+                    tracing::warn!(
+                        path = %kill_state_path,
+                        "Persisted safety state found on startup. Restoring kill-switch state."
+                    );
+                    Some(state)
                 }
-                Err(e) => {
+                Ok(None) => None,
+                Err(error) => {
                     tracing::error!(
                         path = %kill_state_path,
-                        error = %e,
-                        "kill_state.json exists but cannot be read. Entering safe mode anyway."
+                        error = %error,
+                        "Persisted safety state is unreadable. Entering kill-all safe mode."
                     );
+                    let mut fallback = crate::safety::kill_switch::KillSwitchState::default();
+                    fallback.platform_level = crate::safety::kill_switch::KillLevel::KillAll;
+                    fallback.activated_at = Some(chrono::Utc::now());
+                    fallback.trigger = Some("persisted safety state unreadable on startup".into());
+                    Some(fallback)
                 }
             }
-            tracing::warn!(
-                path = %kill_state_path,
-                "kill_state.json found — previous KILL_ALL not resolved. Entering safe mode."
-            );
-            use crate::safety::kill_switch::PLATFORM_KILLED;
-            use std::sync::atomic::Ordering;
-            PLATFORM_KILLED.store(true, Ordering::SeqCst);
-        }
+        } else {
+            None
+        };
 
         // Step 1: Load + validate ghost.yml
         let config = Self::step1_load_config(config_path)?;
@@ -284,12 +281,7 @@ impl GatewayBootstrap {
             None
         };
 
-        // If safe mode, restore kill_all state into the KillSwitch.
-        if safe_mode {
-            let mut restored = crate::safety::kill_switch::KillSwitchState::default();
-            restored.platform_level = crate::safety::kill_switch::KillLevel::KillAll;
-            restored.activated_at = Some(chrono::Utc::now());
-            restored.trigger = Some("kill_state.json found on startup".into());
+        if let Some(restored) = restored_safety_state {
             kill_switch.restore_state(restored);
         }
 
@@ -353,8 +345,13 @@ impl GatewayBootstrap {
         }
         tracing::info!(count = bundled_count, "Phase 8 bundled skills registered");
 
+        let pc_control_circuit_breaker = config.pc_control.circuit_breaker();
+
         // Register Phase 9 PC control skills (disabled by default).
-        let pc_skills = ghost_pc_control::all_pc_control_skills(&config.pc_control);
+        let pc_skills = ghost_pc_control::all_pc_control_skills_with_circuit_breaker(
+            &config.pc_control,
+            Arc::clone(&pc_control_circuit_breaker),
+        );
         let pc_count = pc_skills.len();
         for skill in pc_skills {
             all_skills.insert(skill.name().to_string(), skill);
@@ -393,6 +390,9 @@ impl GatewayBootstrap {
             soul_drift_threshold: config.security.soul_drift_threshold,
             convergence_profile: config.convergence.profile.clone(),
             model_providers: config.models.providers.clone(),
+            default_model_provider: config.models.default_provider.clone(),
+            pc_control_circuit_breaker,
+            websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
             tools_config: config.tools.clone(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
@@ -796,6 +796,10 @@ impl GatewayBootstrap {
         let public_routes = axum::Router::new()
             .route("/api/health", get(crate::api::health::health_handler))
             .route("/api/ready", get(crate::api::health::ready_handler))
+            .route(
+                "/api/compatibility",
+                get(crate::api::compatibility::compatibility_handler),
+            )
             .route("/api/auth/login", post(crate::api::auth::login))
             .route("/api/auth/refresh", post(crate::api::auth::refresh))
             .route("/api/auth/logout", post(crate::api::auth::logout))
@@ -900,6 +904,10 @@ impl GatewayBootstrap {
             .route("/api/costs", get(crate::api::costs::get_costs))
             .route("/api/itp/events", get(crate::api::itp::list_events))
             .route("/api/ws", get(crate::api::websocket::ws_handler))
+            .route(
+                "/api/ws/tickets",
+                post(crate::api::websocket::issue_ws_ticket),
+            )
             .route(
                 "/api/oauth/providers",
                 get(crate::api::oauth_routes::list_providers),
@@ -1133,6 +1141,9 @@ impl GatewayBootstrap {
                 "/api/marketplace/discover",
                 post(crate::api::marketplace::discover_agents),
             )
+            .route_layer(axum::middleware::from_fn(
+                crate::api::compatibility::enforce_client_compatibility_middleware,
+            ))
             .route_layer(axum::middleware::from_fn(rbac::operator));
 
         // ── Admin routes (require Admin role) ─────────────────────────
@@ -1213,6 +1224,9 @@ impl GatewayBootstrap {
                 "/api/pc-control/safe-zones",
                 put(crate::api::pc_control::update_safe_zones),
             )
+            .route_layer(axum::middleware::from_fn(
+                crate::api::compatibility::enforce_client_compatibility_middleware,
+            ))
             .route_layer(axum::middleware::from_fn(rbac::admin));
 
         // ── SuperAdmin routes (require SuperAdmin role) ───────────────
@@ -1223,6 +1237,9 @@ impl GatewayBootstrap {
                 "/api/admin/restore",
                 post(crate::api::admin::restore_backup),
             )
+            .route_layer(axum::middleware::from_fn(
+                crate::api::compatibility::enforce_client_compatibility_middleware,
+            ))
             .route_layer(axum::middleware::from_fn(rbac::superadmin));
 
         // Auth config — resolve once at startup, not per-request.
@@ -1269,38 +1286,44 @@ impl GatewayBootstrap {
         let app = app
             // Middleware stack: last .layer() = outermost = runs first on request.
             //
-            // Request order: Trace → CORS → request_id → auth → rate_limit → handler
+            // Request order: CORS → extensions → operation_context → Trace → auth → rate_limit → handler
             // (auth BEFORE rate_limit so Claims are available for per-token limits)
             .layer(axum::middleware::from_fn(
                 crate::api::rate_limit::rate_limit_middleware,
             ))
             .layer(axum::middleware::from_fn(crate::api::auth::auth_middleware))
-            .layer(axum::middleware::from_fn(
-                crate::api::rate_limit::request_id_middleware,
-            ))
-            .layer(axum::Extension(rate_limit_state))
-            .layer(axum::Extension(auth_config.clone()))
-            .layer(axum::Extension(revocation_set.clone()))
-            .layer(axum::Extension(ws_tracker))
-            .layer(cors)
             .layer(
                 tower_http::trace::TraceLayer::new_for_http().make_span_with(
                     |req: &axum::http::Request<_>| {
                         let request_id = req
                             .headers()
-                            .get("x-request-id")
+                            .get(crate::api::operation_context::REQUEST_ID_HEADER)
                             .and_then(|v| v.to_str().ok())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+                        let operation_id = req
+                            .headers()
+                            .get(crate::api::operation_context::OPERATION_ID_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
                         tracing::info_span!(
                             "request",
                             method = %req.method(),
                             uri = %req.uri(),
                             request_id = %request_id,
+                            operation_id = %operation_id,
                         )
                     },
                 ),
-            );
+            )
+            .layer(axum::middleware::from_fn(
+                crate::api::operation_context::operation_context_middleware,
+            ))
+            .layer(axum::Extension(rate_limit_state))
+            .layer(axum::Extension(auth_config.clone()))
+            .layer(axum::Extension(revocation_set.clone()))
+            .layer(axum::Extension(ws_tracker))
+            .layer(cors);
 
         tracing::info!(
             routes = "health, ready, agents, audit, convergence, goals, sessions, memory, state, integrity, workflows, studio, traces, mesh-viz, profiles, search, admin, safety, safety-checks, webhooks, skills, a2a, costs, ws, oauth, auth, openapi",
@@ -1315,7 +1338,7 @@ impl GatewayBootstrap {
     /// Priority: ghost.yml `security.cors_origins` → `GHOST_CORS_ORIGINS` env → dev defaults.
     /// Production: must have origins configured via config or env var.
     fn build_cors_layer(config: &GhostConfig) -> tower_http::cors::CorsLayer {
-        use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
+        use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer, ExposeHeaders};
 
         let gateway_port = config.gateway.port;
         let origins_env = std::env::var("GHOST_CORS_ORIGINS").ok();
@@ -1378,6 +1401,7 @@ impl GatewayBootstrap {
             .allow_methods(AllowMethods::list([
                 axum::http::Method::GET,
                 axum::http::Method::POST,
+                axum::http::Method::PATCH,
                 axum::http::Method::PUT,
                 axum::http::Method::DELETE,
                 axum::http::Method::OPTIONS,
@@ -1385,7 +1409,35 @@ impl GatewayBootstrap {
             .allow_headers(AllowHeaders::list([
                 axum::http::header::AUTHORIZATION,
                 axum::http::header::CONTENT_TYPE,
-                axum::http::HeaderName::from_static("x-request-id"),
+                axum::http::HeaderName::from_static(
+                    crate::api::operation_context::REQUEST_ID_HEADER,
+                ),
+                axum::http::HeaderName::from_static(
+                    crate::api::operation_context::OPERATION_ID_HEADER,
+                ),
+                axum::http::HeaderName::from_static(
+                    crate::api::operation_context::IDEMPOTENCY_KEY_HEADER,
+                ),
+                axum::http::HeaderName::from_static(crate::api::compatibility::CLIENT_NAME_HEADER),
+                axum::http::HeaderName::from_static(
+                    crate::api::compatibility::CLIENT_VERSION_HEADER,
+                ),
+                axum::http::HeaderName::from_static("x-ghost-client-id"),
+                axum::http::HeaderName::from_static("x-ghost-session-epoch"),
+            ]))
+            .expose_headers(ExposeHeaders::list([
+                axum::http::HeaderName::from_static(
+                    crate::api::operation_context::REQUEST_ID_HEADER,
+                ),
+                axum::http::HeaderName::from_static(
+                    crate::api::operation_context::OPERATION_ID_HEADER,
+                ),
+                axum::http::HeaderName::from_static(
+                    crate::api::operation_context::IDEMPOTENCY_KEY_HEADER,
+                ),
+                axum::http::HeaderName::from_static(
+                    crate::api::operation_context::IDEMPOTENCY_STATUS_HEADER,
+                ),
             ]))
             .allow_credentials(true)
     }

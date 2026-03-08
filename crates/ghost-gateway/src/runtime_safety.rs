@@ -13,7 +13,7 @@ use crate::api::apply_tool_configs;
 use crate::config::ToolsConfig;
 use crate::cost::tracker::CostTracker;
 use crate::safety::kill_gate_bridge::KillGateBridge;
-use crate::safety::kill_switch::KillSwitch;
+use crate::safety::kill_switch::{KillCheckResult, KillSwitch};
 use crate::state::AppState;
 
 pub const API_SYNTHETIC_AGENT_NAME: &str = "__ghost_runtime_api__";
@@ -89,6 +89,19 @@ impl RuntimeSafetyContext {
             kill_switch: Arc::clone(&state.kill_switch),
             kill_gate: state.kill_gate.clone(),
             convergence_profile: state.convergence_profile.clone(),
+        }
+    }
+
+    pub fn ensure_execution_permitted(&self) -> Result<(), ghost_agent_loop::runner::RunError> {
+        match self.kill_switch.check(self.agent.id) {
+            KillCheckResult::Ok => Ok(()),
+            KillCheckResult::AgentPaused(_) => Err(ghost_agent_loop::runner::RunError::AgentPaused),
+            KillCheckResult::AgentQuarantined(_) => {
+                Err(ghost_agent_loop::runner::RunError::AgentQuarantined)
+            }
+            KillCheckResult::PlatformKilled => {
+                Err(ghost_agent_loop::runner::RunError::PlatformKilled)
+            }
         }
     }
 }
@@ -457,5 +470,101 @@ mod tests {
             runner.check_gates(&run_ctx, &mut log),
             Err(ghost_agent_loop::runner::RunError::AgentPaused)
         ));
+    }
+
+    #[test]
+    fn ensure_execution_permitted_fails_closed_for_paused_and_quarantined_agents() {
+        crate::safety::kill_switch::PLATFORM_KILLED
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let kill_switch = Arc::new(KillSwitch::new());
+        let paused_agent = ResolvedRuntimeAgent::synthetic("paused-agent");
+        let paused_ctx = RuntimeSafetyContext {
+            capability_scope: Vec::new(),
+            agent: paused_agent.clone(),
+            session_id: Uuid::now_v7(),
+            run_id: Uuid::now_v7(),
+            message_id: None,
+            kill_switch: Arc::clone(&kill_switch),
+            kill_gate: None,
+            convergence_profile: "standard".into(),
+        };
+
+        kill_switch.activate_agent(
+            paused_agent.id,
+            crate::safety::kill_switch::KillLevel::Pause,
+            &cortex_core::safety::trigger::TriggerEvent::ManualPause {
+                agent_id: paused_agent.id,
+                reason: "test".into(),
+                initiated_by: "test".into(),
+            },
+        );
+
+        assert!(matches!(
+            paused_ctx.ensure_execution_permitted(),
+            Err(ghost_agent_loop::runner::RunError::AgentPaused)
+        ));
+
+        let quarantined_agent = ResolvedRuntimeAgent::synthetic("quarantined-agent");
+        let quarantined_ctx = RuntimeSafetyContext {
+            capability_scope: Vec::new(),
+            agent: quarantined_agent.clone(),
+            session_id: Uuid::now_v7(),
+            run_id: Uuid::now_v7(),
+            message_id: None,
+            kill_switch: Arc::clone(&kill_switch),
+            kill_gate: None,
+            convergence_profile: "standard".into(),
+        };
+
+        kill_switch.activate_agent(
+            quarantined_agent.id,
+            crate::safety::kill_switch::KillLevel::Quarantine,
+            &cortex_core::safety::trigger::TriggerEvent::ManualPause {
+                agent_id: quarantined_agent.id,
+                reason: "test".into(),
+                initiated_by: "test".into(),
+            },
+        );
+
+        assert!(matches!(
+            quarantined_ctx.ensure_execution_permitted(),
+            Err(ghost_agent_loop::runner::RunError::AgentQuarantined)
+        ));
+
+        crate::safety::kill_switch::PLATFORM_KILLED
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[test]
+    fn ensure_execution_permitted_fails_closed_for_platform_kill() {
+        crate::safety::kill_switch::PLATFORM_KILLED
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let kill_switch = Arc::new(KillSwitch::new());
+        let agent = ResolvedRuntimeAgent::synthetic("platform-killed-agent");
+        let ctx = RuntimeSafetyContext {
+            capability_scope: Vec::new(),
+            agent,
+            session_id: Uuid::now_v7(),
+            run_id: Uuid::now_v7(),
+            message_id: None,
+            kill_switch: Arc::clone(&kill_switch),
+            kill_gate: None,
+            convergence_profile: "standard".into(),
+        };
+
+        kill_switch.activate_kill_all(&cortex_core::safety::trigger::TriggerEvent::ManualKillAll {
+            reason: "test".into(),
+            initiated_by: "test".into(),
+        });
+
+        assert!(matches!(
+            ctx.ensure_execution_permitted(),
+            Err(ghost_agent_loop::runner::RunError::PlatformKilled)
+        ));
+
+        crate::safety::kill_switch::PLATFORM_KILLED
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }

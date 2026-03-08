@@ -10,13 +10,25 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::Response;
+use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::execute_idempotent_json_mutation;
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::state::AppState;
+
+const CREATE_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels";
+const RECONNECT_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:id/reconnect";
+const DELETE_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:id";
+const INJECT_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:type/inject";
 
 /// GET /api/channels — list all configured channels with status.
 pub async fn list_channels(State(state): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
@@ -25,10 +37,9 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> ApiResult<serd
         .read()
         .map_err(|e| ApiError::db_error("list_channels", e))?;
 
-    // Query channels table; fall back to agents as implicit CLI channels if table missing.
     let channels: Vec<serde_json::Value> = match db.prepare(
         "SELECT id, channel_type, status, status_message, agent_id, config, last_message_at, message_count \
-         FROM channels ORDER BY channel_type"
+         FROM channels ORDER BY channel_type",
     ) {
         Ok(mut stmt) => stmt
             .query_map([], |row| {
@@ -50,26 +61,29 @@ pub async fn list_channels(State(state): State<Arc<AppState>>) -> ApiResult<serd
             .collect(),
         Err(_) => {
             let agents = state.agents.read().map_err(|_| ApiError::internal("lock"))?;
-            agents.all_agents().iter().map(|a| {
-                serde_json::json!({
-                    "id": a.id.to_string(),
-                    "channel_type": "cli",
-                    "status": "connected",
-                    "agent_id": a.id.to_string(),
-                    "agent_name": a.name,
-                    "config": {},
-                    "last_message_at": null,
-                    "message_count": 0,
+            agents
+                .all_agents()
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "id": a.id.to_string(),
+                        "channel_type": "cli",
+                        "status": "connected",
+                        "agent_id": a.id.to_string(),
+                        "agent_name": a.name,
+                        "config": {},
+                        "last_message_at": null,
+                        "message_count": 0,
+                    })
                 })
-            }).collect()
+                .collect()
         }
     };
 
     Ok(Json(serde_json::json!({ "channels": channels })))
 }
 
-/// POST /api/channels — create a new channel binding.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateChannelRequest {
     pub channel_type: String,
     pub agent_id: String,
@@ -77,67 +91,7 @@ pub struct CreateChannelRequest {
     pub config: Option<serde_json::Value>,
 }
 
-pub async fn create_channel(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateChannelRequest>,
-) -> ApiResult<serde_json::Value> {
-    let id = Uuid::now_v7().to_string();
-    let config_str = serde_json::to_string(&body.config.unwrap_or(serde_json::json!({})))
-        .unwrap_or_else(|_| "{}".to_string());
-
-    let db = state.db.write().await;
-    let _ = db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS channels (
-            id TEXT PRIMARY KEY,
-            channel_type TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'configuring',
-            status_message TEXT,
-            agent_id TEXT NOT NULL,
-            config TEXT NOT NULL DEFAULT '{}',
-            last_message_at TEXT,
-            message_count INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-    );
-
-    db.execute(
-        "INSERT INTO channels (id, channel_type, status, agent_id, config) VALUES (?1, ?2, 'connected', ?3, ?4)",
-        rusqlite::params![id, body.channel_type, body.agent_id, config_str],
-    ).map_err(|e| ApiError::db_error("create_channel", e))?;
-
-    Ok(Json(serde_json::json!({ "id": id, "status": "created" })))
-}
-
-/// POST /api/channels/:id/reconnect
-pub async fn reconnect_channel(
-    State(state): State<Arc<AppState>>,
-    Path(channel_id): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    let db = state.db.write().await;
-    db.execute(
-        "UPDATE channels SET status = 'connected', status_message = NULL, updated_at = datetime('now') WHERE id = ?1",
-        [&channel_id],
-    ).map_err(|e| ApiError::db_error("reconnect_channel", e))?;
-    Ok(Json(
-        serde_json::json!({ "id": channel_id, "status": "reconnected" }),
-    ))
-}
-
-/// DELETE /api/channels/:id
-pub async fn delete_channel(
-    State(state): State<Arc<AppState>>,
-    Path(channel_id): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    let db = state.db.write().await;
-    db.execute("DELETE FROM channels WHERE id = ?1", [&channel_id])
-        .map_err(|e| ApiError::db_error("delete_channel", e))?;
-    Ok(Json(
-        serde_json::json!({ "id": channel_id, "status": "deleted" }),
-    ))
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct InjectMessageRequest {
     pub content: String,
     #[serde(default = "default_sender")]
@@ -156,92 +110,371 @@ pub struct InjectMessageResponse {
     pub routed: bool,
 }
 
+fn channel_actor(claims: Option<&Claims>) -> &str {
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
+}
+
+fn resolve_agent_id(state: &AppState, requested: &str) -> Result<Uuid, ApiError> {
+    if let Ok(id) = Uuid::parse_str(requested) {
+        if let Ok(agents) = state.agents.read() {
+            if agents.lookup_by_id(id).is_some() {
+                return Ok(id);
+            }
+        }
+
+        if let Ok(db) = state.db.read() {
+            let exists = db
+                .query_row(
+                    "SELECT COUNT(*) FROM agents WHERE id = ?1",
+                    [requested],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false);
+            if exists {
+                return Ok(id);
+            }
+        }
+
+        return Err(ApiError::not_found(format!("agent {requested} not found")));
+    }
+
+    if let Ok(agents) = state.agents.read() {
+        if let Some(agent) = agents.lookup_by_name(requested) {
+            return Ok(agent.id);
+        }
+    }
+
+    if let Ok(db) = state.db.read() {
+        let found: Option<String> = db
+            .query_row(
+                "SELECT id FROM agents WHERE name = ?1 LIMIT 1",
+                [requested],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(id) = found {
+            return Uuid::parse_str(&id)
+                .map_err(|e| ApiError::internal(format!("stored agent id is invalid: {e}")));
+        }
+    }
+
+    Err(ApiError::not_found(format!("agent {requested} not found")))
+}
+
+fn resolve_injection_target(
+    state: &AppState,
+    channel_type: &str,
+    requested_agent: Option<&str>,
+) -> Result<Uuid, ApiError> {
+    let agents = state
+        .agents
+        .read()
+        .map_err(|_| ApiError::internal("lock"))?;
+
+    if let Some(id_str) = requested_agent {
+        return match Uuid::parse_str(id_str) {
+            Ok(id) => {
+                if agents.lookup_by_id(id).is_some() {
+                    Ok(id)
+                } else {
+                    Err(ApiError::not_found(format!("agent {id} not found")))
+                }
+            }
+            Err(_) => match agents.lookup_by_name(id_str) {
+                Some(agent) => Ok(agent.id),
+                None => Err(ApiError::not_found(format!("agent {id_str} not found"))),
+            },
+        };
+    }
+
+    if let Some(agent) = agents.lookup_by_channel(channel_type) {
+        return Ok(agent.id);
+    }
+
+    let all = agents.all_agents();
+    if let Some(agent) = all.first() {
+        return Ok(agent.id);
+    }
+
+    Err(ApiError::not_found(
+        "no agent available for channel injection",
+    ))
+}
+
+/// POST /api/channels — create a new channel binding.
+pub async fn create_channel(
+    State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+    Json(body): Json<CreateChannelRequest>,
+) -> Response {
+    if body.channel_type.trim().is_empty() {
+        return error_response_with_idempotency(ApiError::bad_request("channel_type is required"));
+    }
+    if body.agent_id.trim().is_empty() {
+        return error_response_with_idempotency(ApiError::bad_request("agent_id is required"));
+    }
+
+    let actor = channel_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::to_value(&body).unwrap_or(serde_json::Value::Null);
+    let db = state.db.write().await;
+
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        CREATE_CHANNEL_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let channel_id = operation_context
+                .operation_id
+                .clone()
+                .unwrap_or_else(|| Uuid::now_v7().to_string());
+            let resolved_agent_id = resolve_agent_id(&state, &body.agent_id)?;
+            let config_str =
+                serde_json::to_string(&body.config.clone().unwrap_or(serde_json::json!({})))
+                    .unwrap_or_else(|_| "{}".to_string());
+
+            let _ = conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS channels (
+                    id TEXT PRIMARY KEY,
+                    channel_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'configuring',
+                    status_message TEXT,
+                    agent_id TEXT NOT NULL,
+                    config TEXT NOT NULL DEFAULT '{}',
+                    last_message_at TEXT,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+            );
+
+            conn.execute(
+                "INSERT INTO channels (id, channel_type, status, agent_id, config) VALUES (?1, ?2, 'connected', ?3, ?4)",
+                rusqlite::params![channel_id, body.channel_type, resolved_agent_id.to_string(), config_str],
+            )
+            .map_err(|e| ApiError::db_error("create_channel", e))?;
+
+            Ok((
+                StatusCode::CREATED,
+                serde_json::json!({
+                    "id": channel_id,
+                    "status": "created",
+                    "channel_type": body.channel_type,
+                    "agent_id": resolved_agent_id.to_string(),
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                outcome.body["agent_id"].as_str().unwrap_or("platform"),
+                "create_channel",
+                "medium",
+                actor,
+                "created",
+                serde_json::json!({
+                    "channel_id": outcome.body["id"],
+                    "channel_type": outcome.body["channel_type"],
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
+}
+
+/// POST /api/channels/:id/reconnect
+pub async fn reconnect_channel(
+    State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+    Path(channel_id): Path<String>,
+) -> Response {
+    let actor = channel_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({ "channel_id": channel_id });
+    let db = state.db.write().await;
+
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        RECONNECT_CHANNEL_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let affected = conn
+                .execute(
+                    "UPDATE channels SET status = 'connected', status_message = NULL, updated_at = datetime('now') WHERE id = ?1",
+                    [&channel_id],
+                )
+                .map_err(|e| ApiError::db_error("reconnect_channel", e))?;
+            if affected == 0 {
+                return Err(ApiError::not_found(format!(
+                    "channel {channel_id} not found"
+                )));
+            }
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({ "id": channel_id, "status": "reconnected" }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "reconnect_channel",
+                "medium",
+                actor,
+                "reconnected",
+                serde_json::json!({ "channel_id": outcome.body["id"] }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
+}
+
+/// DELETE /api/channels/:id
+pub async fn delete_channel(
+    State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+    Path(channel_id): Path<String>,
+) -> Response {
+    let actor = channel_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({ "channel_id": channel_id });
+    let db = state.db.write().await;
+
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "DELETE",
+        DELETE_CHANNEL_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let affected = conn
+                .execute("DELETE FROM channels WHERE id = ?1", [&channel_id])
+                .map_err(|e| ApiError::db_error("delete_channel", e))?;
+            if affected == 0 {
+                return Err(ApiError::not_found(format!(
+                    "channel {channel_id} not found"
+                )));
+            }
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({ "id": channel_id, "status": "deleted" }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "delete_channel",
+                "medium",
+                actor,
+                "deleted",
+                serde_json::json!({ "channel_id": outcome.body["id"] }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
+}
+
 /// POST /api/channels/:type/inject — inject a synthetic message for debugging.
 pub async fn inject_message(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(channel_type): Path<String>,
     Json(request): Json<InjectMessageRequest>,
-) -> Result<impl IntoResponse, StatusCode> {
-    // 1. Find target agent.
-    // Scoped block ensures RwLockReadGuard is dropped before any .await (Send requirement).
-    let agent_id = {
-        let agents = state
-            .agents
-            .read()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+) -> Result<Response, StatusCode> {
+    let actor = claims
+        .as_ref()
+        .map(|claims| claims.0.sub.as_str())
+        .unwrap_or(request.sender.as_str());
+    let request_body = serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
+    let db = state.db.write().await;
 
-        if let Some(ref id_str) = request.agent_id {
-            // Parse as UUID.
-            match Uuid::parse_str(id_str) {
-                Ok(id) => {
-                    // Verify agent exists.
-                    if agents.lookup_by_id(id).is_none() {
-                        return Err(StatusCode::NOT_FOUND);
-                    }
-                    id
-                }
-                Err(_) => {
-                    // Try by name.
-                    match agents.lookup_by_name(id_str) {
-                        Some(a) => a.id,
-                        None => return Err(StatusCode::NOT_FOUND),
-                    }
-                }
-            }
-        } else {
-            // Try by channel binding first, then fall back to first agent.
-            if let Some(a) = agents.lookup_by_channel(&channel_type) {
-                a.id
-            } else {
-                let all = agents.all_agents();
-                if all.is_empty() {
-                    return Err(StatusCode::NOT_FOUND);
-                }
-                all[0].id
-            }
-        }
-    };
-
-    let message_id = Uuid::now_v7();
-
-    // 2. Broadcast the injection event via WebSocket for observability.
-    crate::api::websocket::broadcast_event(
-        &state,
-        crate::api::websocket::WsEvent::AgentStateChange {
-            agent_id: agent_id.to_string(),
-            new_state: format!("channel_inject:{channel_type}"),
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        INJECT_CHANNEL_ROUTE_TEMPLATE,
+        &serde_json::json!({
+            "channel_type": channel_type,
+            "request": request_body,
+        }),
+        |_conn| {
+            let agent_id =
+                resolve_injection_target(&state, &channel_type, request.agent_id.as_deref())?;
+            Ok((
+                StatusCode::ACCEPTED,
+                serde_json::json!(InjectMessageResponse {
+                    message_id: operation_context
+                        .operation_id
+                        .clone()
+                        .unwrap_or_else(|| Uuid::now_v7().to_string()),
+                    agent_id: agent_id.to_string(),
+                    routed: true,
+                }),
+            ))
         },
-    );
+    ) {
+        Ok(outcome) => {
+            if outcome.idempotency_status == IdempotencyStatus::Executed {
+                crate::api::websocket::broadcast_event(
+                    &state,
+                    crate::api::websocket::WsEvent::AgentStateChange {
+                        agent_id: outcome.body["agent_id"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        new_state: format!("channel_inject:{channel_type}"),
+                    },
+                );
+            }
 
-    // 3. Write audit entry for the injection.
-    {
-        let db = state.db.write().await;
-        let _ = db.execute(
-            "INSERT INTO audit_log (id, event_type, severity, agent_id, details, timestamp, actor_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                message_id.to_string(),
-                format!("channel_inject:{channel_type}"),
+            write_mutation_audit_entry(
+                &db,
+                outcome.body["agent_id"].as_str().unwrap_or("platform"),
+                "inject_channel_message",
                 "info",
-                agent_id.to_string(),
+                actor,
+                "accepted",
                 serde_json::json!({
                     "channel_type": channel_type,
                     "sender": request.sender,
                     "content_length": request.content.len(),
-                })
-                .to_string(),
-                chrono::Utc::now().to_rfc3339(),
-                request.sender,
-            ],
-        );
-    }
+                    "message_id": outcome.body["message_id"],
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(InjectMessageResponse {
-            message_id: message_id.to_string(),
-            agent_id: agent_id.to_string(),
-            routed: true,
-        }),
-    ))
+            Ok(json_response_with_idempotency(
+                outcome.status,
+                outcome.body,
+                outcome.idempotency_status,
+            ))
+        }
+        Err(error) => Ok(error_response_with_idempotency(error)),
+    }
 }

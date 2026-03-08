@@ -28,10 +28,9 @@ pub struct ScreenRegion {
 impl ScreenRegion {
     /// Check whether a point falls within this region.
     pub fn contains(&self, px: i32, py: i32) -> bool {
-        px >= self.x
-            && py >= self.y
-            && px < self.x + self.width as i32
-            && py < self.y + self.height as i32
+        let right = i64::from(self.x) + i64::from(self.width);
+        let bottom = i64::from(self.y) + i64::from(self.height);
+        px >= self.x && py >= self.y && i64::from(px) < right && i64::from(py) < bottom
     }
 }
 
@@ -218,6 +217,19 @@ mod tests {
             v.validate_click(99999, 99999, Some("Firefox")),
             ValidationResult::Allowed,
         );
+    }
+
+    #[test]
+    fn safe_zone_contains_handles_large_coordinates_without_overflow() {
+        let zone = ScreenRegion {
+            x: i32::MAX - 5,
+            y: i32::MAX - 5,
+            width: 5,
+            height: 5,
+        };
+
+        assert!(zone.contains(i32::MAX - 1, i32::MAX - 1));
+        assert!(!zone.contains(i32::MAX, i32::MAX));
     }
 
     // ── App allowlist tests ──────────────────────────────────────

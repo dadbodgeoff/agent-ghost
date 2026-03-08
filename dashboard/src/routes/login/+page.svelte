@@ -1,6 +1,10 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
+  import {
+    invalidateAuthClientState,
+    notifyAuthBoundary,
+    rotateAuthBoundarySession,
+  } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
 
@@ -25,6 +29,7 @@
       } else {
         await runtime.setToken(token.trim());
       }
+      await rotateAuthBoundarySession();
       invalidateAuthClientState();
       await notifyAuthBoundary('ghost-auth-changed');
       goto('/');

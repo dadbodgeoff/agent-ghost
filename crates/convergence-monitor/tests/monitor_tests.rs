@@ -219,7 +219,6 @@ fn atomic_write_uses_temp_rename_pattern() {
 struct AgentInterventionState {
     level: u8,
     consecutive_normal: u32,
-    hysteresis_count: u8,
     ack_required: bool,
 }
 
@@ -363,7 +362,6 @@ fn stale_state_preserves_level_on_crash() {
     let state = AgentInterventionState {
         level: 3,
         consecutive_normal: 1,
-        hysteresis_count: 0,
         ack_required: false,
     };
 
@@ -371,7 +369,6 @@ fn stale_state_preserves_level_on_crash() {
     let restored = AgentInterventionState {
         level: state.level, // Preserved
         consecutive_normal: state.consecutive_normal,
-        hysteresis_count: 0,
         ack_required: state.ack_required,
     };
 
@@ -423,7 +420,6 @@ fn config_unlocked_during_cooldown_accepts_lowering() {
 
 #[test]
 fn raising_thresholds_always_allowed_even_during_lock() {
-    let config_locked = true;
     let current = 0.5;
     let proposed = 0.7; // Raising
 
@@ -435,6 +431,7 @@ fn raising_thresholds_always_allowed_even_during_lock() {
 
 #[test]
 fn intervention_action_level_0_is_log_only() {
+    #[allow(dead_code)]
     #[derive(Debug, PartialEq)]
     enum InterventionAction {
         Level0LogOnly,
@@ -724,6 +721,7 @@ fn post_redirect_verifier_no_amplification_on_genuine_change() {
 
 // ── Task 3.2: InterventionAction per-level tests ────────────────────────
 
+#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 enum FullInterventionAction {
     Level0LogOnly,

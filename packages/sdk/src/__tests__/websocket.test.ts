@@ -42,6 +42,11 @@ class MockWebSocket {
   }
 }
 
+async function flushAsyncWork() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe('GhostWebSocket', () => {
   beforeEach(() => {
     MockWebSocket.instances = [];
@@ -53,15 +58,25 @@ describe('GhostWebSocket', () => {
     vi.useRealTimers();
   });
 
-  it('uses ghost-token subprotocols and sends initial subscriptions', () => {
+  it('uses short-lived websocket tickets and sends initial subscriptions', async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ticket: 'ticket-123' }),
+    } as Response);
     const socket = new GhostWebSocket(
-      { baseUrl: 'http://test:39780', token: 'secret-token' },
+      { baseUrl: 'http://test:39780', token: 'secret-token', fetch },
       { topics: ['agent:alpha'] },
     ).connect();
+    await flushAsyncWork();
 
     const transport = MockWebSocket.instances[0];
     expect(transport.url).toBe('ws://test:39780/api/ws');
-    expect(transport.protocols).toEqual(['ghost-token.secret-token']);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:39780/api/ws/tickets',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(transport.protocols).toEqual(['ghost-ticket.ticket-123']);
 
     transport.open();
 
@@ -72,13 +87,19 @@ describe('GhostWebSocket', () => {
     socket.disconnect();
   });
 
-  it('reconnects with last_seq before replaying subscriptions', () => {
+  it('reconnects with last_seq before replaying subscriptions', async () => {
     vi.useFakeTimers();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ticket: 'ticket-123' }),
+    } as Response);
 
     const socket = new GhostWebSocket(
-      { baseUrl: 'http://test:39780', token: 'secret-token' },
+      { baseUrl: 'http://test:39780', token: 'secret-token', fetch },
       { topics: ['agent:alpha'] },
     ).connect();
+    await flushAsyncWork();
 
     const firstTransport = MockWebSocket.instances[0];
     firstTransport.open();
@@ -92,6 +113,7 @@ describe('GhostWebSocket', () => {
     firstTransport.close();
 
     vi.advanceTimersByTime(1000);
+    await flushAsyncWork();
 
     const secondTransport = MockWebSocket.instances[1];
     expect(secondTransport).toBeDefined();
@@ -106,11 +128,12 @@ describe('GhostWebSocket', () => {
     socket.disconnect();
   });
 
-  it('ignores malformed websocket payloads', () => {
+  it('ignores malformed websocket payloads', async () => {
     const handler = vi.fn();
     const socket = new GhostWebSocket({ baseUrl: 'http://test:39780' });
     socket.onAny(handler);
     socket.connect();
+    await flushAsyncWork();
 
     const transport = MockWebSocket.instances[0];
     transport.open();
@@ -121,15 +144,20 @@ describe('GhostWebSocket', () => {
     socket.disconnect();
   });
 
-  it('reports lifecycle callbacks and reuses an initial replay cursor', () => {
+  it('reports lifecycle callbacks and reuses an initial replay cursor', async () => {
     vi.useFakeTimers();
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ticket: 'ticket-123' }),
+    } as Response);
 
     const states: string[] = [];
     const reconnectAttempts: Array<{ attempt: number; delayMs: number }> = [];
     const envelopes: Array<{ seq?: number; type?: string }> = [];
 
     const socket = new GhostWebSocket(
-      { baseUrl: 'http://test:39780', token: 'secret-token' },
+      { baseUrl: 'http://test:39780', token: 'secret-token', fetch },
       {
         initialLastSeq: 12,
         onStateChange: (state) => states.push(state),
@@ -137,6 +165,7 @@ describe('GhostWebSocket', () => {
         onEnvelope: (envelope) => envelopes.push({ seq: envelope.seq, type: envelope.event?.type }),
       },
     ).connect();
+    await flushAsyncWork();
 
     const firstTransport = MockWebSocket.instances[0];
     expect(states).toEqual(['connecting']);
@@ -159,6 +188,7 @@ describe('GhostWebSocket', () => {
     expect(reconnectAttempts).toEqual([{ attempt: 1, delayMs: 1000 }]);
 
     vi.advanceTimersByTime(1000);
+    await flushAsyncWork();
 
     const secondTransport = MockWebSocket.instances[1];
     secondTransport.open();
@@ -167,7 +197,7 @@ describe('GhostWebSocket', () => {
     socket.disconnect();
   });
 
-  it('normalizes flat websocket events into envelopes', () => {
+  it('normalizes flat websocket events into envelopes', async () => {
     const handler = vi.fn();
     const envelopes: Array<{ type?: string }> = [];
     const socket = new GhostWebSocket(
@@ -178,6 +208,7 @@ describe('GhostWebSocket', () => {
     );
     socket.onAny(handler);
     socket.connect();
+    await flushAsyncWork();
 
     const transport = MockWebSocket.instances[0];
     transport.open();
@@ -187,5 +218,30 @@ describe('GhostWebSocket', () => {
     expect(envelopes).toEqual([{ type: 'Ping' }]);
 
     socket.disconnect();
+  });
+
+  it('does not retry when websocket ticket minting is unauthorized', async () => {
+    vi.useFakeTimers();
+    const errors: string[] = [];
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('unauthorized'),
+    } as Response);
+
+    new GhostWebSocket(
+      { baseUrl: 'http://test:39780', token: 'secret-token', fetch },
+      {
+        onError: (message) => errors.push(message),
+      },
+    ).connect();
+
+    await flushAsyncWork();
+    vi.advanceTimersByTime(10_000);
+    await flushAsyncWork();
+
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(errors).toEqual(['WebSocket authentication failed: unauthorized']);
   });
 });

@@ -50,7 +50,7 @@
 
 {#if isOpen && node}
   <div class="panel-backdrop" onclick={onclose} role="presentation"></div>
-  <aside class="node-detail-panel" role="dialog" aria-modal="true" aria-label="Node details">
+  <div class="node-detail-panel" role="dialog" aria-modal="true" aria-label="Node details">
     <header class="panel-header">
       <div class="header-info">
         <span class="node-type">{typeLabels[node.type] ?? node.type}</span>
@@ -113,7 +113,7 @@
     <footer class="panel-footer">
       <GateCheckBar gates={node.gates} compact={true} />
     </footer>
-  </aside>
+  </div>
 {/if}
 
 <style>

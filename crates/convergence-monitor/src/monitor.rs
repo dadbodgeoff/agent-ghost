@@ -14,7 +14,9 @@ use uuid::Uuid;
 
 use crate::config::MonitorConfig;
 use crate::intervention::actions::InterventionAction;
-use crate::intervention::cooldown::CooldownManager;
+use crate::intervention::cooldown::{
+    CooldownManager, DualKeyConfirmationResult, DualKeyInitiationResult, PendingCriticalAction,
+};
 use crate::intervention::escalation::EscalationManager;
 use crate::intervention::trigger::{CompositeResult, InterventionStateMachine};
 use crate::pipeline::signal_computer::SignalComputer;
@@ -24,7 +26,7 @@ use crate::session::registry::SessionRegistry;
 use crate::state_publisher::{ConvergenceSharedState, StatePublisher};
 use crate::transport::http_api::{
     self, AckResult, HttpApiState, InterventionSnapshot, MonitorRequest, ScoreSnapshot,
-    SessionSnapshot, ThresholdChangeResult,
+    SessionSnapshot, ThresholdChangeResult, ThresholdConfirmResult,
 };
 #[cfg(unix)]
 use crate::transport::unix_socket::UnixSocketTransport;
@@ -94,6 +96,16 @@ impl ConvergenceMonitor {
         })
     }
 
+    fn active_critical_override_threshold(&self) -> f64 {
+        self.config
+            .intervention_thresholds
+            .critical_override_threshold
+    }
+
+    fn threshold_values_match(current: f64, actual: f64) -> bool {
+        (current - actual).abs() <= f64::EPSILON
+    }
+
     /// Reconstruct state from SQLite on startup (Req 9 AC2).
     ///
     /// Queries SQLite for last intervention level, last score,
@@ -115,91 +127,97 @@ impl ConvergenceMonitor {
         };
 
         // Restore intervention states per agent
-        let mut stmt = match conn.prepare(
+        let mut restored_count = 0u32;
+        match conn.prepare(
             "SELECT agent_id, level, consecutive_normal, cooldown_until, \
              ack_required, hysteresis_count, de_escalation_credits \
              FROM intervention_state",
         ) {
-            Ok(s) => s,
+            Ok(mut stmt) => match stmt.query_map([], |row| {
+                let agent_id_str: String = row.get(0)?;
+                let level: u8 = row.get(1)?;
+                let consecutive_normal: u32 = row.get(2)?;
+                let cooldown_until: Option<String> = row.get(3)?;
+                let ack_required: bool = row.get(4)?;
+                let hysteresis_count: u32 = row.get(5)?;
+                let de_escalation_credits: u32 = row.get(6)?;
+                Ok((
+                    agent_id_str,
+                    level,
+                    consecutive_normal,
+                    cooldown_until,
+                    ack_required,
+                    hysteresis_count,
+                    de_escalation_credits,
+                ))
+            }) {
+                Ok(rows) => {
+                    for row in rows {
+                        let (
+                            agent_id_str,
+                            level,
+                            consecutive_normal,
+                            cooldown_until_str,
+                            ack_required,
+                            hysteresis_count,
+                            de_escalation_credits,
+                        ) = match row {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "skipping malformed intervention_state row"
+                                );
+                                continue;
+                            }
+                        };
+
+                        let agent_id = match Uuid::parse_str(&agent_id_str) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    agent_id = %agent_id_str,
+                                    "skipping invalid agent_id"
+                                );
+                                continue;
+                            }
+                        };
+
+                        let cooldown_until = cooldown_until_str.and_then(|s| {
+                            chrono::DateTime::parse_from_rfc3339(&s)
+                                .ok()
+                                .map(|dt| dt.with_timezone(&chrono::Utc))
+                        });
+
+                        self.intervention.restore_state_from_fields(
+                            agent_id,
+                            level,
+                            consecutive_normal,
+                            cooldown_until,
+                            ack_required,
+                            hysteresis_count,
+                            de_escalation_credits,
+                        );
+
+                        restored_count += 1;
+                        tracing::info!(
+                            agent_id = %agent_id,
+                            level,
+                            "restored intervention state"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to query intervention_state — starting fresh"
+                    );
+                }
+            },
             Err(e) => {
                 tracing::warn!(error = %e, "intervention_state table not found — starting fresh");
-                return;
             }
-        };
-
-        let rows = match stmt.query_map([], |row| {
-            let agent_id_str: String = row.get(0)?;
-            let level: u8 = row.get(1)?;
-            let consecutive_normal: u32 = row.get(2)?;
-            let cooldown_until: Option<String> = row.get(3)?;
-            let ack_required: bool = row.get(4)?;
-            let hysteresis_count: u32 = row.get(5)?;
-            let de_escalation_credits: u32 = row.get(6)?;
-            Ok((
-                agent_id_str,
-                level,
-                consecutive_normal,
-                cooldown_until,
-                ack_required,
-                hysteresis_count,
-                de_escalation_credits,
-            ))
-        }) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to query intervention_state — starting fresh");
-                return;
-            }
-        };
-
-        let mut restored_count = 0u32;
-        for row in rows {
-            let (
-                agent_id_str,
-                level,
-                consecutive_normal,
-                cooldown_until_str,
-                ack_required,
-                hysteresis_count,
-                de_escalation_credits,
-            ) = match row {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(error = %e, "skipping malformed intervention_state row");
-                    continue;
-                }
-            };
-
-            let agent_id = match Uuid::parse_str(&agent_id_str) {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(error = %e, agent_id = %agent_id_str, "skipping invalid agent_id");
-                    continue;
-                }
-            };
-
-            let cooldown_until = cooldown_until_str.and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(&s)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-            });
-
-            self.intervention.restore_state_from_fields(
-                agent_id,
-                level,
-                consecutive_normal,
-                cooldown_until,
-                ack_required,
-                hysteresis_count,
-                de_escalation_credits,
-            );
-
-            restored_count += 1;
-            tracing::info!(
-                agent_id = %agent_id,
-                level,
-                "restored intervention state"
-            );
         }
 
         // Restore calibration counts
@@ -306,6 +324,26 @@ impl ConvergenceMonitor {
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to prepare convergence score query — score cache will be empty");
+            }
+        }
+
+        match conn.query_row(
+            "SELECT critical_override_threshold FROM monitor_threshold_config \
+             WHERE config_key = 'critical_override_threshold'",
+            [],
+            |row| row.get::<_, f64>(0),
+        ) {
+            Ok(threshold) => {
+                self.config
+                    .intervention_thresholds
+                    .critical_override_threshold = threshold;
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to restore persisted critical override threshold — using config default"
+                );
             }
         }
 
@@ -426,6 +464,7 @@ impl ConvergenceMonitor {
                 _ = cooldown_interval.tick() => {
                     // Check and expire cooldowns for all agents
                     self.check_cooldowns();
+                    self.prune_stale_state();
                     self.sync_http_state(&http_state_ref).await;
                 }
                 _ = signal_5min_interval.tick() => {
@@ -582,22 +621,74 @@ impl ConvergenceMonitor {
             }
             // T-6.4.2: Propose a threshold change (CS§ dual-key).
             MonitorRequest::ThresholdChange {
+                initiator,
                 current,
                 proposed,
                 reply,
             } => {
-                let result = if self.cooldown.is_critical_change(proposed) {
-                    // Critical change — require dual-key confirmation.
-                    let token = self.cooldown.initiate_dual_key_change();
-                    tracing::info!(
-                        current,
-                        proposed,
-                        "critical threshold change initiated — dual-key required"
-                    );
-                    ThresholdChangeResult::DualKeyRequired { token }
+                let actual = self.active_critical_override_threshold();
+                let result = if !Self::threshold_values_match(current, actual) {
+                    ThresholdChangeResult::CurrentMismatch { actual }
+                } else if proposed < self.cooldown.threshold_floor {
+                    ThresholdChangeResult::Rejected {
+                        reason: format!(
+                            "proposed value {proposed} is below threshold floor {}",
+                            self.cooldown.threshold_floor
+                        ),
+                    }
+                } else if self.cooldown.pending_dual_key_change.is_some() {
+                    let pending = self
+                        .cooldown
+                        .pending_dual_key_change
+                        .as_ref()
+                        .expect("pending change checked above");
+                    ThresholdChangeResult::AlreadyPending {
+                        intended_action: pending.intended_action.clone(),
+                        expires_in_secs: (pending.expires_at - chrono::Utc::now())
+                            .num_seconds()
+                            .max(0) as u64,
+                    }
+                } else if self.cooldown.is_critical_change(current, proposed) {
+                    // Lowering the runtime threshold is safety-critical and must be dual-key confirmed.
+                    match self.cooldown.initiate_dual_key_change(
+                        initiator,
+                        PendingCriticalAction::ThresholdChange { current, proposed },
+                        chrono::Utc::now(),
+                        self.config.dual_key_ttl,
+                    ) {
+                        DualKeyInitiationResult::Initiated { token, expires_at } => {
+                            tracing::info!(
+                                current,
+                                proposed,
+                                expires_at = %expires_at,
+                                "critical threshold change initiated — dual-key required"
+                            );
+                            ThresholdChangeResult::DualKeyRequired {
+                                token,
+                                expires_in_secs: (expires_at - chrono::Utc::now())
+                                    .num_seconds()
+                                    .max(0) as u64,
+                            }
+                        }
+                        DualKeyInitiationResult::AlreadyPending {
+                            intended_action,
+                            expires_at,
+                        } => ThresholdChangeResult::AlreadyPending {
+                            intended_action,
+                            expires_in_secs: (expires_at - chrono::Utc::now()).num_seconds().max(0)
+                                as u64,
+                        },
+                    }
                 } else if self.cooldown.can_change_threshold(current, proposed) {
-                    tracing::info!(current, proposed, "threshold change applied");
-                    ThresholdChangeResult::Applied
+                    match self.apply_threshold_change(proposed, &initiator, None, "immediate") {
+                        Ok(()) => {
+                            tracing::info!(current, proposed, "threshold change applied");
+                            ThresholdChangeResult::Applied
+                        }
+                        Err(e) => ThresholdChangeResult::Rejected {
+                            reason: format!("failed to persist threshold change: {e}"),
+                        },
+                    }
                 } else {
                     let reason = if self.cooldown.config_locked {
                         "config locked during active sessions".to_string()
@@ -609,18 +700,106 @@ impl ConvergenceMonitor {
                 let _ = reply.send(result);
             }
             // T-6.4.2: Confirm a dual-key threshold change.
-            MonitorRequest::ThresholdConfirm { token, reply } => {
-                let confirmed = self.cooldown.confirm_dual_key_change(&token);
-                if confirmed {
-                    tracing::info!("dual-key threshold change confirmed");
-                } else {
-                    tracing::warn!(
-                        "dual-key threshold confirmation failed (invalid/expired token)"
-                    );
+            MonitorRequest::ThresholdConfirm {
+                token,
+                confirmer,
+                reply,
+            } => {
+                let confirmation =
+                    self.cooldown
+                        .confirm_dual_key_change(&token, &confirmer, chrono::Utc::now());
+                match &confirmation {
+                    DualKeyConfirmationResult::Confirmed { pending_change } => {
+                        tracing::info!(
+                            confirmer,
+                            intended_action = pending_change.intended_action,
+                            "dual-key threshold change confirmed"
+                        );
+                    }
+                    DualKeyConfirmationResult::MissingPending => {
+                        tracing::warn!(
+                            "dual-key threshold confirmation failed (no pending change)"
+                        );
+                    }
+                    DualKeyConfirmationResult::InvalidToken => {
+                        tracing::warn!("dual-key threshold confirmation failed (invalid token)");
+                    }
+                    DualKeyConfirmationResult::Expired { pending_change } => {
+                        tracing::warn!(
+                            intended_action = pending_change.intended_action,
+                            "dual-key threshold confirmation failed (expired token)"
+                        );
+                    }
+                    DualKeyConfirmationResult::SameActorRejected => {
+                        tracing::warn!(
+                            confirmer,
+                            "dual-key threshold confirmation failed (same actor)"
+                        );
+                    }
                 }
-                let _ = reply.send(confirmed);
+                let result = match confirmation {
+                    DualKeyConfirmationResult::Confirmed { pending_change } => {
+                        let apply_result = match pending_change.action {
+                            PendingCriticalAction::ThresholdChange { current, proposed } => {
+                                let actual = self.active_critical_override_threshold();
+                                if !Self::threshold_values_match(current, actual) {
+                                    Err(anyhow::anyhow!(
+                                        "threshold drift detected during confirmation: active={actual}, pending_current={current}"
+                                    ))
+                                } else {
+                                    self.apply_threshold_change(
+                                        proposed,
+                                        &pending_change.initiator,
+                                        Some(&confirmer),
+                                        "dual_key",
+                                    )
+                                }
+                            }
+                        };
+
+                        match apply_result {
+                            Ok(()) => ThresholdConfirmResult::Applied,
+                            Err(e) => ThresholdConfirmResult::ApplyFailed {
+                                reason: e.to_string(),
+                            },
+                        }
+                    }
+                    DualKeyConfirmationResult::MissingPending => {
+                        ThresholdConfirmResult::MissingPending
+                    }
+                    DualKeyConfirmationResult::InvalidToken => ThresholdConfirmResult::InvalidToken,
+                    DualKeyConfirmationResult::Expired { pending_change } => {
+                        ThresholdConfirmResult::Expired {
+                            intended_action: pending_change.intended_action,
+                        }
+                    }
+                    DualKeyConfirmationResult::SameActorRejected => {
+                        ThresholdConfirmResult::SameActorRejected
+                    }
+                };
+                let _ = reply.send(result);
             }
         }
+    }
+
+    fn apply_threshold_change(
+        &mut self,
+        proposed: f64,
+        initiated_by: &str,
+        confirmed_by: Option<&str>,
+        change_mode: &str,
+    ) -> anyhow::Result<()> {
+        let previous = self.active_critical_override_threshold();
+        if Self::threshold_values_match(previous, proposed) {
+            return Ok(());
+        }
+
+        self.config
+            .intervention_thresholds
+            .critical_override_threshold = proposed;
+        self.score_cache.clear();
+        self.persist_threshold_change(previous, proposed, initiated_by, confirmed_by, change_mode)?;
+        Ok(())
     }
 
     /// Flush any pending scores to the database before shutdown (T-6.2.8).
@@ -781,7 +960,7 @@ impl ConvergenceMonitor {
                 }
 
                 // T-6.4.1: Unlock config when no active sessions remain (A8).
-                if self.sessions.active_sessions(&event.agent_id).is_empty() {
+                if !self.sessions.has_active_sessions() {
                     self.cooldown.unlock_config();
                 }
             }
@@ -1003,9 +1182,10 @@ impl ConvergenceMonitor {
 
         // Critical single-signal overrides (AC6):
         // session >6h OR gap <5min OR vocab >0.85 → minimum Level 2
-        let critical_override = signals[0] > 0.85  // S1: session duration (normalized, >6h)
-            || signals[1] > 0.85                     // S2: inter-session gap (<5min)
-            || signals[3] > 0.85; // S4: vocabulary convergence (>0.85)
+        let critical_override_threshold = self.active_critical_override_threshold();
+        let critical_override = signals[0] > critical_override_threshold
+            || signals[1] > critical_override_threshold
+            || signals[3] > critical_override_threshold;
 
         let mut level = score_to_level(score);
         if critical_override && level < 2 {
@@ -1031,6 +1211,14 @@ impl ConvergenceMonitor {
         // Iterate all agents with active cooldowns and check expiry.
         // Expired cooldowns are cleared so scoring can resume.
         let now = chrono::Utc::now();
+        if let Some(expired) = self.cooldown.prune_expired_dual_key_change(now) {
+            tracing::info!(
+                initiator = expired.initiator,
+                intended_action = expired.intended_action,
+                expired_at = %expired.expires_at,
+                "expired pending dual-key change pruned"
+            );
+        }
         let mut expired_agents = Vec::new();
         for (agent_id, state) in self.intervention.states_mut() {
             if let Some(until) = state.cooldown_until {
@@ -1047,6 +1235,30 @@ impl ConvergenceMonitor {
                 tracing::error!(agent_id = %agent_id, error = %e, "failed to persist intervention state after cooldown expiry");
             }
         }
+    }
+
+    fn prune_stale_state(&mut self) {
+        let now = chrono::Utc::now();
+        let idle_horizon = chrono::Duration::from_std(self.config.session_idle_horizon)
+            .unwrap_or_else(|_| chrono::Duration::minutes(30));
+        let pruned_sessions = self.sessions.prune_stale(now, idle_horizon);
+        if !pruned_sessions.session_ids.is_empty() {
+            tracing::info!(
+                count = pruned_sessions.session_ids.len(),
+                "pruned stale sessions"
+            );
+        }
+        if !pruned_sessions.provisional_agent_ids.is_empty() {
+            tracing::info!(
+                count = pruned_sessions.provisional_agent_ids.len(),
+                "pruned stale provisional agents"
+            );
+        }
+        if !self.sessions.has_active_sessions() {
+            self.cooldown.unlock_config();
+        }
+        self.rate_limiter
+            .prune_idle(self.config.rate_limit_bucket_idle_horizon);
     }
 
     /// Handle a timer tick (5-min or 15-min) for signal scheduling (Task 19.2).
@@ -1080,7 +1292,7 @@ impl ConvergenceMonitor {
     /// If the cached connection is stale (e.g., disk full, corruption),
     /// drops it and creates a fresh one. A single DB error does NOT
     /// permanently break the monitor.
-    fn get_db_conn(&mut self) -> anyhow::Result<&rusqlite::Connection> {
+    fn get_db_conn(&mut self) -> anyhow::Result<&mut rusqlite::Connection> {
         // Probe the existing connection with a cheap no-op query.
         // If it fails, drop it so we reconnect below.
         if let Some(ref conn) = self.db_conn {
@@ -1093,9 +1305,28 @@ impl ConvergenceMonitor {
         if self.db_conn.is_none() {
             let conn = rusqlite::Connection::open(&self.config.db_path)?;
             conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS monitor_threshold_config (
+                    config_key TEXT PRIMARY KEY,
+                    critical_override_threshold REAL NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT NOT NULL,
+                    confirmed_by TEXT
+                );
+                CREATE TABLE IF NOT EXISTS monitor_threshold_history (
+                    id TEXT PRIMARY KEY,
+                    config_key TEXT NOT NULL,
+                    previous_value REAL NOT NULL,
+                    new_value REAL NOT NULL,
+                    initiated_by TEXT NOT NULL,
+                    confirmed_by TEXT,
+                    change_mode TEXT NOT NULL,
+                    changed_at TEXT NOT NULL
+                );",
+            )?;
             self.db_conn = Some(conn);
         }
-        Ok(self.db_conn.as_ref().unwrap())
+        Ok(self.db_conn.as_mut().unwrap())
     }
 
     /// Persist an ITP event to the database with hash chain linkage (AC4).
@@ -1192,6 +1423,55 @@ impl ConvergenceMonitor {
                 state.de_escalation_credits as i32,
             ],
         )?;
+        Ok(())
+    }
+
+    fn persist_threshold_change(
+        &mut self,
+        previous: f64,
+        proposed: f64,
+        initiated_by: &str,
+        confirmed_by: Option<&str>,
+        change_mode: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.get_db_conn()?;
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        let updated_by = confirmed_by.unwrap_or(initiated_by);
+        tx.execute(
+            "INSERT INTO monitor_threshold_config \
+             (config_key, critical_override_threshold, updated_at, updated_by, confirmed_by) \
+             VALUES ('critical_override_threshold', ?1, ?2, ?3, ?4) \
+             ON CONFLICT(config_key) DO UPDATE SET
+                critical_override_threshold = excluded.critical_override_threshold,
+                updated_at = excluded.updated_at,
+                updated_by = excluded.updated_by,
+                confirmed_by = excluded.confirmed_by",
+            rusqlite::params![proposed, now, updated_by, confirmed_by],
+        )?;
+        tx.execute(
+            "INSERT INTO monitor_threshold_history \
+             (id, config_key, previous_value, new_value, initiated_by, confirmed_by, change_mode, changed_at) \
+             VALUES (?1, 'critical_override_threshold', ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                Uuid::now_v7().to_string(),
+                previous,
+                proposed,
+                initiated_by,
+                confirmed_by,
+                change_mode,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        tx.commit()?;
+        tracing::info!(
+            previous,
+            proposed,
+            initiated_by,
+            confirmed_by,
+            change_mode,
+            "persisted critical override threshold change"
+        );
         Ok(())
     }
 
@@ -1294,5 +1574,109 @@ impl std::fmt::Display for crate::transport::EventSource {
             Self::Proxy => write!(f, "proxy"),
             Self::HttpApi => write!(f, "http_api"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transport::http_api::{
+        MonitorRequest, ThresholdChangeResult, ThresholdConfirmResult,
+    };
+
+    fn test_config(db_path: std::path::PathBuf, state_dir: std::path::PathBuf) -> MonitorConfig {
+        let mut config = MonitorConfig::default();
+        config.db_path = db_path;
+        config.state_dir = state_dir;
+        config
+    }
+
+    #[test]
+    fn threshold_change_updates_runtime_and_persists_audit_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("monitor.sqlite");
+        let state_dir = temp.path().join("state");
+        let config = test_config(db_path.clone(), state_dir);
+        let mut monitor = ConvergenceMonitor::new(config).unwrap();
+
+        monitor
+            .apply_threshold_change(0.9, "alice", None, "immediate")
+            .unwrap();
+
+        assert_eq!(monitor.active_critical_override_threshold(), 0.9);
+
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let persisted: f64 = conn
+            .query_row(
+                "SELECT critical_override_threshold FROM monitor_threshold_config \
+                 WHERE config_key = 'critical_override_threshold'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, 0.9);
+
+        let history: (f64, f64, String, String) = conn
+            .query_row(
+                "SELECT previous_value, new_value, initiated_by, change_mode \
+                 FROM monitor_threshold_history",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            history,
+            (0.85, 0.9, "alice".to_string(), "immediate".to_string())
+        );
+    }
+
+    #[test]
+    fn threshold_configuration_is_restored_on_restart_without_other_state_tables() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("monitor.sqlite");
+        let state_dir = temp.path().join("state");
+        let config = test_config(db_path.clone(), state_dir.clone());
+        let mut monitor = ConvergenceMonitor::new(config.clone()).unwrap();
+        monitor
+            .apply_threshold_change(0.92, "alice", None, "immediate")
+            .unwrap();
+
+        let mut restarted = ConvergenceMonitor::new(test_config(db_path, state_dir)).unwrap();
+        restarted.reconstruct_state();
+
+        assert_eq!(restarted.active_critical_override_threshold(), 0.92);
+    }
+
+    #[test]
+    fn dual_key_threshold_confirmation_applies_runtime_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("monitor.sqlite");
+        let state_dir = temp.path().join("state");
+        let mut monitor = ConvergenceMonitor::new(test_config(db_path, state_dir)).unwrap();
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (change_tx, change_rx) = tokio::sync::oneshot::channel();
+        monitor.handle_monitor_request(MonitorRequest::ThresholdChange {
+            initiator: "alice".to_string(),
+            current: 0.85,
+            proposed: 0.8,
+            reply: change_tx,
+        });
+        let token = match runtime.block_on(change_rx).unwrap() {
+            ThresholdChangeResult::DualKeyRequired { token, .. } => token,
+            other => panic!("expected dual-key challenge, got {other:?}"),
+        };
+
+        let (confirm_tx, confirm_rx) = tokio::sync::oneshot::channel();
+        monitor.handle_monitor_request(MonitorRequest::ThresholdConfirm {
+            token,
+            confirmer: "bob".to_string(),
+            reply: confirm_tx,
+        });
+        assert_eq!(
+            runtime.block_on(confirm_rx).unwrap(),
+            ThresholdConfirmResult::Applied
+        );
+        assert_eq!(monitor.active_critical_override_threshold(), 0.8);
     }
 }

@@ -6,12 +6,29 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::Response;
+use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::{
+    abort_prepared_json_operation, commit_prepared_json_operation,
+    execute_idempotent_json_mutation, prepare_json_operation, PreparedOperation,
+};
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::api::websocket::WsEvent;
 use crate::state::AppState;
+
+const CREATE_WEBHOOK_ROUTE_TEMPLATE: &str = "/api/webhooks";
+const UPDATE_WEBHOOK_ROUTE_TEMPLATE: &str = "/api/webhooks/:id";
+const DELETE_WEBHOOK_ROUTE_TEMPLATE: &str = "/api/webhooks/:id";
+const TEST_WEBHOOK_ROUTE_TEMPLATE: &str = "/api/webhooks/:id/test";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -26,7 +43,7 @@ pub struct WebhookSummary {
     pub updated_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateWebhookRequest {
     pub name: String,
     pub url: String,
@@ -35,7 +52,7 @@ pub struct CreateWebhookRequest {
     pub headers: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateWebhookRequest {
     pub name: Option<String>,
     pub url: Option<String>,
@@ -60,74 +77,26 @@ const VALID_EVENTS: &[&str] = &[
     "backup_complete",
 ];
 
-// ── Handlers ───────────────────────────────────────────────────────
-
-/// GET /api/webhooks — list all webhooks.
-pub async fn list_webhooks(State(state): State<Arc<AppState>>) -> ApiResult<WebhookListResponse> {
-    let db = state
-        .db
-        .read()
-        .map_err(|e| ApiError::db_error("list_webhooks", e))?;
-
-    // T-5.8.2: Do NOT query secret in list endpoint — secrets should never leave DB
-    // except during webhook fire.
-    let mut stmt = db
-        .prepare(
-            "SELECT id, name, url, events, active, created_at, updated_at \
-             FROM webhooks ORDER BY created_at DESC",
-        )
-        .map_err(|e| ApiError::db_error("prepare webhook list", e))?;
-
-    let webhooks: Vec<WebhookSummary> = stmt
-        .query_map([], |row| {
-            let events_json: String = row.get::<_, String>(3).unwrap_or_else(|_| "[]".into());
-            Ok(WebhookSummary {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                url: row.get(2)?,
-                events: serde_json::from_str(&events_json).unwrap_or_default(),
-                active: row.get::<_, i64>(4).unwrap_or(1) != 0,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
-            })
-        })
-        .map_err(|e| ApiError::db_error("query webhooks", e))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(Json(WebhookListResponse { webhooks }))
+fn webhook_actor(claims: Option<&Claims>) -> &str {
+    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
 }
 
-/// POST /api/webhooks — create a webhook.
-pub async fn create_webhook(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<CreateWebhookRequest>,
-) -> ApiResult<WebhookSummary> {
-    if req.name.trim().is_empty() {
-        return Err(ApiError::bad_request("Webhook name is required"));
-    }
-    if req.url.trim().is_empty() {
+fn validate_webhook_url(url: &str) -> Result<(), ApiError> {
+    if url.trim().is_empty() {
         return Err(ApiError::bad_request("Webhook URL is required"));
     }
-    // T-5.6.2: Validate URL format — must be parseable with http/https scheme.
-    if req.url.len() > 2048 {
+    if url.len() > 2048 {
         return Err(ApiError::bad_request(
             "Webhook URL exceeds 2048 character limit",
         ));
     }
-    // T-5.5.1: Validate URL against SSRF blocklist.
-    if let Err(e) = crate::api::ssrf::validate_url(&req.url) {
-        return Err(ApiError::bad_request(format!("Webhook URL blocked: {e}")));
-    }
-    // T-5.2.2: Require non-empty secret for HMAC-SHA256 signing.
-    let secret = req.secret.unwrap_or_default();
-    if secret.is_empty() {
-        return Err(ApiError::bad_request(
-            "Webhook secret is required — every webhook must have a verifiable HMAC signature",
-        ));
-    }
-    // T-5.6.3: Validate custom headers — block dangerous headers.
-    if let Some(ref headers) = req.headers {
+    crate::api::ssrf::validate_url(url)
+        .map_err(|e| ApiError::bad_request(format!("Webhook URL blocked: {e}")))?;
+    Ok(())
+}
+
+fn validate_webhook_headers(headers: &Option<serde_json::Value>) -> Result<(), ApiError> {
+    if let Some(headers) = headers {
         if let Some(obj) = headers.as_object() {
             const BLOCKED_HEADERS: &[&str] = &[
                 "authorization",
@@ -159,169 +128,480 @@ pub async fn create_webhook(
             }
         }
     }
-    // T-5.3.10: Cap total webhook count at 50.
-    {
-        let db = state
-            .db
-            .read()
-            .map_err(|e| ApiError::db_error("webhook_count_check", e))?;
-        let count: i64 = db
-            .query_row("SELECT COUNT(*) FROM webhooks", [], |row| row.get(0))
-            .unwrap_or(0);
-        if count >= 50 {
-            return Err(ApiError::bad_request(
-                "Maximum 50 webhooks allowed. Delete unused webhooks before creating new ones.",
-            ));
-        }
-    }
-    for evt in &req.events {
+    Ok(())
+}
+
+fn validate_webhook_events(events: &[String]) -> Result<(), ApiError> {
+    for evt in events {
         if !VALID_EVENTS.contains(&evt.as_str()) {
             return Err(ApiError::bad_request(format!("Invalid event type: {evt}")));
         }
     }
+    Ok(())
+}
 
-    let id = uuid::Uuid::now_v7().to_string();
-    let events_json = serde_json::to_string(&req.events)
-        .map_err(|e| ApiError::internal(format!("serialize events: {e}")))?;
-    let headers_json = serde_json::to_string(&req.headers.unwrap_or(serde_json::json!({})))
-        .map_err(|e| ApiError::internal(format!("serialize headers: {e}")))?;
+// ── Handlers ───────────────────────────────────────────────────────
 
+/// GET /api/webhooks — list all webhooks.
+pub async fn list_webhooks(State(state): State<Arc<AppState>>) -> ApiResult<WebhookListResponse> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("list_webhooks", e))?;
+
+    let mut stmt = db
+        .prepare(
+            "SELECT id, name, url, events, active, created_at, updated_at \
+             FROM webhooks ORDER BY created_at DESC",
+        )
+        .map_err(|e| ApiError::db_error("prepare webhook list", e))?;
+
+    let webhooks: Vec<WebhookSummary> = stmt
+        .query_map([], |row| {
+            let events_json: String = row.get::<_, String>(3).unwrap_or_else(|_| "[]".into());
+            Ok(WebhookSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                url: row.get(2)?,
+                events: serde_json::from_str(&events_json).unwrap_or_default(),
+                active: row.get::<_, i64>(4).unwrap_or(1) != 0,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })
+        .map_err(|e| ApiError::db_error("query webhooks", e))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(Json(WebhookListResponse { webhooks }))
+}
+
+/// POST /api/webhooks — create a webhook.
+pub async fn create_webhook(
+    State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+    Json(req): Json<CreateWebhookRequest>,
+) -> Response {
+    if req.name.trim().is_empty() {
+        return error_response_with_idempotency(ApiError::bad_request(
+            "Webhook name is required",
+        ));
+    }
+    if let Err(error) = validate_webhook_url(&req.url) {
+        return error_response_with_idempotency(error);
+    }
+    if let Err(error) = validate_webhook_events(&req.events) {
+        return error_response_with_idempotency(error);
+    }
+    if let Err(error) = validate_webhook_headers(&req.headers) {
+        return error_response_with_idempotency(error);
+    }
+
+    let secret = req.secret.clone().unwrap_or_default();
+    if secret.is_empty() {
+        return error_response_with_idempotency(ApiError::bad_request(
+            "Webhook secret is required — every webhook must have a verifiable HMAC signature",
+        ));
+    }
+
+    {
+        let db = state
+            .db
+            .read()
+            .map_err(|e| ApiError::db_error("webhook_count_check", e));
+        match db {
+            Ok(db) => {
+                let count: i64 = db
+                    .query_row("SELECT COUNT(*) FROM webhooks", [], |row| row.get(0))
+                    .unwrap_or(0);
+                if count >= 50 {
+                    return error_response_with_idempotency(ApiError::bad_request(
+                        "Maximum 50 webhooks allowed. Delete unused webhooks before creating new ones.",
+                    ));
+                }
+            }
+            Err(error) => return error_response_with_idempotency(error),
+        }
+    }
+
+    let actor = webhook_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({
+        "name": req.name,
+        "url": req.url,
+        "events": req.events,
+        "headers": req.headers,
+    });
     let db = state.db.write().await;
-    db.execute(
-        "INSERT INTO webhooks (id, name, url, secret, events, headers) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![id, req.name, req.url, secret, events_json, headers_json],
-    )
-    .map_err(|e| ApiError::db_error("insert webhook", e))?;
 
-    Ok(Json(WebhookSummary {
-        id,
-        name: req.name,
-        url: req.url,
-        events: req.events,
-        active: true,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
-    }))
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        CREATE_WEBHOOK_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let id = operation_context
+                .operation_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+            let events_json = serde_json::to_string(&req.events)
+                .map_err(|e| ApiError::internal(format!("serialize events: {e}")))?;
+            let headers_json =
+                serde_json::to_string(&req.headers.clone().unwrap_or(serde_json::json!({})))
+                    .map_err(|e| ApiError::internal(format!("serialize headers: {e}")))?;
+
+            conn.execute(
+                "INSERT INTO webhooks (id, name, url, secret, events, headers) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, req.name, req.url, secret, events_json, headers_json],
+            )
+            .map_err(|e| ApiError::db_error("insert webhook", e))?;
+
+            Ok((
+                StatusCode::CREATED,
+                serde_json::to_value(WebhookSummary {
+                    id,
+                    name: req.name.clone(),
+                    url: req.url.clone(),
+                    events: req.events.clone(),
+                    active: true,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    updated_at: chrono::Utc::now().to_rfc3339(),
+                })
+                .unwrap_or(serde_json::Value::Null),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "create_webhook",
+                "high",
+                actor,
+                "created",
+                serde_json::json!({
+                    "webhook_id": outcome.body["id"],
+                    "name": outcome.body["name"],
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// PUT /api/webhooks/:id — update a webhook.
 pub async fn update_webhook(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(id): Path<String>,
     Json(req): Json<UpdateWebhookRequest>,
-) -> ApiResult<serde_json::Value> {
-    let db = state.db.write().await;
-
-    // Build dynamic UPDATE.
-    let mut sets: Vec<String> = vec!["updated_at = datetime('now')".into()];
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut idx = 1u32;
-
-    if let Some(name) = &req.name {
-        sets.push(format!("name = ?{idx}"));
-        params.push(Box::new(name.clone()));
-        idx += 1;
-    }
+) -> Response {
     if let Some(url) = &req.url {
-        sets.push(format!("url = ?{idx}"));
-        params.push(Box::new(url.clone()));
-        idx += 1;
+        if let Err(error) = validate_webhook_url(url) {
+            return error_response_with_idempotency(error);
+        }
     }
     if let Some(events) = &req.events {
-        let json = serde_json::to_string(events).unwrap_or_else(|_| "[]".into());
-        sets.push(format!("events = ?{idx}"));
-        params.push(Box::new(json));
-        idx += 1;
+        if let Err(error) = validate_webhook_events(events) {
+            return error_response_with_idempotency(error);
+        }
     }
-    if let Some(active) = req.active {
-        sets.push(format!("active = ?{idx}"));
-        params.push(Box::new(active as i64));
-        idx += 1;
-    }
-    if let Some(headers) = &req.headers {
-        let json = serde_json::to_string(headers).unwrap_or_else(|_| "{}".into());
-        sets.push(format!("headers = ?{idx}"));
-        params.push(Box::new(json));
-        idx += 1;
+    if let Err(error) = validate_webhook_headers(&req.headers) {
+        return error_response_with_idempotency(error);
     }
 
-    params.push(Box::new(id.clone()));
-    let sql = format!("UPDATE webhooks SET {} WHERE id = ?{idx}", sets.join(", "));
+    let actor = webhook_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({
+        "webhook_id": id,
+        "body": req,
+    });
+    let db = state.db.write().await;
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let affected = db
-        .execute(&sql, param_refs.as_slice())
-        .map_err(|e| ApiError::db_error("update webhook", e))?;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "PUT",
+        UPDATE_WEBHOOK_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let mut sets: Vec<String> = vec!["updated_at = datetime('now')".into()];
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            let mut idx = 1u32;
 
-    if affected == 0 {
-        return Err(ApiError::not_found(format!("Webhook '{id}' not found")));
+            if let Some(name) = &req.name {
+                sets.push(format!("name = ?{idx}"));
+                params.push(Box::new(name.clone()));
+                idx += 1;
+            }
+            if let Some(url) = &req.url {
+                sets.push(format!("url = ?{idx}"));
+                params.push(Box::new(url.clone()));
+                idx += 1;
+            }
+            if let Some(events) = &req.events {
+                let json = serde_json::to_string(events).unwrap_or_else(|_| "[]".into());
+                sets.push(format!("events = ?{idx}"));
+                params.push(Box::new(json));
+                idx += 1;
+            }
+            if let Some(active) = req.active {
+                sets.push(format!("active = ?{idx}"));
+                params.push(Box::new(active as i64));
+                idx += 1;
+            }
+            if let Some(headers) = &req.headers {
+                let json = serde_json::to_string(headers).unwrap_or_else(|_| "{}".into());
+                sets.push(format!("headers = ?{idx}"));
+                params.push(Box::new(json));
+                idx += 1;
+            }
+
+            params.push(Box::new(id.clone()));
+            let sql = format!("UPDATE webhooks SET {} WHERE id = ?{idx}", sets.join(", "));
+
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            let affected = conn
+                .execute(&sql, param_refs.as_slice())
+                .map_err(|e| ApiError::db_error("update webhook", e))?;
+
+            if affected == 0 {
+                return Err(ApiError::not_found(format!("Webhook '{id}' not found")));
+            }
+
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({ "updated": id }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "update_webhook",
+                "high",
+                actor,
+                "updated",
+                serde_json::json!({ "webhook_id": id }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
     }
-
-    Ok(Json(serde_json::json!({ "updated": id })))
 }
 
 /// DELETE /api/webhooks/:id — delete a webhook.
 pub async fn delete_webhook(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> Response {
+    let actor = webhook_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({ "webhook_id": id.clone() });
     let db = state.db.write().await;
 
-    let affected = db
-        .execute("DELETE FROM webhooks WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| ApiError::db_error("delete webhook", e))?;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "DELETE",
+        DELETE_WEBHOOK_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let affected = conn
+                .execute("DELETE FROM webhooks WHERE id = ?1", rusqlite::params![id])
+                .map_err(|e| ApiError::db_error("delete webhook", e))?;
 
-    if affected == 0 {
-        return Err(ApiError::not_found(format!("Webhook '{id}' not found")));
+            if affected == 0 {
+                return Err(ApiError::not_found(format!("Webhook '{id}' not found")));
+            }
+
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({ "deleted": id }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "delete_webhook",
+                "high",
+                actor,
+                "deleted",
+                serde_json::json!({ "webhook_id": id }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
     }
-
-    Ok(Json(serde_json::json!({ "deleted": id })))
 }
 
 /// POST /api/webhooks/:id/test — fire a test webhook.
 pub async fn test_webhook(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    let (url, secret, headers_json) = {
-        let db = state
-            .db
-            .read()
-            .map_err(|e| ApiError::db_error("test_webhook", e))?;
-        let result: (String, String, String) = db
-            .query_row(
-                "SELECT url, secret, headers FROM webhooks WHERE id = ?1",
-                rusqlite::params![id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .map_err(|_| ApiError::not_found(format!("Webhook '{id}' not found")))?;
-        result
+) -> Response {
+    let actor = webhook_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({ "webhook_id": id.clone() });
+
+    let prepared = {
+        let db = state.db.write().await;
+        prepare_json_operation(
+            &db,
+            &operation_context,
+            actor,
+            "POST",
+            TEST_WEBHOOK_ROUTE_TEMPLATE,
+            &request_body,
+        )
     };
 
-    let payload = serde_json::json!({
-        "event": "test",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "message": "This is a test webhook from GHOST ADE",
-    });
+    match prepared {
+        Ok(PreparedOperation::Replay(stored)) => {
+            let db = state.db.write().await;
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "test_webhook",
+                "high",
+                actor,
+                "replayed",
+                serde_json::json!({
+                    "webhook_id": id,
+                    "status_code": stored.body.get("status_code"),
+                }),
+                &operation_context,
+                &IdempotencyStatus::Replayed,
+            );
+            json_response_with_idempotency(
+                stored.status,
+                stored.body,
+                IdempotencyStatus::Replayed,
+            )
+        }
+        Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency key was reused with a different request payload",
+            serde_json::json!({
+                "route_template": TEST_WEBHOOK_ROUTE_TEMPLATE,
+                "method": "POST",
+            }),
+        )),
+        Ok(PreparedOperation::InProgress) => error_response_with_idempotency(ApiError::custom(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "An equivalent request is already in progress",
+        )),
+        Ok(PreparedOperation::Acquired { journal_id }) => {
+            let webhook_config = {
+                let db = match state.db.read() {
+                    Ok(db) => db,
+                    Err(error) => {
+                        let db = state.db.write().await;
+                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        return error_response_with_idempotency(ApiError::db_error(
+                            "test_webhook",
+                            error,
+                        ));
+                    }
+                };
+                db.query_row(
+                    "SELECT url, secret, headers FROM webhooks WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .ok()
+            };
 
-    let status = fire_single_webhook(&url, &secret, &headers_json, &payload).await;
+            let Some((url, secret, headers_json)) = webhook_config else {
+                let db = state.db.write().await;
+                let _ = abort_prepared_json_operation(&db, &journal_id);
+                return error_response_with_idempotency(ApiError::not_found(format!(
+                    "Webhook '{id}' not found"
+                )));
+            };
 
-    // Broadcast result.
-    crate::api::websocket::broadcast_event(
-        &state,
-        WsEvent::WebhookFired {
-            webhook_id: id.clone(),
-            event_type: "test".into(),
-            status_code: status,
-        },
-    );
+            let payload = serde_json::json!({
+                "event": "test",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "message": "This is a test webhook from GHOST ADE",
+            });
 
-    Ok(Json(serde_json::json!({
-        "webhook_id": id,
-        "status_code": status,
-        "success": (200..300).contains(&(status as u32)),
-    })))
+            let status = fire_single_webhook(&url, &secret, &headers_json, &payload).await;
+            crate::api::websocket::broadcast_event(
+                &state,
+                WsEvent::WebhookFired {
+                    webhook_id: id.clone(),
+                    event_type: "test".into(),
+                    status_code: status,
+                },
+            );
+
+            let response_body = serde_json::json!({
+                "webhook_id": id,
+                "status_code": status,
+                "success": (200..300).contains(&(status as u32)),
+            });
+
+            let db = state.db.write().await;
+            match commit_prepared_json_operation(
+                &db,
+                &operation_context,
+                &journal_id,
+                StatusCode::OK,
+                &response_body,
+            ) {
+                Ok(outcome) => {
+                    write_mutation_audit_entry(
+                        &db,
+                        "platform",
+                        "test_webhook",
+                        "high",
+                        actor,
+                        "executed",
+                        serde_json::json!({
+                            "webhook_id": outcome.body["webhook_id"],
+                            "status_code": outcome.body["status_code"],
+                        }),
+                        &operation_context,
+                        &outcome.idempotency_status,
+                    );
+                    json_response_with_idempotency(
+                        outcome.status,
+                        outcome.body,
+                        outcome.idempotency_status,
+                    )
+                }
+                Err(error) => error_response_with_idempotency(error),
+            }
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 // ── Webhook firing engine ──────────────────────────────────────────
@@ -330,10 +610,6 @@ pub async fn test_webhook(
 const MAX_CONCURRENT_WEBHOOKS: usize = 32;
 
 /// Fire webhooks matching the given event type.
-///
-/// T-5.3.1: Uses a semaphore to bound concurrent HTTP clients. At most
-/// `MAX_CONCURRENT_WEBHOOKS` requests are in flight at any time.
-/// Tracks JoinHandles in a JoinSet for graceful shutdown.
 pub async fn fire_webhooks(
     db: &std::sync::Arc<crate::db_pool::DbPool>,
     app_state: &std::sync::Arc<crate::state::AppState>,
@@ -371,7 +647,6 @@ pub async fn fire_webhooks(
         return;
     }
 
-    // T-5.3.1: Parse max concurrency from env, default to 32.
     let max_concurrent: usize = std::env::var("GHOST_MAX_CONCURRENT_WEBHOOKS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -401,7 +676,6 @@ pub async fn fire_webhooks(
         });
     }
 
-    // Await all webhook fires (bounded by semaphore).
     while let Some(result) = join_set.join_next().await {
         if let Err(e) = result {
             tracing::warn!(error = %e, "Webhook fire task panicked");
@@ -410,8 +684,6 @@ pub async fn fire_webhooks(
 }
 
 /// Compute HMAC-SHA256 signature for a webhook payload (T-5.2.2).
-///
-/// Returns `sha256=<hex>` format matching GitHub/Stripe webhook conventions.
 fn compute_hmac_sha256(secret: &str, body: &str) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -437,8 +709,6 @@ async fn fire_single_webhook(
 ) -> u16 {
     let body = serde_json::to_string(payload).unwrap_or_default();
 
-    // T-5.2.2: Compute HMAC-SHA256 signature (replaces blake3 keyed hash).
-    // Every webhook MUST include a verifiable signature — no unsigned webhooks.
     let signature = if !secret.is_empty() {
         compute_hmac_sha256(secret, &body)
     } else {
@@ -456,11 +726,9 @@ async fn fire_single_webhook(
         .timeout(std::time::Duration::from_secs(10));
 
     if !signature.is_empty() {
-        // T-5.2.2: Standard header format matching GitHub/Stripe conventions.
         req = req.header("X-Ghost-Webhook-Signature", &signature);
     }
 
-    // Apply custom headers.
     if let Ok(headers) =
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(headers_json)
     {

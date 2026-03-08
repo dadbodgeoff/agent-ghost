@@ -1,11 +1,35 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
 
-export interface Workflow {
+export interface WorkflowNode<TData extends Record<string, unknown> = Record<string, unknown>> {
+  id: string;
+  type: string;
+  label?: string;
+  x?: number;
+  y?: number;
+  config?: Record<string, unknown>;
+  data?: TData;
+  branch_group?: string;
+  condition?: string;
+  execution_status?: 'pending' | 'running' | 'completed' | 'failed';
+}
+
+export interface WorkflowEdge<TData extends Record<string, unknown> = Record<string, unknown>> {
+  source: string;
+  target: string;
+  condition_label?: string;
+  branch_type?: 'parallel' | 'conditional' | 'default' | string;
+  data?: TData;
+}
+
+export interface Workflow<
+  TNodeData extends Record<string, unknown> = Record<string, unknown>,
+  TEdgeData extends Record<string, unknown> = Record<string, unknown>,
+> {
   id: string;
   name: string;
   description: string;
-  nodes: unknown;
-  edges: unknown;
+  nodes: WorkflowNode<TNodeData>[];
+  edges: WorkflowEdge<TEdgeData>[];
   created_by?: string | null;
   updated_at?: string;
   created_at?: string;
@@ -27,8 +51,8 @@ export interface ListWorkflowsResult {
 export interface CreateWorkflowParams {
   name: string;
   description?: string;
-  nodes?: unknown;
-  edges?: unknown;
+  nodes?: WorkflowNode[];
+  edges?: WorkflowEdge[];
 }
 
 export interface CreateWorkflowResult {
@@ -41,8 +65,8 @@ export interface CreateWorkflowResult {
 export interface UpdateWorkflowParams {
   name?: string;
   description?: string;
-  nodes?: unknown;
-  edges?: unknown;
+  nodes?: WorkflowNode[];
+  edges?: WorkflowEdge[];
 }
 
 export interface UpdateWorkflowResult {

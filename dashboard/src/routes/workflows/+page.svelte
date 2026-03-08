@@ -132,6 +132,11 @@
     canvas.removeNode(nodeId);
   }
 
+  function formatWorkflowDate(updatedAt?: string): string {
+    if (!updatedAt) return 'Unknown';
+    return new Date(updatedAt).toLocaleDateString();
+  }
+
   const NODE_TYPES = [
     { type: 'llm_call', label: 'LLM Call' },
     { type: 'tool_exec', label: 'Tool Exec' },
@@ -163,7 +168,7 @@
               onclick={() => loadWorkflow(wf.id)}
             >
               <span class="wf-name">{wf.name}</span>
-              <span class="wf-date">{new Date(wf.updated_at).toLocaleDateString()}</span>
+              <span class="wf-date">{formatWorkflowDate(wf.updated_at)}</span>
             </button>
           </li>
         {/each}

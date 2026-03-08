@@ -16,6 +16,7 @@ pub mod memory_audit_queries;
 pub mod memory_event_queries;
 pub mod memory_snapshot_queries;
 pub mod note_queries;
+pub mod operation_journal_queries;
 pub mod pc_control_queries;
 pub mod reflection_queries;
 pub mod revoked_token_queries;

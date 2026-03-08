@@ -2,15 +2,26 @@
 //!
 //! All endpoints require `role == "admin"` in JWT claims.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::response::Response;
+use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::execute_idempotent_json_mutation;
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::OperationContext;
 use crate::state::AppState;
+
+const CREATE_BACKUP_ROUTE_TEMPLATE: &str = "/api/admin/backup";
+const RESTORE_BACKUP_ROUTE_TEMPLATE: &str = "/api/admin/restore";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -68,15 +79,71 @@ pub struct BackupListResponse {
 
 // ── Auth helper ─────────────────────────────────────────────────────
 
-fn require_admin(ext: &axum::http::Extensions) -> Result<(), ApiError> {
-    if let Some(claims) = ext.get::<Claims>() {
-        if claims.role == "admin" {
+fn require_role(claims: Option<&Claims>, role: &str) -> Result<(), ApiError> {
+    if let Some(claims) = claims {
+        if claims.role == role {
             return Ok(());
         }
     }
-    Err(ApiError::Forbidden(
-        "Admin role required for this operation".to_owned(),
-    ))
+    Err(ApiError::Forbidden(format!(
+        "{} role required for this operation",
+        role.to_ascii_uppercase()
+    )))
+}
+
+fn backup_actor(claims: Option<&Claims>) -> &str {
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown-admin")
+}
+
+fn resolve_backup_passphrase() -> String {
+    match std::env::var("GHOST_BACKUP_PASSPHRASE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => {
+            let key_path = crate::bootstrap::shellexpand_tilde("~/.ghost/backup.key");
+            if let Ok(existing) = std::fs::read_to_string(&key_path) {
+                if !existing.trim().is_empty() {
+                    existing.trim().to_string()
+                } else {
+                    generate_backup_key(&key_path)
+                }
+            } else {
+                generate_backup_key(&key_path)
+            }
+        }
+    }
+}
+
+fn backup_paths(backup_dir: &str, backup_id: &str) -> (PathBuf, PathBuf) {
+    let final_path =
+        PathBuf::from(backup_dir).join(format!("ghost-backup-{backup_id}.ghost-backup"));
+    let temp_path = PathBuf::from(backup_dir).join(format!(".ghost-backup-{backup_id}.tmp"));
+    (final_path, temp_path)
+}
+
+fn checksum_file(path: &Path) -> Result<(String, u64), ApiError> {
+    let data =
+        std::fs::read(path).map_err(|e| ApiError::internal(format!("read backup archive: {e}")))?;
+    Ok((blake3::hash(&data).to_hex().to_string(), data.len() as u64))
+}
+
+fn verify_backup_archive(
+    backup_path: &Path,
+    passphrase: &str,
+) -> Result<(ghost_backup::BackupManifest, String, u64), ApiError> {
+    if !backup_path.exists() {
+        return Err(ApiError::not_found("Backup file not found"));
+    }
+
+    let verify_dir = tempfile::tempdir()
+        .map_err(|e| ApiError::internal(format!("create restore verification dir: {e}")))?;
+    let importer = ghost_backup::BackupImporter::new(verify_dir.path());
+    let manifest = importer
+        .import(backup_path, passphrase)
+        .map_err(|e| ApiError::internal(format!("Backup verification failed: {e}")))?;
+    let (checksum, size_bytes) = checksum_file(backup_path)?;
+    Ok((manifest, checksum, size_bytes))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -84,91 +151,136 @@ fn require_admin(ext: &axum::http::Extensions) -> Result<(), ApiError> {
 /// POST /api/admin/backup — trigger a point-in-time backup.
 pub async fn create_backup(
     State(state): State<Arc<AppState>>,
-    request: axum::http::Request<axum::body::Body>,
-) -> ApiResult<BackupResponse> {
-    require_admin(request.extensions())?;
-
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+) -> Response {
+    let claims = claims.as_ref().map(|claims| &claims.0);
+    if let Err(error) = require_role(claims, "admin") {
+        return error_response_with_idempotency(error);
+    }
+    let actor = backup_actor(claims);
     let backup_dir = std::env::var("GHOST_BACKUP_DIR").unwrap_or_else(|_| "./backups".into());
-
-    // T-5.8.1: Require explicit backup passphrase — never use hardcoded default.
-    let passphrase = match std::env::var("GHOST_BACKUP_PASSPHRASE") {
-        Ok(p) if !p.is_empty() => p,
-        _ => {
-            // Generate random 32-byte passphrase and store in ~/.ghost/backup.key.
-            let key_path = crate::bootstrap::shellexpand_tilde("~/.ghost/backup.key");
-            if let Ok(existing) = std::fs::read_to_string(&key_path) {
-                if !existing.trim().is_empty() {
-                    existing.trim().to_string()
-                } else {
-                    let new_key = generate_backup_key(&key_path);
-                    new_key
-                }
-            } else {
-                let new_key = generate_backup_key(&key_path);
-                new_key
-            }
-        }
-    };
-
-    // Ensure backup directory exists.
-    std::fs::create_dir_all(&backup_dir)
-        .map_err(|e| ApiError::internal(format!("Failed to create backup directory: {e}")))?;
-
-    let backup_id = uuid::Uuid::now_v7().to_string();
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-    let output_path =
-        std::path::PathBuf::from(&backup_dir).join(format!("ghost-backup-{timestamp}.tar.gz"));
-
-    // Use ghost-backup exporter.
     let ghost_dir = std::env::var("GHOST_DIR").unwrap_or_else(|_| ".".into());
-    let exporter = ghost_backup::BackupExporter::new(&ghost_dir);
-    let manifest = exporter
-        .export(&output_path, &passphrase)
-        .map_err(|e| ApiError::internal(format!("Backup failed: {e}")))?;
+    let passphrase = resolve_backup_passphrase();
+    let backup_id = operation_context
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let request_body = serde_json::json!({
+        "backup_id": backup_id,
+        "backup_dir": backup_dir,
+        "ghost_dir": ghost_dir,
+    });
 
-    let size_bytes = std::fs::metadata(&output_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-
-    // Compute overall BLAKE3 checksum of the archive.
-    let checksum = {
-        let data = std::fs::read(&output_path).unwrap_or_default();
-        blake3::hash(&data).to_hex().to_string()
-    };
-
-    // Record in backup_manifest table.
     let db = state.db.write().await;
-    db.execute(
-        "INSERT INTO backup_manifest (id, size_bytes, entry_count, blake3_checksum, status, metadata) \
-         VALUES (?1, ?2, ?3, ?4, 'complete', ?5)",
-        rusqlite::params![
-            backup_id,
-            size_bytes as i64,
-            manifest.entries.len() as i64,
-            checksum,
-            serde_json::to_string(&manifest).unwrap_or_default(),
-        ],
-    )
-    .map_err(|e| ApiError::db_error("record backup manifest", e))?;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        CREATE_BACKUP_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            std::fs::create_dir_all(&backup_dir).map_err(|e| {
+                ApiError::internal(format!("Failed to create backup directory: {e}"))
+            })?;
 
-    // Broadcast WS event.
-    crate::api::websocket::broadcast_event(
-        &state,
-        crate::api::websocket::WsEvent::BackupComplete {
-            backup_id: backup_id.clone(),
-            status: "complete".into(),
-            size_bytes,
+            let (output_path, temp_path) = backup_paths(&backup_dir, &backup_id);
+            let _ = std::fs::remove_file(&temp_path);
+
+            let exporter = ghost_backup::BackupExporter::new(&ghost_dir);
+            let manifest = exporter
+                .export(&temp_path, &passphrase)
+                .map_err(|e| ApiError::internal(format!("Backup failed: {e}")))?;
+
+            let temp_file = std::fs::OpenOptions::new()
+                .read(true)
+                .open(&temp_path)
+                .map_err(|e| ApiError::internal(format!("open backup temp file: {e}")))?;
+            temp_file
+                .sync_all()
+                .map_err(|e| ApiError::internal(format!("fsync backup temp file: {e}")))?;
+
+            if output_path.exists() {
+                std::fs::remove_file(&output_path).map_err(|e| {
+                    ApiError::internal(format!("replace prior backup archive: {e}"))
+                })?;
+            }
+            std::fs::rename(&temp_path, &output_path)
+                .map_err(|e| ApiError::internal(format!("finalize backup archive: {e}")))?;
+
+            let (checksum, size_bytes) = checksum_file(&output_path)?;
+            let created_at = chrono::Utc::now().to_rfc3339();
+            let metadata = serde_json::json!({
+                "manifest": manifest,
+                "archive_path": output_path,
+                "ghost_dir": ghost_dir,
+            });
+
+            conn.execute(
+                "INSERT OR REPLACE INTO backup_manifest (id, created_at, size_bytes, entry_count, blake3_checksum, status, metadata) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'complete', ?6)",
+                rusqlite::params![
+                    backup_id,
+                    created_at,
+                    size_bytes as i64,
+                    metadata["manifest"]["entries"].as_array().map(|entries| entries.len()).unwrap_or(0) as i64,
+                    checksum,
+                    metadata.to_string(),
+                ],
+            )
+            .map_err(|e| ApiError::db_error("record backup manifest", e))?;
+
+            Ok((
+                axum::http::StatusCode::OK,
+                serde_json::json!(BackupResponse {
+                    backup_id: backup_id.clone(),
+                    created_at,
+                    size_bytes,
+                    entry_count: metadata["manifest"]["entries"]
+                        .as_array()
+                        .map(|entries| entries.len())
+                        .unwrap_or(0),
+                    blake3_checksum: checksum,
+                    status: "complete".into(),
+                }),
+            ))
         },
-    );
+    ) {
+        Ok(outcome) => {
+            if outcome.idempotency_status
+                == crate::api::operation_context::IdempotencyStatus::Executed
+            {
+                crate::api::websocket::broadcast_event(
+                    &state,
+                    crate::api::websocket::WsEvent::BackupComplete {
+                        backup_id: backup_id.clone(),
+                        status: "complete".into(),
+                        size_bytes: outcome.body["size_bytes"].as_u64().unwrap_or(0),
+                    },
+                );
+            }
 
-    Ok(Json(BackupResponse {
-        backup_id,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        size_bytes,
-        entry_count: manifest.entries.len(),
-        blake3_checksum: checksum,
-        status: "complete".into(),
-    }))
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "create_backup",
+                "high",
+                actor,
+                "complete",
+                serde_json::json!({
+                    "backup_id": backup_id,
+                    "size_bytes": outcome.body["size_bytes"],
+                    "entry_count": outcome.body["entry_count"],
+                    "backup_dir": backup_dir,
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// POST /api/admin/restore — verify backup integrity (does NOT apply).
@@ -176,43 +288,70 @@ pub async fn create_backup(
 /// Validates the backup archive exists and computes its BLAKE3 checksum.
 /// Actual restore requires running `ghost restore <path>` via the CLI.
 pub async fn restore_backup(
-    State(_state): State<Arc<AppState>>,
-    request: axum::http::Request<axum::body::Body>,
-) -> ApiResult<RestoreVerification> {
-    require_admin(request.extensions())?;
-
-    // Parse body.
-    let body = axum::body::to_bytes(request.into_body(), 2048)
-        .await
-        .map_err(|e| ApiError::bad_request(format!("Invalid request body: {e}")))?;
-    let req: RestoreRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::bad_request(format!("Invalid JSON: {e}")))?;
-
-    let backup_path = std::path::Path::new(&req.backup_path);
-    if !backup_path.exists() {
-        return Err(ApiError::not_found("Backup file not found"));
+    State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
+    Json(req): Json<RestoreRequest>,
+) -> Response {
+    let claims = claims.as_ref().map(|claims| &claims.0);
+    if let Err(error) = require_role(claims, "superadmin") {
+        return error_response_with_idempotency(error);
     }
+    let actor = backup_actor(claims);
+    let request_body = serde_json::json!({
+        "backup_path": req.backup_path,
+    });
+    let passphrase = resolve_backup_passphrase();
+    let db = state.db.write().await;
 
-    // Verify BLAKE3 integrity without importing.
-    let data = std::fs::read(backup_path)
-        .map_err(|e| ApiError::internal(format!("Failed to read backup file: {e}")))?;
-    let checksum = blake3::hash(&data).to_hex().to_string();
-    let is_valid_archive = data.len() > 2 && data[0] == 0x1f && data[1] == 0x8b;
-
-    Ok(Json(RestoreVerification {
-        valid: is_valid_archive,
-        entry_count: 0,
-        version: checksum[..16].to_string(),
-        message: if is_valid_archive {
-            format!(
-                "Backup verified (BLAKE3: {}…, {} bytes). Use CLI to apply restore.",
-                &checksum[..16],
-                data.len()
-            )
-        } else {
-            "Invalid backup archive format".into()
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        RESTORE_BACKUP_ROUTE_TEMPLATE,
+        &request_body,
+        |_conn| {
+            let backup_path = Path::new(&req.backup_path);
+            let (manifest, checksum, size_bytes) = verify_backup_archive(backup_path, &passphrase)?;
+            let response = RestoreVerification {
+                valid: true,
+                entry_count: manifest.entries.len(),
+                version: manifest.version.clone(),
+                message: format!(
+                    "Backup verified (BLAKE3: {}…, {} bytes). Use CLI to apply restore.",
+                    &checksum[..16],
+                    size_bytes
+                ),
+            };
+            Ok((
+                axum::http::StatusCode::OK,
+                serde_json::to_value(&response).map_err(|e| {
+                    ApiError::internal(format!("serialize restore verification: {e}"))
+                })?,
+            ))
         },
-    }))
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "restore_backup_verification",
+                "critical",
+                actor,
+                "verified",
+                serde_json::json!({
+                    "backup_path": req.backup_path,
+                    "entry_count": outcome.body["entry_count"],
+                    "version": outcome.body["version"],
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// GET /api/admin/export — export entities as JSON or JSONL.
@@ -223,7 +362,7 @@ pub async fn export_data(
     State(state): State<Arc<AppState>>,
     request: axum::http::Request<axum::body::Body>,
 ) -> Result<axum::response::Response, ApiError> {
-    require_admin(request.extensions())?;
+    require_role(request.extensions().get::<Claims>(), "admin")?;
 
     // Parse format from query string manually.
     let format = request
@@ -312,7 +451,7 @@ pub async fn list_backups(
     State(state): State<Arc<AppState>>,
     request: axum::http::Request<axum::body::Body>,
 ) -> ApiResult<BackupListResponse> {
-    require_admin(request.extensions())?;
+    require_role(request.extensions().get::<Claims>(), "admin")?;
 
     let db = state
         .db

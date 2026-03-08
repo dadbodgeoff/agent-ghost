@@ -482,6 +482,10 @@ mod dead_write_path_tests {
                 tool_name: None,
                 details: "test entry".into(),
                 session_id: None,
+                operation_id: None,
+                request_id: None,
+                idempotency_key: None,
+                idempotency_status: None,
             })
             .unwrap();
         let result = engine.query(&ghost_audit::AuditFilter::new()).unwrap();

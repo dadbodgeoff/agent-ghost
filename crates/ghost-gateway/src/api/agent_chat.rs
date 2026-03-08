@@ -13,14 +13,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use ghost_agent_loop::runner::AgentStreamEvent;
-use ghost_llm::fallback::AuthProfile;
-use ghost_llm::provider::{
-    AnthropicProvider, GeminiProvider, OllamaProvider, OpenAICompatProvider, OpenAIProvider,
-};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::websocket::WsEvent;
-use crate::config::ProviderConfig;
+use crate::provider_runtime;
 use crate::runtime_safety::{
     RunnerBuildOptions, RuntimeSafetyBuilder, RuntimeSafetyContext, RuntimeSafetyError,
     API_SYNTHETIC_AGENT_NAME,
@@ -48,110 +44,6 @@ pub struct AgentChatResponse {
     pub total_cost: f64,
 }
 
-/// Build an LLM fallback chain from provider configs stored in AppState.
-pub fn build_fallback_chain_from_providers(
-    providers: &[ProviderConfig],
-) -> ghost_agent_loop::runner::LLMFallbackChain {
-    let mut chain = ghost_agent_loop::runner::LLMFallbackChain::new();
-
-    for p in providers {
-        match p.name.as_str() {
-            "ollama" => {
-                let base_url = p
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "http://localhost:11434".into());
-                let model = p.model.clone().unwrap_or_else(|| "llama3.1".into());
-                chain.add_provider(Arc::new(OllamaProvider { model, base_url }), vec![]);
-            }
-            "anthropic" => {
-                let key_env = p.api_key_env.as_deref().unwrap_or("ANTHROPIC_API_KEY");
-                if let Some(key) = crate::state::get_api_key(key_env) {
-                    if !key.is_empty() {
-                        let model = p
-                            .model
-                            .clone()
-                            .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
-                        chain.add_provider(
-                            Arc::new(AnthropicProvider {
-                                model,
-                                api_key: std::sync::RwLock::new(key.clone()),
-                            }),
-                            vec![AuthProfile {
-                                api_key: key,
-                                org_id: None,
-                            }],
-                        );
-                    }
-                }
-            }
-            "openai" => {
-                let key_env = p.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
-                if let Some(key) = crate::state::get_api_key(key_env) {
-                    if !key.is_empty() {
-                        let model = p.model.clone().unwrap_or_else(|| "gpt-4o".into());
-                        chain.add_provider(
-                            Arc::new(OpenAIProvider {
-                                model,
-                                api_key: std::sync::RwLock::new(key.clone()),
-                            }),
-                            vec![AuthProfile {
-                                api_key: key,
-                                org_id: None,
-                            }],
-                        );
-                    }
-                }
-            }
-            "gemini" => {
-                let key_env = p.api_key_env.as_deref().unwrap_or("GEMINI_API_KEY");
-                if let Some(key) = crate::state::get_api_key(key_env) {
-                    if !key.is_empty() {
-                        let model = p.model.clone().unwrap_or_else(|| "gemini-2.0-flash".into());
-                        chain.add_provider(
-                            Arc::new(GeminiProvider {
-                                model,
-                                api_key: std::sync::RwLock::new(key.clone()),
-                            }),
-                            vec![AuthProfile {
-                                api_key: key,
-                                org_id: None,
-                            }],
-                        );
-                    }
-                }
-            }
-            "openai_compat" => {
-                let key_env = p.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
-                if let Some(key) = crate::state::get_api_key(key_env) {
-                    if !key.is_empty() {
-                        let base_url = p
-                            .base_url
-                            .clone()
-                            .unwrap_or_else(|| "http://localhost:8080".into());
-                        let model = p.model.clone().unwrap_or_else(|| "default".into());
-                        chain.add_provider(
-                            Arc::new(OpenAICompatProvider {
-                                model,
-                                api_key: std::sync::RwLock::new(key.clone()),
-                                base_url,
-                                context_window_size: 128_000,
-                            }),
-                            vec![AuthProfile {
-                                api_key: key,
-                                org_id: None,
-                            }],
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    chain
-}
-
 /// POST /api/agent/chat
 ///
 /// Runs one turn of the full agent loop with environment awareness, SOUL.md identity,
@@ -164,24 +56,29 @@ pub async fn agent_chat(
         return Err(ApiError::bad_request("message must not be empty"));
     }
 
-    if state.model_providers.is_empty() {
+    let builder = RuntimeSafetyBuilder::new(&state);
+    let agent = builder
+        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
+        .map_err(map_runtime_safety_error)?;
+    ensure_agent_available(&state, agent.id)?;
+    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
+    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
+    runtime_ctx
+        .ensure_execution_permitted()
+        .map_err(map_runner_error)?;
+    let mut runner = builder
+        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
+        .map_err(map_runtime_safety_error)?;
+
+    let providers = provider_runtime::ordered_provider_configs(&state);
+    if providers.is_empty() {
         return Err(ApiError::bad_request(
             "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
         ));
     }
 
-    let builder = RuntimeSafetyBuilder::new(&state);
-    let agent = builder
-        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
-        .map_err(map_runtime_safety_error)?;
-    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
-    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
-    let mut runner = builder
-        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
-        .map_err(map_runtime_safety_error)?;
-
     // 1. Build LLM fallback chain from configured providers
-    let mut fallback_chain = build_fallback_chain_from_providers(&state.model_providers);
+    let mut fallback_chain = provider_runtime::build_fallback_chain(&providers);
 
     // 2. Run pre_loop + run_turn
     let mut ctx = runner
@@ -220,32 +117,35 @@ pub async fn agent_chat_stream(
         return Err(ApiError::bad_request("message must not be empty"));
     }
 
-    if state.model_providers.is_empty() {
+    let builder = RuntimeSafetyBuilder::new(&state);
+    let agent = builder
+        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
+        .map_err(map_runtime_safety_error)?;
+    ensure_agent_available(&state, agent.id)?;
+    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
+    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
+    runtime_ctx
+        .ensure_execution_permitted()
+        .map_err(map_runner_error)?;
+    let mut runner = builder
+        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
+        .map_err(map_runtime_safety_error)?;
+
+    let providers = provider_runtime::ordered_provider_configs(&state);
+    if providers.is_empty() {
         return Err(ApiError::bad_request(
             "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
         ));
     }
 
-    let builder = RuntimeSafetyBuilder::new(&state);
-    let agent = builder
-        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
-        .map_err(map_runtime_safety_error)?;
-    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
-    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
-    let mut runner = builder
-        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
-        .map_err(map_runtime_safety_error)?;
-
     // 2. IDs
     let session_id_str = session_id.to_string();
     let message_id = Uuid::now_v7().to_string();
 
-    // 3. Determine provider for streaming
-    let first_provider = state.model_providers[0].clone();
-
     // 4. Create channel for streaming events
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(64);
     let user_message = req.message.clone();
+    let all_providers = providers.clone();
 
     // 5. Spawn agent run as background task with timeout
     tokio::spawn(async move {
@@ -271,121 +171,43 @@ pub async fn agent_chat_stream(
                 }
             };
 
-            // Build get_stream closure based on provider type (mirrors studio_sessions pattern).
-            let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
-                                   tools: Vec<ghost_llm::provider::ToolSchema>|
-                  -> ghost_llm::streaming::StreamChunkStream {
-                let provider: Arc<dyn ghost_llm::provider::LLMProvider> =
-                    match first_provider.name.as_str() {
-                        "ollama" => {
-                            let ollama = ghost_llm::provider::OllamaProvider {
-                                model: first_provider
-                                    .model
-                                    .clone()
-                                    .unwrap_or_else(|| "llama3.1".into()),
-                                base_url: first_provider
-                                    .base_url
-                                    .clone()
-                                    .unwrap_or_else(|| "http://localhost:11434".into()),
-                            };
-                            return ollama.stream_chat(&messages, &tools);
-                        }
-                        "anthropic" => {
-                            let key = crate::state::get_api_key(
-                                first_provider
-                                    .api_key_env
-                                    .as_deref()
-                                    .unwrap_or("ANTHROPIC_API_KEY"),
-                            )
-                            .unwrap_or_default();
-                            Arc::new(ghost_llm::provider::AnthropicProvider {
-                                model: first_provider
-                                    .model
-                                    .clone()
-                                    .unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
-                                api_key: std::sync::RwLock::new(key),
-                            })
-                        }
-                        "openai" => {
-                            let key = crate::state::get_api_key(
-                                first_provider
-                                    .api_key_env
-                                    .as_deref()
-                                    .unwrap_or("OPENAI_API_KEY"),
-                            )
-                            .unwrap_or_default();
-                            Arc::new(ghost_llm::provider::OpenAIProvider {
-                                model: first_provider
-                                    .model
-                                    .clone()
-                                    .unwrap_or_else(|| "gpt-4o".into()),
-                                api_key: std::sync::RwLock::new(key),
-                            })
-                        }
-                        "gemini" => {
-                            let key = crate::state::get_api_key(
-                                first_provider
-                                    .api_key_env
-                                    .as_deref()
-                                    .unwrap_or("GEMINI_API_KEY"),
-                            )
-                            .unwrap_or_default();
-                            Arc::new(ghost_llm::provider::GeminiProvider {
-                                model: first_provider
-                                    .model
-                                    .clone()
-                                    .unwrap_or_else(|| "gemini-2.0-flash".into()),
-                                api_key: std::sync::RwLock::new(key),
-                            })
-                        }
-                        "openai_compat" => {
-                            let key = crate::state::get_api_key(
-                                first_provider
-                                    .api_key_env
-                                    .as_deref()
-                                    .unwrap_or("OPENAI_API_KEY"),
-                            )
-                            .unwrap_or_default();
-                            let compat = ghost_llm::provider::OpenAICompatProvider {
-                                model: first_provider
-                                    .model
-                                    .clone()
-                                    .unwrap_or_else(|| "default".into()),
-                                api_key: std::sync::RwLock::new(key),
-                                base_url: first_provider
-                                    .base_url
-                                    .clone()
-                                    .unwrap_or_else(|| "http://localhost:8080".into()),
-                                context_window_size: 128_000,
-                            };
-                            return compat.stream_chat(&messages, &tools);
-                        }
-                        _ => Arc::new(ghost_llm::provider::OllamaProvider {
-                            model: first_provider
-                                .model
-                                .clone()
-                                .unwrap_or_else(|| "llama3.1".into()),
-                            base_url: first_provider
-                                .base_url
-                                .clone()
-                                .unwrap_or_else(|| "http://localhost:11434".into()),
-                        }),
-                    };
-                ghost_llm::provider::complete_stream_shim(provider, messages, tools)
-            };
-
-            let result = runner
-                .run_turn_streaming(&mut ctx, &user_message, tx.clone(), get_stream)
-                .await;
-            match result {
-                Ok(_) => {} // TurnComplete already sent
-                Err(e) => {
-                    let _ = tx
-                        .send(AgentStreamEvent::Error {
-                            message: format!("agent run failed: {e}"),
-                        })
-                        .await;
+            let mut result = Err(ghost_agent_loop::runner::RunError::LLMError(
+                "no providers configured".into(),
+            ));
+            for provider_config in &all_providers {
+                let provider = provider_config.clone();
+                let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
+                                       tools: Vec<ghost_llm::provider::ToolSchema>|
+                      -> ghost_llm::streaming::StreamChunkStream {
+                    provider_runtime::build_provider_stream(&provider, messages, tools)
+                };
+                match runner
+                    .run_turn_streaming(&mut ctx, &user_message, tx.clone(), get_stream)
+                    .await
+                {
+                    Ok(run_result) => {
+                        result = Ok(run_result);
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            provider = %provider_config.name,
+                            error = %error,
+                            "streaming provider failed, trying next"
+                        );
+                        ctx.recursion_depth = 0;
+                        result = Err(error);
+                    }
                 }
+            }
+
+            if let Err(e) = result {
+                let _ = tx
+                    .send(AgentStreamEvent::Error {
+                        message: format!("agent run failed: {e}"),
+                    })
+                    .await;
+                return;
             }
         })
         .await;
@@ -554,6 +376,25 @@ fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
     match error {
         RuntimeSafetyError::AgentNotFound(message) => ApiError::bad_request(message),
         _ => ApiError::internal(error.to_string()),
+    }
+}
+
+fn ensure_agent_available(state: &AppState, agent_id: Uuid) -> Result<(), ApiError> {
+    match state.kill_switch.check(agent_id) {
+        crate::safety::kill_switch::KillCheckResult::Ok => Ok(()),
+        crate::safety::kill_switch::KillCheckResult::AgentPaused(_) => Err(ApiError::custom(
+            StatusCode::LOCKED,
+            "AGENT_PAUSED",
+            "Agent is paused",
+        )),
+        crate::safety::kill_switch::KillCheckResult::AgentQuarantined(_) => Err(ApiError::custom(
+            StatusCode::LOCKED,
+            "AGENT_QUARANTINED",
+            "Agent is quarantined",
+        )),
+        crate::safety::kill_switch::KillCheckResult::PlatformKilled => {
+            Err(ApiError::KillSwitchActive)
+        }
     }
 }
 

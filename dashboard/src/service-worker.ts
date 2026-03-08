@@ -18,6 +18,18 @@ declare const self: ServiceWorkerGlobalScope;
 import { build, files, version } from '$service-worker';
 
 const CACHE_NAME = `ghost-cache-${version}`;
+const PENDING_ACTIONS_DB = 'ghost-pending-actions';
+const PENDING_ACTIONS_DB_VERSION = 2;
+const PENDING_ACTIONS_STORE = 'pending_actions';
+const AUTH_STATE_STORE = 'auth_state';
+const AUTH_STATE_KEY = 'active';
+let activeReplayAuthState: ReplayAuthState | null = null;
+
+interface SyncCapableServiceWorkerRegistration extends ServiceWorkerRegistration {
+  sync?: {
+    register(tag: string): Promise<void>;
+  };
+}
 
 // Static assets to pre-cache (shell).
 const PRECACHE_ASSETS = [...build, ...files];
@@ -60,11 +72,28 @@ self.addEventListener('activate', (event: ExtendableEvent) => {
 });
 
 self.addEventListener('message', (event: ExtendableMessageEvent) => {
-  if (
-    event.data?.type === 'ghost-auth-cleared' ||
-    event.data?.type === 'ghost-auth-changed'
-  ) {
-    event.waitUntil(clearAuthenticatedState());
+  if (event.data?.type === 'ghost-auth-session' && event.data?.auth) {
+    activeReplayAuthState = event.data.auth as ReplayAuthState;
+    event.waitUntil(persistReplayAuthState(event.data.auth as ReplayAuthState));
+    return;
+  }
+  if (event.data?.type === 'ghost-auth-changed') {
+    if (event.data?.auth) {
+      activeReplayAuthState = event.data.auth as ReplayAuthState;
+      event.waitUntil(handleAuthChanged(event.data.auth as ReplayAuthState));
+      return;
+    }
+    activeReplayAuthState = null;
+    event.waitUntil(handleAuthCleared());
+    return;
+  }
+  if (event.data?.type === 'ghost-auth-cleared') {
+    activeReplayAuthState = null;
+    event.waitUntil(handleAuthCleared());
+    return;
+  }
+  if (event.data?.type === 'ghost-replay-pending-actions') {
+    event.waitUntil(replayPendingActions());
   }
 });
 
@@ -88,6 +117,10 @@ self.addEventListener('fetch', (event: FetchEvent) => {
   if (url.pathname.startsWith('/api/')) {
     if (isAuthPath(url.pathname)) {
       event.respondWith(networkOnly(event.request));
+      return;
+    }
+    if (event.request.method !== 'GET' && event.request.method !== 'HEAD') {
+      event.respondWith(networkWriteWithQueue(event.request));
       return;
     }
     if (isStaleRevalidatePath(url.pathname)) {
@@ -210,23 +243,57 @@ async function clearAuthenticatedApiCache(): Promise<void> {
   );
 }
 
-async function clearPendingActions(): Promise<void> {
-  const db = await openPendingActionsDB().catch(() => null);
-  if (!db) return;
-
-  await new Promise<void>((resolve) => {
-    const tx = db.transaction('pending_actions', 'readwrite');
-    tx.objectStore('pending_actions').clear();
+async function persistReplayAuthState(auth: ReplayAuthState): Promise<void> {
+  activeReplayAuthState = auth;
+  const db = await openPendingActionsDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(AUTH_STATE_STORE, 'readwrite');
+    tx.objectStore(AUTH_STATE_STORE).put({ key: AUTH_STATE_KEY, ...auth });
     tx.oncomplete = () => resolve();
-    tx.onabort = () => resolve();
-    tx.onerror = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
-
   db.close();
 }
 
+async function loadReplayAuthState(): Promise<ReplayAuthState | null> {
+  if (activeReplayAuthState) return activeReplayAuthState;
+
+  const db = await openPendingActionsDB();
+  const auth = await new Promise<ReplayAuthState | null>((resolve, reject) => {
+    const tx = db.transaction(AUTH_STATE_STORE, 'readonly');
+    const req = tx.objectStore(AUTH_STATE_STORE).get(AUTH_STATE_KEY);
+    req.onsuccess = () => {
+      const value = req.result as (ReplayAuthState & { key: string }) | undefined;
+      if (!value) {
+        resolve(null);
+        return;
+      }
+      resolve({
+        client_id: value.client_id,
+        session_epoch: value.session_epoch,
+        token: value.token,
+      });
+    };
+    req.onerror = () => reject(req.error);
+  }).catch(() => null);
+  db.close();
+  activeReplayAuthState = auth;
+  return auth;
+}
+
 async function clearAuthenticatedState(): Promise<void> {
-  await Promise.all([clearAuthenticatedApiCache(), clearPendingActions()]);
+  await clearAuthenticatedApiCache();
+  await clearDurableReplayState();
+}
+
+async function handleAuthChanged(auth: ReplayAuthState): Promise<void> {
+  await clearAuthenticatedApiCache();
+  await replaceReplayAuthState(auth);
+}
+
+async function handleAuthCleared(): Promise<void> {
+  await clearAuthenticatedState();
 }
 
 async function networkOnly(request: Request): Promise<Response> {
@@ -262,6 +329,70 @@ async function safetyWriteGuard(request: Request): Promise<Response> {
   }
 }
 
+async function networkWriteWithQueue(request: Request): Promise<Response> {
+  const replayRequest = request.clone();
+  try {
+    const response = await fetch(request);
+    if (response.status !== 503) {
+      return response;
+    }
+
+    const queued = await queuePendingAction(replayRequest);
+    if (!queued) {
+      return response;
+    }
+
+    try {
+      await registerPendingActionSync();
+    } catch {
+      // SyncManager is optional; queued actions can still be replayed explicitly.
+    }
+
+    return new Response(
+      JSON.stringify({
+        queued: true,
+        offline: true,
+        message: 'Action queued for replay when connectivity returns.',
+      }),
+      {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+  } catch {
+    const queued = await queuePendingAction(replayRequest);
+    if (!queued) {
+      return new Response(JSON.stringify({ error: 'offline' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    try {
+      await registerPendingActionSync();
+    } catch {
+      // SyncManager is optional; queued actions can still be replayed explicitly.
+    }
+
+    return new Response(
+      JSON.stringify({
+        queued: true,
+        offline: true,
+        message: 'Action queued for replay when connectivity returns.',
+      }),
+      {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+  }
+}
+
+async function registerPendingActionSync(): Promise<void> {
+  const registration = self.registration as SyncCapableServiceWorkerRegistration;
+  await registration.sync?.register('ghost-pending-actions');
+}
+
 // ── Background Sync (T-4.7.3) ──────────────────────────────────────────
 
 self.addEventListener('sync' as any, (event: any) => {
@@ -271,10 +402,15 @@ self.addEventListener('sync' as any, (event: any) => {
 });
 
 async function replayPendingActions(): Promise<void> {
-  // Open IndexedDB to read queued actions.
   const db = await openPendingActionsDB();
-  const tx = db.transaction('pending_actions', 'readonly');
-  const store = tx.objectStore('pending_actions');
+  const activeAuth = await loadReplayAuthState();
+  if (!activeAuth) {
+    db.close();
+    return;
+  }
+
+  const tx = db.transaction(PENDING_ACTIONS_STORE, 'readonly');
+  const store = tx.objectStore(PENDING_ACTIONS_STORE);
   const request = store.getAll();
 
   return new Promise((resolve) => {
@@ -282,14 +418,31 @@ async function replayPendingActions(): Promise<void> {
       const actions: PendingAction[] = request.result ?? [];
 
       for (const action of actions) {
-        // NEVER replay safety actions — hard rule.
-        if (isSafetyPath(action.url)) continue;
+        if (isSafetyPath(action.url)) {
+          await deletePendingAction(db, action.id);
+          continue;
+        }
+        if (
+          action.client_id !== activeAuth.client_id ||
+          action.session_epoch !== activeAuth.session_epoch
+        ) {
+          await deletePendingAction(db, action.id);
+          continue;
+        }
 
         try {
-          // WP9-N: Include session sequence for staleness detection.
           const headers: Record<string, string> = { ...action.headers };
-          if (action.session_seq != null) {
-            headers['X-Ghost-Expected-Seq'] = String(action.session_seq);
+          if (activeAuth.token) {
+            headers.Authorization = `Bearer ${activeAuth.token}`;
+          }
+          if (action.operation_envelope.request_id) {
+            headers['X-Request-ID'] = action.operation_envelope.request_id;
+          }
+          if (action.operation_envelope.operation_id) {
+            headers['X-Ghost-Operation-ID'] = action.operation_envelope.operation_id;
+          }
+          if (action.operation_envelope.idempotency_key) {
+            headers['Idempotency-Key'] = action.operation_envelope.idempotency_key;
           }
 
           const resp = await fetch(action.url, {
@@ -298,43 +451,178 @@ async function replayPendingActions(): Promise<void> {
             body: action.body,
           });
 
-          // WP9-N: 409 Conflict = session changed while offline — discard stale action.
           if (resp.status === 409) {
-            const deleteTx = db.transaction('pending_actions', 'readwrite');
-            deleteTx.objectStore('pending_actions').delete(action.id);
-            // Notify user via postMessage to all clients.
-            const clients = await self.clients.matchAll({ type: 'window' });
-            for (const client of clients) {
-              client.postMessage({
-                type: 'ghost-sync-conflict',
-                message: 'Message outdated — session changed while offline',
-                actionId: action.id,
-              });
-            }
+            await deletePendingAction(db, action.id);
+            await broadcastToClients({
+              type: 'ghost-sync-conflict',
+              message: 'Queued action is stale for the current session.',
+              actionId: action.id,
+            });
             continue;
           }
 
-          // Remove from queue on success.
-          const deleteTx = db.transaction('pending_actions', 'readwrite');
-          deleteTx.objectStore('pending_actions').delete(action.id);
+          if (resp.status === 401 || resp.status === 403) {
+            await clearAuthenticatedState();
+            await broadcastToClients({
+              type: 'ghost-sync-auth-revoked',
+              message: 'Queued actions were dropped because the current session is no longer valid.',
+            });
+            continue;
+          }
+
+          if (resp.ok) {
+            await deletePendingAction(db, action.id);
+            continue;
+          }
+
+          if (resp.status >= 400 && resp.status < 500) {
+            await deletePendingAction(db, action.id);
+            continue;
+          }
         } catch {
           // Will retry on next sync event.
           break;
         }
       }
+      db.close();
       resolve();
     };
-    request.onerror = () => resolve();
+    request.onerror = () => {
+      db.close();
+      resolve();
+    };
   });
+}
+
+async function queuePendingAction(request: Request): Promise<boolean> {
+  const auth = await loadReplayAuthState();
+  if (!auth?.token) return false;
+
+  const db = await openPendingActionsDB();
+  const action: Omit<PendingAction, 'id'> = {
+    url: request.url,
+    method: request.method,
+    headers: cloneReplayHeaders(request.headers),
+    body: await readReplayBody(request),
+    client_id: auth.client_id,
+    session_epoch: auth.session_epoch,
+    operation_envelope: buildOperationEnvelope(request),
+  };
+
+  let stored = true;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(PENDING_ACTIONS_STORE, 'readwrite');
+    tx.objectStore(PENDING_ACTIONS_STORE).add(action);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  }).catch(() => {
+    stored = false;
+  });
+
+  db.close();
+  return stored;
+}
+
+async function readReplayBody(request: Request): Promise<string | null> {
+  if (request.method === 'GET' || request.method === 'HEAD') {
+    return null;
+  }
+
+  try {
+    return await request.text();
+  } catch {
+    return null;
+  }
+}
+
+function cloneReplayHeaders(headers: Headers): Record<string, string> {
+  const replayHeaders: Record<string, string> = {};
+  for (const [key, value] of headers.entries()) {
+    const lower = key.toLowerCase();
+    if (
+      lower === 'authorization' ||
+      lower === 'x-request-id' ||
+      lower === 'x-ghost-operation-id' ||
+      lower === 'idempotency-key'
+    ) {
+      continue;
+    }
+    replayHeaders[key] = value;
+  }
+  return replayHeaders;
+}
+
+function buildOperationEnvelope(request: Request): OperationEnvelope {
+  const requestId = request.headers.get('X-Request-ID') ?? crypto.randomUUID();
+  const operationId = request.headers.get('X-Ghost-Operation-ID') ?? crypto.randomUUID();
+  const idempotencyKey = request.headers.get('Idempotency-Key') ?? crypto.randomUUID();
+
+  return {
+    request_id: requestId,
+    operation_id: operationId,
+    idempotency_key: idempotencyKey,
+  };
+}
+
+async function deletePendingAction(db: IDBDatabase, id: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(PENDING_ACTIONS_STORE, 'readwrite');
+    tx.objectStore(PENDING_ACTIONS_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => resolve();
+    tx.onerror = () => resolve();
+  });
+}
+
+async function broadcastToClients(message: Record<string, unknown>): Promise<void> {
+  const clients = await self.clients.matchAll({ type: 'window' });
+  for (const client of clients) {
+    client.postMessage(message);
+  }
+}
+
+async function replaceReplayAuthState(auth: ReplayAuthState): Promise<void> {
+  activeReplayAuthState = auth;
+  const db = await openPendingActionsDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([PENDING_ACTIONS_STORE, AUTH_STATE_STORE], 'readwrite');
+    tx.objectStore(PENDING_ACTIONS_STORE).clear();
+    tx.objectStore(AUTH_STATE_STORE).put({ key: AUTH_STATE_KEY, ...auth });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+  db.close();
+}
+
+async function clearDurableReplayState(): Promise<void> {
+  activeReplayAuthState = null;
+  const db = await openPendingActionsDB().catch(() => null);
+  if (!db) return;
+
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction([PENDING_ACTIONS_STORE, AUTH_STATE_STORE], 'readwrite');
+    tx.objectStore(PENDING_ACTIONS_STORE).clear();
+    tx.objectStore(AUTH_STATE_STORE).delete(AUTH_STATE_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => resolve();
+    tx.onerror = () => resolve();
+  });
+
+  db.close();
 }
 
 function openPendingActionsDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('ghost-pending-actions', 1);
+    const request = indexedDB.open(PENDING_ACTIONS_DB, PENDING_ACTIONS_DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains('pending_actions')) {
-        db.createObjectStore('pending_actions', { keyPath: 'id', autoIncrement: true });
+      if (!db.objectStoreNames.contains(PENDING_ACTIONS_STORE)) {
+        db.createObjectStore(PENDING_ACTIONS_STORE, { keyPath: 'id', autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains(AUTH_STATE_STORE)) {
+        db.createObjectStore(AUTH_STATE_STORE, { keyPath: 'key' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -379,12 +667,25 @@ interface SyncEvent extends ExtendableEvent {
   tag: string;
 }
 
+interface ReplayAuthState {
+  client_id: string;
+  session_epoch: number;
+  token: string | null;
+}
+
+interface OperationEnvelope {
+  request_id: string;
+  operation_id: string;
+  idempotency_key: string;
+}
+
 interface PendingAction {
   id: number;
   url: string;
   method: string;
   headers: Record<string, string>;
   body: string | null;
-  /** WP9-N: Session sequence at time of queuing — for staleness detection. */
-  session_seq?: number;
+  client_id: string;
+  session_epoch: number;
+  operation_envelope: OperationEnvelope;
 }

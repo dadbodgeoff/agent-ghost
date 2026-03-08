@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
+  import { GhostAPIError, type GoalDecisionRequest, type ProposalDetail } from '@ghost/sdk';
   import GoalCard from '../../components/GoalCard.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import type { Proposal } from '@ghost/sdk';
@@ -11,11 +12,11 @@
   let actionLoading = $state<string | null>(null);
   let resolvedMessage = $state<string | null>(null);
 
-  // Filter state (T-2.4.1)
-  let statusFilter = $state<string>('pending');
-  let agentFilter = $state<string>('');
-
   const statusTabs = ['pending', 'approved', 'rejected', 'all'] as const;
+
+  // Filter state (T-2.4.1)
+  let statusFilter = $state<(typeof statusTabs)[number]>('pending');
+  let agentFilter = $state<string>('');
 
   async function loadProposals() {
     try {
@@ -46,7 +47,7 @@
     return () => unsub();
   });
 
-  function switchTab(tab: string) {
+  function switchTab(tab: (typeof statusTabs)[number]) {
     statusFilter = tab;
     loadProposals();
   }
@@ -62,11 +63,12 @@
     resolvedMessage = null;
     try {
       const client = await getGhostClient();
-      await client.goals.approve(id);
+      const detail = await client.goals.get(id);
+      await client.goals.approve(id, decisionRequest(detail));
       await loadProposals();
     } catch (e: unknown) {
-      if (e instanceof Error && (e.message.includes('already resolved') || e.message.includes('409'))) {
-        resolvedMessage = `Proposal ${id.slice(0, 8)}… was already resolved by another user.`;
+      if (isStaleDecisionError(e)) {
+        resolvedMessage = `Proposal ${id.slice(0, 8)}… is stale and must be re-reviewed before approval.`;
         await loadProposals();
       } else {
         error = e instanceof Error ? e.message : 'Failed to approve proposal';
@@ -81,11 +83,12 @@
     resolvedMessage = null;
     try {
       const client = await getGhostClient();
-      await client.goals.reject(id);
+      const detail = await client.goals.get(id);
+      await client.goals.reject(id, decisionRequest(detail));
       await loadProposals();
     } catch (e: unknown) {
-      if (e instanceof Error && (e.message.includes('already resolved') || e.message.includes('409'))) {
-        resolvedMessage = `Proposal ${id.slice(0, 8)}… was already resolved by another user.`;
+      if (isStaleDecisionError(e)) {
+        resolvedMessage = `Proposal ${id.slice(0, 8)}… is stale and must be re-reviewed before rejection.`;
         await loadProposals();
       } else {
         error = e instanceof Error ? e.message : 'Failed to reject proposal';
@@ -93,6 +96,30 @@
     } finally {
       actionLoading = null;
     }
+  }
+
+  function decisionRequest(detail: ProposalDetail): GoalDecisionRequest {
+    if (
+      !detail.current_state ||
+      !detail.lineage_id ||
+      !detail.subject_key ||
+      !detail.reviewed_revision
+    ) {
+      throw new Error('Proposal detail is missing required lineage or revision fields');
+    }
+
+    return {
+      expectedState: detail.current_state,
+      expectedLineageId: detail.lineage_id,
+      expectedSubjectKey: detail.subject_key,
+      expectedReviewedRevision: detail.reviewed_revision,
+    };
+  }
+
+  function isStaleDecisionError(errorValue: unknown): boolean {
+    return !!(
+      errorValue instanceof GhostAPIError && errorValue.code?.startsWith('STALE_DECISION_')
+    );
   }
 </script>
 

@@ -128,6 +128,7 @@
   }
 
   function handleMouseDown(e: MouseEvent) {
+    if (!svgEl) return;
     const rect = svgEl.getBoundingClientRect();
     drawStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     drawCurrent = { ...drawStart };
@@ -135,7 +136,7 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
-    if (!drawing) return;
+    if (!drawing || !svgEl) return;
     const rect = svgEl.getBoundingClientRect();
     drawCurrent = { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }

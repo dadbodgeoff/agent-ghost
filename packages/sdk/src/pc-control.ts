@@ -19,9 +19,20 @@ export interface PcControlStatus {
   enabled: boolean;
   action_budget: ActionBudget;
   allowed_apps: string[];
+  safe_zone?: SafeZone | null;
   safe_zones: SafeZone[];
   blocked_hotkeys: string[];
   circuit_breaker_state: string;
+  persisted?: {
+    enabled: boolean;
+    allowed_apps: string[];
+    safe_zone?: SafeZone | null;
+    blocked_hotkeys: string[];
+    action_budget: ActionBudget;
+  };
+  runtime?: {
+    circuit_breaker_state: string;
+  };
 }
 
 export interface PcControlActionLogEntry {
@@ -30,6 +41,14 @@ export interface PcControlActionLogEntry {
   target: string;
   timestamp: string;
   result: string;
+  input_json: string;
+  result_json: string;
+  target_app?: string | null;
+  coordinates?: string | null;
+  blocked: boolean;
+  block_reason?: string | null;
+  agent_id: string;
+  session_id: string;
 }
 
 export interface PcControlActionLogResult {

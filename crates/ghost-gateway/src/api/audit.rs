@@ -24,6 +24,7 @@ pub struct AuditQueryParams {
     pub severity: Option<String>,
     pub tool_name: Option<String>,
     pub search: Option<String>,
+    pub operation_id: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
 }
@@ -55,6 +56,7 @@ pub async fn query_audit(
         severity: params.severity.clone(),
         tool_name: params.tool_name.clone(),
         search: params.search.clone(),
+        operation_id: params.operation_id.clone(),
         page: params.page.unwrap_or(1),
         page_size: params.page_size.unwrap_or(50).min(200),
     };
@@ -75,6 +77,7 @@ pub async fn query_audit(
                     "severity": params.severity,
                     "tool_name": params.tool_name,
                     "search": params.search,
+                    "operation_id": params.operation_id,
                 }
             })),
         ),
@@ -163,6 +166,7 @@ pub async fn audit_export(
         severity: None,
         tool_name: None,
         search: None,
+        operation_id: None,
         page: 1,
         page_size: 10_000, // Export up to 10k entries
     };

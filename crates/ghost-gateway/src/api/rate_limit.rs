@@ -246,35 +246,3 @@ impl Default for SafetyCooldown {
         Self::new()
     }
 }
-
-/// Request ID middleware (T-1.1.6).
-///
-/// Injects `X-Request-ID` into every request (from header or generated UUID v7).
-/// Propagates the same ID into the response headers for client correlation.
-pub async fn request_id_middleware(mut request: Request<Body>, next: Next) -> Response {
-    // Read existing X-Request-ID or generate a new one.
-    let request_id = request
-        .headers()
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-
-    // Store in extensions for handlers/tracing to access.
-    request
-        .extensions_mut()
-        .insert(RequestId(request_id.clone()));
-
-    let mut response = next.run(request).await;
-
-    // Set X-Request-ID on response.
-    if let Ok(val) = axum::http::HeaderValue::from_str(&request_id) {
-        response.headers_mut().insert("x-request-id", val);
-    }
-
-    response
-}
-
-/// Newtype for request ID stored in extensions.
-#[derive(Clone, Debug)]
-pub struct RequestId(pub String);

@@ -29,6 +29,10 @@ pub struct AuditEntry {
     pub tool_name: Option<String>,
     pub details: String,
     pub session_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub request_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub idempotency_status: Option<String>,
 }
 
 /// Filter criteria for audit queries.
@@ -41,6 +45,7 @@ pub struct AuditFilter {
     pub severity: Option<String>,
     pub tool_name: Option<String>,
     pub search: Option<String>,
+    pub operation_id: Option<String>,
     pub page: u32,
     pub page_size: u32,
 }
@@ -86,12 +91,18 @@ impl<'a> AuditQueryEngine<'a> {
                     severity TEXT NOT NULL DEFAULT 'info',
                     tool_name TEXT,
                     details TEXT NOT NULL DEFAULT '',
-                    session_id TEXT
+                    session_id TEXT,
+                    operation_id TEXT,
+                    request_id TEXT,
+                    idempotency_key TEXT,
+                    idempotency_status TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
                 CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
-                CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log(severity);",
+                CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log(severity);
+                CREATE INDEX IF NOT EXISTS idx_audit_operation_id ON audit_log(operation_id);
+                CREATE INDEX IF NOT EXISTS idx_audit_idempotency_key ON audit_log(idempotency_key);",
             )
             .map_err(|e| to_audit_err(e.to_string()))?;
         Ok(())
@@ -101,8 +112,11 @@ impl<'a> AuditQueryEngine<'a> {
     pub fn insert(&self, entry: &AuditEntry) -> AuditResult<()> {
         self.conn
             .execute(
-                "INSERT INTO audit_log (id, timestamp, agent_id, event_type, severity, tool_name, details, session_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO audit_log (
+                    id, timestamp, agent_id, event_type, severity, tool_name,
+                    details, session_id, operation_id, request_id, idempotency_key,
+                    idempotency_status
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     entry.id,
                     entry.timestamp,
@@ -112,6 +126,10 @@ impl<'a> AuditQueryEngine<'a> {
                     entry.tool_name,
                     entry.details,
                     entry.session_id,
+                    entry.operation_id,
+                    entry.request_id,
+                    entry.idempotency_key,
+                    entry.idempotency_status,
                 ],
             )
             .map_err(|e| to_audit_err(e.to_string()))?;
@@ -146,6 +164,10 @@ impl<'a> AuditQueryEngine<'a> {
         if let Some(ref tool) = filter.tool_name {
             conditions.push(format!("tool_name = ?{}", param_values.len() + 1));
             param_values.push(Box::new(tool.clone()));
+        }
+        if let Some(ref operation_id) = filter.operation_id {
+            conditions.push(format!("operation_id = ?{}", param_values.len() + 1));
+            param_values.push(Box::new(operation_id.clone()));
         }
         if let Some(ref search) = filter.search {
             conditions.push(format!(
@@ -182,7 +204,8 @@ impl<'a> AuditQueryEngine<'a> {
         let offset = (page - 1) * page_size;
 
         let select_sql = format!(
-            "SELECT id, timestamp, agent_id, event_type, severity, tool_name, details, session_id
+            "SELECT id, timestamp, agent_id, event_type, severity, tool_name, details, session_id,
+                    operation_id, request_id, idempotency_key, idempotency_status
              FROM audit_log {} ORDER BY timestamp DESC LIMIT ?{} OFFSET ?{}",
             where_clause,
             param_values.len() + 1,
@@ -212,6 +235,10 @@ impl<'a> AuditQueryEngine<'a> {
                     tool_name: row.get(5)?,
                     details: row.get(6)?,
                     session_id: row.get(7)?,
+                    operation_id: row.get(8)?,
+                    request_id: row.get(9)?,
+                    idempotency_key: row.get(10)?,
+                    idempotency_status: row.get(11)?,
                 })
             })
             .map_err(|e| to_audit_err(e.to_string()))?

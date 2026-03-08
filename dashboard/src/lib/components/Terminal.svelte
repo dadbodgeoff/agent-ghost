@@ -3,6 +3,7 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { WebLinksAddon } from '@xterm/addon-web-links';
+  import type { RuntimeTerminalPty } from '$lib/platform/runtime';
   import { getRuntime } from '$lib/platform/runtime';
   import '@xterm/xterm/css/xterm.css';
 
@@ -10,6 +11,7 @@
   let term: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
   let ptyDisposables: Array<{ dispose(): void }> = [];
+  let pty: RuntimeTerminalPty | null = null;
   let resizeObserver: ResizeObserver | null = null;
 
   onMount(async () => {
@@ -68,6 +70,7 @@
   });
 
   onDestroy(() => {
+    void pty?.close();
     ptyDisposables.forEach((d) => d.dispose());
     ptyDisposables = [];
     resizeObserver?.disconnect();
@@ -78,45 +81,41 @@
     if (!term || !fitAddon) return;
 
     try {
-      const shell = (await runtime.getDefaultShell()) ?? getFallbackShell();
-      const pty = await runtime.spawnTerminalPty(shell, {
+      pty = await runtime.spawnTerminalPty({
         cols: term.cols,
         rows: term.rows,
       });
       if (!pty) {
         throw new Error('PTY support is unavailable in this runtime');
       }
+      const activePty = pty;
 
       // PTY → xterm
-      const dataSub = pty.onData((data: Uint8Array) => {
+      const dataSub = activePty.onData((data: string) => {
         term?.write(data);
       });
       ptyDisposables.push(dataSub);
 
       // xterm → PTY
       const inputSub = term.onData((data: string) => {
-        pty.write(data);
+        activePty.write(data);
       });
       ptyDisposables.push(inputSub);
 
       // Resize xterm → PTY
       const resizeSub = term.onResize((e: { cols: number; rows: number }) => {
-        pty.resize(e.cols, e.rows);
+        activePty.resize(e.cols, e.rows);
       });
       ptyDisposables.push(resizeSub);
 
       // Handle exit
-      const exitSub = pty.onExit(({ exitCode }: { exitCode: number }) => {
+      const exitSub = activePty.onExit(({ exitCode }: { exitCode: number }) => {
         term?.writeln(`\r\n[Process exited with code ${exitCode}]`);
       });
       ptyDisposables.push(exitSub);
     } catch (err) {
       term.writeln(`Failed to start PTY: ${err}`);
     }
-  }
-
-  function getFallbackShell(): string {
-    return navigator.userAgent.includes('Windows') ? 'cmd.exe' : '/bin/sh';
   }
 </script>
 

@@ -5,6 +5,20 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterventionThresholdConfig {
+    /// Minimum signal score that forces a Level 2 minimum on safety-critical signals.
+    pub critical_override_threshold: f64,
+}
+
+impl Default for InterventionThresholdConfig {
+    fn default() -> Self {
+        Self {
+            critical_override_threshold: 0.85,
+        }
+    }
+}
+
 /// Top-level monitor configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorConfig {
@@ -28,6 +42,14 @@ pub struct MonitorConfig {
     pub max_provisional_sessions: u32,
     /// Health check interval (default 30 seconds).
     pub health_check_interval: Duration,
+    /// Idle horizon before a session is considered stale and pruned.
+    pub session_idle_horizon: Duration,
+    /// Idle horizon before an unused rate-limit bucket is pruned.
+    pub rate_limit_bucket_idle_horizon: Duration,
+    /// Dual-key confirmation TTL.
+    pub dual_key_ttl: Duration,
+    /// Runtime-configurable intervention thresholds.
+    pub intervention_thresholds: InterventionThresholdConfig,
     /// Signal weights for composite scoring (8 weights, default equal 1/8).
     /// Order: S1 session_duration, S2 inter_session_gap, S3 response_latency,
     /// S4 vocabulary_convergence, S5 goal_boundary_erosion, S6 initiative_balance,
@@ -52,6 +74,10 @@ impl Default for MonitorConfig {
             score_cache_ttl: Duration::from_secs(30),
             max_provisional_sessions: 3,
             health_check_interval: Duration::from_secs(30),
+            session_idle_horizon: Duration::from_secs(30 * 60),
+            rate_limit_bucket_idle_horizon: Duration::from_secs(30 * 60),
+            dual_key_ttl: Duration::from_secs(300),
+            intervention_thresholds: InterventionThresholdConfig::default(),
             signal_weights: [1.0 / 8.0; 8],
             native_messaging_enabled: false,
         }

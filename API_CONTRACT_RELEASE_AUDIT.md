@@ -1,5 +1,9 @@
 # API Contract Release Audit
 
+Status: Superseded on 2026-03-07 by [docs/RELEASE_GAP_VALIDATION_2026-03-07.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/RELEASE_GAP_VALIDATION_2026-03-07.md).
+
+This document is retained as historical audit evidence only. It is not current release truth.
+
 Date: 2026-03-07
 
 Scope:

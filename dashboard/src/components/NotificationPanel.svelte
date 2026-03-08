@@ -10,7 +10,7 @@
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
   import { getRuntime } from '$lib/platform/runtime';
 
-  export interface AppNotification {
+  interface AppNotification {
     id: string;
     type: 'agent_state' | 'safety_alert' | 'approval_request' | 'cost_warning' | 'system';
     severity: 'info' | 'warning' | 'critical';

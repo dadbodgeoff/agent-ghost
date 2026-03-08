@@ -1,4 +1,4 @@
-import type { GhostClientOptions } from './client.js';
+import { createTimeoutSignal, type GhostClientOptions } from './client.js';
 
 // ── Types ──
 
@@ -92,6 +92,10 @@ export type GhostWebSocketState =
   | 'reconnecting'
   | 'disconnected';
 
+interface WsTicketResponse {
+  ticket: string;
+}
+
 // ── Implementation ──
 
 export class GhostWebSocket {
@@ -104,6 +108,7 @@ export class GhostWebSocket {
   private closed = false;
   private lastSeq = 0;
   private state: GhostWebSocketState = 'disconnected';
+  private connectAttemptId = 0;
 
   constructor(
     private clientOptions: GhostClientOptions,
@@ -117,7 +122,7 @@ export class GhostWebSocket {
   connect(): this {
     this.closed = false;
     this.reconnectAttempt = 0;
-    this.doConnect();
+    this.startConnect();
     return this;
   }
 
@@ -167,13 +172,47 @@ export class GhostWebSocket {
   }
 
   private doConnect(): void {
+    const attemptId = ++this.connectAttemptId;
+    void this.connectInternal(attemptId);
+  }
+
+  private startConnect(): void {
+    this.doConnect();
+  }
+
+  private async connectInternal(attemptId: number): Promise<void> {
     this.setState('connecting');
     const baseUrl = this.clientOptions.baseUrl ?? 'http://127.0.0.1:39780';
     const wsUrl = baseUrl.replace(/^http/, 'ws') + '/api/ws';
+    let protocols: string[] | undefined;
 
-    const protocols = this.clientOptions.token
-      ? [`ghost-token.${this.clientOptions.token}`]
-      : undefined;
+    try {
+      protocols = await this.resolveProtocols();
+    } catch (error) {
+      if (this.closed || attemptId !== this.connectAttemptId) {
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : 'WebSocket authentication failed';
+      this.wsOptions.onError?.(message);
+      if (
+        error instanceof GhostWebSocketConnectError &&
+        error.retryable &&
+        !this.closed &&
+        (this.wsOptions.autoReconnect ?? true)
+      ) {
+        this.setState('reconnecting');
+        this.scheduleReconnect();
+      } else {
+        this.closed = true;
+        this.setState('disconnected');
+      }
+      return;
+    }
+
+    if (this.closed || attemptId !== this.connectAttemptId) {
+      return;
+    }
 
     this.ws = new WebSocket(wsUrl, protocols);
 
@@ -226,6 +265,60 @@ export class GhostWebSocket {
     };
   }
 
+  private async resolveProtocols(): Promise<string[] | undefined> {
+    if (!this.clientOptions.token) {
+      return undefined;
+    }
+
+    const baseUrl = this.clientOptions.baseUrl ?? 'http://127.0.0.1:39780';
+    const fetchFn = this.clientOptions.fetch ?? globalThis.fetch;
+    if (!fetchFn) {
+      throw new GhostWebSocketConnectError(
+        'WebSocket authentication requires fetch support to mint an upgrade ticket.',
+        false,
+      );
+    }
+
+    let response: Response;
+    try {
+      response = await fetchFn(`${baseUrl}/api/ws/tickets`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.clientOptions.token}`,
+          Accept: 'application/json',
+        },
+        signal: createTimeoutSignal(this.clientOptions.timeout),
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'TimeoutError') {
+        throw new GhostWebSocketConnectError('WebSocket ticket request timed out.', true);
+      }
+      throw new GhostWebSocketConnectError(
+        'Failed to mint a WebSocket upgrade ticket.',
+        true,
+      );
+    }
+
+    if (!response.ok) {
+      const message = await response.text().catch(() => '');
+      const reason = message || `HTTP ${response.status}`;
+      throw new GhostWebSocketConnectError(
+        `WebSocket authentication failed: ${reason}`,
+        !(response.status === 401 || response.status === 403),
+      );
+    }
+
+    const body = await response.json() as WsTicketResponse;
+    if (!body.ticket) {
+      throw new GhostWebSocketConnectError(
+        'WebSocket ticket response did not include a ticket.',
+        false,
+      );
+    }
+
+    return [`ghost-ticket.${body.ticket}`];
+  }
+
   private scheduleReconnect(): void {
     const maxAttempts = this.wsOptions.maxReconnectAttempts ?? 10;
     if (maxAttempts > 0 && this.reconnectAttempt >= maxAttempts) {
@@ -239,7 +332,7 @@ export class GhostWebSocket {
     this.wsOptions.onReconnectScheduled?.(this.reconnectAttempt, delay);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.doConnect();
+      this.startConnect();
     }, delay);
   }
 
@@ -251,5 +344,14 @@ export class GhostWebSocket {
   private setState(state: GhostWebSocketState): void {
     this.state = state;
     this.wsOptions.onStateChange?.(state);
+  }
+}
+
+class GhostWebSocketConnectError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
   }
 }

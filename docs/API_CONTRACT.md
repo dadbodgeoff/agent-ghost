@@ -163,7 +163,10 @@ if provided, otherwise generate one.
 
 - Endpoint: `ws://host:port/api/ws`
 - Authentication:
-  - preferred: `Sec-WebSocket-Protocol: ghost-token.<jwt_or_legacy_token>`
+  - preferred:
+    - `POST /api/ws/tickets` with normal HTTP bearer auth
+    - connect with `Sec-WebSocket-Protocol: ghost-ticket.<short_lived_ticket>`
+  - deprecated fallback: `Sec-WebSocket-Protocol: ghost-token.<jwt_or_legacy_token>`
   - deprecated fallback: `?token=<jwt_or_legacy_token>`
 - Server event wire format:
 

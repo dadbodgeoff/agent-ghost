@@ -8,12 +8,27 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::execute_idempotent_json_mutation;
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::OperationContext;
 use crate::state::AppState;
+
+const CREATE_BOOKMARK_ROUTE_TEMPLATE: &str = "/api/sessions/:id/bookmarks";
+const DELETE_BOOKMARK_ROUTE_TEMPLATE: &str = "/api/sessions/:id/bookmarks/:bookmark_id";
+const BRANCH_SESSION_ROUTE_TEMPLATE: &str = "/api/sessions/:id/branch";
+
+fn session_actor(claims: Option<&Claims>) -> &str {
+    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+}
 
 /// Query parameters for session listing (F15 fix — was hardcoded LIMIT 100).
 /// Phase 2 Task 3.7: Supports both page-based (legacy) and cursor-based pagination.
@@ -409,7 +424,7 @@ pub async fn session_events(
 
 // ── Session Bookmarks (Phase 3, Task 3.9) ──────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateBookmarkRequest {
     pub id: Option<String>,
     #[serde(rename = "eventIndex")]
@@ -452,66 +467,186 @@ pub async fn list_bookmarks(
 /// POST /api/sessions/:id/bookmarks — create a bookmark.
 pub async fn create_bookmark(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(session_id): Path<String>,
     Json(body): Json<CreateBookmarkRequest>,
-) -> ApiResult<serde_json::Value> {
-    let id = body.id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+) -> Response {
+    let actor = session_actor(claims.as_ref().map(|claims| &claims.0));
+    let bookmark_id = body
+        .id
+        .clone()
+        .or_else(|| operation_context.operation_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let request_body = serde_json::json!({
+        "session_id": session_id,
+        "bookmark": body,
+    });
 
     let db = state.db.write().await;
-    db.execute(
-        "INSERT INTO session_bookmarks (id, session_id, event_index, label) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![id, session_id, body.event_index, body.label],
-    ).map_err(|e| ApiError::db_error("create_bookmark", e))?;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        CREATE_BOOKMARK_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            conn.execute(
+                "INSERT INTO session_bookmarks (id, session_id, event_index, label) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![bookmark_id, session_id, body.event_index, body.label],
+            ).map_err(|e| ApiError::db_error("create_bookmark", e))?;
 
-    Ok(Json(serde_json::json!({ "id": id, "status": "created" })))
+            Ok((
+                StatusCode::CREATED,
+                serde_json::json!({ "id": bookmark_id, "status": "created" }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                &session_id,
+                "create_session_bookmark",
+                "info",
+                actor,
+                "created",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "bookmark_id": bookmark_id,
+                    "event_index": body.event_index,
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// DELETE /api/sessions/:id/bookmarks/:bookmark_id — remove a bookmark.
 pub async fn delete_bookmark(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path((_session_id, bookmark_id)): Path<(String, String)>,
-) -> ApiResult<serde_json::Value> {
+) -> Response {
+    let actor = session_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({ "bookmark_id": bookmark_id.clone() });
     let db = state.db.write().await;
-    db.execute(
-        "DELETE FROM session_bookmarks WHERE id = ?1",
-        [&bookmark_id],
-    )
-    .map_err(|e| ApiError::db_error("delete_bookmark", e))?;
 
-    Ok(Json(serde_json::json!({ "status": "deleted" })))
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "DELETE",
+        DELETE_BOOKMARK_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let deleted = conn
+                .execute("DELETE FROM session_bookmarks WHERE id = ?1", [&bookmark_id])
+                .map_err(|e| ApiError::db_error("delete_bookmark", e))?;
+
+            if deleted == 0 {
+                return Err(ApiError::not_found(format!(
+                    "session bookmark {bookmark_id} not found"
+                )));
+            }
+
+            Ok((StatusCode::OK, serde_json::json!({ "status": "deleted" })))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "session",
+                "delete_session_bookmark",
+                "info",
+                actor,
+                "deleted",
+                serde_json::json!({ "bookmark_id": bookmark_id }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// POST /api/sessions/:id/branch — branch a new session from a checkpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BranchRequest {
     pub from_event_index: u32,
 }
 
 pub async fn branch_session(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(session_id): Path<String>,
     Json(body): Json<BranchRequest>,
-) -> ApiResult<serde_json::Value> {
-    let new_session_id = uuid::Uuid::now_v7().to_string();
+) -> Response {
+    let actor = session_actor(claims.as_ref().map(|claims| &claims.0));
+    let new_session_id = operation_context
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
+    let request_body = serde_json::json!({
+        "session_id": session_id,
+        "from_event_index": body.from_event_index,
+    });
 
     let db = state.db.write().await;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        BRANCH_SESSION_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let copied: usize = conn.execute(
+                "INSERT INTO itp_events (id, session_id, event_type, sender, timestamp, sequence_number, \
+                 content_hash, content_length, privacy_level, latency_ms, token_count, event_hash, previous_hash, attributes) \
+                 SELECT hex(randomblob(16)), ?1, event_type, sender, timestamp, sequence_number, \
+                 content_hash, content_length, privacy_level, latency_ms, token_count, event_hash, previous_hash, attributes \
+                 FROM itp_events WHERE session_id = ?2 AND sequence_number <= ?3 \
+                 ORDER BY sequence_number ASC",
+                rusqlite::params![new_session_id, session_id, body.from_event_index],
+            ).map_err(|e| ApiError::db_error("branch_session", e))?;
 
-    // Copy events up to the branch point into a new session.
-    let copied: usize = db.execute(
-        "INSERT INTO itp_events (id, session_id, event_type, sender, timestamp, sequence_number, \
-         content_hash, content_length, privacy_level, latency_ms, token_count, attributes) \
-         SELECT hex(randomblob(16)), ?1, event_type, sender, timestamp, sequence_number, \
-         content_hash, content_length, privacy_level, latency_ms, token_count, attributes \
-         FROM itp_events WHERE session_id = ?2 AND sequence_number <= ?3 \
-         ORDER BY sequence_number ASC",
-        rusqlite::params![new_session_id, session_id, body.from_event_index],
-    ).map_err(|e| ApiError::db_error("branch_session", e))?;
-
-    Ok(Json(serde_json::json!({
-        "session_id": new_session_id,
-        "branched_from": session_id,
-        "events_copied": copied,
-    })))
+            Ok((
+                StatusCode::CREATED,
+                serde_json::json!({
+                    "session_id": new_session_id,
+                    "branched_from": session_id,
+                    "events_copied": copied,
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                &session_id,
+                "branch_session",
+                "info",
+                actor,
+                "branched",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "branched_session_id": new_session_id,
+                    "from_event_index": body.from_event_index,
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// WP9-L: Client heartbeat endpoint.

@@ -14,7 +14,9 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::Response;
 use axum::response::sse::{Event, Sse};
+use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -23,17 +25,27 @@ use uuid::Uuid;
 use ghost_agent_loop::output_inspector::{InspectionResult, OutputInspector};
 use ghost_agent_loop::runner::AgentStreamEvent;
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::execute_idempotent_json_mutation;
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::OperationContext;
 use crate::api::websocket::WsEvent;
+use crate::provider_runtime;
 use crate::runtime_safety::{
     parse_or_stable_uuid, RunnerBuildOptions, RuntimeSafetyBuilder, RuntimeSafetyContext,
     RuntimeSafetyError, STUDIO_SYNTHETIC_AGENT_NAME,
 };
 use crate::state::AppState;
 
+const CREATE_SESSION_ROUTE_TEMPLATE: &str = "/api/studio/sessions";
+const DELETE_SESSION_ROUTE_TEMPLATE: &str = "/api/studio/sessions/:id";
+
 // ── Request / Response types ───────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateSessionRequest {
     pub agent_id: Option<String>,
     pub title: Option<String>,
@@ -127,47 +139,92 @@ pub struct StreamEventApiResponse {
 
 // ── Handlers ───────────────────────────────────────────────────────
 
+fn studio_actor(claims: Option<&Claims>) -> &str {
+    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+}
+
 /// POST /api/studio/sessions — create a new chat session.
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Json(req): Json<CreateSessionRequest>,
-) -> ApiResult<SessionResponse> {
+) -> Response {
+    let actor = studio_actor(claims.as_ref().map(|claims| &claims.0));
     let agent = RuntimeSafetyBuilder::new(&state)
         .resolve_agent(req.agent_id.as_deref(), STUDIO_SYNTHETIC_AGENT_NAME)
-        .map_err(map_runtime_safety_error)?;
-    let id = Uuid::now_v7().to_string();
+        .map_err(map_runtime_safety_error);
+    let Ok(agent) = agent else {
+        return error_response_with_idempotency(agent.err().unwrap());
+    };
+    let request_body = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+    let id = operation_context
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| Uuid::now_v7().to_string());
     let title = req.title.unwrap_or_else(|| "New Chat".into());
     let model = req.model.unwrap_or_else(|| "qwen3.5:9b".into());
     let system_prompt = req.system_prompt.unwrap_or_default();
     let temperature = req.temperature.unwrap_or(0.5);
     let max_tokens = req.max_tokens.unwrap_or(4096);
+    let db = state.db.write().await;
 
-    {
-        let db = state.db.write().await;
-        cortex_storage::queries::studio_chat_queries::create_session(
-            &db,
-            &id,
-            &agent.id.to_string(),
-            &title,
-            &model,
-            &system_prompt,
-            temperature,
-            max_tokens,
-        )
-        .map_err(|e| ApiError::db_error("create_session", e))?;
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        CREATE_SESSION_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            cortex_storage::queries::studio_chat_queries::create_session(
+                conn,
+                &id,
+                &agent.id.to_string(),
+                &title,
+                &model,
+                &system_prompt,
+                temperature,
+                max_tokens,
+            )
+            .map_err(|e| ApiError::db_error("create_session", e))?;
+
+            Ok((
+                StatusCode::CREATED,
+                serde_json::to_value(SessionResponse {
+                    id: id.clone(),
+                    agent_id: agent.id.to_string(),
+                    title: title.clone(),
+                    model: model.clone(),
+                    system_prompt: system_prompt.clone(),
+                    temperature,
+                    max_tokens,
+                    created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    updated_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                })
+                .unwrap_or(serde_json::Value::Null),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                &id,
+                "create_studio_session",
+                "info",
+                actor,
+                "created",
+                serde_json::json!({
+                    "session_id": id,
+                    "agent_id": agent.id.to_string(),
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
     }
-
-    Ok(Json(SessionResponse {
-        id,
-        agent_id: agent.id.to_string(),
-        title,
-        model,
-        system_prompt,
-        temperature,
-        max_tokens,
-        created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-        updated_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-    }))
 }
 
 /// GET /api/studio/sessions — list sessions.
@@ -227,19 +284,48 @@ pub async fn get_session(
 /// DELETE /api/studio/sessions/:id — delete a session (CASCADE deletes messages).
 pub async fn delete_session(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
-    let deleted = {
-        let db = state.db.write().await;
-        cortex_storage::queries::studio_chat_queries::delete_session(&db, &id)
-            .map_err(|e| ApiError::db_error("delete_session", e))?
-    };
+) -> Response {
+    let actor = studio_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({ "session_id": id.clone() });
+    let db = state.db.write().await;
 
-    if !deleted {
-        return Err(ApiError::not_found(format!("session {id} not found")));
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "DELETE",
+        DELETE_SESSION_ROUTE_TEMPLATE,
+        &request_body,
+        |conn| {
+            let deleted = cortex_storage::queries::studio_chat_queries::delete_session(conn, &id)
+                .map_err(|e| ApiError::db_error("delete_session", e))?;
+
+            if !deleted {
+                return Err(ApiError::not_found(format!("session {id} not found")));
+            }
+
+            Ok((StatusCode::OK, serde_json::json!({ "deleted": true })))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                &id,
+                "delete_studio_session",
+                "high",
+                actor,
+                "deleted",
+                serde_json::json!({ "session_id": id }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
     }
-
-    Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
 /// GET /api/studio/sessions/:id/stream/recover — recover missed stream events.
@@ -310,6 +396,7 @@ pub async fn send_message(
     let agent = RuntimeSafetyBuilder::new(&state)
         .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
         .map_err(map_runtime_safety_error)?;
+    ensure_agent_available(&state, agent.id)?;
     let runtime_session_id = parse_or_stable_uuid(&session_id, "studio-session");
     let user_msg_id = Uuid::now_v7().to_string();
 
@@ -385,12 +472,6 @@ pub async fn send_message(
             .map_err(|e| ApiError::db_error("list_messages", e))?
     };
 
-    if state.model_providers.is_empty() {
-        return Err(ApiError::bad_request(
-            "No model providers configured. Add provider config to ghost.yml.",
-        ));
-    }
-
     // 4. Build AgentRunner with the canonical runtime safety builder.
     // Exclude the just-inserted user message (last in history) — it's sent as the user_message param.
     let history_cutoff: Vec<_> =
@@ -402,6 +483,9 @@ pub async fn send_message(
 
     let runtime_ctx =
         RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
+    runtime_ctx
+        .ensure_execution_permitted()
+        .map_err(map_runner_error)?;
     let mut runner = RuntimeSafetyBuilder::new(&state)
         .build_live_runner(
             &runtime_ctx,
@@ -413,9 +497,15 @@ pub async fn send_message(
         )
         .map_err(map_runtime_safety_error)?;
 
+    let providers = provider_runtime::ordered_provider_configs(&state);
+    if providers.is_empty() {
+        return Err(ApiError::bad_request(
+            "No model providers configured. Add provider config to ghost.yml.",
+        ));
+    }
+
     // 5. Build LLM fallback chain and run the agent turn.
-    let mut fallback_chain =
-        super::agent_chat::build_fallback_chain_from_providers(&state.model_providers);
+    let mut fallback_chain = provider_runtime::build_fallback_chain(&providers);
 
     let mut ctx = runner
         .pre_loop(
@@ -559,6 +649,7 @@ pub async fn send_message_stream(
     let agent = RuntimeSafetyBuilder::new(&state)
         .resolve_stored_agent(&session.agent_id, STUDIO_SYNTHETIC_AGENT_NAME)
         .map_err(map_runtime_safety_error)?;
+    ensure_agent_available(&state, agent.id)?;
     let runtime_session_id = parse_or_stable_uuid(&session_id, "studio-session");
     let user_msg_id = Uuid::now_v7().to_string();
     let assistant_msg_id = Uuid::now_v7().to_string();
@@ -635,12 +726,6 @@ pub async fn send_message_stream(
             .map_err(|e| ApiError::db_error("list_messages", e))?
     };
 
-    if state.model_providers.is_empty() {
-        return Err(ApiError::bad_request(
-            "No model providers configured. Add provider config to ghost.yml.",
-        ));
-    }
-
     // 4. Build AgentRunner with the canonical runtime safety builder.
     let history_cutoff: Vec<_> =
         if !history.is_empty() && history.last().map(|m| m.id.as_str()) == Some(&user_msg_id) {
@@ -651,6 +736,9 @@ pub async fn send_message_stream(
 
     let runtime_ctx =
         RuntimeSafetyContext::from_state(&state, agent.clone(), runtime_session_id, None);
+    runtime_ctx
+        .ensure_execution_permitted()
+        .map_err(map_runner_error)?;
     let mut runner = RuntimeSafetyBuilder::new(&state)
         .build_live_runner(
             &runtime_ctx,
@@ -662,8 +750,12 @@ pub async fn send_message_stream(
         )
         .map_err(map_runtime_safety_error)?;
 
-    // 5. Collect all configured providers for fallback (WP2-A).
-    let all_providers = state.model_providers.clone();
+    let all_providers = provider_runtime::ordered_provider_configs(&state);
+    if all_providers.is_empty() {
+        return Err(ApiError::bad_request(
+            "No model providers configured. Add provider config to ghost.yml.",
+        ));
+    }
 
     // 7. Create channel for streaming events.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(256);
@@ -711,7 +803,7 @@ pub async fn send_message_stream(
                 let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
                                        tools: Vec<ghost_llm::provider::ToolSchema>|
                       -> ghost_llm::streaming::StreamChunkStream {
-                    build_provider_stream(&pc, messages, tools)
+                    provider_runtime::build_provider_stream(&pc, messages, tools)
                 };
 
                 tracing::info!(
@@ -1199,6 +1291,25 @@ fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
     }
 }
 
+fn ensure_agent_available(state: &AppState, agent_id: Uuid) -> Result<(), ApiError> {
+    match state.kill_switch.check(agent_id) {
+        crate::safety::kill_switch::KillCheckResult::Ok => Ok(()),
+        crate::safety::kill_switch::KillCheckResult::AgentPaused(_) => Err(ApiError::custom(
+            StatusCode::LOCKED,
+            "AGENT_PAUSED",
+            "Agent is paused",
+        )),
+        crate::safety::kill_switch::KillCheckResult::AgentQuarantined(_) => Err(ApiError::custom(
+            StatusCode::LOCKED,
+            "AGENT_QUARANTINED",
+            "Agent is quarantined",
+        )),
+        crate::safety::kill_switch::KillCheckResult::PlatformKilled => {
+            Err(ApiError::KillSwitchActive)
+        }
+    }
+}
+
 fn map_runner_error(error: ghost_agent_loop::runner::RunError) -> ApiError {
     match error {
         ghost_agent_loop::runner::RunError::AgentPaused => {
@@ -1243,101 +1354,6 @@ fn truncate_for_title(s: &str) -> String {
 /// Build a streaming LLM connection from a provider config (WP2-A).
 ///
 /// Extracted from inline closure to support provider fallback iteration.
-fn build_provider_stream(
-    provider_config: &crate::config::ProviderConfig,
-    messages: Vec<ghost_llm::provider::ChatMessage>,
-    tools: Vec<ghost_llm::provider::ToolSchema>,
-) -> ghost_llm::streaming::StreamChunkStream {
-    let provider: Arc<dyn ghost_llm::provider::LLMProvider> = match provider_config.name.as_str() {
-        "ollama" => {
-            let base_url = provider_config
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:11434".into());
-            let model = provider_config
-                .model
-                .clone()
-                .unwrap_or_else(|| "llama3.1".into());
-            let ollama = ghost_llm::provider::OllamaProvider { model, base_url };
-            return ollama.stream_chat(&messages, &tools);
-        }
-        "anthropic" => {
-            let key_env = provider_config
-                .api_key_env
-                .as_deref()
-                .unwrap_or("ANTHROPIC_API_KEY");
-            let key = crate::state::get_api_key(key_env).unwrap_or_default();
-            Arc::new(ghost_llm::provider::AnthropicProvider {
-                model: provider_config
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
-                api_key: std::sync::RwLock::new(key),
-            })
-        }
-        "openai" => {
-            let key_env = provider_config
-                .api_key_env
-                .as_deref()
-                .unwrap_or("OPENAI_API_KEY");
-            let key = crate::state::get_api_key(key_env).unwrap_or_default();
-            Arc::new(ghost_llm::provider::OpenAIProvider {
-                model: provider_config
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "gpt-4o".into()),
-                api_key: std::sync::RwLock::new(key),
-            })
-        }
-        "gemini" => {
-            let key_env = provider_config
-                .api_key_env
-                .as_deref()
-                .unwrap_or("GEMINI_API_KEY");
-            let key = crate::state::get_api_key(key_env).unwrap_or_default();
-            Arc::new(ghost_llm::provider::GeminiProvider {
-                model: provider_config
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "gemini-2.0-flash".into()),
-                api_key: std::sync::RwLock::new(key),
-            })
-        }
-        "openai_compat" => {
-            let key_env = provider_config
-                .api_key_env
-                .as_deref()
-                .unwrap_or("OPENAI_API_KEY");
-            let key = crate::state::get_api_key(key_env).unwrap_or_default();
-            let base_url = provider_config
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:8080".into());
-            let compat = ghost_llm::provider::OpenAICompatProvider {
-                model: provider_config
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "default".into()),
-                api_key: std::sync::RwLock::new(key),
-                base_url,
-                context_window_size: 128_000,
-            };
-            return compat.stream_chat(&messages, &tools);
-        }
-        _ => Arc::new(ghost_llm::provider::OllamaProvider {
-            model: provider_config
-                .model
-                .clone()
-                .unwrap_or_else(|| "llama3.1".into()),
-            base_url: provider_config
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "http://localhost:11434".into()),
-        }),
-    };
-    ghost_llm::provider::complete_stream_shim(provider, messages, tools)
-}
-
 /// Truncate for WS preview (max n bytes, UTF-8 safe).
 fn truncate_preview(s: &str, max: usize) -> String {
     if s.len() <= max {

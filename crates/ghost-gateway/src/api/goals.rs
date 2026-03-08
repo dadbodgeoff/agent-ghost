@@ -6,15 +6,332 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::Json;
-use serde::Deserialize;
+use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
+use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
+use crate::api::idempotency::execute_idempotent_json_mutation;
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::api::websocket::WsEvent;
 use crate::state::AppState;
+
+const APPROVE_ROUTE_TEMPLATE: &str = "/api/goals/:id/approve";
+const REJECT_ROUTE_TEMPLATE: &str = "/api/goals/:id/reject";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GoalDecisionRequestBody {
+    pub expected_state: String,
+    pub expected_lineage_id: String,
+    pub expected_subject_key: String,
+    pub expected_reviewed_revision: String,
+    pub rationale: Option<String>,
+}
+
+fn parse_decision_request(
+    payload: Result<Json<GoalDecisionRequestBody>, JsonRejection>,
+) -> Result<GoalDecisionRequestBody, ApiError> {
+    payload.map(|Json(body)| body).map_err(|error| {
+        ApiError::bad_request(format!("invalid goal decision request body: {error}"))
+    })
+}
+
+fn stale_decision_response(
+    goal_id: &str,
+    code: &str,
+    message: &str,
+    details: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let mut merged_details = serde_json::Map::new();
+    merged_details.insert(
+        "proposal_id".to_string(),
+        serde_json::Value::String(goal_id.to_string()),
+    );
+    if let Some(extra) = details.as_object() {
+        for (key, value) in extra {
+            merged_details.insert(key.clone(), value.clone());
+        }
+    }
+
+    (
+        StatusCode::CONFLICT,
+        serde_json::json!({
+            "error": {
+                "code": code,
+                "message": message,
+                "details": merged_details,
+            }
+        }),
+    )
+}
+
+fn fetch_transition_history(
+    conn: &rusqlite::Connection,
+    goal_id: &str,
+) -> Result<Vec<serde_json::Value>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT from_state, to_state, actor_type, actor_id, reason_code,
+                    rationale, expected_state, expected_revision, operation_id,
+                    request_id, idempotency_key, created_at
+             FROM goal_proposal_transitions
+             WHERE proposal_id = ?1
+             ORDER BY rowid ASC",
+        )
+        .map_err(|e| ApiError::db_error("goal_transition_history_prepare", e))?;
+
+    let rows = stmt
+        .query_map([goal_id], |row| {
+            Ok(serde_json::json!({
+                "from_state": row.get::<_, Option<String>>(0)?,
+                "to_state": row.get::<_, String>(1)?,
+                "actor_type": row.get::<_, String>(2)?,
+                "actor_id": row.get::<_, Option<String>>(3)?,
+                "reason_code": row.get::<_, Option<String>>(4)?,
+                "rationale": row.get::<_, Option<String>>(5)?,
+                "expected_state": row.get::<_, Option<String>>(6)?,
+                "expected_revision": row.get::<_, Option<String>>(7)?,
+                "operation_id": row.get::<_, Option<String>>(8)?,
+                "request_id": row.get::<_, Option<String>>(9)?,
+                "idempotency_key": row.get::<_, Option<String>>(10)?,
+                "created_at": row.get::<_, String>(11)?,
+            }))
+        })
+        .map_err(|e| ApiError::db_error("goal_transition_history_query", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| ApiError::db_error("goal_transition_history_collect", e))?;
+
+    Ok(rows)
+}
+
+fn actor_key(claims: Option<&Claims>) -> &str {
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("anonymous")
+}
+
+fn fetch_goal_agent_id(
+    conn: &rusqlite::Connection,
+    goal_id: &str,
+) -> Result<Option<String>, ApiError> {
+    conn.query_row(
+        "SELECT agent_id FROM goal_proposals WHERE id = ?1",
+        [goal_id],
+        |row| row.get::<_, String>(0),
+    )
+    .map(Some)
+    .or_else(|err| match err {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(ApiError::db_error("goal_agent_lookup", other)),
+    })
+}
+
+fn write_decision_audit_entry(
+    conn: &rusqlite::Connection,
+    agent_id: &str,
+    proposal_id: &str,
+    decision: &str,
+    actor: &str,
+    operation_context: &OperationContext,
+    idempotency_status: &IdempotencyStatus,
+) {
+    write_mutation_audit_entry(
+        conn,
+        agent_id,
+        "goal_proposal_decision",
+        "info",
+        actor,
+        decision,
+        serde_json::json!({
+            "proposal_id": proposal_id,
+            "decision": decision,
+        }),
+        operation_context,
+        idempotency_status,
+    );
+}
+
+async fn resolve_goal_decision(
+    state: Arc<AppState>,
+    goal_id: String,
+    decision: &'static str,
+    request_body: GoalDecisionRequestBody,
+    route_template: &'static str,
+    claims: Option<Claims>,
+    operation_context: OperationContext,
+) -> Response {
+    tracing::info!(goal_id = %goal_id, decision = %decision, "Goal decision requested");
+
+    let db = state.db.write().await;
+    let actor = actor_key(claims.as_ref());
+
+    let outcome = execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        route_template,
+        &serde_json::to_value(&request_body).unwrap_or(serde_json::Value::Null),
+        |conn| {
+            let resolved_at = chrono::Utc::now().to_rfc3339();
+            let preconditions =
+                cortex_storage::queries::goal_proposal_queries::HumanDecisionPreconditions {
+                    expected_state: &request_body.expected_state,
+                    expected_lineage_id: &request_body.expected_lineage_id,
+                    expected_subject_key: &request_body.expected_subject_key,
+                    expected_reviewed_revision: &request_body.expected_reviewed_revision,
+                    rationale: request_body.rationale.as_deref(),
+                    actor_id: actor,
+                    operation_id: operation_context.operation_id.as_deref(),
+                    request_id: Some(&operation_context.request_id),
+                    idempotency_key: operation_context.idempotency_key.as_deref(),
+                };
+
+            match cortex_storage::queries::goal_proposal_queries::resolve_human_decision_in_transaction(
+                conn,
+                &goal_id,
+                decision,
+                &preconditions,
+                &resolved_at,
+            ) {
+                Ok(()) => Ok((
+                    StatusCode::OK,
+                    serde_json::json!({"status": decision, "id": goal_id}),
+                )),
+                Err(cortex_storage::queries::goal_proposal_queries::HumanDecisionError::NotFound) => {
+                    Ok((
+                        StatusCode::NOT_FOUND,
+                        serde_json::json!({
+                            "error": {
+                                "code": "NOT_FOUND",
+                                "message": "Proposal not found",
+                                "details": { "proposal_id": goal_id }
+                            }
+                        }),
+                    ))
+                }
+                Err(cortex_storage::queries::goal_proposal_queries::HumanDecisionError::StaleState {
+                    expected,
+                    actual,
+                }) => Ok(stale_decision_response(
+                    &goal_id,
+                    "STALE_DECISION_STATE",
+                    "Proposal state no longer matches the reviewed state",
+                    serde_json::json!({
+                        "expected_state": expected,
+                        "actual_state": actual,
+                    }),
+                )),
+                Err(
+                    cortex_storage::queries::goal_proposal_queries::HumanDecisionError::StaleLineage {
+                        expected,
+                        actual,
+                    },
+                ) => Ok(stale_decision_response(
+                    &goal_id,
+                    "STALE_DECISION_LINEAGE",
+                    "Proposal lineage no longer matches the reviewed lineage",
+                    serde_json::json!({
+                        "expected_lineage_id": expected,
+                        "actual_lineage_id": actual,
+                    }),
+                )),
+                Err(
+                    cortex_storage::queries::goal_proposal_queries::HumanDecisionError::StaleSubject {
+                        expected,
+                        actual,
+                    },
+                ) => Ok(stale_decision_response(
+                    &goal_id,
+                    "STALE_DECISION_SUBJECT",
+                    "Proposal subject no longer matches the reviewed subject",
+                    serde_json::json!({
+                        "expected_subject_key": expected,
+                        "actual_subject_key": actual,
+                    }),
+                )),
+                Err(
+                    cortex_storage::queries::goal_proposal_queries::HumanDecisionError::StaleReviewedRevision {
+                        expected,
+                        actual,
+                    },
+                ) => Ok(stale_decision_response(
+                    &goal_id,
+                    "STALE_DECISION_REVIEWED_REVISION",
+                    "Proposal reviewed revision no longer matches the reviewed revision",
+                    serde_json::json!({
+                        "expected_reviewed_revision": expected,
+                        "actual_reviewed_revision": actual,
+                    }),
+                )),
+                Err(
+                    cortex_storage::queries::goal_proposal_queries::HumanDecisionError::StaleHead {
+                        head_proposal_id,
+                        head_state,
+                    },
+                ) => Ok(stale_decision_response(
+                    &goal_id,
+                    "STALE_DECISION_SUPERSEDED",
+                    "Proposal is no longer the active lineage head",
+                    serde_json::json!({
+                        "head_proposal_id": head_proposal_id,
+                        "head_state": head_state,
+                    }),
+                )),
+                Err(cortex_storage::queries::goal_proposal_queries::HumanDecisionError::Storage(
+                    message,
+                )) => Err(ApiError::db_error("goal_resolve", message)),
+            }
+        },
+    );
+
+    match outcome {
+        Ok(outcome) => {
+            let agent_id = match fetch_goal_agent_id(&db, &goal_id) {
+                Ok(agent_id) => agent_id,
+                Err(error) => {
+                    tracing::warn!(goal_id = %goal_id, error = %error, "failed to fetch proposal agent_id after decision");
+                    None
+                }
+            };
+
+            if outcome.status == StatusCode::OK {
+                if let Some(agent_id) = agent_id.as_deref() {
+                    write_decision_audit_entry(
+                        &db,
+                        agent_id,
+                        &goal_id,
+                        decision,
+                        actor,
+                        &operation_context,
+                        &outcome.idempotency_status,
+                    );
+                }
+
+                if outcome.idempotency_status == IdempotencyStatus::Executed {
+                    crate::api::websocket::broadcast_event(
+                        &state,
+                        WsEvent::ProposalDecision {
+                            proposal_id: goal_id.clone(),
+                            decision: decision.into(),
+                            agent_id: agent_id.unwrap_or_default(),
+                        },
+                    );
+                }
+            }
+
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
+}
 
 /// Query parameters for goal/proposal listing (T-2.1.5).
 #[derive(Debug, Deserialize)]
@@ -98,7 +415,8 @@ pub async fn list_goals(
     // Fetch page.
     let query = format!(
         "SELECT id, agent_id, session_id, proposer_type, operation, target_type, \
-                decision, dimension_scores, flags, created_at, resolved_at \
+                decision, dimension_scores, flags, created_at, resolved_at, \
+                (SELECT to_state FROM goal_proposal_transitions t WHERE t.proposal_id = goal_proposals.id ORDER BY rowid DESC LIMIT 1) \
          FROM goal_proposals {where_clause} \
          ORDER BY created_at DESC \
          LIMIT ?{idx} OFFSET ?{}",
@@ -140,6 +458,7 @@ pub async fn list_goals(
                 .unwrap_or(serde_json::Value::Array(vec![])),
             "created_at": row.get::<_, String>(9)?,
             "resolved_at": row.get::<_, Option<String>>(10)?,
+            "current_state": row.get::<_, Option<String>>(11)?,
         }))
     }) {
         Ok(rows) => {
@@ -171,172 +490,54 @@ pub async fn list_goals(
 
 /// POST /api/goals/{id}/approve
 ///
-/// Uses cortex_storage::resolve_proposal which atomically checks
-/// `resolved_at IS NULL` before updating (AC10 — no double-resolve).
+/// Uses the proposal v2 transition engine inside the gateway's idempotent transaction.
 pub async fn approve_goal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Extension(operation_context): Extension<OperationContext>,
+    claims: Option<Extension<Claims>>,
+    request_body: Result<Json<GoalDecisionRequestBody>, JsonRejection>,
 ) -> impl IntoResponse {
-    tracing::info!(goal_id = %id, "Goal approval requested");
+    let request_body = match parse_decision_request(request_body) {
+        Ok(request_body) => request_body,
+        Err(error) => return error_response_with_idempotency(error),
+    };
 
-    let db = state.db.write().await;
-
-    let resolved_at = chrono::Utc::now().to_rfc3339();
-    match cortex_storage::queries::goal_proposal_queries::resolve_proposal(
-        &db,
-        &id,
+    resolve_goal_decision(
+        state,
+        id,
         "approved",
-        "human_operator",
-        &resolved_at,
-    ) {
-        Ok(true) => {
-            // agent_id is NOT NULL per DDL — no COALESCE needed (F9 fix).
-            let agent_id = match db.query_row(
-                "SELECT agent_id FROM goal_proposals WHERE id = ?1",
-                [&id],
-                |row| row.get::<_, String>(0),
-            ) {
-                Ok(aid) => aid,
-                Err(e) => {
-                    tracing::warn!(goal_id = %id, error = %e, "Failed to fetch agent_id for approved proposal broadcast");
-                    String::new()
-                }
-            };
-
-            crate::api::websocket::broadcast_event(
-                &state,
-                WsEvent::ProposalDecision {
-                    proposal_id: id.clone(),
-                    decision: "approved".into(),
-                    agent_id,
-                },
-            );
-
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "approved", "id": id})),
-            )
-        }
-        Ok(false) => {
-            // resolve_proposal returned 0 rows updated — either not found or already resolved.
-            // Check which case.
-            let exists = match db.query_row(
-                "SELECT COUNT(*) FROM goal_proposals WHERE id = ?1",
-                [&id],
-                |row| row.get::<_, u32>(0),
-            ) {
-                Ok(count) => count,
-                Err(e) => {
-                    tracing::warn!(goal_id = %id, error = %e, "Failed to check proposal existence after resolve");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "internal error", "id": id})),
-                    );
-                }
-            };
-
-            if exists > 0 {
-                (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({"error": "proposal already resolved", "id": id})),
-                )
-            } else {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "proposal not found", "id": id})),
-                )
-            }
-        }
-        Err(e) => {
-            tracing::error!(goal_id = %id, error = %e, "Goal approval resolve failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            )
-        }
-    }
+        request_body,
+        APPROVE_ROUTE_TEMPLATE,
+        claims.map(|Extension(claims)| claims),
+        operation_context,
+    )
+    .await
 }
 
 /// POST /api/goals/{id}/reject
 pub async fn reject_goal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Extension(operation_context): Extension<OperationContext>,
+    claims: Option<Extension<Claims>>,
+    request_body: Result<Json<GoalDecisionRequestBody>, JsonRejection>,
 ) -> impl IntoResponse {
-    tracing::info!(goal_id = %id, "Goal rejection requested");
+    let request_body = match parse_decision_request(request_body) {
+        Ok(request_body) => request_body,
+        Err(error) => return error_response_with_idempotency(error),
+    };
 
-    let db = state.db.write().await;
-
-    let resolved_at = chrono::Utc::now().to_rfc3339();
-    match cortex_storage::queries::goal_proposal_queries::resolve_proposal(
-        &db,
-        &id,
+    resolve_goal_decision(
+        state,
+        id,
         "rejected",
-        "human_operator",
-        &resolved_at,
-    ) {
-        Ok(true) => {
-            let agent_id = match db.query_row(
-                "SELECT agent_id FROM goal_proposals WHERE id = ?1",
-                [&id],
-                |row| row.get::<_, String>(0),
-            ) {
-                Ok(aid) => aid,
-                Err(e) => {
-                    tracing::warn!(goal_id = %id, error = %e, "Failed to fetch agent_id for rejected proposal broadcast");
-                    String::new()
-                }
-            };
-
-            crate::api::websocket::broadcast_event(
-                &state,
-                WsEvent::ProposalDecision {
-                    proposal_id: id.clone(),
-                    decision: "rejected".into(),
-                    agent_id,
-                },
-            );
-
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "rejected", "id": id})),
-            )
-        }
-        Ok(false) => {
-            let exists = match db.query_row(
-                "SELECT COUNT(*) FROM goal_proposals WHERE id = ?1",
-                [&id],
-                |row| row.get::<_, u32>(0),
-            ) {
-                Ok(count) => count,
-                Err(e) => {
-                    tracing::warn!(goal_id = %id, error = %e, "Failed to check proposal existence after reject");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "internal error", "id": id})),
-                    );
-                }
-            };
-
-            if exists > 0 {
-                (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({"error": "proposal already resolved", "id": id})),
-                )
-            } else {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "proposal not found", "id": id})),
-                )
-            }
-        }
-        Err(e) => {
-            tracing::error!(goal_id = %id, error = %e, "Goal rejection resolve failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            )
-        }
-    }
+        request_body,
+        REJECT_ROUTE_TEMPLATE,
+        claims.map(|Extension(claims)| claims),
+        operation_context,
+    )
+    .await
 }
 
 /// GET /api/goals/:id — get a single proposal with full validation breakdown (T-2.1.6).
@@ -352,12 +553,18 @@ pub async fn get_goal(
         .read()
         .map_err(|e| ApiError::db_error("goal_get", e))?;
 
+    let transition_history = fetch_transition_history(&db, &id)?;
     let proposal = db
         .query_row(
-            "SELECT id, agent_id, session_id, proposer_type, operation, target_type, \
-                    content, cited_memory_ids, decision, resolved_at, resolver, \
-                    flags, dimension_scores, denial_reason, created_at \
-             FROM goal_proposals WHERE id = ?1",
+            "SELECT gp.id, gp.agent_id, gp.session_id, gp.proposer_type, gp.operation, gp.target_type, \
+                    gp.content, gp.cited_memory_ids, gp.decision, gp.resolved_at, gp.resolver, \
+                    gp.flags, gp.dimension_scores, gp.denial_reason, gp.created_at, \
+                    v2.lineage_id, v2.subject_type, v2.subject_key, v2.reviewed_revision, \
+                    v2.validation_disposition, v2.supersedes_proposal_id, \
+                    (SELECT to_state FROM goal_proposal_transitions t WHERE t.proposal_id = gp.id ORDER BY rowid DESC LIMIT 1) \
+             FROM goal_proposals gp \
+             LEFT JOIN goal_proposals_v2 v2 ON v2.id = gp.id \
+             WHERE gp.id = ?1",
             [&id],
             |row| {
                 let content_str: String = row.get(6)?;
@@ -387,6 +594,14 @@ pub async fn get_goal(
                         .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
                     "denial_reason": row.get::<_, Option<String>>(13)?,
                     "created_at": row.get::<_, String>(14)?,
+                    "lineage_id": row.get::<_, Option<String>>(15)?,
+                    "subject_type": row.get::<_, Option<String>>(16)?,
+                    "subject_key": row.get::<_, Option<String>>(17)?,
+                    "reviewed_revision": row.get::<_, Option<String>>(18)?,
+                    "validation_disposition": row.get::<_, Option<String>>(19)?,
+                    "supersedes_proposal_id": row.get::<_, Option<String>>(20)?,
+                    "current_state": row.get::<_, Option<String>>(21)?,
+                    "transition_history": transition_history,
                 }))
             },
         )

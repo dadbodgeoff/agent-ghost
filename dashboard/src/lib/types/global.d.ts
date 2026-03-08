@@ -2,8 +2,6 @@
 
 declare global {
   interface Window {
-    /** Gateway port injected by Tauri via window.eval at startup. */
-    __GHOST_GATEWAY_PORT__?: number;
     /** Tauri IPC bridge, present only when running inside the Tauri shell. */
     __TAURI__?: Record<string, unknown>;
   }

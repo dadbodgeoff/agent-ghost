@@ -48,9 +48,9 @@ impl CliBackend {
 
         // Try HTTP first.
         if GhostHttpClient::health_check(&base_url).await {
-            return Ok(Self::Http {
-                client: GhostHttpClient::new(base_url, token),
-            });
+            let client = GhostHttpClient::new(base_url, token);
+            client.assert_compatible().await?;
+            return Ok(Self::Http { client });
         }
 
         // Fall back to direct DB.

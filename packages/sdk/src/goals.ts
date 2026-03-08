@@ -9,11 +9,12 @@ export interface Proposal {
   proposer_type: 'agent' | 'human';
   operation: string;
   target_type: string;
-  decision: 'approved' | 'rejected' | null;
+  decision: string | null;
   dimension_scores: Record<string, number>;
   flags: string[];
   created_at: string;
   resolved_at: string | null;
+  current_state?: string | null;
 }
 
 export interface ProposalDetail extends Proposal {
@@ -21,6 +22,37 @@ export interface ProposalDetail extends Proposal {
   cited_memory_ids: string[];
   resolver: string | null;
   denial_reason?: string;
+  lineage_id?: string | null;
+  subject_type?: string | null;
+  subject_key?: string | null;
+  reviewed_revision?: string | null;
+  validation_disposition?: string | null;
+  supersedes_proposal_id?: string | null;
+  current_state?: string | null;
+  transition_history?: GoalProposalTransition[];
+}
+
+export interface GoalProposalTransition {
+  from_state: string | null;
+  to_state: string;
+  actor_type: string;
+  actor_id: string | null;
+  reason_code: string | null;
+  rationale: string | null;
+  expected_state: string | null;
+  expected_revision: string | null;
+  operation_id: string | null;
+  request_id: string | null;
+  idempotency_key: string | null;
+  created_at: string;
+}
+
+export interface GoalDecisionRequest {
+  expectedState: string;
+  expectedLineageId: string;
+  expectedSubjectKey: string;
+  expectedReviewedRevision: string;
+  rationale?: string;
 }
 
 export interface ListGoalsParams {
@@ -61,12 +93,19 @@ export class GoalsAPI {
   /** Approve a pending proposal. */
   async approve(
     id: string,
+    request: GoalDecisionRequest,
     options?: GhostRequestOptions,
   ): Promise<{ status: 'approved'; id: string }> {
     return this.request<{ status: 'approved'; id: string }>(
       'POST',
       `/api/goals/${encodeURIComponent(id)}/approve`,
-      undefined,
+      {
+        expected_state: request.expectedState,
+        expected_lineage_id: request.expectedLineageId,
+        expected_subject_key: request.expectedSubjectKey,
+        expected_reviewed_revision: request.expectedReviewedRevision,
+        rationale: request.rationale,
+      },
       options,
     );
   }
@@ -74,12 +113,19 @@ export class GoalsAPI {
   /** Reject a pending proposal. */
   async reject(
     id: string,
+    request: GoalDecisionRequest,
     options?: GhostRequestOptions,
   ): Promise<{ status: 'rejected'; id: string }> {
     return this.request<{ status: 'rejected'; id: string }>(
       'POST',
       `/api/goals/${encodeURIComponent(id)}/reject`,
-      undefined,
+      {
+        expected_state: request.expectedState,
+        expected_lineage_id: request.expectedLineageId,
+        expected_subject_key: request.expectedSubjectKey,
+        expected_reviewed_revision: request.expectedReviewedRevision,
+        rationale: request.rationale,
+      },
       options,
     );
   }

@@ -22,12 +22,16 @@
     details: string;
   }
 
-  let health: HealthData = $state({ status: 'unknown' });
+  let health: HealthData = $state({
+    status: 'unavailable',
+    state: 'Initializing',
+    platform_killed: false,
+  });
   let error: string | null = $state(null);
   let refreshing = $state(false);
 
   let components: ComponentStatus[] = $derived.by(() => {
-    const gwOk = health.status === 'ok' || health.status === 'healthy';
+    const gwOk = health.status === 'alive';
     return [
       {
         name: 'Gateway Server',
@@ -124,7 +128,7 @@
   <div class="metrics-grid">
     <div class="metric-card">
       <h3>Gateway Status</h3>
-      <span class="metric-value" class:healthy={health.status === 'ok' || health.status === 'healthy'}>
+      <span class="metric-value" class:healthy={health.status === 'alive'}>
         {health.status}
       </span>
     </div>

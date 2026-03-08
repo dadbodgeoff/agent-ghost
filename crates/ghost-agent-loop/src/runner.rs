@@ -333,16 +333,16 @@ impl AgentRunner {
         &self,
         proposal: &cortex_core::traits::convergence::Proposal,
         decision: &str,
-    ) {
+    ) -> Option<cortex_storage::queries::goal_proposal_queries::ProposalInsertOutcome> {
         let db = match &self.db {
             Some(db) => db,
-            None => return,
+            None => return None,
         };
         let conn = match db.lock() {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, "failed to lock DB for proposal persistence");
-                return;
+                return None;
             }
         };
         let id = proposal.id.to_string();
@@ -355,22 +355,35 @@ impl AgentRunner {
         let session_id = proposal.session_id.to_string();
         let content = proposal.content.to_string();
         let cited = serde_json::to_string(&proposal.cited_memory_ids).unwrap_or_default();
+        let proposer_type = format!("{:?}", proposal.proposer);
+        let operation = format!("{:?}", proposal.operation);
+        let target_type = format!("{:?}", proposal.target_type);
         let event_hash = blake3::hash(id.as_bytes());
-        if let Err(e) = cortex_storage::queries::goal_proposal_queries::insert_proposal(
-            &conn,
-            &id,
-            &agent_id,
-            &session_id,
-            &format!("{:?}", proposal.proposer),
-            &format!("{:?}", proposal.operation),
-            &format!("{:?}", proposal.target_type),
-            &content,
-            &cited,
+        let created_at = proposal.timestamp.to_rfc3339();
+        let record = cortex_storage::queries::goal_proposal_queries::NewProposalRecord {
+            id: &id,
+            agent_id: &agent_id,
+            session_id: &session_id,
+            proposer_type: &proposer_type,
+            operation: &operation,
+            target_type: &target_type,
+            content: &content,
+            cited_memory_ids: &cited,
             decision,
-            event_hash.as_bytes(),
-            &[0u8; 32],
+            event_hash: event_hash.as_bytes(),
+            previous_hash: &[0u8; 32],
+            created_at: Some(&created_at),
+            operation_id: None,
+            request_id: None,
+        };
+        match cortex_storage::queries::goal_proposal_queries::insert_proposal_record_with_outcome(
+            &conn, &record,
         ) {
-            tracing::error!(error = %e, proposal_id = %id, "failed to persist proposal");
+            Ok(outcome) => Some(outcome),
+            Err(e) => {
+                tracing::error!(error = %e, proposal_id = %id, "failed to persist proposal");
+                None
+            }
         }
     }
 
@@ -944,10 +957,9 @@ impl AgentRunner {
                     ctx.proposal_count += proposals.len() as u32;
 
                     // Route proposals through ProposalRouter (Req 33).
-                    for proposal in proposals {
+                    for mut proposal in proposals {
                         use cortex_core::models::proposal::ProposalDecision;
                         use cortex_core::models::proposal::ProposalOperation;
-                        self.proposal_router.check_superseding(&proposal);
                         let decision = if self.proposal_router.is_resubmission(&proposal) {
                             ProposalDecision::AutoRejected
                         } else if let Some(d) = self.proposal_router.reflection_precheck(
@@ -961,7 +973,21 @@ impl AgentRunner {
                             ProposalDecision::HumanReviewRequired
                         };
                         // Persist to goal_proposals table.
-                        self.persist_proposal(&proposal, &format!("{decision:?}"));
+                        if let Some(outcome) =
+                            self.persist_proposal(&proposal, &format!("{decision:?}"))
+                        {
+                            proposal.content = outcome.canonical_content;
+                            if let Some(old_id) = outcome.supersedes_proposal_id.as_deref() {
+                                match Uuid::parse_str(old_id) {
+                                    Ok(old_id) => self.proposal_router.mark_superseded(old_id),
+                                    Err(error) => tracing::warn!(
+                                        error = %error,
+                                        superseded_proposal_id = old_id,
+                                        "storage returned non-UUID superseded proposal id"
+                                    ),
+                                }
+                            }
+                        }
                         // Persist reflection entries when approved.
                         if proposal.operation == ProposalOperation::ReflectionWrite
                             && decision == ProposalDecision::AutoApproved
@@ -1098,10 +1124,9 @@ impl AgentRunner {
                     ctx.proposal_count += proposals.len() as u32;
 
                     // Route proposals through ProposalRouter (Req 33).
-                    for proposal in proposals {
+                    for mut proposal in proposals {
                         use cortex_core::models::proposal::ProposalDecision;
                         use cortex_core::models::proposal::ProposalOperation;
-                        self.proposal_router.check_superseding(&proposal);
                         let decision = if self.proposal_router.is_resubmission(&proposal) {
                             ProposalDecision::AutoRejected
                         } else if let Some(d) = self.proposal_router.reflection_precheck(
@@ -1115,7 +1140,21 @@ impl AgentRunner {
                             ProposalDecision::HumanReviewRequired
                         };
                         // Persist to goal_proposals table.
-                        self.persist_proposal(&proposal, &format!("{decision:?}"));
+                        if let Some(outcome) =
+                            self.persist_proposal(&proposal, &format!("{decision:?}"))
+                        {
+                            proposal.content = outcome.canonical_content;
+                            if let Some(old_id) = outcome.supersedes_proposal_id.as_deref() {
+                                match Uuid::parse_str(old_id) {
+                                    Ok(old_id) => self.proposal_router.mark_superseded(old_id),
+                                    Err(error) => tracing::warn!(
+                                        error = %error,
+                                        superseded_proposal_id = old_id,
+                                        "storage returned non-UUID superseded proposal id"
+                                    ),
+                                }
+                            }
+                        }
                         // Persist reflection entries when approved.
                         if proposal.operation == ProposalOperation::ReflectionWrite
                             && decision == ProposalDecision::AutoApproved
@@ -1439,9 +1478,8 @@ impl AgentRunner {
                     result.proposals_extracted += proposals.len() as u32;
                     ctx.proposal_count += proposals.len() as u32;
                     // Route proposals (same as run_turn).
-                    for proposal in proposals {
+                    for mut proposal in proposals {
                         use cortex_core::models::proposal::{ProposalDecision, ProposalOperation};
-                        self.proposal_router.check_superseding(&proposal);
                         let decision = if self.proposal_router.is_resubmission(&proposal) {
                             ProposalDecision::AutoRejected
                         } else if let Some(d) = self.proposal_router.reflection_precheck(
@@ -1454,7 +1492,21 @@ impl AgentRunner {
                         } else {
                             ProposalDecision::HumanReviewRequired
                         };
-                        self.persist_proposal(&proposal, &format!("{decision:?}"));
+                        if let Some(outcome) =
+                            self.persist_proposal(&proposal, &format!("{decision:?}"))
+                        {
+                            proposal.content = outcome.canonical_content;
+                            if let Some(old_id) = outcome.supersedes_proposal_id.as_deref() {
+                                match Uuid::parse_str(old_id) {
+                                    Ok(old_id) => self.proposal_router.mark_superseded(old_id),
+                                    Err(error) => tracing::warn!(
+                                        error = %error,
+                                        superseded_proposal_id = old_id,
+                                        "storage returned non-UUID superseded proposal id"
+                                    ),
+                                }
+                            }
+                        }
                         if proposal.operation == ProposalOperation::ReflectionWrite
                             && decision == ProposalDecision::AutoApproved
                         {

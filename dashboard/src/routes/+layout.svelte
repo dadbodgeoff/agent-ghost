@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { GhostCompatibilityAssessment } from '@ghost/sdk';
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
@@ -13,7 +14,12 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { tabStore } from '$lib/stores/tabs.svelte';
   import { shortcuts } from '$lib/shortcuts';
-  import { invalidateAuthClientState, isAuthResetError, notifyAuthBoundary } from '$lib/auth-boundary';
+  import {
+    invalidateAuthClientState,
+    isAuthResetError,
+    notifyAuthBoundary,
+    rotateAuthBoundarySession,
+  } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
@@ -27,6 +33,14 @@
 
   let wsState = $derived(wsStore.state);
 
+  function pushSubscriptionToPayload(subscription: PushSubscriptionJSON) {
+    if (!subscription.endpoint) return null;
+    return {
+      endpoint: subscription.endpoint,
+      keys: subscription.keys,
+    };
+  }
+
   function applyTheme() {
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
@@ -38,18 +52,54 @@
     }
   }
 
+  function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
+    const clientLabel = assessment.client.name === 'desktop' ? 'desktop' : 'dashboard';
+
+    if (assessment.reason === 'unsupported_client') {
+      return `This ${clientLabel} build is not recognized by gateway ${assessment.gatewayVersion}. Update the client before continuing.`;
+    }
+
+    if (assessment.reason === 'invalid_version') {
+      return `This ${clientLabel} build reported an invalid version (${assessment.client.version}). Reinstall or update the client before continuing.`;
+    }
+
+    if (assessment.supportedRange) {
+      return [
+        `This ${clientLabel} build (${assessment.client.version}) is outside the gateway's supported range.`,
+        `Gateway ${assessment.gatewayVersion} requires ${assessment.supportedRange.clientName} clients`,
+        `from ${assessment.supportedRange.minimumVersion} up to`,
+        `${assessment.supportedRange.maximumVersionExclusive} (exclusive).`,
+      ].join(' ');
+    }
+
+    return `This ${clientLabel} build is incompatible with gateway ${assessment.gatewayVersion}. Update the client before continuing.`;
+  }
+
   onMount(async () => {
     applyTheme();
 
     runtime = await getRuntime();
     const currentPath = $page.url.pathname;
 
+    try {
+      const client = await getGhostClient();
+      const compatibility = await client.compatibility.assessCurrentClient();
+      if (!compatibility.supported) {
+        bootError = compatibilityMessage(compatibility);
+        return;
+      }
+    } catch {
+      // Compatibility probe is advisory at startup; hard enforcement lives in the gateway.
+    }
+
     if (currentPath !== '/login') {
       try {
         const client = await getGhostClient();
         await client.auth.session();
+        await notifyAuthBoundary('ghost-auth-session');
       } catch (error) {
         if (isAuthResetError(error)) {
+          await rotateAuthBoundarySession();
           await runtime.clearToken();
           invalidateAuthClientState();
           await notifyAuthBoundary('ghost-auth-cleared');
@@ -144,7 +194,9 @@
         applicationServerKey,
       });
 
-      await client.push.subscribe(newSub.toJSON());
+      const payload = pushSubscriptionToPayload(newSub.toJSON());
+      if (!payload) return;
+      await client.push.subscribe(payload);
     } catch {
       // Push subscription failed — non-fatal.
     }

@@ -4,32 +4,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "store:default",
     "notification:default",
     "notification:allow-request-permission",
     "notification:allow-notify",
-    "notification:allow-is-permission-granted",
-    "fs:default",
-    "shell:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        { "name": "ghost", "sidecar": true, "args": true }
-      ]
-    },
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        { "name": "ghost", "sidecar": true, "args": true }
-      ]
-    },
-    "shell:allow-stdin-write",
-    "shell:allow-open",
-    "window-state:default",
-    "os:default",
-    "process:default",
-    "deep-link:default",
-    "log:default",
-    "pty:default"
+    "notification:allow-is-permission-granted"
   ]
 }

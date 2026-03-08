@@ -540,6 +540,10 @@ mod appstate_field_tests {
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".into(),
             model_providers: Vec::new(),
+            default_model_provider: None,
+            pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
+                .circuit_breaker(),
+            websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),

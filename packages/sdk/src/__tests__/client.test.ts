@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GhostClient } from '../client.js';
+import { assessGhostClientCompatibility } from '../compatibility.js';
 import { GhostAPIError, GhostNetworkError, GhostTimeoutError } from '../errors.js';
 
 // ── Helpers ──
@@ -52,6 +53,11 @@ function errorResponse(status: number, body?: unknown): Parameters<typeof mockFe
 }
 
 // ── Tests ──
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe('GhostClient', () => {
   it('uses default baseUrl', () => {
@@ -121,6 +127,16 @@ describe('AgentsAPI', () => {
         body: JSON.stringify({ name: 'New Agent' }),
       }),
     );
+    const headers = fetch.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['X-Request-ID']).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    expect(headers['X-Ghost-Client-Name']).toBe('sdk');
+    expect(headers['X-Ghost-Client-Version']).toBe('0.1.0');
+    expect(headers['X-Ghost-Operation-ID']).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(headers['Idempotency-Key']).toBe(headers['X-Ghost-Operation-ID']);
   });
 
   it('deletes an agent', async () => {
@@ -136,13 +152,111 @@ describe('AgentsAPI', () => {
   });
 });
 
+describe('Operation envelope', () => {
+  it('does not attach operation headers to GET requests by default', async () => {
+    const fetch = mockFetch(jsonResponse([]));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    await client.agents.list();
+    const headers = fetch.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['X-Ghost-Client-Name']).toBe('sdk');
+    expect(headers['X-Ghost-Client-Version']).toBe('0.1.0');
+    expect(headers['X-Request-ID']).toBeUndefined();
+    expect(headers['X-Ghost-Operation-ID']).toBeUndefined();
+    expect(headers['Idempotency-Key']).toBeUndefined();
+  });
+
+  it('preserves caller-supplied operation identity on goal approval', async () => {
+    const approved = { status: 'approved' as const, id: 'goal-1' };
+    const fetch = mockFetch(jsonResponse(approved));
+    const client = new GhostClient({
+      fetch,
+      baseUrl: 'http://test:1234',
+      clientName: 'dashboard',
+      clientVersion: '0.1.0',
+    });
+
+    await client.goals.approve(
+      'goal-1',
+      {
+        expectedState: 'pending_review',
+        expectedLineageId: 'ln-123',
+        expectedSubjectKey: 'goal:agent-1:primary',
+        expectedReviewedRevision: 'rev-42',
+      },
+      {
+        requestId: 'request-123',
+        operationId: '018f0f23-8c65-7abc-9def-1234567890ab',
+        idempotencyKey: 'idem-123',
+      },
+    );
+
+    const headers = fetch.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['X-Ghost-Client-Name']).toBe('dashboard');
+    expect(headers['X-Ghost-Client-Version']).toBe('0.1.0');
+    expect(headers['X-Request-ID']).toBe('request-123');
+    expect(headers['X-Ghost-Operation-ID']).toBe('018f0f23-8c65-7abc-9def-1234567890ab');
+    expect(headers['Idempotency-Key']).toBe('idem-123');
+  });
+
+  it('assesses compatibility against the gateway contract', () => {
+    const supported = assessGhostClientCompatibility(
+      {
+        gatewayVersion: '0.1.0',
+        compatibilityContractVersion: 1,
+        policyAWritesRequireExplicitClientIdentity: true,
+        requiredMutationHeaders: ['x-ghost-client-name', 'x-ghost-client-version'],
+        supportedClients: [
+          {
+            clientName: 'dashboard',
+            minimumVersion: '0.1.0',
+            maximumVersionExclusive: '0.2.0',
+            enforcement: 'policy_a_writes',
+          },
+        ],
+      },
+      { name: 'dashboard', version: '0.1.0' },
+    );
+    expect(supported.supported).toBe(true);
+
+    const unsupported = assessGhostClientCompatibility(
+      {
+        gatewayVersion: '0.1.0',
+        compatibilityContractVersion: 1,
+        policyAWritesRequireExplicitClientIdentity: true,
+        requiredMutationHeaders: ['x-ghost-client-name', 'x-ghost-client-version'],
+        supportedClients: [
+          {
+            clientName: 'dashboard',
+            minimumVersion: '0.1.0',
+            maximumVersionExclusive: '0.2.0',
+            enforcement: 'policy_a_writes',
+          },
+        ],
+      },
+      { name: 'dashboard', version: '0.0.99' },
+    );
+    expect(unsupported.supported).toBe(false);
+    expect(unsupported.reason).toBe('unsupported_version');
+  });
+});
+
 describe('SessionsAPI', () => {
   it('creates a session', async () => {
-    const session = { id: 's1', agent_id: 'a1' };
+    const session = {
+      id: 's1',
+      title: 'Session',
+      model: 'gpt-4o-mini',
+      system_prompt: '',
+      temperature: 0.2,
+      max_tokens: 512,
+      created_at: '2026-03-07T00:00:00Z',
+      updated_at: '2026-03-07T00:00:00Z',
+    };
     const fetch = mockFetch(jsonResponse(session));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
-    const result = await client.sessions.create({ agent_id: 'a1' });
+    const result = await client.sessions.create({ title: 'Session' });
     expect(result).toEqual(session);
   });
 
@@ -287,11 +401,25 @@ describe('GoalsAPI', () => {
     const fetch = mockFetch(jsonResponse(approved));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
-    const result = await client.goals.approve('goal-1');
+    const result = await client.goals.approve('goal-1', {
+      expectedState: 'pending_review',
+      expectedLineageId: 'ln-123',
+      expectedSubjectKey: 'goal:agent-1:primary',
+      expectedReviewedRevision: 'rev-42',
+    });
     expect(result).toEqual(approved);
     expect(fetch).toHaveBeenCalledWith(
       'http://test:1234/api/goals/goal-1/approve',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          expected_state: 'pending_review',
+          expected_lineage_id: 'ln-123',
+          expected_subject_key: 'goal:agent-1:primary',
+          expected_reviewed_revision: 'rev-42',
+          rationale: undefined,
+        }),
+      }),
     );
   });
 
@@ -300,11 +428,26 @@ describe('GoalsAPI', () => {
     const fetch = mockFetch(jsonResponse(rejected));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
-    const result = await client.goals.reject('goal-1');
+    const result = await client.goals.reject('goal-1', {
+      expectedState: 'pending_review',
+      expectedLineageId: 'ln-123',
+      expectedSubjectKey: 'goal:agent-1:primary',
+      expectedReviewedRevision: 'rev-42',
+      rationale: 'unsafe',
+    });
     expect(result).toEqual(rejected);
     expect(fetch).toHaveBeenCalledWith(
       'http://test:1234/api/goals/goal-1/reject',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          expected_state: 'pending_review',
+          expected_lineage_id: 'ln-123',
+          expected_subject_key: 'goal:agent-1:primary',
+          expected_reviewed_revision: 'rev-42',
+          rationale: 'unsafe',
+        }),
+      }),
     );
   });
 });
@@ -382,6 +525,80 @@ describe('Error handling', () => {
 
     const result = await client.agents.delete('a1');
     expect(result).toBeUndefined();
+  });
+
+  it('retries safe requests on transient network failure with bounded backoff', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('temporary network failure'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve([{ id: 'a1' }]),
+        text: () => Promise.resolve('[{"id":"a1"}]'),
+        headers: new Headers({
+          'content-type': 'application/json',
+          'content-length': '13',
+        }),
+      } as Response);
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const request = client.agents.list();
+    await vi.runAllTimersAsync();
+
+    await expect(request).resolves.toEqual([{ id: 'a1' }]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry semantic 4xx responses', async () => {
+    const fetch = mockFetch(errorResponse(401, { error: 'unauthorized' }));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    await expect(client.agents.list()).rejects.toMatchObject({
+      status: 401,
+      message: 'unauthorized',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry mutating requests by default', async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError('temporary network failure'));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    await expect(client.agents.create({ name: 'New Agent' })).rejects.toThrow(GhostNetworkError);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Security hardening', () => {
+  it('requires secure crypto when generating operation identifiers', async () => {
+    vi.stubGlobal('crypto', undefined);
+
+    const client = new GhostClient({
+      fetch: mockFetch(jsonResponse({ id: 'a1' })),
+      baseUrl: 'http://test:1234',
+    });
+
+    await expect(client.agents.create({ name: 'New Agent' })).rejects.toThrow(/Web Crypto/);
+  });
+
+  it('uses timeout signals for blob exports', async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(new Blob(['ok'])),
+    } as Response);
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234', timeout: 5000 });
+
+    await client.audit.exportBlob({ format: 'json' });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/audit/export?format=json',
+      expect.objectContaining({
+        method: 'GET',
+        signal: expect.any(AbortSignal),
+      }),
+    );
   });
 });
 

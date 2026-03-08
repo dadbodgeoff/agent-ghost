@@ -22,7 +22,13 @@ pub struct SessionState {
 #[derive(Debug, Clone)]
 struct ProvisionalAgent {
     session_count: u32,
-    first_seen: DateTime<Utc>,
+    last_seen: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PruneResult {
+    pub session_ids: Vec<Uuid>,
+    pub provisional_agent_ids: Vec<Uuid>,
 }
 
 /// Session registry managing active sessions and provisional tracking.
@@ -86,6 +92,7 @@ impl SessionRegistry {
             .entry(agent_id)
             .or_default()
             .push(session_id);
+        self.provisional.remove(&agent_id);
 
         closed_sessions
     }
@@ -119,9 +126,10 @@ impl SessionRegistry {
             .entry(agent_id)
             .or_insert(ProvisionalAgent {
                 session_count: 0,
-                first_seen: now,
+                last_seen: now,
             });
         entry.session_count += 1;
+        entry.last_seen = now;
         entry.session_count <= self.max_provisional
     }
 
@@ -154,5 +162,98 @@ impl SessionRegistry {
             })
             .map(|(agent_id, _)| *agent_id)
             .collect()
+    }
+
+    pub fn has_active_sessions(&self) -> bool {
+        self.agent_sessions.iter().any(|(_, sids)| {
+            sids.iter().any(|sid| {
+                self.sessions
+                    .get(sid)
+                    .is_some_and(|session| session.is_active)
+            })
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn provisional_count(&self) -> usize {
+        self.provisional.len()
+    }
+
+    pub fn prune_stale(
+        &mut self,
+        now: DateTime<Utc>,
+        idle_horizon: chrono::Duration,
+    ) -> PruneResult {
+        let stale_sessions: Vec<Uuid> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| now - session.last_event_at >= idle_horizon)
+            .map(|(session_id, _)| *session_id)
+            .collect();
+
+        for session_id in &stale_sessions {
+            if let Some(session) = self.sessions.remove(session_id) {
+                if let Some(agent_sessions) = self.agent_sessions.get_mut(&session.agent_id) {
+                    agent_sessions.retain(|candidate| candidate != session_id);
+                    if agent_sessions.is_empty() {
+                        self.agent_sessions.remove(&session.agent_id);
+                    }
+                }
+            }
+        }
+
+        let stale_provisional_agents: Vec<Uuid> = self
+            .provisional
+            .iter()
+            .filter(|(_, agent)| now - agent.last_seen >= idle_horizon)
+            .map(|(agent_id, _)| *agent_id)
+            .collect();
+        for agent_id in &stale_provisional_agents {
+            self.provisional.remove(agent_id);
+        }
+
+        PruneResult {
+            session_ids: stale_sessions,
+            provisional_agent_ids: stale_provisional_agents,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_stale_sessions_removes_idle_sessions_and_empty_indexes() {
+        let mut registry = SessionRegistry::new(3);
+        let agent_id = Uuid::now_v7();
+        let session_id = Uuid::now_v7();
+        let now = Utc::now();
+
+        registry.start_session(session_id, agent_id, now - chrono::Duration::hours(2));
+        let pruned = registry.prune_stale(now, chrono::Duration::minutes(30));
+
+        assert_eq!(pruned.session_ids, vec![session_id]);
+        assert!(registry.active_sessions(&agent_id).is_empty());
+        assert!(registry.all_active_agent_ids().is_empty());
+    }
+
+    #[test]
+    fn prune_stale_removes_idle_provisional_agents_and_start_session_clears_them() {
+        let mut registry = SessionRegistry::new(3);
+        let agent_id = Uuid::now_v7();
+        let session_id = Uuid::now_v7();
+        let now = Utc::now();
+
+        assert!(registry.register_provisional(agent_id, now - chrono::Duration::hours(2)));
+        assert_eq!(registry.provisional_count(), 1);
+
+        let pruned = registry.prune_stale(now, chrono::Duration::minutes(30));
+        assert_eq!(pruned.provisional_agent_ids, vec![agent_id]);
+        assert_eq!(registry.provisional_count(), 0);
+
+        assert!(registry.register_provisional(agent_id, now));
+        registry.start_session(session_id, agent_id, now);
+        assert_eq!(registry.provisional_count(), 0);
     }
 }

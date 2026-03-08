@@ -1,20 +1,11 @@
 <script lang="ts">
+  import type { Skill } from '@ghost/sdk';
   import CapabilityBadge from './CapabilityBadge.svelte';
 
-  interface SkillInfo {
-    id: string;
-    name: string;
-    version: string;
-    description: string;
-    capabilities: string[];
-    source: string;
-    state: string;
-  }
-
   interface Props {
-    skill: SkillInfo;
+    skill: Skill;
     installed: boolean;
-    onAction: (skill: SkillInfo, action: 'install' | 'uninstall') => void;
+    onAction: (skill: Skill, action: 'install' | 'uninstall') => void;
     loading?: boolean;
   }
 

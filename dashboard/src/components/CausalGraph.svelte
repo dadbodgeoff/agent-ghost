@@ -170,6 +170,8 @@
     <svg
       viewBox="{viewBox.x} {viewBox.y} {viewBox.w} {viewBox.h}"
       class="graph-svg"
+      role="img"
+      aria-label="Interactive causal graph"
       onwheel={handleWheel}
       onpointerdown={handlePointerDown}
       onpointermove={handlePointerMove}
