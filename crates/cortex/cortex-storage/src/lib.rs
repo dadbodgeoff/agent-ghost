@@ -5,6 +5,8 @@
 
 pub mod migrations;
 pub mod queries;
+pub mod schema_contract;
+pub mod sqlite;
 
 use cortex_core::models::error::{CortexError, CortexResult};
 use rusqlite::Connection;

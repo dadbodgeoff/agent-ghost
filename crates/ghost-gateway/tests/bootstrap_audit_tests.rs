@@ -454,6 +454,7 @@ mod registry_bootstrap_tests {
 
 mod db_pragma_tests {
     use super::*;
+    use tempfile::tempdir;
 
     /// WAL mode should be set on the connection.
     #[test]
@@ -481,6 +482,47 @@ mod db_pragma_tests {
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .unwrap();
         assert_eq!(timeout, 5000);
+    }
+
+    fn assert_writer_pragmas(conn: &Connection) {
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        let foreign_keys: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(mode, "wal");
+        assert_eq!(timeout, 5000);
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(synchronous, 2);
+    }
+
+    #[tokio::test]
+    async fn create_pool_writer_uses_full_durability_pragmas() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("gateway.db");
+        let pool = ghost_gateway::db_pool::create_pool(db_path).unwrap();
+
+        let writer = pool.write().await;
+        assert_writer_pragmas(&writer);
+    }
+
+    #[test]
+    fn legacy_write_connection_uses_full_durability_pragmas() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("gateway.db");
+        let pool = ghost_gateway::db_pool::create_pool(db_path).unwrap();
+        let conn = pool.legacy_connection().unwrap();
+        let guard = conn.lock().unwrap();
+
+        assert_writer_pragmas(&guard);
     }
 }
 

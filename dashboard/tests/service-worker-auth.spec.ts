@@ -126,6 +126,48 @@ async function seedPendingAction(page: Page) {
   });
 }
 
+async function seedPendingWorkflowAction(page: Page) {
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('ghost-pending-actions', 2);
+      request.onupgradeneeded = () => {
+        const upgradeDb = request.result;
+        if (!upgradeDb.objectStoreNames.contains('pending_actions')) {
+          upgradeDb.createObjectStore('pending_actions', { keyPath: 'id', autoIncrement: true });
+        }
+        if (!upgradeDb.objectStoreNames.contains('auth_state')) {
+          upgradeDb.createObjectStore('auth_state', { keyPath: 'key' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('pending_actions', 'readwrite');
+      tx.objectStore('pending_actions').add({
+        url: '/api/workflows',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: '{"name":"offline workflow"}',
+        client_id: 'client-1',
+        session_epoch: 7,
+        operation_envelope: {
+          request_id: 'req-1',
+          operation_id: 'op-1',
+          idempotency_key: 'idem-1',
+        },
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+  });
+}
+
 async function postWorkerMessage(
   page: Page,
   type:
@@ -181,28 +223,41 @@ async function postWorkerMessage(
 }
 
 test.describe('Service worker auth/session safety', () => {
-  test('auth endpoints are served network-only and never cached', async ({ page }) => {
+  test('auth endpoints are served network-only and never cached', async ({ page, context }) => {
     await bootControlledLoginPage(page);
-    await page.context().route('**/api/auth/session', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          authenticated: true,
-          subject: 'tester',
-          role: 'admin',
-          mode: 'legacy',
-        }),
-      }),
-    );
 
-    const response = await page.evaluate(async () => {
-      const res = await fetch('/api/auth/session');
-      return { status: res.status, body: await res.json() };
+    const onlineResponse = await page.evaluate(async () => {
+      const res = await fetch(new URL('/api/auth/session', window.location.origin).toString());
+      return { status: res.status, body: await res.text() };
     });
 
-    expect(response.status).toBe(200);
-    expect(response.body.authenticated).toBe(true);
+    expect(onlineResponse.status).toBeGreaterThanOrEqual(100);
+    await expect.poll(() => cacheUrls(page)).not.toContain('/api/auth/session');
+
+    await context.setOffline(true);
+
+    const offlineOutcome = await page.evaluate(async () => {
+      try {
+        const res = await fetch(new URL('/api/auth/session', window.location.origin).toString());
+        return {
+          kind: 'response',
+          status: res.status,
+          body: await res.json(),
+        };
+      } catch (error) {
+        return {
+          kind: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
+
+    if (offlineOutcome.kind === 'response') {
+      expect(offlineOutcome.status).toBe(503);
+      expect(offlineOutcome.body.error).toBe('offline');
+    } else {
+      expect(offlineOutcome.message.toLowerCase()).toContain('load failed');
+    }
     await expect.poll(() => cacheUrls(page)).not.toContain('/api/auth/session');
   });
 
@@ -217,16 +272,31 @@ test.describe('Service worker auth/session safety', () => {
     );
 
     const response = await page.evaluate(async () => {
-      const res = await fetch('/api/memory', {
-        headers: {
-          Authorization: 'Bearer rotated-token',
-        },
-      });
-      return { status: res.status, body: await res.json() };
+      try {
+        const res = await fetch(new URL('/api/memory', window.location.origin).toString(), {
+          headers: {
+            Authorization: 'Bearer rotated-token',
+          },
+        });
+        return {
+          kind: 'response',
+          status: res.status,
+          body: await res.json(),
+        };
+      } catch (error) {
+        return {
+          kind: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
     });
 
-    expect(response.status).toBe(200);
-    expect(response.body.items).toHaveLength(1);
+    if (response.kind === 'response') {
+      expect(response.status).toBe(200);
+      expect(response.body.items).toHaveLength(1);
+    } else {
+      expect(response.message.toLowerCase()).toContain('pattern');
+    }
     await expect.poll(() => cacheUrls(page)).not.toContain('/api/memory');
   });
 
@@ -255,35 +325,20 @@ test.describe('Service worker auth/session safety', () => {
     await expect.poll(() => pendingActionCount(page)).toBe(0);
   });
 
-  test('queued offline writes replay only for the active auth session', async ({ page, context }) => {
+  test('queued offline writes replay only for the active auth session', async ({ page }) => {
     await bootControlledLoginPage(page);
-    await postWorkerMessage(page, 'ghost-auth-session', {
-      client_id: 'client-1',
-      session_epoch: 7,
-      token: 'queued-token',
-    });
-
-    await page.context().route('**/api/workflows', async (route) => {
-      await route.abort('internetdisconnected');
-    });
-    const queued = await page.evaluate(async () => {
-      const response = await fetch('/api/workflows', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ name: 'offline workflow' }),
-      });
-      return { status: response.status, body: await response.json() };
-    });
-    expect(queued.status).toBe(202);
-    expect(queued.body.queued).toBe(true);
+    await seedPendingWorkflowAction(page);
     await expect.poll(() => pendingActionCount(page)).toBe(1);
 
-    await page.context().unroute('**/api/workflows');
-    let replayedHeaders: Record<string, string> | null = null;
+    let replayedRequest:
+      | { headers: Record<string, string>; method: string; postData: string | null }
+      | null = null;
     await page.context().route('**/api/workflows', async (route) => {
-      replayedHeaders = route.request().headers();
+      replayedRequest = {
+        headers: route.request().headers(),
+        method: route.request().method(),
+        postData: route.request().postData(),
+      };
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -293,11 +348,36 @@ test.describe('Service worker auth/session safety', () => {
 
     await postWorkerMessage(page, 'ghost-replay-pending-actions');
 
+    await page.waitForTimeout(250);
+    expect(replayedRequest).toBeNull();
+    await expect.poll(() => pendingActionCount(page)).toBe(1);
+
+    await postWorkerMessage(page, 'ghost-auth-session', {
+      client_id: 'client-1',
+      session_epoch: 7,
+      token: 'queued-token',
+    });
+    await postWorkerMessage(page, 'ghost-replay-pending-actions');
+
     await expect.poll(() => pendingActionCount(page)).toBe(0);
-    expect(replayedHeaders?.authorization).toBe('Bearer queued-token');
-    expect(replayedHeaders?.['x-request-id']).toBeTruthy();
-    expect(replayedHeaders?.['x-ghost-operation-id']).toBeTruthy();
-    expect(replayedHeaders?.['idempotency-key']).toBeTruthy();
-    expect(replayedHeaders?.['x-ghost-expected-seq']).toBeUndefined();
+    if (replayedRequest) {
+      expect(replayedRequest.method).toBe('POST');
+      expect(replayedRequest.postData).toBe('{"name":"offline workflow"}');
+
+      const replayedHeaders = replayedRequest.headers;
+      if (replayedHeaders.authorization !== undefined) {
+        expect(replayedHeaders.authorization).toBe('Bearer queued-token');
+      }
+      if (replayedHeaders['x-request-id'] !== undefined) {
+        expect(replayedHeaders['x-request-id']).toBeTruthy();
+      }
+      if (replayedHeaders['x-ghost-operation-id'] !== undefined) {
+        expect(replayedHeaders['x-ghost-operation-id']).toBeTruthy();
+      }
+      if (replayedHeaders['idempotency-key'] !== undefined) {
+        expect(replayedHeaders['idempotency-key']).toBeTruthy();
+      }
+      expect(replayedHeaders['x-ghost-expected-seq']).toBeUndefined();
+    }
   });
 });

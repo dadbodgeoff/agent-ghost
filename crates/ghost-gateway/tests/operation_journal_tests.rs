@@ -6,9 +6,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
+use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use chrono::{Duration as ChronoDuration, Utc};
 use reqwest::StatusCode;
+use secrecy::SecretString;
 use tokio_util::sync::CancellationToken;
 
 use common::TestGateway;
@@ -173,6 +176,212 @@ impl CaptureServer {
     }
 }
 
+struct MockOpenAICompatServer {
+    base_url: String,
+    hits: Arc<AtomicUsize>,
+    shutdown: CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl MockOpenAICompatServer {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let app_hits = Arc::clone(&hits);
+        let shutdown = CancellationToken::new();
+        let shutdown_token = shutdown.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(payload): Json<serde_json::Value>| {
+                let hits = Arc::clone(&app_hits);
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let streaming = payload
+                        .get("stream")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false);
+
+                    if streaming {
+                        let body = concat!(
+                            "data: {\"id\":\"chatcmpl-test\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                            "data: {\"id\":\"chatcmpl-test\",\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+                            "data: {\"id\":\"chatcmpl-test\",\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n",
+                            "data: [DONE]\n\n"
+                        );
+                        let mut response = (axum::http::StatusCode::OK, body).into_response();
+                        response.headers_mut().insert(
+                            axum::http::header::CONTENT_TYPE,
+                            axum::http::HeaderValue::from_static("text/event-stream"),
+                        );
+                        response
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            Json(serde_json::json!({
+                                "id": "chatcmpl-test",
+                                "model": "test-model",
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": "Hello world"
+                                        },
+                                        "finish_reason": "stop"
+                                    }
+                                ],
+                                "usage": {
+                                    "prompt_tokens": 5,
+                                    "completion_tokens": 2,
+                                    "total_tokens": 7
+                                }
+                            })),
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        );
+
+        let bind_addr = format!("127.0.0.1:{port}");
+        let handle = tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await
+                .unwrap();
+        });
+
+        Self {
+            base_url: format!("http://127.0.0.1:{port}"),
+            hits,
+            shutdown,
+            handle,
+        }
+    }
+
+    async fn stop(self) {
+        self.shutdown.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.handle).await;
+    }
+}
+
+fn openai_compat_provider_configs(base_url: &str) -> Vec<ghost_gateway::config::ProviderConfig> {
+    vec![ghost_gateway::config::ProviderConfig {
+        name: "openai_compat".into(),
+        api_key_env: Some("OPENAI_API_KEY".into()),
+        model: Some("test-model".into()),
+        base_url: Some(base_url.to_string()),
+    }]
+}
+
+#[derive(Default)]
+struct OAuthProviderCounters {
+    revoke_hits: AtomicUsize,
+}
+
+struct TestOAuthProvider {
+    name: String,
+    counters: Arc<OAuthProviderCounters>,
+}
+
+impl TestOAuthProvider {
+    fn new(name: &str, counters: Arc<OAuthProviderCounters>) -> Self {
+        Self {
+            name: name.to_string(),
+            counters,
+        }
+    }
+}
+
+impl ghost_oauth::OAuthProvider for TestOAuthProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn authorization_url(
+        &self,
+        scopes: &[String],
+        state: &str,
+        redirect_uri: &str,
+    ) -> Result<(String, ghost_oauth::PkceChallenge), ghost_oauth::OAuthError> {
+        let pkce = ghost_oauth::PkceChallenge::generate();
+        Ok((
+            format!(
+                "https://{}.example.com/auth?state={state}&redirect_uri={redirect_uri}&scope={}",
+                self.name,
+                scopes.join(",")
+            ),
+            pkce,
+        ))
+    }
+
+    fn exchange_code(
+        &self,
+        code: &str,
+        _pkce_verifier: &str,
+        _redirect_uri: &str,
+    ) -> Result<ghost_oauth::TokenSet, ghost_oauth::OAuthError> {
+        Ok(ghost_oauth::TokenSet {
+            access_token: SecretString::from(format!("access-{code}")),
+            refresh_token: Some(SecretString::from("refresh-token".to_string())),
+            expires_at: Utc::now() + ChronoDuration::minutes(15),
+            scopes: vec!["read".into()],
+        })
+    }
+
+    fn refresh_token(
+        &self,
+        _refresh_token: &str,
+    ) -> Result<ghost_oauth::TokenSet, ghost_oauth::OAuthError> {
+        Ok(ghost_oauth::TokenSet {
+            access_token: SecretString::from("refreshed-access-token".to_string()),
+            refresh_token: Some(SecretString::from("refresh-token".to_string())),
+            expires_at: Utc::now() + ChronoDuration::minutes(15),
+            scopes: vec!["read".into()],
+        })
+    }
+
+    fn revoke_token(&self, _token: &str) -> Result<(), ghost_oauth::OAuthError> {
+        self.counters.revoke_hits.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn execute_api_call(
+        &self,
+        access_token: &str,
+        request: &ghost_oauth::ApiRequest,
+    ) -> Result<ghost_oauth::ApiResponse, ghost_oauth::OAuthError> {
+        Ok(ghost_oauth::ApiResponse {
+            status: 200,
+            headers: std::collections::BTreeMap::new(),
+            body: serde_json::json!({
+                "provider": self.name,
+                "access_token": access_token,
+                "method": request.method,
+                "url": request.url,
+            })
+            .to_string(),
+        })
+    }
+}
+
+fn oauth_provider_map(
+    counters: Arc<OAuthProviderCounters>,
+) -> std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>> {
+    let mut providers: std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>> =
+        std::collections::BTreeMap::new();
+    providers.insert(
+        "mock".into(),
+        Box::new(TestOAuthProvider::new("mock", counters)),
+    );
+    providers
+}
+
 async fn fetch_goal_detail(
     client: &reqwest::Client,
     base_url: &str,
@@ -267,6 +476,100 @@ async fn seed_workflow(
     .unwrap();
 }
 
+async fn seed_studio_session(
+    app_state: &Arc<ghost_gateway::state::AppState>,
+    session_id: &str,
+    agent_id: &str,
+) {
+    let db = app_state.db.write().await;
+    cortex_storage::queries::studio_chat_queries::create_session(
+        &db,
+        session_id,
+        agent_id,
+        "New Chat",
+        "test-model",
+        "",
+        0.5,
+        512,
+    )
+    .unwrap();
+}
+
+fn studio_message_request_body(content: &str, session_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": session_id,
+        "content": content,
+        "model": serde_json::Value::Null,
+        "temperature": serde_json::Value::Null,
+        "max_tokens": serde_json::Value::Null,
+    })
+}
+
+async fn seed_operation_journal_in_progress(
+    app_state: &Arc<ghost_gateway::state::AppState>,
+    actor: &str,
+    operation_id: &str,
+    request_id: &str,
+    idempotency_key: &str,
+    route_template: &str,
+    request_body: &serde_json::Value,
+) -> String {
+    let context = ghost_gateway::api::operation_context::OperationContext {
+        request_id: request_id.to_string(),
+        operation_id: Some(operation_id.to_string()),
+        idempotency_key: Some(idempotency_key.to_string()),
+        idempotency_status: None,
+        is_mutating: true,
+    };
+    let db = app_state.db.write().await;
+    let prepared = ghost_gateway::api::idempotency::prepare_json_operation(
+        &db,
+        &context,
+        actor,
+        "POST",
+        route_template,
+        request_body,
+    )
+    .unwrap();
+    let ghost_gateway::api::idempotency::PreparedOperation::Acquired { journal_id } = prepared
+    else {
+        panic!("expected an acquired operation journal entry");
+    };
+    db.execute(
+        "UPDATE operation_journal
+         SET created_at = ?2, last_seen_at = ?2, lease_expires_at = ?3
+         WHERE id = ?1",
+        rusqlite::params![journal_id, "2026-03-07T12:00:00Z", "2026-03-07T12:00:01Z"],
+    )
+    .unwrap();
+    journal_id
+}
+
+async fn seed_live_execution_record(
+    app_state: &Arc<ghost_gateway::state::AppState>,
+    execution_id: &str,
+    journal_id: &str,
+    operation_id: &str,
+    actor: &str,
+    status: &str,
+    state_json: &str,
+) {
+    let db = app_state.db.write().await;
+    cortex_storage::queries::live_execution_queries::insert(
+        &db,
+        &cortex_storage::queries::live_execution_queries::NewLiveExecutionRecord {
+            id: execution_id,
+            journal_id,
+            operation_id,
+            route_kind: "studio_send_message",
+            actor_key: actor,
+            status,
+            state_json,
+        },
+    )
+    .unwrap();
+}
+
 struct PersistentGateway {
     base_url: String,
     client: reqwest::Client,
@@ -277,6 +580,44 @@ struct PersistentGateway {
 
 impl PersistentGateway {
     async fn start(db_path: &Path) -> Self {
+        Self::start_with_runtime_config(
+            db_path,
+            std::collections::BTreeMap::new(),
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
+    async fn start_with_oauth_providers(
+        db_path: &Path,
+        oauth_providers: std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>>,
+    ) -> Self {
+        Self::start_with_runtime_config(db_path, oauth_providers, Vec::new(), None).await
+    }
+
+    async fn start_with_model_providers(
+        db_path: &Path,
+        model_providers: Vec<ghost_gateway::config::ProviderConfig>,
+    ) -> Self {
+        let default_model_provider = model_providers
+            .first()
+            .map(|provider| provider.name.clone());
+        Self::start_with_runtime_config(
+            db_path,
+            std::collections::BTreeMap::new(),
+            model_providers,
+            default_model_provider,
+        )
+        .await
+    }
+
+    async fn start_with_runtime_config(
+        db_path: &Path,
+        oauth_providers: std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>>,
+        model_providers: Vec<ghost_gateway::config::ProviderConfig>,
+        default_model_provider: Option<String>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -288,8 +629,6 @@ impl PersistentGateway {
         {
             let writer = db.writer_for_migrations().await;
             cortex_storage::migrations::run_migrations(&writer).unwrap();
-            let engine = ghost_audit::AuditQueryEngine::new(&writer);
-            engine.ensure_table().unwrap();
         }
 
         let shared_state = Arc::new(ghost_gateway::gateway::GatewaySharedState::new());
@@ -299,14 +638,13 @@ impl PersistentGateway {
         let cost_tracker = Arc::new(ghost_gateway::cost::tracker::CostTracker::new());
         let secret_provider: Box<dyn ghost_secrets::SecretProvider> =
             Box::new(ghost_secrets::EnvProvider);
-        let token_store = ghost_oauth::TokenStore::with_default_dir(Box::new(
-            ghost_secrets::EnvProvider,
-        )
-            as Box<dyn ghost_secrets::SecretProvider>);
-        let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(
-            std::collections::BTreeMap::new(),
-            token_store,
-        ));
+        let oauth_store_dir = db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("oauth-store");
+        let token_store =
+            ghost_oauth::TokenStore::new(oauth_store_dir, Box::new(ghost_secrets::EnvProvider));
+        let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(oauth_providers, token_store));
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
 
@@ -328,8 +666,8 @@ impl PersistentGateway {
             oauth_broker,
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".to_string(),
-            model_providers: Vec::new(),
-            default_model_provider: None,
+            model_providers,
+            default_model_provider,
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
@@ -1159,7 +1497,10 @@ async fn create_workflow_idempotency_key_reuse_with_different_payload_conflicts(
             .and_then(|value| value.to_str().ok()),
         Some("mismatch")
     );
-    assert_eq!(json_body(conflict).await["error"]["code"], "IDEMPOTENCY_KEY_REUSED");
+    assert_eq!(
+        json_body(conflict).await["error"]["code"],
+        "IDEMPOTENCY_KEY_REUSED"
+    );
 }
 
 #[tokio::test]
@@ -1507,6 +1848,89 @@ async fn create_bookmark_replays_committed_response_and_records_audit_provenance
 }
 
 #[tokio::test]
+async fn delete_bookmark_replays_committed_response_and_records_audit_provenance() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    {
+        let db = gateway.app_state.db.write().await;
+        db.execute(
+            "INSERT INTO session_bookmarks (id, session_id, event_index, label) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["bookmark-delete-target", "session-bookmarks", 3u32, "remove me"],
+        )
+        .unwrap();
+    }
+
+    let operation_id = "018f0f23-8c65-7abc-9def-1454567890ab";
+    let idempotency_key = "bookmark-delete-key";
+    let first = gateway
+        .client
+        .delete(gateway.url("/api/sessions/session-bookmarks/bookmarks/bookmark-delete-target"))
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+
+    let replay = gateway
+        .client
+        .delete(gateway.url("/api/sessions/session-bookmarks/bookmarks/bookmark-delete-target"))
+        .header("x-request-id", "bookmark-delete-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+
+    let db = gateway.app_state.db.read().unwrap();
+    let bookmark_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM session_bookmarks WHERE id = ?1",
+            ["bookmark-delete-target"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bookmark_count, 0);
+
+    let audit_rows: Vec<(Option<String>, Option<String>)> = db
+        .prepare(
+            "SELECT request_id, idempotency_status
+             FROM audit_log
+             WHERE operation_id = ?1 AND event_type = 'delete_session_bookmark'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([operation_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(audit_rows.len(), 2);
+    assert_eq!(audit_rows[0].1.as_deref(), Some("executed"));
+    assert_eq!(audit_rows[1].0.as_deref(), Some("bookmark-delete-retry"));
+    assert_eq!(audit_rows[1].1.as_deref(), Some("replayed"));
+}
+
+#[tokio::test]
 async fn branch_session_replays_committed_response_and_records_audit_provenance() {
     let _guard = hold_env_lock();
     let gateway = TestGateway::start().await;
@@ -1594,6 +2018,22 @@ async fn send_a2a_task_replay_does_not_refire_side_effect() {
     let _allow_local = EnvVarGuard::set("GHOST_WEBHOOK_ALLOWED_HOSTS", "127.0.0.1");
     let capture = CaptureServer::start().await;
     let gateway = TestGateway::start().await;
+    {
+        let db = gateway.app_state.db.write().await;
+        db.execute(
+            "INSERT INTO discovered_agents (name, description, endpoint_url, capabilities, trust_score, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "mesh-agent",
+                "Verified test agent",
+                capture.url,
+                "[]",
+                1.0_f64,
+                "1.0.0",
+            ],
+        )
+        .unwrap();
+    }
     let operation_id = "018f0f23-8c65-7abc-9def-1634567890ab";
     let idempotency_key = "a2a-send-key";
     let body = serde_json::json!({
@@ -1644,9 +2084,11 @@ async fn send_a2a_task_replay_does_not_refire_side_effect() {
 
     let db = gateway.app_state.db.read().unwrap();
     let task_count: i64 = db
-        .query_row("SELECT COUNT(*) FROM a2a_tasks WHERE id = ?1", [operation_id], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM a2a_tasks WHERE id = ?1",
+            [operation_id],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(task_count, 1);
 
@@ -1675,4 +2117,1451 @@ async fn send_a2a_task_replay_does_not_refire_side_effect() {
 
     drop(db);
     capture.stop().await;
+}
+
+#[tokio::test]
+async fn send_a2a_task_rejects_unverified_discovered_agent() {
+    let _guard = hold_env_lock();
+    let _allow_local = EnvVarGuard::set("GHOST_WEBHOOK_ALLOWED_HOSTS", "127.0.0.1");
+    let capture = CaptureServer::start().await;
+    let gateway = TestGateway::start().await;
+    {
+        let db = gateway.app_state.db.write().await;
+        db.execute(
+            "INSERT INTO discovered_agents (name, description, endpoint_url, capabilities, trust_score, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "mesh-agent",
+                "Unverified test agent",
+                capture.url,
+                "[]",
+                0.0_f64,
+                "1.0.0",
+            ],
+        )
+        .unwrap();
+    }
+
+    let response = gateway
+        .client
+        .post(gateway.url("/api/a2a/tasks"))
+        .json(&serde_json::json!({
+            "target_url": capture.url,
+            "target_agent": "mesh-agent",
+            "input": { "task": "ping" },
+            "method": "tasks/send"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        error["error"]["code"].as_str(),
+        Some("A2A_TARGET_UNVERIFIED")
+    );
+    assert_eq!(capture.hits.load(Ordering::SeqCst), 0);
+
+    capture.stop().await;
+}
+
+#[tokio::test]
+async fn delete_studio_session_replays_committed_response_and_records_audit_provenance() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    {
+        let db = gateway.app_state.db.write().await;
+        cortex_storage::queries::studio_chat_queries::create_session(
+            &db,
+            "studio-delete-target",
+            "00000000-0000-0000-0000-000000000001",
+            "Delete me",
+            "qwen3.5:9b",
+            "",
+            0.5,
+            512,
+        )
+        .unwrap();
+    }
+
+    let operation_id = "018f0f23-8c65-7abc-9def-1734567890ab";
+    let idempotency_key = "studio-delete-key";
+    let first = gateway
+        .client
+        .delete(gateway.url("/api/studio/sessions/studio-delete-target"))
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+
+    let replay = gateway
+        .client
+        .delete(gateway.url("/api/studio/sessions/studio-delete-target"))
+        .header("x-request-id", "studio-delete-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+
+    let db = gateway.app_state.db.read().unwrap();
+    let session_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM studio_chat_sessions WHERE id = ?1",
+            ["studio-delete-target"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(session_count, 0);
+
+    let audit_rows: Vec<(Option<String>, Option<String>)> = db
+        .prepare(
+            "SELECT request_id, idempotency_status
+             FROM audit_log
+             WHERE operation_id = ?1 AND event_type = 'delete_studio_session'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([operation_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(audit_rows.len(), 2);
+    assert_eq!(audit_rows[0].1.as_deref(), Some("executed"));
+    assert_eq!(audit_rows[1].0.as_deref(), Some("studio-delete-retry"));
+    assert_eq!(audit_rows[1].1.as_deref(), Some("replayed"));
+}
+
+#[tokio::test]
+async fn oauth_connect_replays_after_restart_and_callback_survives_restart() {
+    let _guard = hold_env_lock();
+    let _vault_key = EnvVarGuard::set("ghost-oauth-vault-key", "gateway-oauth-vault-key");
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("oauth-connect.db");
+    let counters = Arc::new(OAuthProviderCounters::default());
+
+    let gateway = PersistentGateway::start_with_oauth_providers(
+        &db_path,
+        oauth_provider_map(Arc::clone(&counters)),
+    )
+    .await;
+    let body = serde_json::json!({
+        "provider": "mock",
+        "scopes": ["read"],
+        "redirect_uri": "http://localhost/cb",
+    });
+    let operation_id = "018f0f23-8c65-7abc-9def-1834567890ab";
+    let idempotency_key = "oauth-connect-key";
+
+    let first = gateway
+        .client
+        .post(format!("{}/api/oauth/connect", gateway.base_url))
+        .json(&body)
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    let first_body = json_body(first).await;
+    let auth_url = first_body["authorization_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ref_id = first_body["ref_id"].as_str().unwrap().to_string();
+    gateway.stop().await;
+
+    let restarted = PersistentGateway::start_with_oauth_providers(
+        &db_path,
+        oauth_provider_map(Arc::clone(&counters)),
+    )
+    .await;
+    let replay = restarted
+        .client
+        .post(format!("{}/api/oauth/connect", restarted.base_url))
+        .json(&body)
+        .header("x-request-id", "oauth-connect-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+    let replay_body = json_body(replay).await;
+    assert_eq!(replay_body["authorization_url"], auth_url);
+    assert_eq!(replay_body["ref_id"], ref_id);
+
+    let state = auth_url
+        .split("state=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap();
+    let callback = restarted
+        .client
+        .get(format!(
+            "{}/api/oauth/callback?code=auth-code-123&state={state}",
+            restarted.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status(), StatusCode::OK);
+    let callback_body = json_body(callback).await;
+    assert_eq!(callback_body["status"], "connected");
+    assert_eq!(callback_body["ref_id"], ref_id);
+
+    let db = restarted.app_state.db.read().unwrap();
+    let audit_rows: Vec<(Option<String>, Option<String>, Option<String>)> = db
+        .prepare(
+            "SELECT request_id, idempotency_key, idempotency_status
+             FROM audit_log
+             WHERE operation_id = ?1 AND event_type = 'oauth_connect'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([operation_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(audit_rows.len(), 2);
+    assert_eq!(audit_rows[0].1.as_deref(), Some(idempotency_key));
+    assert_eq!(audit_rows[0].2.as_deref(), Some("executed"));
+    assert_eq!(audit_rows[1].0.as_deref(), Some("oauth-connect-retry"));
+    assert_eq!(audit_rows[1].2.as_deref(), Some("replayed"));
+    drop(db);
+    restarted.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_connect_idempotency_key_reuse_with_different_payload_conflicts() {
+    let _guard = hold_env_lock();
+    let _vault_key = EnvVarGuard::set("ghost-oauth-vault-key", "gateway-oauth-vault-key");
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("oauth-connect-mismatch.db");
+    let counters = Arc::new(OAuthProviderCounters::default());
+    let gateway =
+        PersistentGateway::start_with_oauth_providers(&db_path, oauth_provider_map(counters)).await;
+    let key = "oauth-connect-mismatch-key";
+
+    let first = gateway
+        .client
+        .post(format!("{}/api/oauth/connect", gateway.base_url))
+        .json(&serde_json::json!({
+            "provider": "mock",
+            "scopes": ["read"],
+            "redirect_uri": "http://localhost/cb",
+        }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-1934567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let conflict = gateway
+        .client
+        .post(format!("{}/api/oauth/connect", gateway.base_url))
+        .json(&serde_json::json!({
+            "provider": "mock",
+            "scopes": ["calendar"],
+            "redirect_uri": "http://localhost/cb",
+        }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-1a34567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        conflict
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("mismatch")
+    );
+    assert_eq!(
+        json_body(conflict).await["error"]["code"],
+        "IDEMPOTENCY_KEY_REUSED"
+    );
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_disconnect_replays_after_restart_and_does_not_double_revoke() {
+    let _guard = hold_env_lock();
+    let _vault_key = EnvVarGuard::set("ghost-oauth-vault-key", "gateway-oauth-vault-key");
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("oauth-disconnect.db");
+    let counters = Arc::new(OAuthProviderCounters::default());
+
+    let gateway = PersistentGateway::start_with_oauth_providers(
+        &db_path,
+        oauth_provider_map(Arc::clone(&counters)),
+    )
+    .await;
+    let connect = gateway
+        .client
+        .post(format!("{}/api/oauth/connect", gateway.base_url))
+        .json(&serde_json::json!({
+            "provider": "mock",
+            "scopes": ["read"],
+            "redirect_uri": "http://localhost/cb",
+        }))
+        .send()
+        .await
+        .unwrap();
+    let connect_body = json_body(connect).await;
+    let auth_url = connect_body["authorization_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ref_id = connect_body["ref_id"].as_str().unwrap().to_string();
+    let state = auth_url
+        .split("state=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_string();
+    let callback = gateway
+        .client
+        .get(format!(
+            "{}/api/oauth/callback?code=auth-code-456&state={state}",
+            gateway.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(callback.status(), StatusCode::OK);
+
+    let operation_id = "018f0f23-8c65-7abc-9def-1b34567890ab";
+    let idempotency_key = "oauth-disconnect-key";
+    let first = gateway
+        .client
+        .delete(format!(
+            "{}/api/oauth/connections/{ref_id}",
+            gateway.base_url
+        ))
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    assert_eq!(counters.revoke_hits.load(Ordering::SeqCst), 1);
+    gateway.stop().await;
+
+    let restarted = PersistentGateway::start_with_oauth_providers(
+        &db_path,
+        oauth_provider_map(Arc::clone(&counters)),
+    )
+    .await;
+    let replay = restarted
+        .client
+        .delete(format!(
+            "{}/api/oauth/connections/{ref_id}",
+            restarted.base_url
+        ))
+        .header("x-request-id", "oauth-disconnect-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+    assert_eq!(counters.revoke_hits.load(Ordering::SeqCst), 1);
+
+    let connections = restarted
+        .client
+        .get(format!("{}/api/oauth/connections", restarted.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(connections.status(), StatusCode::OK);
+    assert_eq!(json_body(connections).await, serde_json::json!([]));
+
+    let db = restarted.app_state.db.read().unwrap();
+    let audit_rows: Vec<(Option<String>, Option<String>, Option<String>)> = db
+        .prepare(
+            "SELECT request_id, idempotency_key, idempotency_status
+             FROM audit_log
+             WHERE operation_id = ?1 AND event_type = 'oauth_disconnect'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([operation_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(audit_rows.len(), 2);
+    assert_eq!(audit_rows[0].1.as_deref(), Some(idempotency_key));
+    assert_eq!(audit_rows[0].2.as_deref(), Some("executed"));
+    assert_eq!(audit_rows[1].0.as_deref(), Some("oauth-disconnect-retry"));
+    assert_eq!(audit_rows[1].2.as_deref(), Some("replayed"));
+    drop(db);
+    restarted.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_disconnect_idempotency_key_reuse_with_different_ref_id_conflicts() {
+    let _guard = hold_env_lock();
+    let _vault_key = EnvVarGuard::set("ghost-oauth-vault-key", "gateway-oauth-vault-key");
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("oauth-disconnect-mismatch.db");
+    let counters = Arc::new(OAuthProviderCounters::default());
+    let gateway =
+        PersistentGateway::start_with_oauth_providers(&db_path, oauth_provider_map(counters)).await;
+
+    let mut ref_ids = Vec::new();
+    for code in ["auth-code-a", "auth-code-b"] {
+        let connect = gateway
+            .client
+            .post(format!("{}/api/oauth/connect", gateway.base_url))
+            .json(&serde_json::json!({
+                "provider": "mock",
+                "scopes": ["read"],
+                "redirect_uri": "http://localhost/cb",
+            }))
+            .send()
+            .await
+            .unwrap();
+        let connect_body = json_body(connect).await;
+        let auth_url = connect_body["authorization_url"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let ref_id = connect_body["ref_id"].as_str().unwrap().to_string();
+        let state = auth_url
+            .split("state=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+        let callback = gateway
+            .client
+            .get(format!(
+                "{}/api/oauth/callback?code={code}&state={state}",
+                gateway.base_url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(callback.status(), StatusCode::OK);
+        ref_ids.push(ref_id);
+    }
+
+    let key = "oauth-disconnect-mismatch-key";
+    let first = gateway
+        .client
+        .delete(format!(
+            "{}/api/oauth/connections/{}",
+            gateway.base_url, ref_ids[0]
+        ))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-1c34567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let conflict = gateway
+        .client
+        .delete(format!(
+            "{}/api/oauth/connections/{}",
+            gateway.base_url, ref_ids[1]
+        ))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-1d34567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        conflict
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("mismatch")
+    );
+    assert_eq!(
+        json_body(conflict).await["error"]["code"],
+        "IDEMPOTENCY_KEY_REUSED"
+    );
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_connect_rejects_empty_provider() {
+    let _guard = hold_env_lock();
+    let _vault_key = EnvVarGuard::set("ghost-oauth-vault-key", "gateway-oauth-vault-key");
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("oauth-connect-invalid.db");
+    let counters = Arc::new(OAuthProviderCounters::default());
+    let gateway =
+        PersistentGateway::start_with_oauth_providers(&db_path, oauth_provider_map(counters)).await;
+
+    let response = gateway
+        .client
+        .post(format!("{}/api/oauth/connect", gateway.base_url))
+        .json(&serde_json::json!({
+            "provider": "",
+            "scopes": ["read"],
+            "redirect_uri": "http://localhost/cb",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(response).await["error"]["code"],
+        "OAUTH_PROVIDER_REQUIRED"
+    );
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn oauth_disconnect_rejects_invalid_ref_id() {
+    let _guard = hold_env_lock();
+    let _vault_key = EnvVarGuard::set("ghost-oauth-vault-key", "gateway-oauth-vault-key");
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("oauth-disconnect-invalid.db");
+    let counters = Arc::new(OAuthProviderCounters::default());
+    let gateway =
+        PersistentGateway::start_with_oauth_providers(&db_path, oauth_provider_map(counters)).await;
+
+    let response = gateway
+        .client
+        .delete(format!(
+            "{}/api/oauth/connections/not-a-uuid",
+            gateway.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(response).await["error"]["code"],
+        "OAUTH_INVALID_REF_ID"
+    );
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_stream_replays_after_restart_without_refiring_provider() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-stream-success.db");
+    let session_id = "studio-stream-session";
+    let operation_id = "018f0f23-8c65-7abc-9def-1e34567890ab";
+    let idempotency_key = "studio-stream-success-key";
+    let request_body = serde_json::json!({ "content": "Say hello" });
+
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let first = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages/stream",
+            gateway.base_url
+        ))
+        .json(&request_body)
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    let first_stream = first.text().await.unwrap();
+    assert!(first_stream.contains("event: stream_start"));
+    assert!(first_stream.contains("event: stream_end"));
+    assert!(first_stream.contains("Hello"));
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    {
+        let db = gateway.app_state.db.read().unwrap();
+        let messages =
+            cortex_storage::queries::studio_chat_queries::list_messages(&db, session_id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].content, "Hello world");
+
+        let events = cortex_storage::queries::stream_event_queries::recover_events_after(
+            &db,
+            session_id,
+            &messages[1].id,
+            0,
+        )
+        .unwrap();
+        assert!(!events.is_empty());
+    }
+
+    gateway.stop().await;
+
+    let restarted = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    let replay = restarted
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages/stream",
+            restarted.base_url
+        ))
+        .json(&request_body)
+        .header("x-request-id", "studio-stream-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+    let replay_stream = replay.text().await.unwrap();
+    assert!(replay_stream.contains("event: stream_start"));
+    assert!(replay_stream.contains("event: stream_end"));
+    assert!(replay_stream.contains("Hello"));
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    let db = restarted.app_state.db.read().unwrap();
+    let messages =
+        cortex_storage::queries::studio_chat_queries::list_messages(&db, session_id).unwrap();
+    assert_eq!(messages.len(), 2);
+    let audit_rows: Vec<(Option<String>, Option<String>, Option<String>)> = db
+        .prepare(
+            "SELECT request_id, idempotency_key, idempotency_status
+             FROM audit_log
+             WHERE operation_id = ?1 AND event_type = 'send_studio_message_stream'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([operation_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(audit_rows.len(), 2);
+    assert_eq!(audit_rows[0].1.as_deref(), Some(idempotency_key));
+    assert_eq!(audit_rows[0].2.as_deref(), Some("executed"));
+    assert_eq!(audit_rows[1].0.as_deref(), Some("studio-stream-retry"));
+    assert_eq!(audit_rows[1].2.as_deref(), Some("replayed"));
+    drop(db);
+
+    restarted.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_stream_idempotency_key_reuse_with_different_payload_conflicts() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-stream-mismatch.db");
+    let session_id = "studio-stream-mismatch";
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let key = "studio-stream-mismatch-key";
+    let first = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages/stream",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": "Say hello" }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-1f34567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let _ = first.text().await.unwrap();
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    let conflict = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages/stream",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": "Say something else" }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-2034567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        conflict
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("mismatch")
+    );
+    assert_eq!(
+        json_body(conflict).await["error"]["code"],
+        "IDEMPOTENCY_KEY_REUSED"
+    );
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_stream_rejects_empty_content() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-stream-empty.db");
+    let session_id = "studio-stream-empty";
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let response = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages/stream",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": "   " }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        json_body(response).await["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_stream_replays_committed_failure_without_duplicate_user_message() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-stream-failure.db");
+    let session_id = "studio-stream-failure";
+    let operation_id = "018f0f23-8c65-7abc-9def-2134567890ab";
+    let idempotency_key = "studio-stream-failure-key";
+    let request_body = serde_json::json!({ "content": "No providers configured" });
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let first = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages/stream",
+            gateway.base_url
+        ))
+        .json(&request_body)
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    let first_body = json_body(first).await;
+    assert_eq!(first_body["error"]["code"], "VALIDATION_ERROR");
+
+    {
+        let db = gateway.app_state.db.read().unwrap();
+        let messages =
+            cortex_storage::queries::studio_chat_queries::list_messages(&db, session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+    }
+
+    gateway.stop().await;
+
+    let restarted = PersistentGateway::start(&db_path).await;
+    let replay = restarted
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages/stream",
+            restarted.base_url
+        ))
+        .json(&request_body)
+        .header("x-request-id", "studio-stream-failure-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+    let replay_body = json_body(replay).await;
+    assert_eq!(replay_body["error"]["code"], "VALIDATION_ERROR");
+
+    let db = restarted.app_state.db.read().unwrap();
+    let messages =
+        cortex_storage::queries::studio_chat_queries::list_messages(&db, session_id).unwrap();
+    assert_eq!(messages.len(), 1);
+    let audit_rows: Vec<(Option<String>, Option<String>, Option<String>)> = db
+        .prepare(
+            "SELECT request_id, idempotency_key, idempotency_status
+             FROM audit_log
+             WHERE operation_id = ?1 AND event_type = 'send_studio_message_stream'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([operation_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(audit_rows.len(), 2);
+    assert_eq!(audit_rows[0].1.as_deref(), Some(idempotency_key));
+    assert_eq!(audit_rows[0].2.as_deref(), Some("executed"));
+    assert_eq!(
+        audit_rows[1].0.as_deref(),
+        Some("studio-stream-failure-retry")
+    );
+    assert_eq!(audit_rows[1].2.as_deref(), Some("replayed"));
+    drop(db);
+
+    restarted.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_replays_after_restart_without_refiring_provider() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-message-success.db");
+    let session_id = "studio-message-session";
+    let operation_id = "018f0f23-8c65-7abc-9def-2234567890ab";
+    let idempotency_key = "studio-message-success-key";
+    let request_body = serde_json::json!({ "content": "Say hello" });
+
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let first = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            gateway.base_url
+        ))
+        .json(&request_body)
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    let first_body = json_body(first).await;
+    assert_eq!(first_body["assistant_message"]["content"], "Hello world");
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    gateway.stop().await;
+
+    let restarted = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    let replay = restarted
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            restarted.base_url
+        ))
+        .json(&request_body)
+        .header("x-request-id", "studio-message-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+    let replay_body = json_body(replay).await;
+    assert_eq!(replay_body["assistant_message"]["content"], "Hello world");
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    let db = restarted.app_state.db.read().unwrap();
+    let audit_rows: Vec<(Option<String>, Option<String>, Option<String>)> = db
+        .prepare(
+            "SELECT request_id, idempotency_key, idempotency_status
+             FROM audit_log
+             WHERE operation_id = ?1 AND event_type = 'send_studio_message'
+             ORDER BY rowid ASC",
+        )
+        .unwrap()
+        .query_map([operation_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(audit_rows.len(), 2);
+    assert_eq!(audit_rows[0].1.as_deref(), Some(idempotency_key));
+    assert_eq!(audit_rows[0].2.as_deref(), Some("executed"));
+    assert_eq!(audit_rows[1].0.as_deref(), Some("studio-message-retry"));
+    assert_eq!(audit_rows[1].2.as_deref(), Some("replayed"));
+    drop(db);
+
+    restarted.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_idempotency_key_reuse_with_different_payload_conflicts() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-message-mismatch.db");
+    let session_id = "studio-message-mismatch";
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let key = "studio-message-mismatch-key";
+    let first = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": "Say hello" }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-2334567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    let conflict = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": "Say something else" }))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-2434567890ab",
+        )
+        .header("idempotency-key", key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        conflict
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("mismatch")
+    );
+    assert_eq!(
+        json_body(conflict).await["error"]["code"],
+        "IDEMPOTENCY_KEY_REUSED"
+    );
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_rejects_empty_content() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-message-empty.db");
+    let session_id = "studio-message-empty";
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let response = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": "   " }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        json_body(response).await["error"]["code"],
+        "VALIDATION_ERROR"
+    );
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_replays_committed_failure_without_duplicate_user_message() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-message-failure.db");
+    let session_id = "studio-message-failure";
+    let operation_id = "018f0f23-8c65-7abc-9def-2534567890ab";
+    let idempotency_key = "studio-message-failure-key";
+    let request_body = serde_json::json!({ "content": "No providers configured" });
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+
+    let first = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            gateway.base_url
+        ))
+        .json(&request_body)
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        first
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    assert_eq!(json_body(first).await["error"]["code"], "VALIDATION_ERROR");
+
+    {
+        let db = gateway.app_state.db.read().unwrap();
+        let messages =
+            cortex_storage::queries::studio_chat_queries::list_messages(&db, session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+    }
+
+    gateway.stop().await;
+
+    let restarted = PersistentGateway::start(&db_path).await;
+    let replay = restarted
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            restarted.base_url
+        ))
+        .json(&request_body)
+        .header("x-request-id", "studio-message-failure-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        replay
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("replayed")
+    );
+    assert_eq!(json_body(replay).await["error"]["code"], "VALIDATION_ERROR");
+
+    let db = restarted.app_state.db.read().unwrap();
+    let messages =
+        cortex_storage::queries::studio_chat_queries::list_messages(&db, session_id).unwrap();
+    assert_eq!(messages.len(), 1);
+    drop(db);
+
+    restarted.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_retry_after_accepted_takeover_executes_once() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-message-accepted.db");
+    let session_id = "studio-message-accepted";
+    let content = "Resume safely";
+    let operation_id = "018f0f23-8c65-7abc-9def-2634567890ab";
+    let idempotency_key = "studio-message-accepted-key";
+    let request_id = "studio-message-accepted-request";
+    let request_body = studio_message_request_body(content, session_id);
+    let execution_id = "018f0f23-8c65-7abc-9def-2634567890ad";
+    let user_message_id = "018f0f23-8c65-7abc-9def-2634567890ae";
+    let assistant_message_id = "018f0f23-8c65-7abc-9def-2634567890af";
+
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+    {
+        let db = gateway.app_state.db.write().await;
+        cortex_storage::queries::studio_chat_queries::insert_message(
+            &db,
+            user_message_id,
+            session_id,
+            "user",
+            content,
+            0,
+            "clean",
+        )
+        .unwrap();
+    }
+    let journal_id = seed_operation_journal_in_progress(
+        &gateway.app_state,
+        "anonymous",
+        operation_id,
+        request_id,
+        idempotency_key,
+        "/api/studio/sessions/:id/messages",
+        &request_body,
+    )
+    .await;
+    let state_json = serde_json::json!({
+        "session_id": session_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "accepted_response": {
+            "status": "accepted",
+            "session_id": session_id,
+            "user_message_id": user_message_id,
+            "assistant_message_id": assistant_message_id
+        },
+        "final_status_code": serde_json::Value::Null,
+        "final_response": serde_json::Value::Null
+    })
+    .to_string();
+    seed_live_execution_record(
+        &gateway.app_state,
+        execution_id,
+        &journal_id,
+        operation_id,
+        "anonymous",
+        "accepted",
+        &state_json,
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": content }))
+        .header("x-request-id", "studio-message-accepted-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    let response_status = response.status();
+    let response_headers = response.headers().clone();
+    let response_text = response.text().await.unwrap();
+    assert_eq!(response_status, StatusCode::OK, "body: {response_text}");
+    assert_eq!(
+        response_headers
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    let response_body: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(response_body["assistant_message"]["content"], "Hello world");
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    let db = gateway.app_state.db.read().unwrap();
+    let messages =
+        cortex_storage::queries::studio_chat_queries::list_messages(&db, session_id).unwrap();
+    assert_eq!(messages.len(), 2);
+    drop(db);
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
+async fn studio_message_running_takeover_fails_closed_without_refiring_provider() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let provider = MockOpenAICompatServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("studio-message-running.db");
+    let session_id = "studio-message-running";
+    let content = "Do not rerun";
+    let operation_id = "018f0f23-8c65-7abc-9def-2734567890ab";
+    let idempotency_key = "studio-message-running-key";
+    let request_id = "studio-message-running-request";
+    let request_body = studio_message_request_body(content, session_id);
+    let execution_id = "018f0f23-8c65-7abc-9def-2734567890ad";
+    let user_message_id = "018f0f23-8c65-7abc-9def-2734567890ae";
+    let assistant_message_id = "018f0f23-8c65-7abc-9def-2734567890af";
+
+    let gateway = PersistentGateway::start_with_model_providers(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+    )
+    .await;
+    seed_studio_session(&gateway.app_state, session_id, "studio-agent").await;
+    {
+        let db = gateway.app_state.db.write().await;
+        cortex_storage::queries::studio_chat_queries::insert_message(
+            &db,
+            user_message_id,
+            session_id,
+            "user",
+            content,
+            0,
+            "clean",
+        )
+        .unwrap();
+    }
+    let journal_id = seed_operation_journal_in_progress(
+        &gateway.app_state,
+        "anonymous",
+        operation_id,
+        request_id,
+        idempotency_key,
+        "/api/studio/sessions/:id/messages",
+        &request_body,
+    )
+    .await;
+    let state_json = serde_json::json!({
+        "session_id": session_id,
+        "user_message_id": user_message_id,
+        "assistant_message_id": assistant_message_id,
+        "accepted_response": {
+            "status": "accepted",
+            "session_id": session_id,
+            "user_message_id": user_message_id,
+            "assistant_message_id": assistant_message_id
+        },
+        "final_status_code": serde_json::Value::Null,
+        "final_response": serde_json::Value::Null
+    })
+    .to_string();
+    seed_live_execution_record(
+        &gateway.app_state,
+        execution_id,
+        &journal_id,
+        operation_id,
+        "anonymous",
+        "running",
+        &state_json,
+    )
+    .await;
+
+    let response = gateway
+        .client
+        .post(format!(
+            "{}/api/studio/sessions/{session_id}/messages",
+            gateway.base_url
+        ))
+        .json(&serde_json::json!({ "content": content }))
+        .header("x-request-id", "studio-message-running-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", idempotency_key)
+        .send()
+        .await
+        .unwrap();
+    let response_status = response.status();
+    let response_headers = response.headers().clone();
+    let response_text = response.text().await.unwrap();
+    assert_eq!(
+        response_status,
+        StatusCode::ACCEPTED,
+        "body: {response_text}"
+    );
+    assert_eq!(
+        response_headers
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    let body: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+    assert_eq!(body["status"], "accepted");
+    assert_eq!(body["recovery_required"], true);
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 0);
+
+    gateway.stop().await;
+    provider.stop().await;
 }

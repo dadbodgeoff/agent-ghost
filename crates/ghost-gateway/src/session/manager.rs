@@ -90,7 +90,7 @@ impl SessionManager {
         let to_remove: Vec<Uuid> = self
             .sessions
             .iter()
-            .filter(|(_, ctx)| ctx.last_activity < cutoff)
+            .filter(|(_, ctx)| ctx.last_activity <= cutoff)
             .map(|(id, _)| *id)
             .collect();
 

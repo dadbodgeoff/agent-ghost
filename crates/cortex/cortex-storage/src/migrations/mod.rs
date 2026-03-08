@@ -1,8 +1,5 @@
-//! Forward-only migrations with pre-migration backup safety net.
-//!
-//! Before running pending migrations, the DB file is copied to a backup.
-//! On failure, the backup path is logged so the operator can restore.
-//! Last 3 migration backups are retained; older ones are cleaned up.
+//! Forward-only migrations with SQLite-consistent backup, maintenance lock,
+//! post-migration schema verification, and DB-adjacent receipts.
 
 pub mod v016_convergence_safety;
 pub mod v017_convergence_tables;
@@ -35,19 +32,28 @@ pub mod v043_session_lifecycle;
 pub mod v044_studio_session_agent_id;
 pub mod v045_operation_journal;
 pub mod v046_goal_proposal_v2;
+pub mod v047_monitor_threshold_tables;
+pub mod v048_audit_log_canonicalization;
+pub mod v049_channels_canonicalization;
+pub mod v050_profile_assignments;
+pub mod v051_live_execution_records;
 
+use std::path::{Path, PathBuf};
+
+use crate::schema_contract::require_schema_ready;
+use crate::sqlite::{acquire_maintenance_lock, apply_writer_pragmas};
 use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
-use rusqlite::Connection;
+use rusqlite::{Connection, DatabaseName};
 
-pub const LATEST_VERSION: u32 = 46;
+pub const LATEST_VERSION: u32 = 51;
 
 /// Maximum number of migration backup files to retain.
 const MAX_MIGRATION_BACKUPS: usize = 3;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 31] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 36] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -91,48 +97,174 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 31] = [
     ),
     (45, "operation_journal", v045_operation_journal::migrate),
     (46, "goal_proposal_v2", v046_goal_proposal_v2::migrate),
+    (
+        47,
+        "monitor_threshold_tables",
+        v047_monitor_threshold_tables::migrate,
+    ),
+    (
+        48,
+        "audit_log_canonicalization",
+        v048_audit_log_canonicalization::migrate,
+    ),
+    (
+        49,
+        "channels_canonicalization",
+        v049_channels_canonicalization::migrate,
+    ),
+    (50, "profile_assignments", v050_profile_assignments::migrate),
+    (
+        51,
+        "live_execution_records",
+        v051_live_execution_records::migrate,
+    ),
 ];
 
 /// Query the current schema version from the database.
 /// Returns 0 if no migrations have been applied yet.
 pub fn current_version(conn: &Connection) -> CortexResult<u32> {
-    // Ensure the table exists before querying.
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_version (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );",
-    )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+    if !has_schema_version_table(conn)? {
+        return Ok(0);
+    }
 
     conn.query_row(
         "SELECT COALESCE(MAX(version), 0) FROM schema_version",
         [],
         |row| row.get(0),
     )
-    .map_err(|e| to_storage_err(e.to_string()))
+    .map_err(|error| to_storage_err(error.to_string()))
 }
 
-/// Ensure the schema_version table exists and run pending migrations.
-///
-/// If `db_path` is provided and there are pending migrations, a backup of the
-/// DB file is created before any migration runs. On failure, the error message
-/// includes the backup path for manual restoration.
+/// Run pending migrations without pre-migration backup or maintenance lock.
+/// Intended for tests and in-memory databases.
 pub fn run_migrations(conn: &Connection) -> CortexResult<()> {
     run_migrations_with_backup(conn, None)
 }
 
-/// Run migrations with optional pre-migration backup.
+/// Run migrations with optional SQLite-consistent pre-migration backup.
 ///
-/// When `db_path` is `Some`, the DB file is copied to
-/// `{db_path}.pre-migration-v{first_pending}.bak` before running any
-/// pending migration. After all migrations succeed, `user_version` is
-/// verified. Old backups beyond the retention limit are cleaned up.
-pub fn run_migrations_with_backup(
-    conn: &Connection,
-    db_path: Option<&std::path::Path>,
-) -> CortexResult<()> {
+/// When `db_path` is `Some`, the migration run is treated as a maintenance
+/// operation: a DB-adjacent maintenance lock is acquired, a SQLite backup
+/// snapshot is created before any schema change, and a JSON receipt is written
+/// after post-migration schema verification succeeds.
+pub fn run_migrations_with_backup(conn: &Connection, db_path: Option<&Path>) -> CortexResult<()> {
+    apply_writer_pragmas(conn).map_err(|error| to_storage_err(error.to_string()))?;
+
+    let current = current_version(conn)?;
+    if current > LATEST_VERSION {
+        return Err(to_storage_err(format!(
+            "unsupported newer schema: database is v{current}, binary supports up to v{LATEST_VERSION}"
+        )));
+    }
+
+    let pending: Vec<(u32, &str, MigrationFn)> = MIGRATIONS
+        .iter()
+        .filter(|(version, _, _)| *version > current)
+        .map(|(version, name, migrate_fn)| (*version, *name, *migrate_fn))
+        .collect();
+
+    if pending.is_empty() {
+        require_schema_ready(conn).map_err(|error| to_storage_err(error.to_string()))?;
+        return Ok(());
+    }
+
+    let _maintenance_lock = if let Some(path) = db_path {
+        Some(acquire_maintenance_lock(path).map_err(|error| to_storage_err(error.to_string()))?)
+    } else {
+        None
+    };
+
+    let first_pending_version = pending[0].0;
+    let last_pending_version = pending.last().expect("pending not empty").0;
+    let backup_path = if let Some(path) = db_path {
+        Some(create_pre_migration_backup(
+            conn,
+            path,
+            first_pending_version,
+            current,
+            last_pending_version,
+            pending.len(),
+        )?)
+    } else {
+        None
+    };
+
+    ensure_schema_version_table(conn)?;
+
+    let mut applied = Vec::new();
+    for (version, name, migrate_fn) in &pending {
+        tracing::info!(version, name, "running migration");
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(|error| {
+            to_storage_err(format!("begin transaction for v{version}: {error}"))
+        })?;
+
+        match migrate_fn(conn) {
+            Ok(()) => {
+                conn.execute(
+                    "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
+                    rusqlite::params![version, name],
+                )
+                .map_err(|error| {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    migration_failure(
+                        *version,
+                        name,
+                        &backup_path,
+                        format!("record migration v{version}: {error}"),
+                    )
+                })?;
+                conn.execute_batch("COMMIT").map_err(|error| {
+                    to_storage_err(format!("commit migration v{version}: {error}"))
+                })?;
+                applied.push((*version, (*name).to_string()));
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(migration_failure(
+                    *version,
+                    name,
+                    &backup_path,
+                    format!("migration v{version} ({name}) failed: {error}"),
+                ));
+            }
+        }
+    }
+
+    let final_version = current_version(conn)?;
+    if final_version != last_pending_version {
+        return Err(to_storage_err(format!(
+            "post-migration version mismatch: expected v{last_pending_version}, got v{final_version}"
+        )));
+    }
+
+    require_schema_ready(conn).map_err(|error| {
+        to_storage_err(format!(
+            "post-migration schema verification failed at v{final_version}: {error}"
+        ))
+    })?;
+
+    if let Some(path) = db_path {
+        write_migration_receipt(
+            path,
+            current,
+            final_version,
+            &applied,
+            backup_path.as_deref(),
+        )?;
+        cleanup_old_backups(path);
+    }
+
+    tracing::info!(
+        from_version = current,
+        to_version = final_version,
+        applied = applied.len(),
+        "migrations completed and schema verified",
+    );
+
+    Ok(())
+}
+
+fn ensure_schema_version_table(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY,
@@ -140,166 +272,168 @@ pub fn run_migrations_with_backup(
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         );",
     )
-    .map_err(|e| to_storage_err(e.to_string()))?;
+    .map_err(|error| to_storage_err(error.to_string()))
+}
 
-    let current: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| to_storage_err(e.to_string()))?;
+fn has_schema_version_table(conn: &Connection) -> CortexResult<bool> {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version' LIMIT 1",
+        [],
+        |_row| Ok(()),
+    )
+    .map(|_| true)
+    .or_else(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => Ok(false),
+        other => Err(other),
+    })
+    .map_err(|error| to_storage_err(error.to_string()))
+}
 
-    // Collect pending migrations.
-    let pending: Vec<_> = MIGRATIONS
-        .iter()
-        .filter(|(version, _, _)| *version > current)
-        .collect();
-
-    if pending.is_empty() {
-        return Ok(());
-    }
-
-    let first_pending_version = pending[0].0;
-    let last_pending_version = pending.last().unwrap().0;
-
-    // Create pre-migration backup if db_path is provided.
-    let backup_path = if let Some(path) = db_path {
-        let backup = path.with_extension(format!("pre-migration-v{first_pending_version}.bak"));
-        tracing::info!(
-            from_version = current,
-            to_version = last_pending_version,
-            backup = %backup.display(),
-            "Creating pre-migration backup before running {} pending migration(s)",
-            pending.len(),
-        );
-        if let Err(e) = std::fs::copy(path, &backup) {
-            return Err(to_storage_err(format!(
-                "failed to create pre-migration backup at {}: {e}",
-                backup.display()
-            )));
-        }
-        // Also copy WAL and SHM files if they exist (ensures backup is consistent).
-        let wal = path.with_extension("db-wal");
-        if wal.exists() {
-            let _ = std::fs::copy(&wal, backup.with_extension("bak-wal"));
-        }
-        let shm = path.with_extension("db-shm");
-        if shm.exists() {
-            let _ = std::fs::copy(&shm, backup.with_extension("bak-shm"));
-        }
-        Some(backup)
-    } else {
-        None
-    };
-
-    // Run each pending migration.
-    for &(version, name, migrate_fn) in &pending {
-        tracing::info!(version, name, "running migration");
-        conn.execute_batch("BEGIN IMMEDIATE")
-            .map_err(|e| to_storage_err(format!("begin transaction for v{version}: {e}")))?;
-        match migrate_fn(conn) {
-            Ok(()) => {
-                conn.execute(
-                    "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
-                    rusqlite::params![version, name],
-                )
-                .map_err(|e| {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    let msg = format!("record migration v{version}: {e}");
-                    if let Some(ref bp) = backup_path {
-                        to_storage_err(format!(
-                            "{msg}. Pre-migration backup available at: {}",
-                            bp.display()
-                        ))
-                    } else {
-                        to_storage_err(msg)
-                    }
-                })?;
-                conn.execute_batch("COMMIT")
-                    .map_err(|e| to_storage_err(format!("commit migration v{version}: {e}")))?;
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                let msg = format!("migration v{version} ({name}) failed: {e}");
-                if let Some(ref bp) = backup_path {
-                    tracing::error!(
-                        version,
-                        name,
-                        backup = %bp.display(),
-                        "Migration failed. Restore from backup: {}",
-                        bp.display(),
-                    );
-                    return Err(to_storage_err(format!(
-                        "{msg}. Pre-migration backup available at: {}",
-                        bp.display()
-                    )));
-                }
-                return Err(to_storage_err(msg));
-            }
-        }
-    }
-
-    // Post-migration verification: ensure schema_version matches expected.
-    let final_version: u32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|e| to_storage_err(e.to_string()))?;
-
-    if final_version != last_pending_version {
-        let msg = format!(
-            "post-migration version mismatch: expected v{last_pending_version}, got v{final_version}"
-        );
-        if let Some(ref bp) = backup_path {
-            tracing::error!(
-                expected = last_pending_version,
-                actual = final_version,
-                backup = %bp.display(),
-                "Post-migration verification failed. Restore from backup: {}",
-                bp.display(),
-            );
-        }
-        return Err(to_storage_err(msg));
-    }
+fn create_pre_migration_backup(
+    conn: &Connection,
+    db_path: &Path,
+    first_pending_version: u32,
+    current: u32,
+    target: u32,
+    pending_count: usize,
+) -> CortexResult<PathBuf> {
+    let backup = backup_path(db_path, first_pending_version);
+    let _ = std::fs::remove_file(&backup);
 
     tracing::info!(
         from_version = current,
-        to_version = final_version,
-        "All {} migration(s) completed successfully",
-        pending.len(),
+        to_version = target,
+        backup = %backup.display(),
+        "creating SQLite-consistent pre-migration backup before running {pending_count} pending migration(s)",
     );
 
-    // Cleanup old migration backups — retain only the last MAX_MIGRATION_BACKUPS.
-    if let Some(path) = db_path {
-        cleanup_old_backups(path);
+    conn.backup(DatabaseName::Main, &backup, None)
+        .map_err(|error| {
+            to_storage_err(format!(
+                "failed to create SQLite backup at {}: {error}",
+                backup.display()
+            ))
+        })?;
+
+    let backup_conn = Connection::open(&backup).map_err(|error| {
+        to_storage_err(format!(
+            "failed to open SQLite backup {}: {error}",
+            backup.display()
+        ))
+    })?;
+    let integrity: String = backup_conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| {
+            to_storage_err(format!(
+                "failed to verify SQLite backup {}: {error}",
+                backup.display()
+            ))
+        })?;
+    if integrity != "ok" {
+        return Err(to_storage_err(format!(
+            "SQLite backup integrity check failed for {}: {integrity}",
+            backup.display()
+        )));
     }
 
+    Ok(backup)
+}
+
+fn backup_path(db_path: &Path, first_pending_version: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "{}.pre-migration-v{first_pending_version}.bak",
+        db_path.display()
+    ))
+}
+
+fn write_migration_receipt(
+    db_path: &Path,
+    from_version: u32,
+    to_version: u32,
+    applied: &[(u32, String)],
+    backup_path: Option<&Path>,
+) -> CortexResult<()> {
+    let receipt_dir = receipt_dir(db_path);
+    std::fs::create_dir_all(&receipt_dir).map_err(|error| {
+        to_storage_err(format!(
+            "create migration receipt dir {}: {error}",
+            receipt_dir.display()
+        ))
+    })?;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let receipt_path = receipt_dir.join(format!("{to_version}_{timestamp}.json"));
+    let payload = serde_json::json!({
+        "db_path": db_path.display().to_string(),
+        "from_version": from_version,
+        "to_version": to_version,
+        "applied_migrations": applied
+            .iter()
+            .map(|(version, name)| serde_json::json!({ "version": version, "name": name }))
+            .collect::<Vec<_>>(),
+        "backup_path": backup_path.map(|path| path.display().to_string()),
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    let serialized = serde_json::to_vec_pretty(&payload)
+        .map_err(|error| to_storage_err(format!("serialize migration receipt: {error}")))?;
+    std::fs::write(&receipt_path, serialized).map_err(|error| {
+        to_storage_err(format!(
+            "write migration receipt {}: {error}",
+            receipt_path.display()
+        ))
+    })?;
+    tracing::info!(path = %receipt_path.display(), "wrote migration receipt");
     Ok(())
 }
 
+fn receipt_dir(db_path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.migration-receipts", db_path.display()))
+}
+
+fn migration_failure(
+    version: u32,
+    name: &str,
+    backup_path: &Option<PathBuf>,
+    message: String,
+) -> cortex_core::models::error::CortexError {
+    if let Some(backup) = backup_path {
+        tracing::error!(
+            version,
+            name,
+            backup = %backup.display(),
+            "migration failed; restore from SQLite backup {}",
+            backup.display(),
+        );
+        return to_storage_err(format!(
+            "{message}. Pre-migration SQLite backup available at: {}",
+            backup.display()
+        ));
+    }
+
+    to_storage_err(message)
+}
+
 /// Remove old `.pre-migration-v*.bak` files, keeping only the most recent ones.
-fn cleanup_old_backups(db_path: &std::path::Path) {
+fn cleanup_old_backups(db_path: &Path) {
     let parent = match db_path.parent() {
-        Some(p) => p,
+        Some(parent) => parent,
         None => return,
     };
-    let stem = match db_path.file_name().and_then(|f| f.to_str()) {
-        Some(s) => s,
+    let stem = match db_path.file_name().and_then(|file| file.to_str()) {
+        Some(stem) => stem,
         None => return,
     };
 
     let prefix = format!("{stem}.pre-migration-v");
-    let mut backups: Vec<std::path::PathBuf> = match std::fs::read_dir(parent) {
+    let mut backups: Vec<PathBuf> = match std::fs::read_dir(parent) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|f| f.to_str())
-                    .map(|f| f.starts_with(&prefix) && f.ends_with(".bak"))
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|file| file.to_str())
+                    .map(|file| file.starts_with(&prefix) && file.ends_with(".bak"))
                     .unwrap_or(false)
             })
             .collect(),
@@ -310,19 +444,15 @@ fn cleanup_old_backups(db_path: &std::path::Path) {
         return;
     }
 
-    // Sort by modification time (oldest first).
-    backups.sort_by(|a, b| {
-        let ta = a.metadata().and_then(|m| m.modified()).ok();
-        let tb = b.metadata().and_then(|m| m.modified()).ok();
-        ta.cmp(&tb)
+    backups.sort_by(|left, right| {
+        let left_time = left.metadata().and_then(|meta| meta.modified()).ok();
+        let right_time = right.metadata().and_then(|meta| meta.modified()).ok();
+        left_time.cmp(&right_time)
     });
 
     let to_remove = backups.len() - MAX_MIGRATION_BACKUPS;
     for path in backups.into_iter().take(to_remove) {
         tracing::debug!(path = %path.display(), "removing old migration backup");
         let _ = std::fs::remove_file(&path);
-        // Also remove companion WAL/SHM backup files.
-        let _ = std::fs::remove_file(path.with_extension("bak-wal"));
-        let _ = std::fs::remove_file(path.with_extension("bak-shm"));
     }
 }

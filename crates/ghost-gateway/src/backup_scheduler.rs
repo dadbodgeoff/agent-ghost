@@ -1,4 +1,4 @@
-//! Scheduled backup background task (T-3.4.3).
+//! Scheduled platform-state archive background task (T-3.4.3).
 //!
 //! Runs daily backups at the configured cron time and prunes old backups.
 
@@ -70,7 +70,7 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
 
         let now = chrono::Utc::now();
 
-        tracing::info!("Scheduled backup starting");
+        tracing::info!("Scheduled archive export starting");
 
         if let Err(e) = std::fs::create_dir_all(&backup_dir) {
             tracing::error!(error = %e, "Failed to create backup directory");
@@ -78,8 +78,8 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
         }
 
         let timestamp = now.format("%Y%m%d_%H%M%S").to_string();
-        let output_path =
-            std::path::PathBuf::from(&backup_dir).join(format!("ghost-backup-{timestamp}.tar.gz"));
+        let output_path = std::path::PathBuf::from(&backup_dir)
+            .join(format!("ghost-backup-{timestamp}.ghost-backup"));
 
         let exporter = ghost_backup::BackupExporter::new(&ghost_dir);
         match exporter.export(&output_path, &passphrase) {
@@ -140,11 +140,11 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
                 tracing::info!(
                     entries = manifest.entries.len(),
                     size_bytes = size,
-                    "Scheduled backup complete"
+                    "Scheduled archive export complete"
                 );
             }
             Err(e) => {
-                tracing::error!(error = %e, "Scheduled backup failed");
+                tracing::error!(error = %e, "Scheduled archive export failed");
             }
         }
 
@@ -254,7 +254,7 @@ fn prune_old_backups(backup_dir: &str, retention_days: u64) {
         if !path
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("ghost-backup-") && n.ends_with(".tar.gz"))
+            .map(|n| n.starts_with("ghost-backup-") && n.ends_with(".ghost-backup"))
             .unwrap_or(false)
         {
             continue;

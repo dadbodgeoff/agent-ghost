@@ -260,6 +260,7 @@ async fn write_audit_entry(
         tool_name: None,
         details: details.to_string(),
         session_id: None,
+        actor_id: None,
         operation_id: None,
         request_id: None,
         idempotency_key: None,
@@ -942,9 +943,6 @@ mod tests {
         {
             let writer = db.writer_for_migrations().await;
             cortex_storage::migrations::run_migrations(&writer).unwrap();
-            ghost_audit::AuditQueryEngine::new(&writer)
-                .ensure_table()
-                .unwrap();
         }
 
         let shared_state = Arc::new(crate::gateway::GatewaySharedState::new());

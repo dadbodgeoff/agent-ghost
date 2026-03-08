@@ -9,6 +9,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::Utc;
+use cortex_storage::schema_contract::require_schema_ready;
+use cortex_storage::sqlite::{
+    apply_reader_pragmas, apply_writer_pragmas, ensure_maintenance_lock_absent,
+};
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
@@ -68,10 +72,13 @@ pub struct ConvergenceMonitor {
     /// Reusable SQLite connection — avoids opening a new connection per
     /// event, critical for the 10K events/sec throughput target.
     db_conn: Option<rusqlite::Connection>,
+    /// Flipped to false when DB persistence fails; surfaced via /health.
+    db_write_healthy: bool,
 }
 
 impl ConvergenceMonitor {
     pub fn new(config: MonitorConfig) -> anyhow::Result<Self> {
+        Self::verify_startup_contract(&config)?;
         let state_publisher = StatePublisher::new(config.state_dir.clone());
         let validator = EventValidator::new(config.clock_skew_tolerance);
         let rate_limiter = RateLimiter::new(config.rate_limit_per_min);
@@ -93,7 +100,26 @@ impl ConvergenceMonitor {
             score_cache: BTreeMap::new(),
             hash_chains: BTreeMap::new(),
             db_conn: None,
+            db_write_healthy: true,
         })
+    }
+
+    fn verify_startup_contract(config: &MonitorConfig) -> anyhow::Result<()> {
+        if !config.db_path.exists() {
+            return Err(anyhow::anyhow!(
+                "database {} is missing; run `ghost db migrate` before starting the convergence monitor",
+                config.db_path.display()
+            ));
+        }
+        ensure_maintenance_lock_absent(&config.db_path)?;
+
+        let conn = rusqlite::Connection::open_with_flags(
+            &config.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        apply_reader_pragmas(&conn)?;
+        require_schema_ready(&conn)?;
+        Ok(())
     }
 
     fn active_critical_override_threshold(&self) -> f64 {
@@ -104,6 +130,15 @@ impl ConvergenceMonitor {
 
     fn threshold_values_match(current: f64, actual: f64) -> bool {
         (current - actual).abs() <= f64::EPSILON
+    }
+
+    fn mark_db_persistence_failure(&mut self, operation: &str, error: &dyn std::fmt::Display) {
+        self.db_write_healthy = false;
+        tracing::error!(operation, error = %error, "database persistence failure degraded monitor health");
+    }
+
+    fn mark_db_persistence_recovered(&mut self) {
+        self.db_write_healthy = true;
     }
 
     /// Reconstruct state from SQLite on startup (Req 9 AC2).
@@ -125,6 +160,12 @@ impl ConvergenceMonitor {
                 return;
             }
         };
+        if let Err(e) = apply_reader_pragmas(&conn) {
+            tracing::warn!(
+                error = %e,
+                "failed to apply read pragmas during state reconstruction"
+            );
+        }
 
         // Restore intervention states per agent
         let mut restored_count = 0u32;
@@ -365,7 +406,7 @@ impl ConvergenceMonitor {
         // ── Start HTTP API transport ────────────────────────────────
         let http_state = Arc::new(RwLock::new(HttpApiState {
             ingest_tx: ingest_tx.clone(),
-            healthy: true,
+            healthy: self.db_write_healthy,
             start_time: std::time::Instant::now(),
             scores: BTreeMap::new(),
             sessions: Vec::new(),
@@ -505,6 +546,7 @@ impl ConvergenceMonitor {
     /// Sync monitor state snapshots into the shared HTTP API state.
     async fn sync_http_state(&self, http_state: &Arc<RwLock<HttpApiState>>) {
         let mut state = http_state.write().await;
+        state.healthy = self.db_write_healthy;
 
         // Scores: snapshot from score_cache
         state.scores = self
@@ -1304,26 +1346,7 @@ impl ConvergenceMonitor {
 
         if self.db_conn.is_none() {
             let conn = rusqlite::Connection::open(&self.config.db_path)?;
-            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS monitor_threshold_config (
-                    config_key TEXT PRIMARY KEY,
-                    critical_override_threshold REAL NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    updated_by TEXT NOT NULL,
-                    confirmed_by TEXT
-                );
-                CREATE TABLE IF NOT EXISTS monitor_threshold_history (
-                    id TEXT PRIMARY KEY,
-                    config_key TEXT NOT NULL,
-                    previous_value REAL NOT NULL,
-                    new_value REAL NOT NULL,
-                    initiated_by TEXT NOT NULL,
-                    confirmed_by TEXT,
-                    change_mode TEXT NOT NULL,
-                    changed_at TEXT NOT NULL
-                );",
-            )?;
+            apply_writer_pragmas(&conn)?;
             self.db_conn = Some(conn);
         }
         Ok(self.db_conn.as_mut().unwrap())
@@ -1336,32 +1359,45 @@ impl ConvergenceMonitor {
         event_hash: &[u8; 32],
         previous_hash: &[u8; 32],
     ) -> anyhow::Result<()> {
-        let conn = self.get_db_conn()?;
-        let id = Uuid::now_v7().to_string();
-        let payload_str = event.payload.to_string();
-        let content_hash = blake3::hash(payload_str.as_bytes()).to_hex().to_string();
-        let content_length = payload_str.len() as i64;
-        conn.execute(
-            "INSERT INTO itp_events (id, session_id, event_type, sender, \
-             timestamp, sequence_number, content_hash, content_length, privacy_level, \
-             event_hash, previous_hash) \
-             VALUES (?1, ?2, ?3, ?4, ?5, \
-             (SELECT COALESCE(MAX(sequence_number), -1) + 1 FROM itp_events WHERE session_id = ?2), \
-             ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![
-                id,
-                event.session_id.to_string(),
-                format!("{:?}", event.event_type),
-                event.agent_id.to_string(),
-                event.timestamp.to_rfc3339(),
-                content_hash,
-                content_length,
-                "standard",
-                event_hash.as_slice(),
-                previous_hash.as_slice(),
-            ],
-        )?;
-        Ok(())
+        let result = (|| -> anyhow::Result<()> {
+            let conn = self.get_db_conn()?;
+            let id = Uuid::now_v7().to_string();
+            let payload_str = event.payload.to_string();
+            let content_hash = blake3::hash(payload_str.as_bytes()).to_hex().to_string();
+            let content_length = payload_str.len() as i64;
+            conn.execute(
+                "INSERT INTO itp_events (id, session_id, event_type, sender, \
+                 timestamp, sequence_number, content_hash, content_length, privacy_level, \
+                 event_hash, previous_hash) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, \
+                 (SELECT COALESCE(MAX(sequence_number), -1) + 1 FROM itp_events WHERE session_id = ?2), \
+                 ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    id,
+                    event.session_id.to_string(),
+                    format!("{:?}", event.event_type),
+                    event.agent_id.to_string(),
+                    event.timestamp.to_rfc3339(),
+                    content_hash,
+                    content_length,
+                    "standard",
+                    event_hash.as_slice(),
+                    previous_hash.as_slice(),
+                ],
+            )?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.mark_db_persistence_recovered();
+                Ok(())
+            }
+            Err(error) => {
+                self.mark_db_persistence_failure("persist_itp_event", &error);
+                Err(error)
+            }
+        }
     }
 
     /// Persist a convergence score to the database (Step 10, Req 9 AC6).
@@ -1376,27 +1412,50 @@ impl ConvergenceMonitor {
         event_hash: &[u8; 32],
         previous_hash: &[u8; 32],
     ) -> anyhow::Result<()> {
-        let conn = self.get_db_conn()?;
-        let id = Uuid::now_v7().to_string();
-        let signal_json = serde_json::to_string(signal_scores)?;
-        conn.execute(
-            "INSERT INTO convergence_scores (id, agent_id, session_id, composite_score, \
-             signal_scores, level, profile, computed_at, event_hash, previous_hash) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![
-                id,
-                agent_id.to_string(),
-                session_id.to_string(),
-                score,
-                signal_json,
-                level as i32,
-                "standard",
-                Utc::now().to_rfc3339(),
-                event_hash.as_slice(),
-                previous_hash.as_slice(),
-            ],
-        )?;
-        Ok(())
+        let default_profile = self.config.default_profile.clone();
+        let result = (|| -> anyhow::Result<()> {
+            let conn = self.get_db_conn()?;
+            let id = Uuid::now_v7().to_string();
+            let signal_json = serde_json::to_string(signal_scores)?;
+            let profile = match conn.query_row(
+                "SELECT profile_name FROM agent_profile_assignments WHERE agent_id = ?1",
+                [agent_id.to_string()],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(profile) => profile,
+                Err(rusqlite::Error::QueryReturnedNoRows) => default_profile.clone(),
+                Err(error) => return Err(error.into()),
+            };
+            conn.execute(
+                "INSERT INTO convergence_scores (id, agent_id, session_id, composite_score, \
+                 signal_scores, level, profile, computed_at, event_hash, previous_hash) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    id,
+                    agent_id.to_string(),
+                    session_id.to_string(),
+                    score,
+                    signal_json,
+                    level as i32,
+                    profile,
+                    Utc::now().to_rfc3339(),
+                    event_hash.as_slice(),
+                    previous_hash.as_slice(),
+                ],
+            )?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.mark_db_persistence_recovered();
+                Ok(())
+            }
+            Err(error) => {
+                self.mark_db_persistence_failure("persist_convergence_score", &error);
+                Err(error)
+            }
+        }
     }
 
     /// Persist the current intervention state for an agent to SQLite.
@@ -1407,23 +1466,36 @@ impl ConvergenceMonitor {
             Some(s) => s.clone(),
             None => return Ok(()), // No state to persist
         };
-        let conn = self.get_db_conn()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO intervention_state \
-             (agent_id, level, consecutive_normal, cooldown_until, \
-              ack_required, hysteresis_count, de_escalation_credits, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
-            rusqlite::params![
-                agent_id.to_string(),
-                state.level as i32,
-                state.consecutive_normal as i32,
-                state.cooldown_until.map(|t| t.to_rfc3339()),
-                state.ack_required,
-                state.hysteresis_count as i32,
-                state.de_escalation_credits as i32,
-            ],
-        )?;
-        Ok(())
+        let result = (|| -> anyhow::Result<()> {
+            let conn = self.get_db_conn()?;
+            conn.execute(
+                "INSERT OR REPLACE INTO intervention_state \
+                 (agent_id, level, consecutive_normal, cooldown_until, \
+                  ack_required, hysteresis_count, de_escalation_credits, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+                rusqlite::params![
+                    agent_id.to_string(),
+                    state.level as i32,
+                    state.consecutive_normal as i32,
+                    state.cooldown_until.map(|t| t.to_rfc3339()),
+                    state.ack_required,
+                    state.hysteresis_count as i32,
+                    state.de_escalation_credits as i32,
+                ],
+            )?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.mark_db_persistence_recovered();
+                Ok(())
+            }
+            Err(error) => {
+                self.mark_db_persistence_failure("persist_intervention_state", &error);
+                Err(error)
+            }
+        }
     }
 
     fn persist_threshold_change(
@@ -1434,45 +1506,58 @@ impl ConvergenceMonitor {
         confirmed_by: Option<&str>,
         change_mode: &str,
     ) -> anyhow::Result<()> {
-        let conn = self.get_db_conn()?;
-        let tx = conn.transaction()?;
-        let now = Utc::now().to_rfc3339();
-        let updated_by = confirmed_by.unwrap_or(initiated_by);
-        tx.execute(
-            "INSERT INTO monitor_threshold_config \
-             (config_key, critical_override_threshold, updated_at, updated_by, confirmed_by) \
-             VALUES ('critical_override_threshold', ?1, ?2, ?3, ?4) \
-             ON CONFLICT(config_key) DO UPDATE SET
-                critical_override_threshold = excluded.critical_override_threshold,
-                updated_at = excluded.updated_at,
-                updated_by = excluded.updated_by,
-                confirmed_by = excluded.confirmed_by",
-            rusqlite::params![proposed, now, updated_by, confirmed_by],
-        )?;
-        tx.execute(
-            "INSERT INTO monitor_threshold_history \
-             (id, config_key, previous_value, new_value, initiated_by, confirmed_by, change_mode, changed_at) \
-             VALUES (?1, 'critical_override_threshold', ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                Uuid::now_v7().to_string(),
+        let result = (|| -> anyhow::Result<()> {
+            let conn = self.get_db_conn()?;
+            let tx = conn.transaction()?;
+            let now = Utc::now().to_rfc3339();
+            let updated_by = confirmed_by.unwrap_or(initiated_by);
+            tx.execute(
+                "INSERT INTO monitor_threshold_config \
+                 (config_key, critical_override_threshold, updated_at, updated_by, confirmed_by) \
+                 VALUES ('critical_override_threshold', ?1, ?2, ?3, ?4) \
+                 ON CONFLICT(config_key) DO UPDATE SET
+                    critical_override_threshold = excluded.critical_override_threshold,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by,
+                    confirmed_by = excluded.confirmed_by",
+                rusqlite::params![proposed, now, updated_by, confirmed_by],
+            )?;
+            tx.execute(
+                "INSERT INTO monitor_threshold_history \
+                 (id, config_key, previous_value, new_value, initiated_by, confirmed_by, change_mode, changed_at) \
+                 VALUES (?1, 'critical_override_threshold', ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    Uuid::now_v7().to_string(),
+                    previous,
+                    proposed,
+                    initiated_by,
+                    confirmed_by,
+                    change_mode,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+            tx.commit()?;
+            tracing::info!(
                 previous,
                 proposed,
                 initiated_by,
                 confirmed_by,
                 change_mode,
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
-        tx.commit()?;
-        tracing::info!(
-            previous,
-            proposed,
-            initiated_by,
-            confirmed_by,
-            change_mode,
-            "persisted critical override threshold change"
-        );
-        Ok(())
+                "persisted critical override threshold change"
+            );
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.mark_db_persistence_recovered();
+                Ok(())
+            }
+            Err(error) => {
+                self.mark_db_persistence_failure("persist_threshold_change", &error);
+                Err(error)
+            }
+        }
     }
 
     /// Persist an intervention level transition to intervention_history (append-only).
@@ -1488,28 +1573,41 @@ impl ConvergenceMonitor {
         event_hash: &[u8; 32],
         previous_hash: &[u8; 32],
     ) -> anyhow::Result<()> {
-        let conn = self.get_db_conn()?;
-        let id = Uuid::now_v7().to_string();
-        let trigger_signals = serde_json::to_string(signal_scores)?;
-        conn.execute(
-            "INSERT INTO intervention_history (id, agent_id, session_id, intervention_level, \
-             previous_level, trigger_score, trigger_signals, action_type, \
-             event_hash, previous_hash) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![
-                id,
-                agent_id.to_string(),
-                session_id.to_string(),
-                level as i32,
-                previous_level as i32,
-                trigger_score,
-                trigger_signals,
-                action_type,
-                event_hash.as_slice(),
-                previous_hash.as_slice(),
-            ],
-        )?;
-        Ok(())
+        let result = (|| -> anyhow::Result<()> {
+            let conn = self.get_db_conn()?;
+            let id = Uuid::now_v7().to_string();
+            let trigger_signals = serde_json::to_string(signal_scores)?;
+            conn.execute(
+                "INSERT INTO intervention_history (id, agent_id, session_id, intervention_level, \
+                 previous_level, trigger_score, trigger_signals, action_type, \
+                 event_hash, previous_hash) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    id,
+                    agent_id.to_string(),
+                    session_id.to_string(),
+                    level as i32,
+                    previous_level as i32,
+                    trigger_score,
+                    trigger_signals,
+                    action_type,
+                    event_hash.as_slice(),
+                    previous_hash.as_slice(),
+                ],
+            )?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.mark_db_persistence_recovered();
+                Ok(())
+            }
+            Err(error) => {
+                self.mark_db_persistence_failure("persist_intervention_history", &error);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -1584,7 +1682,14 @@ mod tests {
         MonitorRequest, ThresholdChangeResult, ThresholdConfirmResult,
     };
 
+    fn prepare_monitor_db(db_path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        cortex_storage::sqlite::apply_writer_pragmas(&conn).unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+    }
+
     fn test_config(db_path: std::path::PathBuf, state_dir: std::path::PathBuf) -> MonitorConfig {
+        prepare_monitor_db(&db_path);
         let mut config = MonitorConfig::default();
         config.db_path = db_path;
         config.state_dir = state_dir;
@@ -1678,5 +1783,80 @@ mod tests {
             ThresholdConfirmResult::Applied
         );
         assert_eq!(monitor.active_critical_override_threshold(), 0.8);
+    }
+
+    #[test]
+    fn db_write_failure_degrades_monitor_health() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("monitor.sqlite");
+        let state_dir = temp.path().join("state");
+        let mut monitor = ConvergenceMonitor::new(test_config(db_path, state_dir)).unwrap();
+
+        monitor.db_conn = Some(rusqlite::Connection::open_in_memory().unwrap());
+        let result = monitor.persist_convergence_score(
+            Uuid::new_v4(),
+            0.7,
+            2,
+            Uuid::new_v4(),
+            &[0.0; 8],
+            &[1u8; 32],
+            &[0u8; 32],
+        );
+
+        assert!(
+            result.is_err(),
+            "persistence should fail against wrong schema"
+        );
+        assert!(
+            !monitor.db_write_healthy,
+            "monitor health should degrade on DB persistence failure"
+        );
+    }
+
+    #[test]
+    fn profile_assignment_lookup_failure_degrades_monitor_health() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("monitor.sqlite");
+        let state_dir = temp.path().join("state");
+        let mut monitor = ConvergenceMonitor::new(test_config(db_path, state_dir)).unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        cortex_storage::sqlite::apply_writer_pragmas(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE convergence_scores (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                session_id TEXT,
+                composite_score REAL NOT NULL,
+                signal_scores TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                profile TEXT NOT NULL DEFAULT 'standard',
+                computed_at TEXT NOT NULL,
+                event_hash BLOB NOT NULL,
+                previous_hash BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        monitor.db_conn = Some(conn);
+
+        let result = monitor.persist_convergence_score(
+            Uuid::new_v4(),
+            0.4,
+            1,
+            Uuid::new_v4(),
+            &[0.0; 8],
+            &[1u8; 32],
+            &[0u8; 32],
+        );
+
+        assert!(
+            result.is_err(),
+            "profile lookup failure should not silently fall back"
+        );
+        assert!(
+            !monitor.db_write_healthy,
+            "monitor health should degrade on profile lookup failure"
+        );
     }
 }

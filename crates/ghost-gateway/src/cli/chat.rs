@@ -286,7 +286,7 @@ async fn run_interactive_chat_inner() {
     // Wire DB connection for proposal/violation/reflection persistence.
     let db_path = crate::bootstrap::shellexpand_tilde("~/.ghost/data/ghost.db");
     let db = if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-        if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;") {
+        if let Err(e) = cortex_storage::sqlite::apply_writer_pragmas(&conn) {
             tracing::warn!(error = %e, path = %db_path, "PRAGMA setup failed — DB may have degraded performance");
         }
         let db = std::sync::Arc::new(std::sync::Mutex::new(conn));

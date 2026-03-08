@@ -297,9 +297,6 @@ mod dead_write_path_tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
         cortex_storage::migrations::run_migrations(&conn).unwrap();
-        // Also create audit_log (created by ghost-audit, not migrations).
-        let engine = ghost_audit::AuditQueryEngine::new(&conn);
-        engine.ensure_table().unwrap();
         conn
     }
 
@@ -482,6 +479,7 @@ mod dead_write_path_tests {
                 tool_name: None,
                 details: "test entry".into(),
                 session_id: None,
+                actor_id: None,
                 operation_id: None,
                 request_id: None,
                 idempotency_key: None,

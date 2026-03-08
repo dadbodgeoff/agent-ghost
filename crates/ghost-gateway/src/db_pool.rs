@@ -11,6 +11,7 @@
 //!   - busy_timeout = 5000ms on all connections
 //!   - All connections share the same WAL file
 
+use cortex_storage::sqlite::{apply_reader_pragmas, apply_writer_pragmas};
 use crossbeam_queue::ArrayQueue;
 use rusqlite::{Connection, OpenFlags};
 use std::path::PathBuf;
@@ -42,19 +43,28 @@ impl DbPool {
     /// Create pool with 1 writer + `pool_size` readers.
     /// Recommended pool_size: `min(num_cpus, 8)`, minimum 2.
     pub fn open(db_path: PathBuf, pool_size: usize) -> Result<Self, DbPoolError> {
+        Self::open_with_mode(db_path, pool_size, true)
+    }
+
+    pub fn open_existing(db_path: PathBuf, pool_size: usize) -> Result<Self, DbPoolError> {
+        Self::open_with_mode(db_path, pool_size, false)
+    }
+
+    fn open_with_mode(
+        db_path: PathBuf,
+        pool_size: usize,
+        create_if_missing: bool,
+    ) -> Result<Self, DbPoolError> {
         let pool_size = pool_size.max(2);
 
+        let mut writer_flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if create_if_missing {
+            writer_flags |= OpenFlags::SQLITE_OPEN_CREATE;
+        }
+
         // Writer: read-write, WAL mode, busy_timeout 5000ms
-        let writer = Connection::open_with_flags(
-            &db_path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        writer.pragma_update(None, "journal_mode", "WAL")?;
-        writer.pragma_update(None, "busy_timeout", 5000)?;
-        writer.pragma_update(None, "synchronous", "NORMAL")?;
-        writer.pragma_update(None, "foreign_keys", "ON")?;
+        let writer = Connection::open_with_flags(&db_path, writer_flags)?;
+        apply_writer_pragmas(&writer)?;
 
         // Readers: read-only, same pragmas minus journal_mode (inherited via WAL)
         let readers = ArrayQueue::new(pool_size);
@@ -63,7 +73,7 @@ impl DbPool {
                 &db_path,
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )?;
-            r.pragma_update(None, "busy_timeout", 5000)?;
+            apply_reader_pragmas(&r)?;
             readers.push(r).map_err(|_| DbPoolError::PoolFull)?;
         }
 
@@ -109,7 +119,7 @@ impl DbPool {
                     &self.db_path,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
                 )?;
-                conn.pragma_update(None, "busy_timeout", 5000)?;
+                apply_reader_pragmas(&conn)?;
                 Ok(ReadConn {
                     conn: Some(conn),
                     pool: self,
@@ -163,8 +173,7 @@ impl DbPool {
             &self.db_path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
+        apply_writer_pragmas(&conn)?;
         Ok(std::sync::Arc::new(std::sync::Mutex::new(conn)))
     }
 }
@@ -272,10 +281,25 @@ pub async fn wal_checkpoint_task(db: Arc<DbPool>) {
 
 /// Create a DbPool wrapped in Arc, ready for AppState.
 pub fn create_pool(db_path: PathBuf) -> Result<Arc<DbPool>, DbPoolError> {
+    create_pool_internal(db_path, true)
+}
+
+pub fn create_existing_pool(db_path: PathBuf) -> Result<Arc<DbPool>, DbPoolError> {
+    create_pool_internal(db_path, false)
+}
+
+fn create_pool_internal(
+    db_path: PathBuf,
+    create_if_missing: bool,
+) -> Result<Arc<DbPool>, DbPoolError> {
     let num_cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
     let pool_size = num_cpus.min(8).max(2);
-    let pool = DbPool::open(db_path, pool_size)?;
+    let pool = if create_if_missing {
+        DbPool::open(db_path, pool_size)?
+    } else {
+        DbPool::open_existing(db_path, pool_size)?
+    };
     Ok(Arc::new(pool))
 }

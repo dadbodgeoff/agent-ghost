@@ -1,4 +1,7 @@
 //! Backup export — collect, compress, encrypt, archive (Req 30 AC3).
+//!
+//! This is a platform-state archive for export/import flows. It is not the
+//! SQLite-consistent rollback artifact used for schema migrations.
 
 use std::collections::BTreeMap;
 use std::fs;

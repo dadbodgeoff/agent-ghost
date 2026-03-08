@@ -16,7 +16,9 @@ use secrecy::ExposeSecret;
 
 use crate::error::OAuthError;
 use crate::provider::OAuthProvider;
-use crate::storage::TokenStore;
+use crate::storage::{
+    StoredConnectionMeta, StoredDisconnectTombstone, StoredPendingFlow, TokenStore,
+};
 use crate::types::{
     ApiRequest, ApiResponse, ConnectionInfo, ConnectionStatus, OAuthRefId, PkceChallenge,
 };
@@ -76,12 +78,34 @@ impl OAuthBroker {
         scopes: &[String],
         redirect_uri: &str,
     ) -> Result<(String, OAuthRefId), OAuthError> {
+        let ref_id = OAuthRefId::new();
+        let state = format!("{}:{}", ref_id, uuid::Uuid::new_v4());
+        self.connect_with_state(provider_name, scopes, redirect_uri, ref_id, state)
+    }
+
+    pub fn connect_with_ref_id(
+        &self,
+        provider_name: &str,
+        scopes: &[String],
+        redirect_uri: &str,
+        ref_id: OAuthRefId,
+        state_nonce: &str,
+    ) -> Result<(String, OAuthRefId), OAuthError> {
+        let state = format!("{ref_id}:{state_nonce}");
+        self.connect_with_state(provider_name, scopes, redirect_uri, ref_id, state)
+    }
+
+    fn connect_with_state(
+        &self,
+        provider_name: &str,
+        scopes: &[String],
+        redirect_uri: &str,
+        ref_id: OAuthRefId,
+        state: String,
+    ) -> Result<(String, OAuthRefId), OAuthError> {
         let provider = self.providers.get(provider_name).ok_or_else(|| {
             OAuthError::ProviderError(format!("unknown provider: {provider_name}"))
         })?;
-
-        let ref_id = OAuthRefId::new();
-        let state = format!("{}:{}", ref_id, uuid::Uuid::new_v4()); // ref_id + CSRF token
 
         let (auth_url, pkce) = provider.authorization_url(scopes, &state, redirect_uri)?;
 
@@ -93,6 +117,19 @@ impl OAuthBroker {
             redirect_uri: redirect_uri.to_string(),
             created_at: Utc::now(),
         };
+
+        self.token_store.store_pending_flow(
+            &state,
+            &StoredPendingFlow {
+                state: state.clone(),
+                provider_name: flow.provider_name.clone(),
+                ref_id: flow.ref_id.clone(),
+                pkce_verifier: flow.pkce.code_verifier.expose_secret().to_string(),
+                scopes: flow.scopes.clone(),
+                redirect_uri: flow.redirect_uri.clone(),
+                created_at: flow.created_at,
+            },
+        )?;
 
         self.pending_flows
             .lock()
@@ -112,12 +149,7 @@ impl OAuthBroker {
     ///
     /// Exchanges the authorization code for tokens, encrypts and stores them.
     pub fn callback(&self, state: &str, code: &str) -> Result<OAuthRefId, OAuthError> {
-        let flow = self
-            .pending_flows
-            .lock()
-            .map_err(|_| OAuthError::FlowFailed("lock poisoned".into()))?
-            .remove(state)
-            .ok_or_else(|| OAuthError::InvalidState("unknown or expired state".into()))?;
+        let flow = self.take_pending_flow(state)?;
 
         // Reject stale flows (>10 minutes)
         let age = Utc::now() - flow.created_at;
@@ -134,6 +166,20 @@ impl OAuthBroker {
 
         self.token_store
             .store_token(&flow.ref_id, &flow.provider_name, &token_set)?;
+        let connected_at = Utc::now();
+        let stored_meta = StoredConnectionMeta {
+            ref_id: flow.ref_id.clone(),
+            provider_name: flow.provider_name.clone(),
+            scopes: flow.scopes.clone(),
+            connected_at,
+        };
+        if let Err(error) = self.token_store.store_connection_meta(&stored_meta) {
+            let _ = self
+                .token_store
+                .delete_token(&flow.ref_id, &flow.provider_name);
+            return Err(error);
+        }
+        self.token_store.delete_pending_flow(state)?;
 
         self.connections
             .lock()
@@ -143,7 +189,7 @@ impl OAuthBroker {
                 ConnectionMeta {
                     provider_name: flow.provider_name.clone(),
                     scopes: flow.scopes.clone(),
-                    connected_at: Utc::now(),
+                    connected_at,
                 },
             );
 
@@ -187,25 +233,50 @@ impl OAuthBroker {
 
     /// Disconnect: revoke at provider + delete local tokens.
     pub fn disconnect(&self, ref_id: &OAuthRefId) -> Result<(), OAuthError> {
-        let meta = self.get_connection_meta(ref_id)?;
-        let provider = self.providers.get(&meta.provider_name);
+        let had_tombstone = self
+            .token_store
+            .load_disconnect_tombstone(ref_id)?
+            .is_some();
+        let meta = match self.get_connection_meta(ref_id) {
+            Ok(meta) => meta,
+            Err(OAuthError::NotConnected(_)) => {
+                if had_tombstone {
+                    tracing::info!(ref_id = %ref_id, "OAuth connection already disconnected");
+                    return Ok(());
+                }
+                return Err(OAuthError::NotConnected(ref_id.to_string()));
+            }
+            Err(error) => return Err(error),
+        };
 
-        // Best-effort revocation at provider
-        if let Some(provider) = provider {
-            if let Ok(ts) = self.token_store.load_token(ref_id, &meta.provider_name) {
-                if let Err(e) = provider.revoke_token(ts.access_token.expose_secret()) {
-                    tracing::warn!(
-                        provider = %meta.provider_name,
-                        ref_id = %ref_id,
-                        error = %e,
-                        "provider-side token revocation failed (best-effort, continuing with local cleanup)"
-                    );
+        if !had_tombstone {
+            self.token_store
+                .store_disconnect_tombstone(&StoredDisconnectTombstone {
+                    ref_id: ref_id.clone(),
+                    provider_name: meta.provider_name.clone(),
+                    disconnected_at: Utc::now(),
+                })?;
+        }
+
+        if !had_tombstone {
+            let provider = self.providers.get(&meta.provider_name);
+            if let Some(provider) = provider {
+                if let Ok(ts) = self.token_store.load_token(ref_id, &meta.provider_name) {
+                    if let Err(e) = provider.revoke_token(ts.access_token.expose_secret()) {
+                        tracing::warn!(
+                            provider = %meta.provider_name,
+                            ref_id = %ref_id,
+                            error = %e,
+                            "provider-side token revocation failed (best-effort, continuing with local cleanup)"
+                        );
+                    }
                 }
             }
         }
 
         // Delete local encrypted tokens
         self.token_store.delete_token(ref_id, &meta.provider_name)?;
+        self.token_store.delete_connection_meta(ref_id)?;
 
         self.connections
             .lock()
@@ -243,6 +314,9 @@ impl OAuthBroker {
             if let Err(e) = self.token_store.delete_token(ref_id, provider_name) {
                 errors.push(format!("{ref_id}: {e}"));
             }
+            if let Err(e) = self.token_store.delete_connection_meta(ref_id) {
+                errors.push(format!("{ref_id}: {e}"));
+            }
         }
 
         self.connections
@@ -267,10 +341,28 @@ impl OAuthBroker {
 
     /// List all active connections (agent-visible, no tokens).
     pub fn list_connections(&self) -> Result<Vec<ConnectionInfo>, OAuthError> {
-        let conns = self
+        let mut conns = self
+            .token_store
+            .list_connection_metas()?
+            .into_iter()
+            .map(|meta| {
+                (
+                    meta.ref_id.to_string(),
+                    ConnectionMeta {
+                        provider_name: meta.provider_name,
+                        scopes: meta.scopes,
+                        connected_at: meta.connected_at,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let live_conns = self
             .connections
             .lock()
             .map_err(|_| OAuthError::FlowFailed("lock poisoned".into()))?;
+        for (ref_id, meta) in live_conns.iter() {
+            conns.insert(ref_id.clone(), meta.clone());
+        }
 
         let mut infos = Vec::new();
         for (ref_id_str, meta) in conns.iter() {
@@ -307,12 +399,29 @@ impl OAuthBroker {
     // -----------------------------------------------------------------------
 
     fn get_connection_meta(&self, ref_id: &OAuthRefId) -> Result<ConnectionMeta, OAuthError> {
+        {
+            let conns = self
+                .connections
+                .lock()
+                .map_err(|_| OAuthError::FlowFailed("lock poisoned".into()))?;
+            if let Some(meta) = conns.get(&ref_id.to_string()).cloned() {
+                return Ok(meta);
+            }
+        }
+
+        let Some(stored) = self.token_store.load_connection_meta(ref_id)? else {
+            return Err(OAuthError::NotConnected(ref_id.to_string()));
+        };
+        let meta = ConnectionMeta {
+            provider_name: stored.provider_name,
+            scopes: stored.scopes,
+            connected_at: stored.connected_at,
+        };
         self.connections
             .lock()
             .map_err(|_| OAuthError::FlowFailed("lock poisoned".into()))?
-            .get(&ref_id.to_string())
-            .cloned()
-            .ok_or_else(|| OAuthError::NotConnected(ref_id.to_string()))
+            .insert(ref_id.to_string(), meta.clone());
+        Ok(meta)
     }
 
     /// Refresh an expired token and store the new one.
@@ -341,5 +450,33 @@ impl OAuthBroker {
             "token refreshed transparently"
         );
         Ok(new_ts)
+    }
+
+    fn take_pending_flow(&self, state: &str) -> Result<PendingFlow, OAuthError> {
+        if let Some(flow) = self
+            .pending_flows
+            .lock()
+            .map_err(|_| OAuthError::FlowFailed("lock poisoned".into()))?
+            .remove(state)
+        {
+            return Ok(flow);
+        }
+
+        let stored = self
+            .token_store
+            .load_pending_flow(state)?
+            .ok_or_else(|| OAuthError::InvalidState("unknown or expired state".into()))?;
+        Ok(PendingFlow {
+            provider_name: stored.provider_name,
+            ref_id: stored.ref_id,
+            pkce: PkceChallenge {
+                code_verifier: secrecy::SecretString::from(stored.pkce_verifier),
+                code_challenge: String::new(),
+                method: "S256".into(),
+            },
+            scopes: stored.scopes,
+            redirect_uri: stored.redirect_uri,
+            created_at: stored.created_at,
+        })
     }
 }

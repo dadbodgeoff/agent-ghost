@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
 use axum::response::sse::{Event, Sse};
+use axum::response::Response;
 use axum::Extension;
 use axum::Json;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 use crate::api::auth::Claims;
@@ -28,6 +29,12 @@ use crate::api::websocket::{WsEnvelope, WsEvent};
 use crate::state::AppState;
 
 const SEND_TASK_ROUTE_TEMPLATE: &str = "/api/a2a/tasks";
+
+#[derive(Debug, Clone)]
+struct VerifiedDiscoveredAgent {
+    name: String,
+    endpoint_url: String,
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -73,7 +80,9 @@ pub struct DiscoverResponse {
 }
 
 fn a2a_actor(claims: Option<&Claims>) -> &str {
-    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
 }
 
 // ── Handlers ───────────────────────────────────────────────────────
@@ -85,14 +94,19 @@ pub async fn send_task(
     Extension(operation_context): Extension<OperationContext>,
     Json(req): Json<SendTaskRequest>,
 ) -> Response {
-    if req.target_url.trim().is_empty() {
+    let normalized_target_url = normalize_a2a_endpoint_url(&req.target_url);
+    if normalized_target_url.is_empty() {
         return error_response_with_idempotency(ApiError::bad_request("target_url is required"));
     }
-    if let Err(e) = crate::api::ssrf::validate_url(&req.target_url) {
+    if let Err(e) = crate::api::ssrf::validate_url(&normalized_target_url) {
         return error_response_with_idempotency(ApiError::bad_request(format!(
             "A2A target URL blocked: {e}"
         )));
     }
+    let verified_agent = match load_verified_discovered_agent(&state, &normalized_target_url) {
+        Ok(agent) => agent,
+        Err(error) => return error_response_with_idempotency(error),
+    };
 
     let actor = a2a_actor(claims.as_ref().map(|claims| &claims.0));
     let request_body = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
@@ -101,7 +115,11 @@ pub async fn send_task(
         .operation_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-    let agent_name = req.target_agent.clone().unwrap_or_else(|| "unknown".into());
+    let agent_name = req
+        .target_agent
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| verified_agent.name.clone());
     let created_at = chrono::Utc::now().to_rfc3339();
 
     let jsonrpc_req = serde_json::json!({
@@ -180,7 +198,7 @@ pub async fn send_task(
                     rusqlite::params![
                         task_id,
                         agent_name,
-                        req.target_url,
+                        verified_agent.endpoint_url,
                         method,
                         input_str,
                         created_at
@@ -193,10 +211,10 @@ pub async fn send_task(
                     ));
                 }
             }
-    
+
             let client = reqwest::Client::new();
             let resp = match client
-                .post(&req.target_url)
+                .post(&verified_agent.endpoint_url)
                 .header("Content-Type", "application/json")
                 .timeout(std::time::Duration::from_secs(30))
                 .json(&jsonrpc_req)
@@ -236,7 +254,7 @@ pub async fn send_task(
             let task = A2ATask {
                 task_id: task_id.clone(),
                 target_agent: agent_name.clone(),
-                target_url: req.target_url.clone(),
+                target_url: verified_agent.endpoint_url.clone(),
                 method: method.clone(),
                 status: task_status.into(),
                 created_at: created_at.clone(),
@@ -282,7 +300,7 @@ pub async fn send_task(
                         serde_json::json!({
                             "task_id": task_id,
                             "target_agent": agent_name,
-                            "target_url": req.target_url,
+                            "target_url": verified_agent.endpoint_url,
                         }),
                         &operation_context,
                         &outcome.idempotency_status,
@@ -465,7 +483,8 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
     let client = reqwest::Client::new();
 
     let probe_futures = peer_urls.into_iter().map(|peer_url| {
-        let url = format!("{}/.well-known/agent.json", peer_url.trim_end_matches('/'));
+        let normalized_peer_url = normalize_a2a_endpoint_url(&peer_url);
+        let url = format!("{normalized_peer_url}/.well-known/agent.json");
         let client = client.clone();
 
         async move {
@@ -479,7 +498,7 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
                 Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.ok(),
                 _ => None,
             };
-            (peer_url, card)
+            (peer_url, normalized_peer_url, card)
         }
     });
 
@@ -487,7 +506,7 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
     let mut probed_agents: Vec<DiscoveredAgent> = Vec::new();
     let mut buffered = futures::stream::iter(probe_futures).buffer_unordered(16);
 
-    while let Some((peer_url, card)) = buffered.next().await {
+    while let Some((peer_url, normalized_peer_url, card)) = buffered.next().await {
         let card = match card {
             Some(card) => card,
             None => {
@@ -495,7 +514,7 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
                 probed_agents.push(DiscoveredAgent {
                     name: "unknown".into(),
                     description: String::new(),
-                    endpoint_url: peer_url,
+                    endpoint_url: normalized_peer_url,
                     capabilities: vec![],
                     trust_score: 0.0,
                     version: String::new(),
@@ -540,7 +559,7 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
         probed_agents.push(DiscoveredAgent {
             name,
             description,
-            endpoint_url: peer_url,
+            endpoint_url: normalized_peer_url,
             capabilities,
             trust_score,
             version,
@@ -668,4 +687,65 @@ fn verify_agent_card_signature(card: &serde_json::Value) -> bool {
     let canonical = serde_json::to_string(&card_for_signing).unwrap_or_default();
 
     ghost_signing::verify(canonical.as_bytes(), &signature, &verifying_key)
+}
+
+fn normalize_a2a_endpoint_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
+fn load_verified_discovered_agent(
+    state: &AppState,
+    target_url: &str,
+) -> Result<VerifiedDiscoveredAgent, ApiError> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("load_verified_discovered_agent", e))?;
+    let normalized = normalize_a2a_endpoint_url(target_url);
+    let candidate = db
+        .query_row(
+            "SELECT name, endpoint_url, trust_score
+             FROM discovered_agents
+             WHERE rtrim(endpoint_url, '/') = ?1
+             ORDER BY trust_score DESC
+             LIMIT 1",
+            rusqlite::params![normalized],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| ApiError::db_error("load_verified_discovered_agent", e))?;
+
+    match candidate {
+        Some((name, endpoint_url, trust_score)) if trust_score > 0.0 => {
+            Ok(VerifiedDiscoveredAgent {
+                name,
+                endpoint_url: normalize_a2a_endpoint_url(&endpoint_url),
+            })
+        }
+        Some((_name, endpoint_url, _trust_score)) => Err(ApiError::with_details(
+            StatusCode::PRECONDITION_FAILED,
+            "A2A_TARGET_UNVERIFIED",
+            "A2A target must be rediscovered with a verified Ed25519 agent card before dispatch",
+            serde_json::json!({
+                "target_url": endpoint_url,
+                "required_trust_score": 1.0,
+                "next_step": "Run A2A discovery and choose a reachable verified agent.",
+            }),
+        )),
+        None => Err(ApiError::with_details(
+            StatusCode::PRECONDITION_FAILED,
+            "A2A_TARGET_UNDISCOVERED",
+            "A2A target must be discovered before dispatch",
+            serde_json::json!({
+                "target_url": normalized,
+                "next_step": "Run A2A discovery and choose a reachable verified agent.",
+            }),
+        )),
+    }
 }

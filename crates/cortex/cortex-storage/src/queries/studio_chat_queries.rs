@@ -284,6 +284,26 @@ pub fn list_messages(conn: &Connection, session_id: &str) -> CortexResult<Vec<St
     Ok(rows)
 }
 
+pub fn get_message(conn: &Connection, id: &str) -> CortexResult<Option<StudioMessageRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_id, role, content, token_count, safety_status, created_at
+             FROM studio_chat_messages
+             WHERE id = ?1",
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let mut rows = stmt
+        .query_map(params![id], map_message_row)
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    match rows.next() {
+        Some(Ok(row)) => Ok(Some(row)),
+        Some(Err(e)) => Err(to_storage_err(e.to_string())),
+        None => Ok(None),
+    }
+}
+
 // ── Safety audit ───────────────────────────────────────────────────
 
 pub fn insert_safety_audit(

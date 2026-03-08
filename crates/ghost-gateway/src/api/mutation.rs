@@ -7,18 +7,24 @@ use crate::api::operation_context::{
     IdempotencyStatus, OperationContext, IDEMPOTENCY_STATUS_HEADER,
 };
 
-pub fn json_response_with_idempotency(
-    status: StatusCode,
-    body: serde_json::Value,
+pub fn response_with_idempotency(
+    mut response: Response,
     idempotency_status: IdempotencyStatus,
 ) -> Response {
-    let mut response = (status, Json(body)).into_response();
     if let Ok(value) = HeaderValue::from_str(idempotency_status.as_header_value()) {
         response
             .headers_mut()
             .insert(IDEMPOTENCY_STATUS_HEADER, value);
     }
     response
+}
+
+pub fn json_response_with_idempotency(
+    status: StatusCode,
+    body: serde_json::Value,
+    idempotency_status: IdempotencyStatus,
+) -> Response {
+    response_with_idempotency((status, Json(body)).into_response(), idempotency_status)
 }
 
 pub fn error_response_with_idempotency(error: ApiError) -> Response {
@@ -69,6 +75,7 @@ pub fn write_mutation_audit_entry(
         })
         .to_string(),
         session_id: None,
+        actor_id: Some(actor.to_string()),
         operation_id: operation_context.operation_id.clone(),
         request_id: Some(operation_context.request_id.clone()),
         idempotency_key: operation_context.idempotency_key.clone(),
@@ -82,5 +89,43 @@ pub fn write_mutation_audit_entry(
             error = %error,
             "failed to write mutation audit entry"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutation_audit_entries_populate_actor_id_column() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+
+        let operation_context = OperationContext {
+            request_id: "req-1".to_string(),
+            operation_id: Some("op-1".to_string()),
+            idempotency_key: Some("idem-1".to_string()),
+            idempotency_status: None,
+            is_mutating: true,
+        };
+
+        write_mutation_audit_entry(
+            &conn,
+            "agent-1",
+            "assign_profile",
+            "info",
+            "operator-1",
+            "assigned",
+            serde_json::json!({ "profile_name": "research" }),
+            &operation_context,
+            &IdempotencyStatus::Executed,
+        );
+
+        let actor_id: Option<String> = conn
+            .query_row("SELECT actor_id FROM audit_log LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(actor_id.as_deref(), Some("operator-1"));
     }
 }

@@ -55,8 +55,6 @@ impl TestGateway {
         {
             let writer = db.writer_for_migrations().await;
             cortex_storage::migrations::run_migrations(&writer).expect("failed to run migrations");
-            let engine = ghost_audit::AuditQueryEngine::new(&writer);
-            engine.ensure_table().expect("failed to ensure audit table");
         }
 
         // Build application state (minimal -- no skills, no mesh, no kill gates).

@@ -29,6 +29,7 @@ pub struct AuditEntry {
     pub tool_name: Option<String>,
     pub details: String,
     pub session_id: Option<String>,
+    pub actor_id: Option<String>,
     pub operation_id: Option<String>,
     pub request_id: Option<String>,
     pub idempotency_key: Option<String>,
@@ -79,44 +80,15 @@ impl<'a> AuditQueryEngine<'a> {
         Self { conn }
     }
 
-    /// Ensure the audit_log table exists.
-    pub fn ensure_table(&self) -> AuditResult<()> {
-        self.conn
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS audit_log (
-                    id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    agent_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    severity TEXT NOT NULL DEFAULT 'info',
-                    tool_name TEXT,
-                    details TEXT NOT NULL DEFAULT '',
-                    session_id TEXT,
-                    operation_id TEXT,
-                    request_id TEXT,
-                    idempotency_key TEXT,
-                    idempotency_status TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
-                CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id);
-                CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
-                CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log(severity);
-                CREATE INDEX IF NOT EXISTS idx_audit_operation_id ON audit_log(operation_id);
-                CREATE INDEX IF NOT EXISTS idx_audit_idempotency_key ON audit_log(idempotency_key);",
-            )
-            .map_err(|e| to_audit_err(e.to_string()))?;
-        Ok(())
-    }
-
     /// Insert an audit entry.
     pub fn insert(&self, entry: &AuditEntry) -> AuditResult<()> {
         self.conn
             .execute(
                 "INSERT INTO audit_log (
                     id, timestamp, agent_id, event_type, severity, tool_name,
-                    details, session_id, operation_id, request_id, idempotency_key,
-                    idempotency_status
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    details, session_id, actor_id, operation_id, request_id,
+                    idempotency_key, idempotency_status
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     entry.id,
                     entry.timestamp,
@@ -126,6 +98,7 @@ impl<'a> AuditQueryEngine<'a> {
                     entry.tool_name,
                     entry.details,
                     entry.session_id,
+                    entry.actor_id,
                     entry.operation_id,
                     entry.request_id,
                     entry.idempotency_key,
@@ -205,7 +178,7 @@ impl<'a> AuditQueryEngine<'a> {
 
         let select_sql = format!(
             "SELECT id, timestamp, agent_id, event_type, severity, tool_name, details, session_id,
-                    operation_id, request_id, idempotency_key, idempotency_status
+                    actor_id, operation_id, request_id, idempotency_key, idempotency_status
              FROM audit_log {} ORDER BY timestamp DESC LIMIT ?{} OFFSET ?{}",
             where_clause,
             param_values.len() + 1,
@@ -235,10 +208,11 @@ impl<'a> AuditQueryEngine<'a> {
                     tool_name: row.get(5)?,
                     details: row.get(6)?,
                     session_id: row.get(7)?,
-                    operation_id: row.get(8)?,
-                    request_id: row.get(9)?,
-                    idempotency_key: row.get(10)?,
-                    idempotency_status: row.get(11)?,
+                    actor_id: row.get(8)?,
+                    operation_id: row.get(9)?,
+                    request_id: row.get(10)?,
+                    idempotency_key: row.get(11)?,
+                    idempotency_status: row.get(12)?,
                 })
             })
             .map_err(|e| to_audit_err(e.to_string()))?

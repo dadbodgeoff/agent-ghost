@@ -961,6 +961,26 @@ mod broker_tests {
     use ghost_oauth::storage::TokenStore;
     use std::sync::Arc;
 
+    struct SharedMockSecretProvider(Arc<MockSecretProvider>);
+
+    impl SecretProvider for SharedMockSecretProvider {
+        fn get_secret(&self, key: &str) -> Result<SecretString, SecretsError> {
+            self.0.get_secret(key)
+        }
+
+        fn set_secret(&self, key: &str, value: &str) -> Result<(), SecretsError> {
+            self.0.set_secret(key, value)
+        }
+
+        fn delete_secret(&self, key: &str) -> Result<(), SecretsError> {
+            self.0.delete_secret(key)
+        }
+
+        fn has_secret(&self, key: &str) -> bool {
+            self.0.has_secret(key)
+        }
+    }
+
     /// A mock OAuthProvider for testing the broker without real HTTP calls.
     struct MockOAuthProvider {
         name: String,
@@ -1096,17 +1116,29 @@ mod broker_tests {
 
     fn test_broker_with_provider(provider: MockOAuthProvider) -> (OAuthBroker, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
+        let broker = broker_in_dir(dir.path(), provider);
+        (broker, dir)
+    }
+
+    fn broker_in_dir(base_dir: &std::path::Path, provider: MockOAuthProvider) -> OAuthBroker {
+        broker_in_dir_with_secrets(base_dir, provider, Arc::new(MockSecretProvider::new()))
+    }
+
+    fn broker_in_dir_with_secrets(
+        base_dir: &std::path::Path,
+        provider: MockOAuthProvider,
+        secrets: Arc<MockSecretProvider>,
+    ) -> OAuthBroker {
         let store = TokenStore::new(
-            dir.path().to_path_buf(),
-            Box::new(MockSecretProvider::new()),
+            base_dir.to_path_buf(),
+            Box::new(SharedMockSecretProvider(secrets)),
         );
 
         let name = provider.name().to_string();
         let mut providers: BTreeMap<String, Box<dyn OAuthProvider>> = BTreeMap::new();
         providers.insert(name, Box::new(provider));
 
-        let broker = OAuthBroker::new(providers, store);
-        (broker, dir)
+        OAuthBroker::new(providers, store)
     }
 
     /// Helper: run the full connect→callback flow and return the ref_id.
@@ -1147,6 +1179,34 @@ mod broker_tests {
         let (broker, _dir) = test_broker();
         let result = broker.connect("nonexistent", &[], "http://localhost/cb");
         assert!(matches!(result, Err(OAuthError::ProviderError(_))));
+    }
+
+    #[test]
+    fn callback_survives_restart_via_persisted_pending_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(MockSecretProvider::new());
+        let broker = broker_in_dir_with_secrets(
+            dir.path(),
+            MockOAuthProvider::new("mock"),
+            Arc::clone(&secrets),
+        );
+        let (auth_url, ref_id) = broker
+            .connect("mock", &["read".into()], "http://localhost/cb")
+            .unwrap();
+        drop(broker);
+
+        let state = auth_url
+            .split("state=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+        let restarted =
+            broker_in_dir_with_secrets(dir.path(), MockOAuthProvider::new("mock"), secrets);
+        let callback_ref_id = restarted.callback(&state, "auth-code-123").unwrap();
+        assert_eq!(callback_ref_id, ref_id);
     }
 
     // ─── Spec: "Integration: Full connect → callback → execute → disconnect flow (mock provider)" ──
@@ -1199,6 +1259,35 @@ mod broker_tests {
         // 7. Execute after disconnect → NotConnected
         let result = broker.execute(&callback_ref_id, &request);
         assert!(matches!(result, Err(OAuthError::NotConnected(_))));
+    }
+
+    #[test]
+    fn list_connections_and_execute_survive_restart_via_persisted_connection_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(MockSecretProvider::new());
+        let broker = broker_in_dir_with_secrets(
+            dir.path(),
+            MockOAuthProvider::new("mock"),
+            Arc::clone(&secrets),
+        );
+        let ref_id = do_connect_callback(&broker);
+        drop(broker);
+
+        let restarted =
+            broker_in_dir_with_secrets(dir.path(), MockOAuthProvider::new("mock"), secrets);
+        let conns = restarted.list_connections().unwrap();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].ref_id, ref_id);
+        assert_eq!(conns[0].provider, "mock");
+
+        let request = ApiRequest {
+            method: "GET".into(),
+            url: "https://api.example.com/data".into(),
+            headers: BTreeMap::new(),
+            body: None,
+        };
+        let response = restarted.execute(&ref_id, &request).unwrap();
+        assert_eq!(response.status, 200);
     }
 
     // ─── Spec: "Unit: execute with valid ref_id → API call made with Bearer token" ──
@@ -1446,6 +1535,24 @@ mod broker_tests {
         let ref_id = OAuthRefId::new();
         let result = broker.disconnect(&ref_id);
         assert!(matches!(result, Err(OAuthError::NotConnected(_))));
+    }
+
+    #[test]
+    fn repeated_disconnect_after_restart_uses_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(MockSecretProvider::new());
+        let broker = broker_in_dir_with_secrets(
+            dir.path(),
+            MockOAuthProvider::new("mock"),
+            Arc::clone(&secrets),
+        );
+        let ref_id = do_connect_callback(&broker);
+        broker.disconnect(&ref_id).unwrap();
+        drop(broker);
+
+        let restarted =
+            broker_in_dir_with_secrets(dir.path(), MockOAuthProvider::new("mock"), secrets);
+        restarted.disconnect(&ref_id).unwrap();
     }
 
     // ─── revoke_all on empty broker ──────────────────────────────────

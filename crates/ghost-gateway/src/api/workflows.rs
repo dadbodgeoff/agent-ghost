@@ -77,7 +77,9 @@ pub struct WorkflowResponse {
 }
 
 fn workflow_actor(claims: Option<&Claims>) -> &str {
-    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
 }
 
 /// GET /api/workflows — list saved workflows.
@@ -144,9 +146,7 @@ pub async fn create_workflow(
     Json(body): Json<CreateWorkflowRequest>,
 ) -> Response {
     if body.name.trim().is_empty() {
-        return error_response_with_idempotency(ApiError::bad_request(
-            "Workflow name is required",
-        ));
+        return error_response_with_idempotency(ApiError::bad_request("Workflow name is required"));
     }
 
     let actor = workflow_actor(claims.as_ref().map(|claims| &claims.0));
@@ -166,12 +166,20 @@ pub async fn create_workflow(
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
             let description = body.description.clone().unwrap_or_default();
-            let nodes =
-                serde_json::to_string(&body.nodes.clone().unwrap_or(serde_json::Value::Array(vec![])))
-                    .unwrap_or_else(|_| "[]".to_string());
-            let edges =
-                serde_json::to_string(&body.edges.clone().unwrap_or(serde_json::Value::Array(vec![])))
-                    .unwrap_or_else(|_| "[]".to_string());
+            let nodes = serde_json::to_string(
+                &body
+                    .nodes
+                    .clone()
+                    .unwrap_or(serde_json::Value::Array(vec![])),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
+            let edges = serde_json::to_string(
+                &body
+                    .edges
+                    .clone()
+                    .unwrap_or(serde_json::Value::Array(vec![])),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
 
             conn.execute(
                 "INSERT INTO workflows (id, name, description, nodes, edges, created_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -812,11 +820,7 @@ pub async fn execute_workflow(
                 &operation_context,
                 &IdempotencyStatus::Replayed,
             );
-            json_response_with_idempotency(
-                stored.status,
-                stored.body,
-                IdempotencyStatus::Replayed,
-            )
+            json_response_with_idempotency(stored.status, stored.body, IdempotencyStatus::Replayed)
         }
         Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
             StatusCode::CONFLICT,
@@ -963,11 +967,7 @@ pub async fn resume_execution(
                 &operation_context,
                 &IdempotencyStatus::Replayed,
             );
-            json_response_with_idempotency(
-                stored.status,
-                stored.body,
-                IdempotencyStatus::Replayed,
-            )
+            json_response_with_idempotency(stored.status, stored.body, IdempotencyStatus::Replayed)
         }
         Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
             StatusCode::CONFLICT,

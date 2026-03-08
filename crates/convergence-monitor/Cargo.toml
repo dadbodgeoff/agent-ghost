@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 cortex-core = { workspace = true }
+cortex-storage = { workspace = true }
+ghost-gateway = { workspace = true }
 anyhow = { workspace = true }
 blake3 = { workspace = true }
 serde = { workspace = true }

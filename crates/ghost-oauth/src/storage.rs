@@ -8,8 +8,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use ghost_secrets::{ExposeSecret, SecretProvider, SecretString};
 use rand::Rng;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::OAuthError;
@@ -24,6 +26,32 @@ pub struct TokenStore {
     base_dir: PathBuf,
     /// Secret provider for encryption key retrieval.
     secret_provider: Box<dyn SecretProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StoredPendingFlow {
+    pub state: String,
+    pub provider_name: String,
+    pub ref_id: OAuthRefId,
+    pub pkce_verifier: String,
+    pub scopes: Vec<String>,
+    pub redirect_uri: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StoredConnectionMeta {
+    pub ref_id: OAuthRefId,
+    pub provider_name: String,
+    pub scopes: Vec<String>,
+    pub connected_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StoredDisconnectTombstone {
+    pub ref_id: OAuthRefId,
+    pub provider_name: String,
+    pub disconnected_at: DateTime<Utc>,
 }
 
 impl TokenStore {
@@ -55,23 +83,10 @@ impl TokenStore {
         provider: &str,
         token_set: &TokenSet,
     ) -> Result<(), OAuthError> {
-        let dir = self.provider_dir(provider);
-        fs::create_dir_all(&dir)
-            .map_err(|e| OAuthError::StorageError(format!("create dir: {e}")))?;
-
-        let serde_form: TokenSetSerde = token_set.into();
-        let json = serde_json::to_vec(&serde_form)
-            .map_err(|e| OAuthError::StorageError(format!("serialize: {e}")))?;
-
-        let key = self.get_or_create_vault_key()?;
-        let encrypted = Self::encrypt(&json, key.expose_secret());
-
-        // Atomic write: temp file + rename
-        let target = self.token_path(provider, ref_id);
-        let tmp = target.with_extension("tmp");
-        fs::write(&tmp, &encrypted)
-            .map_err(|e| OAuthError::StorageError(format!("write tmp: {e}")))?;
-        fs::rename(&tmp, &target).map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
+        self.write_encrypted_json(
+            self.token_path(provider, ref_id),
+            &TokenSetSerde::from(token_set),
+        )?;
 
         tracing::debug!(
             provider = %provider,
@@ -98,32 +113,82 @@ impl TokenStore {
         ref_id: &OAuthRefId,
         provider: &str,
     ) -> Result<TokenSet, OAuthError> {
-        let path = self.token_path(provider, ref_id);
-        if !path.exists() {
-            return Err(OAuthError::NotConnected(ref_id.to_string()));
+        match self.read_encrypted_json::<TokenSetSerde>(&self.token_path(provider, ref_id))? {
+            Some(serde_form) => Ok(serde_form.into()),
+            None => Err(OAuthError::NotConnected(ref_id.to_string())),
         }
-
-        let encrypted =
-            fs::read(&path).map_err(|e| OAuthError::StorageError(format!("read: {e}")))?;
-
-        let key = self.get_or_create_vault_key()?;
-        let decrypted = Self::decrypt(&encrypted, key.expose_secret())
-            .map_err(|e| OAuthError::EncryptionError(format!("decrypt: {e}")))?;
-
-        let serde_form: TokenSetSerde = serde_json::from_slice(&decrypted)
-            .map_err(|e| OAuthError::StorageError(format!("deserialize: {e}")))?;
-
-        Ok(serde_form.into())
     }
 
     /// Delete an encrypted token file.
     pub fn delete_token(&self, ref_id: &OAuthRefId, provider: &str) -> Result<(), OAuthError> {
-        let path = self.token_path(provider, ref_id);
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| OAuthError::StorageError(format!("delete: {e}")))?;
-        }
+        self.delete_if_exists(&self.token_path(provider, ref_id))?;
         tracing::debug!(provider = %provider, ref_id = %ref_id, "token deleted");
         Ok(())
+    }
+
+    pub(crate) fn store_pending_flow(
+        &self,
+        state: &str,
+        flow: &StoredPendingFlow,
+    ) -> Result<(), OAuthError> {
+        self.write_encrypted_json(self.pending_flow_path(state), flow)
+    }
+
+    pub(crate) fn load_pending_flow(
+        &self,
+        state: &str,
+    ) -> Result<Option<StoredPendingFlow>, OAuthError> {
+        let Some(flow) =
+            self.read_encrypted_json::<StoredPendingFlow>(&self.pending_flow_path(state))?
+        else {
+            return Ok(None);
+        };
+        if flow.state != state {
+            return Err(OAuthError::StorageError(
+                "pending OAuth flow state mismatch".into(),
+            ));
+        }
+        Ok(Some(flow))
+    }
+
+    pub(crate) fn delete_pending_flow(&self, state: &str) -> Result<(), OAuthError> {
+        self.delete_if_exists(&self.pending_flow_path(state))
+    }
+
+    pub(crate) fn store_connection_meta(
+        &self,
+        meta: &StoredConnectionMeta,
+    ) -> Result<(), OAuthError> {
+        self.write_encrypted_json(self.connection_meta_path(&meta.ref_id), meta)
+    }
+
+    pub(crate) fn load_connection_meta(
+        &self,
+        ref_id: &OAuthRefId,
+    ) -> Result<Option<StoredConnectionMeta>, OAuthError> {
+        self.read_encrypted_json(&self.connection_meta_path(ref_id))
+    }
+
+    pub(crate) fn list_connection_metas(&self) -> Result<Vec<StoredConnectionMeta>, OAuthError> {
+        self.list_encrypted_entries(&self.connections_dir())
+    }
+
+    pub(crate) fn delete_connection_meta(&self, ref_id: &OAuthRefId) -> Result<(), OAuthError> {
+        self.delete_if_exists(&self.connection_meta_path(ref_id))
+    }
+
+    pub(crate) fn store_disconnect_tombstone(
+        &self,
+        tombstone: &StoredDisconnectTombstone,
+    ) -> Result<(), OAuthError> {
+        self.write_encrypted_json(self.disconnect_tombstone_path(&tombstone.ref_id), tombstone)
+    }
+
+    pub(crate) fn load_disconnect_tombstone(
+        &self,
+        ref_id: &OAuthRefId,
+    ) -> Result<Option<StoredDisconnectTombstone>, OAuthError> {
+        self.read_encrypted_json(&self.disconnect_tombstone_path(ref_id))
     }
 
     /// List all connection ref_ids for a provider.
@@ -163,6 +228,9 @@ impl TokenStore {
             let entry = entry.map_err(|e| OAuthError::StorageError(format!("dir entry: {e}")))?;
             if entry.path().is_dir() {
                 let provider = entry.file_name().to_string_lossy().to_string();
+                if provider == "_broker" {
+                    continue;
+                }
                 for ref_id in self.list_connections(&provider)? {
                     all.push((provider.clone(), ref_id));
                 }
@@ -182,6 +250,111 @@ impl TokenStore {
     fn token_path(&self, provider: &str, ref_id: &OAuthRefId) -> PathBuf {
         self.provider_dir(provider)
             .join(format!("{}.age", ref_id.as_uuid()))
+    }
+
+    fn broker_dir(&self) -> PathBuf {
+        self.base_dir.join("_broker")
+    }
+
+    fn pending_dir(&self) -> PathBuf {
+        self.broker_dir().join("pending")
+    }
+
+    fn connections_dir(&self) -> PathBuf {
+        self.broker_dir().join("connections")
+    }
+
+    fn disconnects_dir(&self) -> PathBuf {
+        self.broker_dir().join("disconnects")
+    }
+
+    fn pending_flow_path(&self, state: &str) -> PathBuf {
+        self.pending_dir()
+            .join(format!("{}.age", Self::state_file_key(state)))
+    }
+
+    fn connection_meta_path(&self, ref_id: &OAuthRefId) -> PathBuf {
+        self.connections_dir()
+            .join(format!("{}.age", ref_id.as_uuid()))
+    }
+
+    fn disconnect_tombstone_path(&self, ref_id: &OAuthRefId) -> PathBuf {
+        self.disconnects_dir()
+            .join(format!("{}.age", ref_id.as_uuid()))
+    }
+
+    fn write_encrypted_json<T>(&self, target: PathBuf, value: &T) -> Result<(), OAuthError>
+    where
+        T: Serialize,
+    {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| OAuthError::StorageError(format!("create dir: {e}")))?;
+        }
+
+        let json = serde_json::to_vec(value)
+            .map_err(|e| OAuthError::StorageError(format!("serialize: {e}")))?;
+        let key = self.get_or_create_vault_key()?;
+        let encrypted = Self::encrypt(&json, key.expose_secret());
+
+        let tmp = target.with_extension("tmp");
+        fs::write(&tmp, &encrypted)
+            .map_err(|e| OAuthError::StorageError(format!("write tmp: {e}")))?;
+        fs::rename(&tmp, &target).map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
+        Ok(())
+    }
+
+    fn read_encrypted_json<T>(&self, path: &PathBuf) -> Result<Option<T>, OAuthError>
+    where
+        T: DeserializeOwned,
+    {
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let encrypted =
+            fs::read(path).map_err(|e| OAuthError::StorageError(format!("read: {e}")))?;
+        let key = self.get_or_create_vault_key()?;
+        let decrypted = Self::decrypt(&encrypted, key.expose_secret())
+            .map_err(|e| OAuthError::EncryptionError(format!("decrypt: {e}")))?;
+        let value = serde_json::from_slice(&decrypted)
+            .map_err(|e| OAuthError::StorageError(format!("deserialize: {e}")))?;
+        Ok(Some(value))
+    }
+
+    fn list_encrypted_entries<T>(&self, dir: &PathBuf) -> Result<Vec<T>, OAuthError>
+    where
+        T: DeserializeOwned,
+    {
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = Vec::new();
+        let dir_entries =
+            fs::read_dir(dir).map_err(|e| OAuthError::StorageError(format!("read dir: {e}")))?;
+        for entry in dir_entries {
+            let entry = entry.map_err(|e| OAuthError::StorageError(format!("dir entry: {e}")))?;
+            if entry.path().is_file() {
+                if let Some(value) = self.read_encrypted_json::<T>(&entry.path())? {
+                    entries.push(value);
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    fn delete_if_exists(&self, path: &PathBuf) -> Result<(), OAuthError> {
+        if path.exists() {
+            fs::remove_file(path).map_err(|e| OAuthError::StorageError(format!("delete: {e}")))?;
+        }
+        Ok(())
+    }
+
+    fn state_file_key(state: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(state.as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 
     /// Retrieve the vault key from SecretProvider, or auto-generate one.

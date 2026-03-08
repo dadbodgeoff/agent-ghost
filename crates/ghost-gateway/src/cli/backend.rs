@@ -65,7 +65,7 @@ impl CliBackend {
             return Err(CliError::NoBackend);
         }
 
-        let pool = crate::db_pool::create_pool(std::path::PathBuf::from(&db_path))
+        let pool = crate::db_pool::create_existing_pool(std::path::PathBuf::from(&db_path))
             .map_err(|e| CliError::Database(format!("open db pool: {e}")))?;
 
         Ok(Self::Direct {

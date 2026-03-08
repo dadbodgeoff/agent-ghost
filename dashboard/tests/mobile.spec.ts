@@ -1,34 +1,51 @@
-import { test, expect, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 // ---------------------------------------------------------------------------
-// GHOST ADE Dashboard — Mobile & Responsive Tests (T-4.10.3)
+// GHOST ADE Dashboard — Responsive shell and PWA tests.
 //
-// These tests exercise the three responsive breakpoints defined in
-// +layout.svelte, verify touch-interaction readiness on SVG canvases,
-// validate mobile navigation, and check PWA install prerequisites.
-//
-// No live backend is required — all API calls are intercepted via
-// page.route() and return deterministic mock payloads.
+// These tests track the current dashboard contract:
+// - the shell is a split-pane layout rendered by PanelLayout
+// - primary navigation lives in the sidebar at every viewport
+// - page content remains accessible across viewport sizes
+// - touch-capable canvases expose observable accessibility/gesture affordances
 // ---------------------------------------------------------------------------
 
-// ── Mock API helpers ─────────────────────────────────────────────────────────
-
-// Match the dashboard web runtime default so mocked routes intercept the actual client.
 const GATEWAY = 'http://127.0.0.1:39780';
+const SIDEBAR_SELECTOR = '[role="complementary"][aria-label="Sidebar"]';
+const PRIMARY_NAV_SELECTOR = 'nav[aria-label="Primary navigation"]';
+const MAIN_CONTENT_SELECTOR = '.main-content[role="main"][aria-label="Main content"]';
 
-/** Seed sessionStorage with a fake auth token so the layout renders
- *  instead of redirecting to /login. */
 async function authenticate(page: Page) {
-  await page.addInitScript(() => {
+  await page.addInitScript((gateway) => {
+    localStorage.setItem('ghost-gateway-url', gateway);
     sessionStorage.setItem('ghost-token', 'test-token-playwright');
-  });
+  }, GATEWAY);
 }
 
-/** Register route handlers that satisfy every API call the dashboard pages
- *  make on mount, returning lightweight but structurally correct JSON. */
 async function mockAllApis(page: Page) {
-  // Convergence scores (overview page)
-  await page.route(`${GATEWAY}/api/convergence/scores`, (route) =>
+  // Register the generic fallback first so the more specific mocks below win.
+  await page.route('**/api/**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: '{}',
+    }),
+  );
+
+  await page.route('**/api/auth/session', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        authenticated: true,
+        subject: 'tester',
+        role: 'admin',
+        mode: 'legacy',
+      }),
+    }),
+  );
+
+  await page.route('**/api/convergence/scores', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -38,8 +55,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // Agents list
-  await page.route(`${GATEWAY}/api/agents`, (route) =>
+  await page.route('**/api/agents', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -50,8 +66,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // Goals / proposals
-  await page.route(`${GATEWAY}/api/goals*`, (route) =>
+  await page.route('**/api/goals*', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -71,12 +86,14 @@ async function mockAllApis(page: Page) {
             resolved_at: null,
           },
         ],
+        page: 1,
+        page_size: 50,
+        total: 1,
       }),
     }),
   );
 
-  // Workflows list
-  await page.route(`${GATEWAY}/api/workflows*`, (route) => {
+  await page.route('**/api/workflows*', (route) => {
     if (route.request().method() === 'GET') {
       return route.fulfill({
         status: 200,
@@ -99,8 +116,7 @@ async function mockAllApis(page: Page) {
     return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
   });
 
-  // Orchestration: trust-graph, consensus, delegations
-  await page.route(`${GATEWAY}/api/mesh/trust-graph`, (route) =>
+  await page.route('**/api/mesh/trust-graph', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -114,7 +130,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  await page.route(`${GATEWAY}/api/mesh/consensus`, (route) =>
+  await page.route('**/api/mesh/consensus', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -122,7 +138,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  await page.route(`${GATEWAY}/api/mesh/delegations`, (route) =>
+  await page.route('**/api/mesh/delegations', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -133,8 +149,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // A2A discovery
-  await page.route(`${GATEWAY}/api/a2a/discover`, (route) =>
+  await page.route('**/api/a2a/discover', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -142,7 +157,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  await page.route(`${GATEWAY}/api/a2a/tasks`, (route) =>
+  await page.route('**/api/a2a/tasks', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -150,8 +165,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // Sessions list
-  await page.route(`${GATEWAY}/api/sessions*`, (route) =>
+  await page.route('**/api/sessions*', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -159,8 +173,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // Memory
-  await page.route(`${GATEWAY}/api/memory*`, (route) =>
+  await page.route('**/api/memory*', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -168,8 +181,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // Push VAPID key (non-fatal, but called on mount)
-  await page.route(`${GATEWAY}/api/push/vapid-key`, (route) =>
+  await page.route('**/api/push/vapid-key', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -177,8 +189,7 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // Auth login (used by login page)
-  await page.route(`${GATEWAY}/api/auth/login`, (route) =>
+  await page.route('**/api/auth/login', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -186,307 +197,136 @@ async function mockAllApis(page: Page) {
     }),
   );
 
-  // Catch-all: any unmatched gateway API returns 200 with empty object
-  await page.route(`${GATEWAY}/api/**`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: '{}',
-    }),
-  );
-
-  // Prevent service worker registration from failing on file not found
   await page.route('**/service-worker.js', (route) =>
     route.fulfill({ status: 200, contentType: 'application/javascript', body: '' }),
   );
 }
 
-/** Navigate to a page with full API mocking and auth pre-seeded. */
 async function navigateTo(page: Page, path: string) {
   await mockAllApis(page);
   await authenticate(page);
   await page.goto(path, { waitUntil: 'networkidle' });
 }
 
+function sidebar(page: Page) {
+  return page.locator(SIDEBAR_SELECTOR);
+}
+
+function primaryNav(page: Page) {
+  return page.locator(PRIMARY_NAV_SELECTOR);
+}
+
+function mainContent(page: Page) {
+  return page.locator(MAIN_CONTENT_SELECTOR);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
-// 1. RESPONSIVE LAYOUT — THREE BREAKPOINTS
+// 1. RESPONSIVE SHELL
 // ═══════════════════════════════════════════════════════════════════════════
 
-test.describe('Responsive layout', () => {
-  // ── sm (<640px) — iPhone 14 ──────────────────────────────────────────
-
+test.describe('Responsive shell', () => {
   test.describe('sm breakpoint (<640px / iPhone 14)', () => {
-    test.use({ ...({ viewport: { width: 390, height: 844 } }) });
+    test.use({ viewport: { width: 390, height: 844 } });
 
-    test('sidebar is hidden', async ({ page }) => {
+    test('split-pane shell still renders the sidebar and main content', async ({ page }) => {
       await navigateTo(page, '/');
-      const sidebar = page.locator('nav.sidebar');
-      await expect(sidebar).toBeHidden();
+      await expect(sidebar(page)).toBeVisible();
+      await expect(primaryNav(page)).toBeVisible();
+      await expect(mainContent(page)).toBeVisible();
+      await expect(page.locator('nav.bottom-nav')).toHaveCount(0);
     });
 
-    test('bottom nav is visible', async ({ page }) => {
+    test('overview grid collapses to a single column on mobile', async ({ page }) => {
       await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await expect(bottomNav).toBeVisible();
-    });
-
-    test('bottom nav contains expected links', async ({ page }) => {
-      await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      const links = bottomNav.locator('a');
-      await expect(links).toHaveCount(5);
-
-      const hrefs = await links.evaluateAll((els) =>
-        els.map((el) => el.getAttribute('href')),
-      );
-      expect(hrefs).toEqual(['/', '/agents', '/goals', '/workflows', '/settings']);
-    });
-
-    test('content occupies full width (no sidebar offset)', async ({ page }) => {
-      await navigateTo(page, '/');
-      const content = page.locator('main.content');
-      const box = await content.boundingBox();
-      expect(box).toBeTruthy();
-      // Content should start at x=0 (no sidebar pushing it right)
-      expect(box!.x).toBeLessThanOrEqual(1);
-    });
-
-    test('overview grid is single column on mobile', async ({ page }) => {
-      await navigateTo(page, '/');
-      // Wait for the grid to render (the skeleton or actual cards)
       const grid = page.locator('.grid');
       await grid.waitFor({ state: 'attached' });
-      const gridCols = await grid.evaluate((el) =>
-        getComputedStyle(el).gridTemplateColumns,
-      );
-      // Single column means only one track value
+      const gridCols = await grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns);
       const tracks = gridCols.split(/\s+/).filter(Boolean);
       expect(tracks.length).toBe(1);
     });
   });
 
-  // ── md (641–1024px) — iPad ───────────────────────────────────────────
-
   test.describe('md breakpoint (641–1024px / iPad)', () => {
-    test.use({ ...({ viewport: { width: 820, height: 1180 } }) });
+    test.use({ viewport: { width: 820, height: 1180 } });
 
-    test('sidebar is visible but collapsed', async ({ page }) => {
+    test('sidebar shell remains visible on tablet', async ({ page }) => {
       await navigateTo(page, '/');
-      const sidebar = page.locator('nav.sidebar');
-      await expect(sidebar).toBeVisible();
-
-      // The collapsed sidebar should be narrower than the full width
-      // (full sidebar is var(--layout-sidebar-width), collapsed is
-      //  var(--layout-sidebar-collapsed)).
-      const sidebarBox = await sidebar.boundingBox();
-      expect(sidebarBox).toBeTruthy();
-      // The collapsed sidebar should be significantly narrower than 200px
-      // (typical full width). We just confirm it is visible.
-      expect(sidebarBox!.width).toBeGreaterThan(0);
-    });
-
-    test('bottom nav is hidden', async ({ page }) => {
-      await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await expect(bottomNav).toBeHidden();
-    });
-
-    test('sidebar links have truncated text (font-size: 0)', async ({ page }) => {
-      await navigateTo(page, '/');
-      const sidebarLink = page.locator('nav.sidebar > a').first();
-      const fontSize = await sidebarLink.evaluate((el) =>
-        getComputedStyle(el).fontSize,
-      );
-      // At md breakpoint, sidebar links have font-size: 0 (icon-only)
-      expect(fontSize).toBe('0px');
-    });
-
-    test('sidebar footer (ConnectionIndicator) is hidden on tablet', async ({ page }) => {
-      await navigateTo(page, '/');
-      const footer = page.locator('.sidebar-footer');
-      await expect(footer).toBeHidden();
+      await expect(sidebar(page)).toBeVisible();
+      await expect(primaryNav(page)).toBeVisible();
+      await expect(page.locator('.sidebar-footer')).toBeVisible();
+      await expect(page.locator('nav.bottom-nav')).toHaveCount(0);
     });
   });
 
-  // ── lg (>1024px) — Desktop ───────────────────────────────────────────
-
   test.describe('lg breakpoint (>1024px / Desktop)', () => {
-    test.use({ ...({ viewport: { width: 1280, height: 800 } }) });
+    test.use({ viewport: { width: 1280, height: 800 } });
 
-    test('full sidebar is visible', async ({ page }) => {
+    test('desktop shell exposes the primary navigation links', async ({ page }) => {
       await navigateTo(page, '/');
-      const sidebar = page.locator('nav.sidebar');
-      await expect(sidebar).toBeVisible();
+      const nav = primaryNav(page);
+      await expect(nav).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'Overview' })).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'Memory' })).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'Goals' })).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'Workflows' })).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'Orchestration' })).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'Settings' })).toBeVisible();
     });
 
-    test('bottom nav is hidden', async ({ page }) => {
+    test('desktop shell keeps the sidebar footer visible', async ({ page }) => {
       await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await expect(bottomNav).toBeHidden();
-    });
-
-    test('sidebar links have readable text', async ({ page }) => {
-      await navigateTo(page, '/');
-      const overviewLink = page.locator('nav.sidebar > a', { hasText: 'Overview' });
-      await expect(overviewLink).toBeVisible();
-      const fontSize = await overviewLink.evaluate((el) =>
-        getComputedStyle(el).fontSize,
-      );
-      // Font size should be non-zero (readable)
-      expect(parseFloat(fontSize)).toBeGreaterThan(0);
-    });
-
-    test('sidebar contains all navigation links', async ({ page }) => {
-      await navigateTo(page, '/');
-      const sidebar = page.locator('nav.sidebar');
-
-      const expectedLinks = [
-        'Overview',
-        'Convergence',
-        'Memory',
-        'Goals',
-        'Sessions',
-        'Agents',
-        'Workflows',
-        'Skills',
-        'Studio',
-        'Observability',
-        'Orchestration',
-        'Security',
-        'Costs',
-        'Settings',
-      ];
-
-      for (const label of expectedLinks) {
-        await expect(sidebar.locator('a', { hasText: label }).first()).toBeAttached();
-      }
-    });
-
-    test('sidebar footer is visible on desktop', async ({ page }) => {
-      await navigateTo(page, '/');
-      const footer = page.locator('.sidebar-footer');
-      await expect(footer).toBeVisible();
+      await expect(page.locator('.sidebar-footer')).toBeVisible();
     });
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. TOUCH INTERACTIONS
+// 2. TOUCH-READY VISUALS
 // ═══════════════════════════════════════════════════════════════════════════
 
-test.describe('Touch interactions', () => {
-  test.describe('WorkflowCanvas touch handlers', () => {
-    test.use({ ...({ viewport: { width: 390, height: 844 } }) });
+test.describe('Touch-ready visuals', () => {
+  test.describe('Workflow canvas', () => {
+    test.use({ viewport: { width: 390, height: 844 } });
 
-    test('workflow canvas SVG has touch event handlers', async ({ page }) => {
+    test('workflow canvas exposes accessibility metadata and touch-action none', async ({ page }) => {
       await navigateTo(page, '/workflows');
-
-      const canvas = page.locator('svg.workflow-canvas');
-      await canvas.waitFor({ state: 'attached' });
-
-      // Verify touch-action: none is set (required for custom touch handling)
-      const touchAction = await canvas.evaluate((el) =>
-        getComputedStyle(el).touchAction,
-      );
-      expect(touchAction).toBe('none');
-
-      // Verify the SVG element has the touch event listeners wired up.
-      // In Svelte 5, event handlers are attached via ontouchstart/ontouchmove/
-      // ontouchend attributes — we verify they exist as properties on the element.
-      const hasTouchHandlers = await canvas.evaluate((el) => {
-        // Svelte 5 compiles ontouchstart/ontouchmove/ontouchend as
-        // properties on the element. We check that the DOM element
-        // has these as callable functions.
-        return (
-          typeof (el as any).ontouchstart === 'function' ||
-          el.hasAttribute('ontouchstart') ||
-          // Also check via getEventListeners-style inspection where possible
-          typeof (el as any).__touchstart !== 'undefined'
-        );
-      });
-      // The handler is always attached via Svelte's compiled output
-      expect(hasTouchHandlers).toBe(true);
-    });
-
-    test('workflow canvas has role="img" and aria-label', async ({ page }) => {
-      await navigateTo(page, '/workflows');
-
       const canvas = page.locator('svg.workflow-canvas');
       await canvas.waitFor({ state: 'attached' });
 
       await expect(canvas).toHaveAttribute('role', 'img');
       await expect(canvas).toHaveAttribute('aria-label', 'Workflow canvas');
-    });
-  });
 
-  test.describe('Orchestration trust graph touch handlers', () => {
-    test.use({ ...({ viewport: { width: 390, height: 844 } }) });
-
-    test('trust graph SVG has touch event handlers', async ({ page }) => {
-      await navigateTo(page, '/orchestration');
-
-      // The trust graph SVG is rendered when trust tab is active (default)
-      const graphSvg = page.locator('svg.graph-svg');
-      await graphSvg.waitFor({ state: 'attached' });
-
-      // Verify touch-action is properly set for gesture handling
-      const touchAction = await graphSvg.evaluate((el) =>
-        getComputedStyle(el).touchAction,
-      );
-      // Touch action should allow custom handling (auto or none)
-      expect(['none', 'auto']).toContain(touchAction);
-
-      // Verify touch event handlers are attached
-      const hasTouchHandlers = await graphSvg.evaluate((el) => {
-        return (
-          typeof (el as any).ontouchstart === 'function' ||
-          el.hasAttribute('ontouchstart')
-        );
-      });
-      expect(hasTouchHandlers).toBe(true);
-    });
-
-    test('trust graph renders nodes from mocked data', async ({ page }) => {
-      await navigateTo(page, '/orchestration');
-
-      const graphSvg = page.locator('svg.graph-svg');
-      await graphSvg.waitFor({ state: 'attached' });
-
-      // Wait for d3-force to tick and render nodes
-      // Each node gets a <g transform="translate(...)"> containing a circle
-      const nodeGroups = graphSvg.locator('g > circle[r="24"]');
-      await expect(nodeGroups.first()).toBeAttached({ timeout: 5_000 });
-    });
-  });
-
-  test.describe('Pinch gesture support', () => {
-    test.use({ ...({ viewport: { width: 390, height: 844 } }) });
-
-    test('workflow canvas SVG has touch-action: none for pinch zoom', async ({ page }) => {
-      await navigateTo(page, '/workflows');
-
-      const canvas = page.locator('svg.workflow-canvas');
-      await canvas.waitFor({ state: 'attached' });
-
-      // touch-action: none allows the JS handlers (handleTouchStart etc.)
-      // to process multi-finger gestures like pinch-to-zoom.
-      const touchAction = await canvas.evaluate((el) =>
-        getComputedStyle(el).touchAction,
-      );
+      const touchAction = await canvas.evaluate((el) => getComputedStyle(el).touchAction);
       expect(touchAction).toBe('none');
     });
 
-    test('workflow canvas has viewBox attribute for zoom transforms', async ({ page }) => {
+    test('workflow canvas exposes a viewBox for gesture-driven transforms', async ({ page }) => {
       await navigateTo(page, '/workflows');
-
       const canvas = page.locator('svg.workflow-canvas');
       await canvas.waitFor({ state: 'attached' });
 
       const viewBox = await canvas.getAttribute('viewBox');
       expect(viewBox).toBeTruthy();
-      // Default viewBox is "-50 -50 800 600"
-      const parts = viewBox!.split(/\s+/).map(Number);
-      expect(parts).toHaveLength(4);
+      expect(viewBox!.split(/\s+/).map(Number)).toHaveLength(4);
+    });
+  });
+
+  test.describe('Orchestration trust graph', () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test('trust graph renders an accessible SVG', async ({ page }) => {
+      await navigateTo(page, '/orchestration');
+      const graphSvg = page.locator('svg.graph-svg');
+      await graphSvg.waitFor({ state: 'attached' });
+
+      await expect(graphSvg).toHaveAttribute('role', 'img');
+      await expect(graphSvg).toHaveAttribute('aria-label', 'Trust graph');
+    });
+
+    test('trust graph renders node circles from mocked data', async ({ page }) => {
+      await navigateTo(page, '/orchestration');
+      const nodeCircles = page.locator('svg.graph-svg g circle[r="24"]');
+      await expect(nodeCircles).toHaveCount(2);
     });
   });
 });
@@ -495,96 +335,44 @@ test.describe('Touch interactions', () => {
 // 3. NAVIGATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-test.describe('Navigation', () => {
-  test.describe('Mobile bottom nav', () => {
-    test.use({ ...({ viewport: { width: 390, height: 844 } }) });
+test.describe('Primary navigation', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
 
-    test('bottom nav Overview link navigates to /', async ({ page }) => {
-      await navigateTo(page, '/goals');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await bottomNav.locator('a', { hasText: 'Overview' }).click();
-      await page.waitForURL('/');
-      expect(page.url()).toContain('/');
-    });
-
-    test('bottom nav Agents link navigates to /agents', async ({ page }) => {
-      await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await bottomNav.locator('a', { hasText: 'Agents' }).click();
-      await page.waitForURL('**/agents');
-      expect(page.url()).toContain('/agents');
-    });
-
-    test('bottom nav Goals link navigates to /goals', async ({ page }) => {
-      await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await bottomNav.locator('a', { hasText: 'Goals' }).click();
-      await page.waitForURL('**/goals');
-      expect(page.url()).toContain('/goals');
-    });
-
-    test('bottom nav Workflows link navigates to /workflows', async ({ page }) => {
-      await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await bottomNav.locator('a', { hasText: 'Workflows' }).click();
-      await page.waitForURL('**/workflows');
-      expect(page.url()).toContain('/workflows');
-    });
-
-    test('bottom nav Settings link navigates to /settings', async ({ page }) => {
-      await navigateTo(page, '/');
-      const bottomNav = page.locator('nav.bottom-nav');
-      await bottomNav.locator('a', { hasText: 'Settings' }).click();
-      await page.waitForURL('**/settings');
-      expect(page.url()).toContain('/settings');
-    });
-
-    test('active bottom nav link has active class', async ({ page }) => {
-      await navigateTo(page, '/goals');
-      const bottomNav = page.locator('nav.bottom-nav');
-      const goalsLink = bottomNav.locator('a[href="/goals"]');
-      await expect(goalsLink).toHaveClass(/active/);
-    });
+  test('Goals link navigates and is marked current', async ({ page }) => {
+    await navigateTo(page, '/');
+    const nav = primaryNav(page);
+    await nav.getByRole('link', { name: 'Goals' }).click();
+    await page.waitForURL('**/goals');
+    await expect(nav.locator('a[href="/goals"]')).toHaveAttribute('aria-current', 'page');
   });
 
-  test.describe('Desktop sidebar nav', () => {
-    test.use({ ...({ viewport: { width: 1280, height: 800 } }) });
+  test('Memory link navigates and is marked current', async ({ page }) => {
+    await navigateTo(page, '/');
+    const nav = primaryNav(page);
+    await nav.getByRole('link', { name: 'Memory' }).click();
+    await page.waitForURL('**/memory');
+    await expect(nav.locator('a[href="/memory"]')).toHaveAttribute('aria-current', 'page');
+  });
 
-    test('sidebar Memory link navigates to /memory', async ({ page }) => {
-      await navigateTo(page, '/');
-      const sidebar = page.locator('nav.sidebar');
-      await sidebar.locator('a', { hasText: 'Memory' }).click();
-      await page.waitForURL('**/memory');
-      expect(page.url()).toContain('/memory');
-    });
+  test('Orchestration link navigates and is marked current', async ({ page }) => {
+    await navigateTo(page, '/');
+    const nav = primaryNav(page);
+    await nav.getByRole('link', { name: 'Orchestration' }).click();
+    await page.waitForURL('**/orchestration');
+    await expect(nav.locator('a[href="/orchestration"]')).toHaveAttribute('aria-current', 'page');
+  });
 
-    test('sidebar Orchestration link navigates to /orchestration', async ({ page }) => {
-      await navigateTo(page, '/');
-      const sidebar = page.locator('nav.sidebar');
-      await sidebar.locator('a', { hasText: 'Orchestration' }).click();
-      await page.waitForURL('**/orchestration');
-      expect(page.url()).toContain('/orchestration');
-    });
+  test('Settings route reveals the settings sub-navigation', async ({ page }) => {
+    await navigateTo(page, '/settings');
+    const subnav = page.locator('.settings-subnav');
+    await expect(subnav).toBeVisible();
 
-    test('sidebar active link has active class on current route', async ({ page }) => {
-      await navigateTo(page, '/memory');
-      const memoryLink = page.locator('nav.sidebar > a[href="/memory"]');
-      await expect(memoryLink).toHaveClass(/active/);
-    });
-
-    test('clicking Settings reveals subnav links', async ({ page }) => {
-      await navigateTo(page, '/settings');
-      const subnav = page.locator('.settings-subnav');
-      await expect(subnav).toBeVisible();
-
-      const subnavLinks = subnav.locator('a');
-      const hrefs = await subnavLinks.evaluateAll((els) =>
-        els.map((el) => el.getAttribute('href')),
-      );
-      expect(hrefs).toContain('/settings/profiles');
-      expect(hrefs).toContain('/settings/policies');
-      expect(hrefs).toContain('/settings/backups');
-    });
+    const hrefs = await subnav.locator('a').evaluateAll((els) =>
+      els.map((el) => el.getAttribute('href')),
+    );
+    expect(hrefs).toContain('/settings/profiles');
+    expect(hrefs).toContain('/settings/policies');
+    expect(hrefs).toContain('/settings/backups');
   });
 });
 
@@ -593,7 +381,7 @@ test.describe('Navigation', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 test.describe('PWA install prerequisites', () => {
-  test.use({ ...({ viewport: { width: 390, height: 844 } }) });
+  test.use({ viewport: { width: 390, height: 844 } });
 
   test('manifest.json link is present in head', async ({ page }) => {
     await navigateTo(page, '/');
@@ -625,8 +413,6 @@ test.describe('PWA install prerequisites', () => {
 
   test('manifest.json is fetchable and contains required PWA fields', async ({ page }) => {
     await navigateTo(page, '/');
-
-    // Fetch the manifest directly and validate its structure
     const manifestResp = await page.request.get('/manifest.json');
     expect(manifestResp.ok()).toBe(true);
 
@@ -639,57 +425,51 @@ test.describe('PWA install prerequisites', () => {
     expect(manifest.icons).toBeDefined();
     expect(manifest.icons.length).toBeGreaterThanOrEqual(2);
 
-    // Check for maskable icon (required for Android adaptive icons)
-    const maskable = manifest.icons.find(
-      (icon: any) => icon.purpose === 'maskable',
-    );
+    const maskable = manifest.icons.find((icon: { purpose?: string }) => icon.purpose === 'maskable');
     expect(maskable).toBeDefined();
   });
 
   test('install banner appears when beforeinstallprompt fires', async ({ page }) => {
     await navigateTo(page, '/');
 
-    // Simulate the beforeinstallprompt event
     await page.evaluate(() => {
       const event = new Event('beforeinstallprompt', {
         bubbles: true,
         cancelable: true,
       });
-      (event as any).prompt = () => Promise.resolve();
-      (event as any).userChoice = Promise.resolve({ outcome: 'dismissed' });
+      (event as Event & { prompt?: () => Promise<void>; userChoice?: Promise<{ outcome: string }> }).prompt =
+        () => Promise.resolve();
+      (
+        event as Event & { prompt?: () => Promise<void>; userChoice?: Promise<{ outcome: string }> }
+      ).userChoice = Promise.resolve({ outcome: 'dismissed' });
       window.dispatchEvent(event);
     });
 
-    // The install banner should now be visible
     const installBanner = page.locator('.install-banner');
     await expect(installBanner).toBeVisible();
     await expect(installBanner).toContainText('Install GHOST Dashboard');
-
-    // It should have Install and Dismiss buttons
-    const installBtn = installBanner.locator('button', { hasText: 'Install' });
-    const dismissBtn = installBanner.locator('button', { hasText: 'Dismiss' });
-    await expect(installBtn).toBeVisible();
-    await expect(dismissBtn).toBeVisible();
+    await expect(installBanner.locator('button', { hasText: 'Install' })).toBeVisible();
+    await expect(installBanner.locator('button', { hasText: 'Dismiss' })).toBeVisible();
   });
 
   test('dismiss button hides the install banner', async ({ page }) => {
     await navigateTo(page, '/');
 
-    // Fire the beforeinstallprompt event to show the banner
     await page.evaluate(() => {
       const event = new Event('beforeinstallprompt', {
         bubbles: true,
         cancelable: true,
       });
-      (event as any).prompt = () => Promise.resolve();
-      (event as any).userChoice = Promise.resolve({ outcome: 'dismissed' });
+      (event as Event & { prompt?: () => Promise<void>; userChoice?: Promise<{ outcome: string }> }).prompt =
+        () => Promise.resolve();
+      (
+        event as Event & { prompt?: () => Promise<void>; userChoice?: Promise<{ outcome: string }> }
+      ).userChoice = Promise.resolve({ outcome: 'dismissed' });
       window.dispatchEvent(event);
     });
 
     const installBanner = page.locator('.install-banner');
     await expect(installBanner).toBeVisible();
-
-    // Click Dismiss
     await installBanner.locator('button', { hasText: 'Dismiss' }).click();
     await expect(installBanner).toBeHidden();
   });
@@ -700,15 +480,11 @@ test.describe('PWA install prerequisites', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 test.describe('Offline awareness', () => {
-  test.use({ ...({ viewport: { width: 390, height: 844 } }) });
+  test.use({ viewport: { width: 390, height: 844 } });
 
   test('offline banner appears when browser goes offline', async ({ page, context }) => {
     await navigateTo(page, '/');
-
-    // Simulate going offline
     await context.setOffline(true);
-
-    // Trigger the offline event in the page context
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
 
     const offlineBanner = page.locator('.offline-banner');
@@ -724,7 +500,6 @@ test.describe('Offline awareness', () => {
 
 test.describe('Auth redirect', () => {
   test('unauthenticated user is redirected to /login', async ({ page }) => {
-    // Do NOT call authenticate() — no token in sessionStorage
     await mockAllApis(page);
     await page.route('**/api/auth/session', (route) =>
       route.fulfill({
@@ -739,23 +514,16 @@ test.describe('Auth redirect', () => {
       }),
     );
     await page.goto('/', { waitUntil: 'networkidle' });
-    // The layout should redirect to /login
     await page.waitForURL('**/login', { timeout: 5_000 });
     expect(page.url()).toContain('/login');
   });
 
-  test('login page renders without sidebar or bottom nav', async ({ page }) => {
+  test('login page renders without the application shell', async ({ page }) => {
     await mockAllApis(page);
     await page.goto('/login', { waitUntil: 'networkidle' });
 
-    // Login page uses a special conditional branch — no sidebar/bottom-nav
-    const sidebar = page.locator('nav.sidebar');
-    const bottomNav = page.locator('nav.bottom-nav');
-    await expect(sidebar).toHaveCount(0);
-    await expect(bottomNav).toHaveCount(0);
-
-    // Login card is visible
-    const loginCard = page.locator('.login-card');
-    await expect(loginCard).toBeVisible();
+    await expect(page.locator(PRIMARY_NAV_SELECTOR)).toHaveCount(0);
+    await expect(page.locator(SIDEBAR_SELECTOR)).toHaveCount(0);
+    await expect(page.locator('.login-card')).toBeVisible();
   });
 });

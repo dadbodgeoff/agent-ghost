@@ -1,6 +1,7 @@
 //! ghost db — database management commands (T-1.7.1, T-1.7.2, T-2.5.1, T-2.5.2).
 
-use cortex_storage::migrations::{current_version, run_migrations, LATEST_VERSION};
+use cortex_storage::migrations::{current_version, run_migrations_with_backup, LATEST_VERSION};
+use cortex_storage::schema_contract::require_schema_ready;
 use serde::Serialize;
 
 use super::backend::{BackendRequirement, CliBackend};
@@ -20,7 +21,8 @@ pub async fn run_migrate(_args: DbMigrateArgs, backend: &CliBackend) -> Result<(
     let conn = db.write().await;
 
     let before = current_version(&conn).map_err(|e| CliError::Database(e.to_string()))?;
-    run_migrations(&conn).map_err(|e| CliError::Database(format!("migration failed: {e}")))?;
+    run_migrations_with_backup(&conn, Some(db.db_path()))
+        .map_err(|e| CliError::Database(format!("migration failed: {e}")))?;
     let after = current_version(&conn).map_err(|e| CliError::Database(e.to_string()))?;
 
     if before == after {
@@ -86,6 +88,7 @@ pub fn run_status(args: DbStatusArgs, backend: &CliBackend) -> Result<(), CliErr
     backend.require(BackendRequirement::DirectOnly)?;
     let db = backend.db();
     let conn = db.read().map_err(|e| CliError::Database(e.to_string()))?;
+    require_schema_ready(&conn).map_err(|e| CliError::Database(e.to_string()))?;
 
     let version = current_version(&conn).map_err(|e| CliError::Database(e.to_string()))?;
 
@@ -148,6 +151,7 @@ pub fn run_verify(args: DbVerifyArgs, backend: &CliBackend) -> Result<(), CliErr
     backend.require(BackendRequirement::DirectOnly)?;
     let db = backend.db();
     let conn = db.read().map_err(|e| CliError::Database(e.to_string()))?;
+    require_schema_ready(&conn).map_err(|e| CliError::Database(e.to_string()))?;
 
     let start = std::time::Instant::now();
 
@@ -454,4 +458,50 @@ fn build_compaction_summary(
 
 fn get_db_path(conn: &rusqlite::Connection) -> Option<String> {
     conn.path().map(|p| p.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn direct_backend(db_path: &std::path::Path) -> CliBackend {
+        let config = crate::config::GhostConfig::test_config(39780, db_path.to_str().unwrap());
+        let pool = crate::db_pool::create_existing_pool(db_path.to_path_buf()).unwrap();
+        CliBackend::Direct { config, db: pool }
+    }
+
+    #[test]
+    fn status_fails_when_required_objects_are_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("status.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+        conn.execute_batch("DROP TABLE audit_log;").unwrap();
+
+        let backend = direct_backend(&db_path);
+        let result = run_status(
+            DbStatusArgs {
+                output: OutputFormat::Table,
+            },
+            &backend,
+        );
+        assert!(result.is_err(), "status should fail on missing audit_log");
+    }
+
+    #[test]
+    fn verify_fails_when_required_objects_are_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("verify.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+        conn.execute_batch("DROP INDEX idx_channels_agent;")
+            .unwrap();
+
+        let backend = direct_backend(&db_path);
+        let result = run_verify(DbVerifyArgs { full: false }, &backend);
+        assert!(
+            result.is_err(),
+            "verify should fail on missing channels index"
+        );
+    }
 }

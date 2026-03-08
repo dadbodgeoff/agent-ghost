@@ -11,6 +11,7 @@ pub mod fts_queries;
 pub mod goal_proposal_queries;
 pub mod intervention_history_queries;
 pub mod itp_event_queries;
+pub mod live_execution_queries;
 pub mod marketplace_queries;
 pub mod memory_audit_queries;
 pub mod memory_event_queries;

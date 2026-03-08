@@ -148,7 +148,7 @@ fn verify_backup_archive(
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// POST /api/admin/backup — trigger a point-in-time backup.
+/// POST /api/admin/backup — trigger a platform-state archive export.
 pub async fn create_backup(
     State(state): State<Arc<AppState>>,
     claims: Option<Extension<Claims>>,
@@ -283,7 +283,7 @@ pub async fn create_backup(
     }
 }
 
-/// POST /api/admin/restore — verify backup integrity (does NOT apply).
+/// POST /api/admin/restore — verify archive integrity (does NOT apply).
 ///
 /// Validates the backup archive exists and computes its BLAKE3 checksum.
 /// Actual restore requires running `ghost restore <path>` via the CLI.
@@ -319,7 +319,7 @@ pub async fn restore_backup(
                 entry_count: manifest.entries.len(),
                 version: manifest.version.clone(),
                 message: format!(
-                    "Backup verified (BLAKE3: {}…, {} bytes). Use CLI to apply restore.",
+                    "Archive verified (BLAKE3: {}…, {} bytes). This checks the export package only, not migration rollback safety.",
                     &checksum[..16],
                     size_bytes
                 ),

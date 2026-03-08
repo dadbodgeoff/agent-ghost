@@ -28,7 +28,7 @@ async fn session_lifecycle_create_and_list() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200, "create session should succeed");
+    assert_eq!(resp.status(), 201, "create session should succeed");
     let body: serde_json::Value = resp.json().await.unwrap();
     let session_id = body["id"].as_str().unwrap().to_string();
     assert_eq!(body["title"], "Test Session");
@@ -161,7 +161,8 @@ async fn migration_backup_created_when_pending() {
     }
 
     // Verify backup file was created.
-    let backup_path = db_path.with_extension("pre-migration-v16.bak");
+    let backup_path =
+        std::path::PathBuf::from(format!("{}.pre-migration-v16.bak", db_path.display()));
     assert!(
         backup_path.exists(),
         "pre-migration backup should exist at {:?}",
@@ -428,7 +429,7 @@ async fn studio_session_api_active_since_query() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 201);
 
     // List with active_since in the past — should return the session.
     let since = "2020-01-01 00:00:00";

@@ -68,7 +68,9 @@ pub struct AssignProfileResponse {
 }
 
 fn profile_actor(claims: Option<&Claims>) -> &str {
-    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
 }
 
 fn validate_weights(weights: &[f64; 8]) -> Result<(), ApiError> {
@@ -400,10 +402,7 @@ pub async fn delete_profile(
                 return Err(ApiError::not_found(format!("Profile '{name}' not found")));
             }
 
-            Ok((
-                StatusCode::OK,
-                serde_json::json!({ "deleted": name }),
-            ))
+            Ok((StatusCode::OK, serde_json::json!({ "deleted": name })))
         },
     ) {
         Ok(outcome) => {
@@ -468,8 +467,13 @@ pub async fn assign_profile(
             }
 
             conn.execute(
-                "UPDATE convergence_scores SET profile = ?1 WHERE agent_id = ?2",
-                rusqlite::params![req.profile_name, agent_id],
+                "INSERT INTO agent_profile_assignments (agent_id, profile_name, updated_at, updated_by)
+                 VALUES (?1, ?2, datetime('now'), ?3)
+                 ON CONFLICT(agent_id) DO UPDATE SET
+                    profile_name = excluded.profile_name,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by",
+                rusqlite::params![agent_id, req.profile_name, actor],
             )
             .map_err(|e| ApiError::db_error("assign profile", e))?;
 
@@ -501,5 +505,151 @@ pub async fn assign_profile(
             json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
         }
         Err(error) => error_response_with_idempotency(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::to_bytes;
+    use axum::extract::State;
+    use axum::Extension;
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
+
+    async fn test_state(db_path: &std::path::Path) -> Arc<AppState> {
+        let db = crate::db_pool::create_pool(db_path.to_path_buf()).unwrap();
+        {
+            let writer = db.writer_for_migrations().await;
+            cortex_storage::migrations::run_migrations(&writer).unwrap();
+        }
+
+        let (event_tx, _) = tokio::sync::broadcast::channel(16);
+        let token_store =
+            ghost_oauth::TokenStore::with_default_dir(Box::new(ghost_secrets::EnvProvider));
+        let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(
+            std::collections::BTreeMap::new(),
+            token_store,
+        ));
+        let embedding_engine =
+            cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
+
+        Arc::new(AppState {
+            gateway: Arc::new(crate::gateway::GatewaySharedState::new()),
+            agents: Arc::new(RwLock::new(crate::agents::registry::AgentRegistry::new())),
+            kill_switch: Arc::new(crate::safety::kill_switch::KillSwitch::new()),
+            quarantine: Arc::new(RwLock::new(
+                crate::safety::quarantine::QuarantineManager::new(),
+            )),
+            db,
+            event_tx,
+            replay_buffer: Arc::new(crate::api::websocket::EventReplayBuffer::new(16)),
+            cost_tracker: Arc::new(crate::cost::tracker::CostTracker::new()),
+            kill_gate: None,
+            secret_provider: Arc::new(ghost_secrets::EnvProvider),
+            oauth_broker,
+            soul_drift_threshold: 0.15,
+            convergence_profile: "standard".to_string(),
+            model_providers: Vec::new(),
+            default_model_provider: None,
+            pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
+                .circuit_breaker(),
+            websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            tools_config: crate::config::ToolsConfig::default(),
+            custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
+            shutdown_token: tokio_util::sync::CancellationToken::new(),
+            background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
+            monitor_address: "127.0.0.1:18790".to_string(),
+            monitor_enabled: false,
+            monitor_block_on_degraded: false,
+            convergence_state_stale_after: std::time::Duration::from_secs(300),
+            monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            distributed_kill_enabled: false,
+            embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
+            safety_skills: Arc::new(HashMap::new()),
+            client_heartbeats: Arc::new(dashmap::DashMap::new()),
+            session_ttl_days: 90,
+        })
+    }
+
+    #[tokio::test]
+    async fn assign_profile_updates_mutable_table_without_mutating_convergence_scores() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("profiles.db");
+        let state = test_state(&db_path).await;
+
+        {
+            let writer = state.db.write().await;
+            writer
+                .execute(
+                    "INSERT INTO convergence_scores (
+                        id, agent_id, session_id, composite_score, signal_scores, level,
+                        profile, computed_at, event_hash, previous_hash
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        "score-1",
+                        "agent-1",
+                        "session-1",
+                        0.42f64,
+                        "[]",
+                        2i32,
+                        "standard",
+                        "2026-03-01T00:00:00Z",
+                        vec![1u8; 32],
+                        vec![0u8; 32],
+                    ],
+                )
+                .unwrap();
+        }
+
+        let response = assign_profile(
+            State(Arc::clone(&state)),
+            Some(Extension(crate::api::auth::Claims {
+                sub: "operator-1".to_string(),
+                role: "admin".to_string(),
+                exp: u64::MAX,
+                iat: 0,
+                jti: "jti-1".to_string(),
+            })),
+            Extension(crate::api::operation_context::OperationContext {
+                request_id: "req-1".to_string(),
+                operation_id: Some("op-1".to_string()),
+                idempotency_key: Some("idem-1".to_string()),
+                idempotency_status: None,
+                is_mutating: true,
+            }),
+            Path("agent-1".to_string()),
+            Json(AssignProfileRequest {
+                profile_name: "research".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["profile_name"], "research");
+
+        let db = state.db.read().unwrap();
+        let assigned: (String, String) = db
+            .query_row(
+                "SELECT agent_id, profile_name FROM agent_profile_assignments WHERE agent_id = 'agent-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(assigned.0, "agent-1");
+        assert_eq!(assigned.1, "research");
+
+        let score_profile: String = db
+            .query_row(
+                "SELECT profile FROM convergence_scores WHERE id = 'score-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(score_profile, "standard");
     }
 }

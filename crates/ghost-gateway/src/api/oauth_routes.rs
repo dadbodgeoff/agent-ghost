@@ -9,13 +9,89 @@
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
+use crate::api::error::ApiError;
+use crate::api::idempotency::execute_idempotent_json_mutation;
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, write_mutation_audit_entry,
+};
+use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::state::AppState;
 use axum::extract::State;
 use std::sync::Arc;
+
+const CONNECT_ROUTE_TEMPLATE: &str = "/api/oauth/connect";
+const DISCONNECT_ROUTE_TEMPLATE: &str = "/api/oauth/connections/:ref_id";
+
+fn oauth_actor(claims: Option<&Claims>) -> &str {
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
+}
+
+fn oauth_connect_error(error: ghost_oauth::OAuthError) -> ApiError {
+    match error {
+        ghost_oauth::OAuthError::ProviderError(message)
+        | ghost_oauth::OAuthError::FlowFailed(message)
+        | ghost_oauth::OAuthError::InvalidState(message)
+        | ghost_oauth::OAuthError::RefreshFailed(message)
+        | ghost_oauth::OAuthError::NotConnected(message)
+        | ghost_oauth::OAuthError::TokenExpired(message)
+        | ghost_oauth::OAuthError::TokenRevoked(message) => {
+            ApiError::custom(StatusCode::BAD_REQUEST, "OAUTH_CONNECT_FAILED", message)
+        }
+        ghost_oauth::OAuthError::StorageError(message)
+        | ghost_oauth::OAuthError::EncryptionError(message) => ApiError::custom(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "OAUTH_CONNECT_STORAGE_ERROR",
+            message,
+        ),
+    }
+}
+
+fn oauth_disconnect_error(error: ghost_oauth::OAuthError) -> ApiError {
+    match error {
+        ghost_oauth::OAuthError::NotConnected(message)
+        | ghost_oauth::OAuthError::ProviderError(message)
+        | ghost_oauth::OAuthError::FlowFailed(message)
+        | ghost_oauth::OAuthError::InvalidState(message)
+        | ghost_oauth::OAuthError::RefreshFailed(message)
+        | ghost_oauth::OAuthError::TokenExpired(message)
+        | ghost_oauth::OAuthError::TokenRevoked(message) => {
+            ApiError::custom(StatusCode::BAD_REQUEST, "OAUTH_DISCONNECT_FAILED", message)
+        }
+        ghost_oauth::OAuthError::StorageError(message)
+        | ghost_oauth::OAuthError::EncryptionError(message) => ApiError::custom(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "OAUTH_DISCONNECT_STORAGE_ERROR",
+            message,
+        ),
+    }
+}
+
+fn connect_ref_id(operation_context: &OperationContext) -> ghost_oauth::OAuthRefId {
+    let seed = operation_context
+        .operation_id
+        .as_deref()
+        .unwrap_or(operation_context.request_id.as_str());
+    ghost_oauth::OAuthRefId::from_uuid(uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        seed.as_bytes(),
+    ))
+}
+
+fn connect_state_nonce(operation_context: &OperationContext) -> String {
+    let seed = operation_context
+        .operation_id
+        .as_deref()
+        .unwrap_or(operation_context.request_id.as_str());
+    blake3::hash(seed.as_bytes()).to_hex().to_string()
+}
 
 /// GET /api/oauth/providers — list configured providers.
 pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -28,7 +104,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
 }
 
 /// Request body for POST /api/oauth/connect.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub struct ConnectRequest {
     pub provider: String,
     pub scopes: Vec<String>,
@@ -44,23 +120,76 @@ fn default_redirect_uri() -> String {
 /// POST /api/oauth/connect — initiate OAuth flow.
 pub async fn connect(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Json(req): Json<ConnectRequest>,
-) -> impl IntoResponse {
-    match state
-        .oauth_broker
-        .connect(&req.provider, &req.scopes, &req.redirect_uri)
-    {
-        Ok((auth_url, ref_id)) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "authorization_url": auth_url,
-                "ref_id": ref_id.to_string(),
-            })),
-        ),
-        Err(e) => (
+) -> Response {
+    if req.provider.trim().is_empty() {
+        return error_response_with_idempotency(ApiError::custom(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
+            "OAUTH_PROVIDER_REQUIRED",
+            "provider must not be empty",
+        ));
+    }
+
+    let actor = oauth_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+    let db = state.db.write().await;
+
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "POST",
+        CONNECT_ROUTE_TEMPLATE,
+        &request_body,
+        |_| {
+            let ref_id = connect_ref_id(&operation_context);
+            let state_nonce = connect_state_nonce(&operation_context);
+            let (auth_url, ref_id) = state
+                .oauth_broker
+                .connect_with_ref_id(
+                    &req.provider,
+                    &req.scopes,
+                    &req.redirect_uri,
+                    ref_id,
+                    &state_nonce,
+                )
+                .map_err(oauth_connect_error)?;
+            Ok((
+                StatusCode::OK,
+                serde_json::json!({
+                    "authorization_url": auth_url,
+                    "ref_id": ref_id.to_string(),
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "oauth_connect",
+                "medium",
+                actor,
+                match &outcome.idempotency_status {
+                    IdempotencyStatus::Executed => "initiated",
+                    IdempotencyStatus::Replayed => "replayed",
+                    IdempotencyStatus::InProgress => "in_progress",
+                    IdempotencyStatus::Mismatch => "mismatch",
+                },
+                serde_json::json!({
+                    "provider": req.provider,
+                    "scopes": req.scopes,
+                    "redirect_uri": req.redirect_uri,
+                    "ref_id": outcome.body.get("ref_id").cloned().unwrap_or(serde_json::Value::Null),
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
     }
 }
 
@@ -194,32 +323,68 @@ pub async fn execute_api_call(
 /// DELETE /api/oauth/connections/:ref_id — disconnect.
 pub async fn disconnect(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Path(ref_id_str): Path<String>,
-) -> impl IntoResponse {
+) -> Response {
     let ref_id = match uuid::Uuid::parse_str(&ref_id_str) {
         Ok(id) => ghost_oauth::OAuthRefId::from_uuid(id),
         Err(_) => {
-            return (
+            return error_response_with_idempotency(ApiError::custom(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid ref_id format"})),
-            );
+                "OAUTH_INVALID_REF_ID",
+                "invalid ref_id format",
+            ));
         }
     };
 
-    match state.oauth_broker.disconnect(&ref_id) {
-        Ok(()) => {
+    let actor = oauth_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = serde_json::json!({ "ref_id": ref_id_str.clone() });
+    let db = state.db.write().await;
+
+    match execute_idempotent_json_mutation(
+        &db,
+        &operation_context,
+        actor,
+        "DELETE",
+        DISCONNECT_ROUTE_TEMPLATE,
+        &request_body,
+        |_| {
+            state
+                .oauth_broker
+                .disconnect(&ref_id)
+                .map_err(oauth_disconnect_error)?;
             tracing::info!(ref_id = %ref_id_str, "OAuth connection disconnected");
-            (
+            Ok((
                 StatusCode::OK,
-                Json(serde_json::json!({
+                serde_json::json!({
                     "status": "disconnected",
                     "ref_id": ref_id_str,
-                })),
-            )
+                }),
+            ))
+        },
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                "platform",
+                "oauth_disconnect",
+                "high",
+                actor,
+                match &outcome.idempotency_status {
+                    IdempotencyStatus::Executed => "disconnected",
+                    IdempotencyStatus::Replayed => "replayed",
+                    IdempotencyStatus::InProgress => "in_progress",
+                    IdempotencyStatus::Mismatch => "mismatch",
+                },
+                serde_json::json!({
+                    "ref_id": ref_id_str,
+                }),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
+        Err(error) => error_response_with_idempotency(error),
     }
 }

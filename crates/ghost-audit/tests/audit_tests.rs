@@ -7,8 +7,7 @@ use rusqlite::Connection;
 
 fn setup_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    let engine = AuditQueryEngine::new(&conn);
-    engine.ensure_table().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
     conn
 }
 
@@ -22,6 +21,11 @@ fn make_entry(id: &str, event_type: &str, severity: &str, agent: &str) -> AuditE
         tool_name: Some("test_tool".to_string()),
         details: "test details".to_string(),
         session_id: Some("sess-1".to_string()),
+        actor_id: None,
+        operation_id: None,
+        request_id: None,
+        idempotency_key: None,
+        idempotency_status: None,
     }
 }
 

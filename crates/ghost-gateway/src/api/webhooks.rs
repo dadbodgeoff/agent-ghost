@@ -78,7 +78,9 @@ const VALID_EVENTS: &[&str] = &[
 ];
 
 fn webhook_actor(claims: Option<&Claims>) -> &str {
-    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
 }
 
 fn validate_webhook_url(url: &str) -> Result<(), ApiError> {
@@ -184,9 +186,7 @@ pub async fn create_webhook(
     Json(req): Json<CreateWebhookRequest>,
 ) -> Response {
     if req.name.trim().is_empty() {
-        return error_response_with_idempotency(ApiError::bad_request(
-            "Webhook name is required",
-        ));
+        return error_response_with_idempotency(ApiError::bad_request("Webhook name is required"));
     }
     if let Err(error) = validate_webhook_url(&req.url) {
         return error_response_with_idempotency(error);
@@ -377,10 +377,7 @@ pub async fn update_webhook(
                 return Err(ApiError::not_found(format!("Webhook '{id}' not found")));
             }
 
-            Ok((
-                StatusCode::OK,
-                serde_json::json!({ "updated": id }),
-            ))
+            Ok((StatusCode::OK, serde_json::json!({ "updated": id })))
         },
     ) {
         Ok(outcome) => {
@@ -428,10 +425,7 @@ pub async fn delete_webhook(
                 return Err(ApiError::not_found(format!("Webhook '{id}' not found")));
             }
 
-            Ok((
-                StatusCode::OK,
-                serde_json::json!({ "deleted": id }),
-            ))
+            Ok((StatusCode::OK, serde_json::json!({ "deleted": id })))
         },
     ) {
         Ok(outcome) => {
@@ -491,11 +485,7 @@ pub async fn test_webhook(
                 &operation_context,
                 &IdempotencyStatus::Replayed,
             );
-            json_response_with_idempotency(
-                stored.status,
-                stored.body,
-                IdempotencyStatus::Replayed,
-            )
+            json_response_with_idempotency(stored.status, stored.body, IdempotencyStatus::Replayed)
         }
         Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
             StatusCode::CONFLICT,

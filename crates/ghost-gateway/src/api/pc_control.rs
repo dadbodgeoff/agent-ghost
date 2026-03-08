@@ -658,9 +658,6 @@ mod tests {
         {
             let writer = db.writer_for_migrations().await;
             cortex_storage::migrations::run_migrations(&writer).unwrap();
-            ghost_audit::AuditQueryEngine::new(&writer)
-                .ensure_table()
-                .unwrap();
         }
 
         let shared_state = Arc::new(crate::gateway::GatewaySharedState::new());

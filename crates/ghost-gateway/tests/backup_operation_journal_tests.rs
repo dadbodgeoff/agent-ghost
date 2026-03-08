@@ -138,8 +138,6 @@ impl PersistentGateway {
         {
             let writer = db.writer_for_migrations().await;
             cortex_storage::migrations::run_migrations(&writer).unwrap();
-            let engine = ghost_audit::AuditQueryEngine::new(&writer);
-            engine.ensure_table().unwrap();
         }
 
         let shared_state = Arc::new(ghost_gateway::gateway::GatewaySharedState::new());
@@ -573,7 +571,10 @@ async fn test_webhook_replay_does_not_refire_side_effect() {
     let idempotency_key = "webhook-test-key";
     let first = gateway
         .client
-        .post(format!("{}/api/webhooks/{webhook_id}/test", gateway.base_url))
+        .post(format!(
+            "{}/api/webhooks/{webhook_id}/test",
+            gateway.base_url
+        ))
         .header("authorization", format!("Bearer {token}"))
         .header("x-ghost-operation-id", operation_id)
         .header("idempotency-key", idempotency_key)
@@ -592,7 +593,10 @@ async fn test_webhook_replay_does_not_refire_side_effect() {
 
     let replay = gateway
         .client
-        .post(format!("{}/api/webhooks/{webhook_id}/test", gateway.base_url))
+        .post(format!(
+            "{}/api/webhooks/{webhook_id}/test",
+            gateway.base_url
+        ))
         .header("authorization", format!("Bearer {token}"))
         .header("x-request-id", "webhook-test-retry")
         .header("x-ghost-operation-id", operation_id)

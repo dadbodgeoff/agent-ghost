@@ -27,7 +27,9 @@ const DELETE_BOOKMARK_ROUTE_TEMPLATE: &str = "/api/sessions/:id/bookmarks/:bookm
 const BRANCH_SESSION_ROUTE_TEMPLATE: &str = "/api/sessions/:id/branch";
 
 fn session_actor(claims: Option<&Claims>) -> &str {
-    claims.map(|claims| claims.sub.as_str()).unwrap_or("unknown")
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
 }
 
 /// Query parameters for session listing (F15 fix — was hardcoded LIMIT 100).
@@ -545,7 +547,10 @@ pub async fn delete_bookmark(
         &request_body,
         |conn| {
             let deleted = conn
-                .execute("DELETE FROM session_bookmarks WHERE id = ?1", [&bookmark_id])
+                .execute(
+                    "DELETE FROM session_bookmarks WHERE id = ?1",
+                    [&bookmark_id],
+                )
                 .map_err(|e| ApiError::db_error("delete_bookmark", e))?;
 
             if deleted == 0 {

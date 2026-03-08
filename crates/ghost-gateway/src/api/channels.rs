@@ -30,55 +30,41 @@ const RECONNECT_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:id/reconnect";
 const DELETE_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:id";
 const INJECT_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:type/inject";
 
+fn load_channels(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, channel_type, status, status_message, agent_id, config, last_message_at, message_count \
+             FROM channels ORDER BY channel_type",
+        )
+        .map_err(|e| ApiError::db_error("list_channels_prepare", e))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "channel_type": row.get::<_, String>(1)?,
+                "status": row.get::<_, String>(2)?,
+                "status_message": row.get::<_, Option<String>>(3)?,
+                "agent_id": row.get::<_, String>(4)?,
+                "config": serde_json::from_str::<serde_json::Value>(
+                    &row.get::<_, String>(5)?
+                ).unwrap_or(serde_json::json!({})),
+                "last_message_at": row.get::<_, Option<String>>(6)?,
+                "message_count": row.get::<_, u64>(7)?,
+            }))
+        })
+        .map_err(|e| ApiError::db_error("list_channels_query", e))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| ApiError::db_error("list_channels_row", e))
+}
+
 /// GET /api/channels — list all configured channels with status.
 pub async fn list_channels(State(state): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
     let db = state
         .db
         .read()
         .map_err(|e| ApiError::db_error("list_channels", e))?;
-
-    let channels: Vec<serde_json::Value> = match db.prepare(
-        "SELECT id, channel_type, status, status_message, agent_id, config, last_message_at, message_count \
-         FROM channels ORDER BY channel_type",
-    ) {
-        Ok(mut stmt) => stmt
-            .query_map([], |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "channel_type": row.get::<_, String>(1)?,
-                    "status": row.get::<_, String>(2)?,
-                    "status_message": row.get::<_, Option<String>>(3)?,
-                    "agent_id": row.get::<_, String>(4)?,
-                    "config": serde_json::from_str::<serde_json::Value>(
-                        &row.get::<_, String>(5)?
-                    ).unwrap_or(serde_json::json!({})),
-                    "last_message_at": row.get::<_, Option<String>>(6)?,
-                    "message_count": row.get::<_, u64>(7)?,
-                }))
-            })
-            .map_err(|e| ApiError::db_error("list_channels_query", e))?
-            .filter_map(|r| r.ok())
-            .collect(),
-        Err(_) => {
-            let agents = state.agents.read().map_err(|_| ApiError::internal("lock"))?;
-            agents
-                .all_agents()
-                .iter()
-                .map(|a| {
-                    serde_json::json!({
-                        "id": a.id.to_string(),
-                        "channel_type": "cli",
-                        "status": "connected",
-                        "agent_id": a.id.to_string(),
-                        "agent_name": a.name,
-                        "config": {},
-                        "last_message_at": null,
-                        "message_count": 0,
-                    })
-                })
-                .collect()
-        }
-    };
+    let channels = load_channels(&db)?;
 
     Ok(Json(serde_json::json!({ "channels": channels })))
 }
@@ -238,21 +224,6 @@ pub async fn create_channel(
             let config_str =
                 serde_json::to_string(&body.config.clone().unwrap_or(serde_json::json!({})))
                     .unwrap_or_else(|_| "{}".to_string());
-
-            let _ = conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS channels (
-                    id TEXT PRIMARY KEY,
-                    channel_type TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'configuring',
-                    status_message TEXT,
-                    agent_id TEXT NOT NULL,
-                    config TEXT NOT NULL DEFAULT '{}',
-                    last_message_at TEXT,
-                    message_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-                )",
-            );
 
             conn.execute(
                 "INSERT INTO channels (id, channel_type, status, agent_id, config) VALUES (?1, ?2, 'connected', ?3, ?4)",
@@ -476,5 +447,32 @@ pub async fn inject_message(
             ))
         }
         Err(error) => Ok(error_response_with_idempotency(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_channels_fails_on_malformed_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, channel_type, status, agent_id, config, message_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "channel-1",
+                "slack",
+                "connected",
+                "agent-1",
+                "{}",
+                "not-an-integer"
+            ],
+        )
+        .unwrap();
+
+        let error = load_channels(&conn).unwrap_err();
+        assert!(error.to_string().contains("list_channels_row"), "{error}");
     }
 }

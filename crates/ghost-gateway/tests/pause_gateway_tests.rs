@@ -61,7 +61,7 @@ async fn paused_agents_are_blocked_on_agent_chat_and_studio_message_routes() {
         .send()
         .await
         .unwrap();
-    assert_eq!(create_session.status(), StatusCode::OK);
+    assert_eq!(create_session.status(), StatusCode::CREATED);
     let session: serde_json::Value = create_session.json().await.unwrap();
     let session_id = session["id"].as_str().unwrap();
 

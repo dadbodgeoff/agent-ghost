@@ -780,6 +780,8 @@ dependencies = [
  "blake3",
  "chrono",
  "cortex-core",
+ "cortex-storage",
+ "ghost-gateway",
  "proptest",
  "rusqlite",
  "serde",

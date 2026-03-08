@@ -50,19 +50,17 @@ pub struct MonitorConfig {
     pub dual_key_ttl: Duration,
     /// Runtime-configurable intervention thresholds.
     pub intervention_thresholds: InterventionThresholdConfig,
+    /// Default profile name from gateway config.
+    pub default_profile: String,
     /// Signal weights for composite scoring (8 weights, default equal 1/8).
-    /// Order: S1 session_duration, S2 inter_session_gap, S3 response_latency,
-    /// S4 vocabulary_convergence, S5 goal_boundary_erosion, S6 initiative_balance,
-    /// S7 disengagement_resistance, S8 behavioral_anomaly.
     pub signal_weights: [f64; 8],
     /// Enable native messaging transport for browser extensions (default false).
-    /// When enabled, spawns a Chrome/Firefox native messaging listener on stdin.
     pub native_messaging_enabled: bool,
 }
 
 impl Default for MonitorConfig {
     fn default() -> Self {
-        let home = dirs_path();
+        let home = ghost_gateway::bootstrap::ghost_home();
         Self {
             db_path: home.join("data/ghost.db"),
             http_port: 18790,
@@ -78,6 +76,7 @@ impl Default for MonitorConfig {
             rate_limit_bucket_idle_horizon: Duration::from_secs(30 * 60),
             dual_key_ttl: Duration::from_secs(300),
             intervention_thresholds: InterventionThresholdConfig::default(),
+            default_profile: "standard".to_string(),
             signal_weights: [1.0 / 8.0; 8],
             native_messaging_enabled: false,
         }
@@ -86,22 +85,54 @@ impl Default for MonitorConfig {
 
 impl MonitorConfig {
     pub fn load() -> anyhow::Result<Self> {
-        // In production, load from ghost.yml. For now, use defaults.
-        Ok(Self::default())
+        let ghost_config = ghost_gateway::config::GhostConfig::load_default(None)?;
+        let mut config = Self::default();
+        config.db_path = PathBuf::from(ghost_gateway::bootstrap::shellexpand_tilde(
+            &ghost_config.gateway.db_path,
+        ));
+        config.http_port = parse_monitor_port(&ghost_config.convergence.monitor.address)?;
+        config.default_profile = ghost_config.convergence.profile;
+        Ok(config)
     }
 }
 
-fn dirs_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".ghost")
+fn parse_monitor_port(address: &str) -> anyhow::Result<u16> {
+    let (_, port) = address.rsplit_once(':').ok_or_else(|| {
+        anyhow::anyhow!("invalid monitor address '{address}': expected host:port")
+    })?;
+    port.parse::<u16>()
+        .map_err(|error| anyhow::anyhow!("invalid monitor port in '{address}': {error}"))
 }
 
-/// Minimal dirs helper — resolve home directory.
-mod dirs {
-    use std::path::PathBuf;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn load_uses_same_db_path_source_as_gateway_on_non_default_config() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("ghost.yml");
+        let yaml = format!(
+            "gateway:\n  db_path: \"~/.ghost/data/custom.db\"\nconvergence:\n  monitor:\n    address: \"127.0.0.1:28790\"\n"
+        );
+        std::fs::write(&config_path, yaml).unwrap();
+
+        std::env::set_var("GHOST_HOME", temp_dir.path());
+        std::env::set_var("GHOST_CONFIG", &config_path);
+
+        let config = MonitorConfig::load().unwrap();
+        assert_eq!(config.db_path, temp_dir.path().join("data/custom.db"));
+        assert_eq!(config.http_port, 28790);
+
+        std::env::remove_var("GHOST_CONFIG");
+        std::env::remove_var("GHOST_HOME");
     }
 }
