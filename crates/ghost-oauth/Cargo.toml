@@ -22,6 +22,7 @@ uuid = { workspace = true }
 thiserror = { workspace = true }
 
 # Crypto / secrets
+age = "0.11"
 secrecy = { workspace = true }
 zeroize = { workspace = true }
 sha2 = { workspace = true }

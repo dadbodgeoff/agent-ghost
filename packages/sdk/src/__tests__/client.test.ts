@@ -463,7 +463,20 @@ describe('SkillsAPI', () => {
   });
 
   it('installs a skill', async () => {
-    const skill = { id: 'sk1', name: 'test-skill' };
+    const skill = {
+      id: 'test-skill',
+      name: 'test-skill',
+      version: '0.1.0',
+      description: 'Compiled test skill',
+      source: 'compiled',
+      removable: true,
+      installable: true,
+      execution_mode: 'native',
+      policy_capability: 'skill:test-skill',
+      privileges: ['Read test data'],
+      state: 'installed',
+      capabilities: ['skill:test-skill'],
+    };
     const fetch = mockFetch(jsonResponse(skill));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
@@ -472,6 +485,60 @@ describe('SkillsAPI', () => {
     expect(fetch).toHaveBeenCalledWith(
       'http://test:1234/api/skills/test-skill/install',
       expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('uninstalls a skill with the same catalog shape', async () => {
+    const skill = {
+      id: 'test-skill',
+      name: 'test-skill',
+      version: '0.1.0',
+      description: 'Compiled test skill',
+      source: 'compiled',
+      removable: true,
+      installable: true,
+      execution_mode: 'native',
+      policy_capability: 'skill:test-skill',
+      privileges: ['Read test data'],
+      state: 'available',
+      capabilities: ['skill:test-skill'],
+    };
+    const fetch = mockFetch(jsonResponse(skill));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.skills.uninstall('test-skill');
+    expect(result).toEqual(skill);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/skills/test-skill/uninstall',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('executes a skill with the canonical request envelope', async () => {
+    const response = {
+      skill: 'note_take',
+      result: { status: 'created', note_id: 'note-1' },
+    };
+    const fetch = mockFetch(jsonResponse(response));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.skills.execute('note_take', {
+      agent_id: 'agent-1',
+      session_id: 'session-1',
+      input: { action: 'create', title: 'Test', content: 'Body' },
+    });
+
+    expect(result).toEqual(response);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/skills/note_take/execute',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          agent_id: 'agent-1',
+          session_id: 'session-1',
+          input: { action: 'create', title: 'Test', content: 'Body' },
+        }),
+      }),
     );
   });
 });

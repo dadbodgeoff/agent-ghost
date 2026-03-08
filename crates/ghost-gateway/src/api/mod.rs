@@ -65,6 +65,7 @@ pub mod idempotency;
 pub mod integrity;
 pub mod itp;
 pub mod kill_fanout;
+pub mod live_executions;
 pub mod marketplace;
 pub mod memory;
 pub mod mesh_routes;

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 use thiserror::Error;
@@ -26,6 +26,21 @@ impl SchemaProblem {
     fn missing_column(table: &str, column: &str) -> Self {
         Self {
             message: format!("table {table} missing column {column}"),
+        }
+    }
+
+    fn column_type_mismatch(
+        table: &str,
+        column: &str,
+        expected: ColumnAffinity,
+        actual: ColumnAffinity,
+    ) -> Self {
+        Self {
+            message: format!(
+                "table {table} column {column} has type {}, expected {}",
+                actual.as_str(),
+                expected.as_str()
+            ),
         }
     }
 
@@ -73,6 +88,34 @@ pub enum SchemaContractError {
 struct TableRequirement {
     name: &'static str,
     required_columns: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColumnAffinity {
+    Text,
+    Integer,
+    Real,
+    Blob,
+    Numeric,
+}
+
+impl ColumnAffinity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "TEXT",
+            Self::Integer => "INTEGER",
+            Self::Real => "REAL",
+            Self::Blob => "BLOB",
+            Self::Numeric => "NUMERIC",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ColumnTypeRequirement {
+    table: &'static str,
+    column: &'static str,
+    affinity: ColumnAffinity,
 }
 
 const REQUIRED_TABLES: &[TableRequirement] = &[
@@ -254,6 +297,10 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "installed_skills",
         required_columns: &[],
+    },
+    TableRequirement {
+        name: "skill_install_state",
+        required_columns: &["skill_name", "state", "updated_at", "updated_by"],
     },
     TableRequirement {
         name: "a2a_tasks",
@@ -496,6 +543,7 @@ const REQUIRED_INDEXES: &[&str] = &[
     "idx_webhooks_active",
     "idx_installed_skills_state",
     "idx_installed_skills_name",
+    "idx_skill_install_state_state",
     "idx_a2a_tasks_status",
     "idx_a2a_tasks_created",
     "idx_discovered_agents_trust",
@@ -579,6 +627,199 @@ const REQUIRED_TRIGGERS: &[&str] = &[
     "prevent_audit_log_row_delete",
 ];
 
+const REQUIRED_COLUMN_TYPES: &[ColumnTypeRequirement] = &[
+    ColumnTypeRequirement {
+        table: "schema_version",
+        column: "version",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "memory_events",
+        column: "event_id",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "memory_events",
+        column: "event_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "memory_events",
+        column: "previous_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "memory_snapshots",
+        column: "id",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "memory_snapshots",
+        column: "state_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "memory_snapshots",
+        column: "citation_count",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "itp_events",
+        column: "sequence_number",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "itp_events",
+        column: "event_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "itp_events",
+        column: "previous_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "convergence_scores",
+        column: "composite_score",
+        affinity: ColumnAffinity::Real,
+    },
+    ColumnTypeRequirement {
+        table: "convergence_scores",
+        column: "level",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "convergence_scores",
+        column: "event_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "convergence_scores",
+        column: "previous_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_history",
+        column: "intervention_level",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_history",
+        column: "previous_level",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_history",
+        column: "trigger_score",
+        affinity: ColumnAffinity::Real,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_history",
+        column: "event_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_history",
+        column: "previous_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "goal_proposals",
+        column: "event_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "goal_proposals",
+        column: "previous_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "reflection_entries",
+        column: "depth",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "reflection_entries",
+        column: "event_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "reflection_entries",
+        column: "previous_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "boundary_violations",
+        column: "severity",
+        affinity: ColumnAffinity::Real,
+    },
+    ColumnTypeRequirement {
+        table: "boundary_violations",
+        column: "event_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "boundary_violations",
+        column: "previous_hash",
+        affinity: ColumnAffinity::Blob,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_state",
+        column: "level",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_state",
+        column: "consecutive_normal",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_state",
+        column: "ack_required",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_state",
+        column: "hysteresis_count",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "intervention_state",
+        column: "de_escalation_credits",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "studio_chat_sessions",
+        column: "temperature",
+        affinity: ColumnAffinity::Real,
+    },
+    ColumnTypeRequirement {
+        table: "studio_chat_sessions",
+        column: "max_tokens",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "channels",
+        column: "message_count",
+        affinity: ColumnAffinity::Integer,
+    },
+    ColumnTypeRequirement {
+        table: "monitor_threshold_config",
+        column: "critical_override_threshold",
+        affinity: ColumnAffinity::Real,
+    },
+    ColumnTypeRequirement {
+        table: "monitor_threshold_history",
+        column: "previous_value",
+        affinity: ColumnAffinity::Real,
+    },
+    ColumnTypeRequirement {
+        table: "monitor_threshold_history",
+        column: "new_value",
+        affinity: ColumnAffinity::Real,
+    },
+];
+
 pub fn require_schema_ready(
     conn: &Connection,
 ) -> Result<SchemaContractReport, SchemaContractError> {
@@ -612,9 +853,25 @@ pub fn require_schema_ready(
 
         let columns = load_table_columns(conn, requirement.name)?;
         for column in requirement.required_columns {
-            if !columns.contains(*column) {
+            if !columns.contains_key(*column) {
                 problems.push(SchemaProblem::missing_column(requirement.name, column));
             }
+        }
+    }
+
+    for requirement in REQUIRED_COLUMN_TYPES {
+        let columns = load_table_columns(conn, requirement.table)?;
+        let Some(actual) = columns.get(requirement.column) else {
+            continue;
+        };
+        let actual_affinity = normalize_declared_type(actual);
+        if actual_affinity != requirement.affinity {
+            problems.push(SchemaProblem::column_type_mismatch(
+                requirement.table,
+                requirement.column,
+                requirement.affinity,
+                actual_affinity,
+            ));
         }
     }
 
@@ -669,17 +926,40 @@ fn load_named_objects(
 fn load_table_columns(
     conn: &Connection,
     table: &str,
-) -> Result<BTreeSet<String>, SchemaContractError> {
+) -> Result<BTreeMap<String, String>, SchemaContractError> {
     let sql = format!("PRAGMA table_info('{table}')");
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|error| SchemaContractError::Query(error.to_string()))?;
     let rows = stmt
-        .query_map([], |row| row.get::<_, String>(1))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })
         .map_err(|error| SchemaContractError::Query(error.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| SchemaContractError::Query(error.to_string()))?;
     Ok(rows.into_iter().collect())
+}
+
+fn normalize_declared_type(declared_type: &str) -> ColumnAffinity {
+    let normalized = declared_type.trim().to_ascii_uppercase();
+    if normalized.contains("INT") {
+        ColumnAffinity::Integer
+    } else if normalized.contains("CHAR")
+        || normalized.contains("CLOB")
+        || normalized.contains("TEXT")
+    {
+        ColumnAffinity::Text
+    } else if normalized.contains("BLOB") || normalized.is_empty() {
+        ColumnAffinity::Blob
+    } else if normalized.contains("REAL")
+        || normalized.contains("FLOA")
+        || normalized.contains("DOUB")
+    {
+        ColumnAffinity::Real
+    } else {
+        ColumnAffinity::Numeric
+    }
 }
 
 fn verify_integrity(conn: &Connection) -> Result<(), SchemaContractError> {

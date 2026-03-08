@@ -2,6 +2,8 @@
 
 > Codename: **GHOST** (General Hybrid Orchestrated Self-healing Taskrunner)
 > Philosophy: Lean. Secure. Composable. Payments-native. Memory-first.
+>
+> Status note (March 8, 2026): this document is a future-state architecture plan, not the live product contract. The production skill system does not currently implement directory-backed `SKILL.md` discovery, runtime signature verification, quarantine for community skills, or untrusted WASM skill execution. The live skill model is the compiled gateway-owned catalog described in [wiki/ghost-skills.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/wiki/ghost-skills.md).
 
 ---
 
@@ -14,7 +16,7 @@
 | **Markdown-as-config** | Human-readable, git-diffable, LLM-native. SOUL.md, HEARTBEAT.md, MEMORY.md — the agent's brain is just files. Brilliant. |
 | **Gateway architecture** | Single long-running process as control plane. All channels route through one authority. Clean. |
 | **Heartbeat / Cron duality** | Heartbeat = ambient polling ("anything need me?"). Cron = precise scheduling ("8am briefing"). Both needed. |
-| **Skill system** | Directory-based, YAML frontmatter, composable. Agents can discover and install skills autonomously. |
+| **Skill system** | Directory-based skill authoring is a useful design direction. The live gateway currently exposes a compiled catalog instead. |
 | **Session compaction + memory flush** | Before truncating context, agent writes durable memories to disk. No silent data loss. |
 | **Hybrid search (BM25 + vector)** | Exact match for IDs/env vars, semantic for concepts. Both needed, neither alone is sufficient. |
 | **Local-first, model-agnostic** | No vendor lock-in. Swap Claude for GPT for Ollama without touching the gateway. |
@@ -61,6 +63,8 @@ These three give us something OpenClaw doesn't have:
 ---
 
 ## 3. DIRECTORY STRUCTURE
+
+This directory tree is aspirational. It describes a proposed end-state architecture, not a claim that the current Rust workspace already ships every listed loader, registry, signing, or sandbox component as a live operator-facing feature.
 
 ```
 ghost/
@@ -192,7 +196,7 @@ Everything is denied until explicitly granted. The opposite of OpenClaw.
 |-------|----------|-------|
 | Network binding | `0.0.0.0` (all interfaces) | `127.0.0.1` (loopback only) |
 | Tool execution | Allowed by default | Denied by default, capability-granted |
-| Skill installation | Unvetted, immediate | Quarantined → signed → verified → allowed |
+| Skill installation | Unvetted, immediate | Future state: quarantined and verified before execution. Current live state: compiled gateway catalog with persisted install enablement, not file-backed community loading. |
 | SOUL.md modification | Agent encouraged to self-edit | Immutable root layer + mutable user layer |
 | Credential storage | Shared process memory | Per-agent isolated vault |
 | Audit trail | Optional logging | Append-only signed audit log (mandatory) |
@@ -232,13 +236,14 @@ We detect this:
 
 This catches what hash verification misses: gradual, plausible-looking corruption.
 
-### Skill Signing
+### Skill Signing (Proposed, Not Live)
 
-Every skill has a cryptographic signature (ed25519):
-- Builtin skills: signed by us
-- Community skills: quarantined on install, must be explicitly approved
-- Signature covers: SKILL.md content + all referenced files
-- Tamper detection: signature verified on every load, not just install
+This section describes a possible future model, not current production behavior.
+
+- Target state: builtin skills signed by us and community skills quarantined pending approval.
+- Target state: signatures cover `SKILL.md` content plus referenced files.
+- Target state: signatures are verified on load and before execution.
+- Current live state: compiled skills are built into the workspace and exposed through the gateway catalog. There is no live file-backed signing or quarantine enforcement path today.
 
 ### Blast Radius Containment
 
@@ -478,7 +483,7 @@ observability:
 ### Phase 2: Integrations (Week 5-6)
 - `integrations/cortex/` — Convergence monitoring, MCP server
 - `integrations/drift/` — Codebase indexer, MCP server
-- `skills/` — Registry, loader, signature verification, builtin skills
+- `skills/` — Future registry/loader/signature-verification plan. Current live product uses a compiled gateway skill catalog.
 
 ### Phase 3: Channels + Payments (Week 7-8)
 - `channels/` — Telegram, Discord, Slack, Web UI adapters
@@ -1077,7 +1082,7 @@ Here's how GHOST maps to each:
 | ASI01 | **Agent Goal Hijack** | Vulnerable. SOUL.md is mutable, no intent verification. | Immutable root policy (CORP_POLICY.md). Intent capsule pattern: original goal bound to execution cycle. Policy engine validates every action against stated goal. |
 | ASI02 | **Tool Misuse** | Binary allow/deny. No contextual evaluation. | Cedar-style continuous authorization. Every tool call evaluated in context. Denial = feedback, not termination. Strict JSON schema validation on all tool inputs. |
 | ASI03 | **Identity & Privilege Abuse** | Shared credentials. No per-agent identity. | Per-agent ed25519 keypair. Short-lived session credentials. Capability-based permissions (not roles). Spending caps at gateway level. |
-| ASI04 | **Supply Chain Vulnerabilities** | ClawHub is unvetted. 20% malicious packages. | No marketplace. Builtin skills signed by us. Community skills quarantined + require explicit approval. Signature verification on every load. |
+| ASI04 | **Supply Chain Vulnerabilities** | ClawHub is unvetted. 20% malicious packages. | Current live mitigation: no production marketplace or file-backed community skill execution path. Future target: signed builtin skills plus quarantined community skills before execution. |
 | ASI05 | **Unexpected Code Execution (RCE)** | Shell access with minimal sandboxing. CVE for command injection. | Sandbox-first execution. Capability grants per tool. Shell access requires explicit policy permit. All generated code logged before execution. |
 | ASI06 | **Memory & Context Poisoning** | No memory integrity checks. RAG poisoning persists after cleanup. | Cortex convergence monitoring detects behavioral drift. Memory health scoring. Cryptographic integrity on memory index. Version-controlled memory with rollback. |
 | ASI07 | **Insecure Inter-Agent Communication** | Messages route through gateway but no crypto verification. | ed25519 signed messages. Nonce + timestamp replay prevention. Policy-gated routing. Optional encryption for sensitive payloads. |
@@ -1301,7 +1306,7 @@ We define three deployment profiles, all secure by default.
 □ Health endpoint accessible for monitoring
 □ Tailscale (or equivalent) configured for remote access
 □ No ports exposed to public internet
-□ All community skills quarantined (default)
+□ If community/file-backed skills are introduced, quarantine and signing policy is implemented before exposure
 ```
 
 ---
@@ -1351,7 +1356,7 @@ tests/
 ├── integration/                 # FUNCTIONAL TESTS
 │   ├── channels/                # Each adapter sends/receives correctly
 │   ├── memory/                  # Search, compaction, flush, daily logs
-│   ├── skills/                  # Load, verify, execute, quarantine
+│   ├── skills/                  # Future file-backed skill loading/verification coverage; live product uses compiled catalog tests
 │   ├── pipelines/               # Deterministic execution, approval gates, resume
 │   ├── payments/                # Wallet, escrow, settlement, spending caps
 │   └── multi-agent/             # Routing, isolation, inter-agent messaging

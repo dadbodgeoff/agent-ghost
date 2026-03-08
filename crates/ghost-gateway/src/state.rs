@@ -110,9 +110,8 @@ pub struct AppState {
     /// Embedding engine for memory vector search.
     pub embedding_engine: Arc<tokio::sync::Mutex<cortex_embeddings::EmbeddingEngine>>,
 
-    /// Phase 5 safety skills — platform-managed, always active, cannot be uninstalled.
-    /// Keyed by skill name for O(1) lookup in the execute endpoint.
-    pub safety_skills: Arc<std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>>>,
+    /// Canonical compiled-skill catalog and install-state authority.
+    pub skill_catalog: Arc<crate::skill_catalog::SkillCatalogService>,
 
     /// WP9-L: Client heartbeat tracker — maps session_id to last heartbeat instant.
     /// Frontend POSTs every 30s; backend pauses SSE if stale >90s.

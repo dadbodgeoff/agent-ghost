@@ -1,4 +1,4 @@
-//! ghost skill — WASM skill management (T-4.2.1–T-4.2.3, §4.1).
+//! ghost skill — compiled skill catalog management.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,15 +18,27 @@ pub struct SkillEntry {
     pub name: String,
     pub version: String,
     pub description: String,
-    pub capabilities: Vec<String>,
     pub source: String,
+    pub removable: bool,
+    pub installable: bool,
+    pub execution_mode: String,
+    pub policy_capability: String,
+    pub privileges: Vec<String>,
     pub state: String,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct SkillListResponse {
     installed: Vec<SkillEntry>,
     available: Vec<SkillEntry>,
+}
+
+fn direct_mode_not_supported() -> CliError {
+    CliError::Usage(
+        "skill catalog commands require a running gateway; direct manifest-backed skill mode is no longer supported"
+            .into(),
+    )
 }
 
 impl TableDisplay for SkillListResponse {
@@ -40,7 +52,7 @@ impl TableDisplay for SkillListResponse {
             println!("Installed Skills ({}):", self.installed.len());
             println!(
                 "  {:<20}  {:<10}  {:<10}  {:<8}  {}",
-                "NAME", "VERSION", "SOURCE", "STATE", "CAPABILITIES"
+                "NAME", "VERSION", "STATE", "MODE", "POLICY"
             );
             println!("  {}", "─".repeat(75));
             for s in &self.installed {
@@ -48,10 +60,13 @@ impl TableDisplay for SkillListResponse {
                     "  {:<20}  {:<10}  {:<10}  {:<8}  {}",
                     &s.name[..s.name.len().min(20)],
                     &s.version[..s.version.len().min(10)],
-                    &s.source[..s.source.len().min(10)],
                     &s.state[..s.state.len().min(8)],
-                    s.capabilities.join(", ")
+                    &s.execution_mode[..s.execution_mode.len().min(8)],
+                    s.policy_capability
                 );
+                if !s.privileges.is_empty() {
+                    println!("       privileges: {}", s.privileges.join(" | "));
+                }
             }
         }
 
@@ -60,16 +75,23 @@ impl TableDisplay for SkillListResponse {
                 println!();
             }
             println!("Available Skills ({}):", self.available.len());
-            println!("  {:<20}  {:<10}  {}", "NAME", "VERSION", "DESCRIPTION");
+            println!(
+                "  {:<20}  {:<10}  {:<10}  {}",
+                "NAME", "VERSION", "STATE", "DESCRIPTION"
+            );
             println!("  {}", "─".repeat(60));
             for s in &self.available {
                 let desc = &s.description[..s.description.len().min(40)];
                 println!(
-                    "  {:<20}  {:<10}  {}",
+                    "  {:<20}  {:<10}  {:<10}  {}",
                     &s.name[..s.name.len().min(20)],
                     &s.version[..s.version.len().min(10)],
+                    &s.state[..s.state.len().min(10)],
                     desc
                 );
+                if !s.privileges.is_empty() {
+                    println!("       privileges: {}", s.privileges.join(" | "));
+                }
             }
         }
     }
@@ -90,48 +112,7 @@ pub async fn run_list(args: SkillListArgs, backend: &CliBackend) -> Result<(), C
                 serde_json::from_value(body["available"].clone()).unwrap_or_default();
             (installed, available)
         }
-        CliBackend::Direct { .. } => {
-            // Direct: read from ~/.ghost/skills/ directory.
-            let skills_dir = crate::bootstrap::shellexpand_tilde("~/.ghost/skills");
-            let mut installed = Vec::new();
-            if let Ok(dir) = std::fs::read_dir(&skills_dir) {
-                for entry in dir.flatten() {
-                    let path = entry.path();
-                    // Look for manifest.json files in skill directories.
-                    let manifest_path = if path.is_dir() {
-                        path.join("manifest.json")
-                    } else {
-                        continue;
-                    };
-                    if manifest_path.exists() {
-                        if let Ok(data) = std::fs::read_to_string(&manifest_path) {
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-                                installed.push(SkillEntry {
-                                    id: v["name"].as_str().unwrap_or("").to_string(),
-                                    name: v["name"].as_str().unwrap_or("").to_string(),
-                                    version: v["version"].as_str().unwrap_or("0.0.0").to_string(),
-                                    description: v["description"]
-                                        .as_str()
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    capabilities: v["capabilities"]
-                                        .as_array()
-                                        .map(|a| {
-                                            a.iter()
-                                                .filter_map(|c| c.as_str().map(String::from))
-                                                .collect()
-                                        })
-                                        .unwrap_or_default(),
-                                    source: "user".to_string(),
-                                    state: "loaded".to_string(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            (installed, Vec::new())
-        }
+        CliBackend::Direct { .. } => return Err(direct_mode_not_supported()),
     };
 
     print_output(
@@ -169,10 +150,12 @@ impl TableDisplay for InstallResult {
 
 /// Run `ghost skill install <path>`.
 pub async fn run_install(args: SkillInstallArgs, backend: &CliBackend) -> Result<(), CliError> {
-    backend.require(super::backend::BackendRequirement::HttpOnly)?;
-    let client = backend.http();
+    let client = match backend {
+        CliBackend::Http { client } => client,
+        CliBackend::Direct { .. } => return Err(direct_mode_not_supported()),
+    };
 
-    // The path argument is the skill ID for the bundled skills API.
+    // The path argument is the compiled skill name exposed by the gateway catalog.
     let path = format!("/api/skills/{}/install", args.path);
     let resp = client.post(&path, &serde_json::json!({})).await?;
     let body: serde_json::Value = resp
@@ -202,9 +185,12 @@ struct SkillDetail {
     name: String,
     version: String,
     description: String,
-    capabilities: Vec<String>,
     source: String,
+    execution_mode: String,
+    policy_capability: String,
+    privileges: Vec<String>,
     state: String,
+    capabilities: Vec<String>,
 }
 
 impl TableDisplay for SkillDetail {
@@ -212,9 +198,18 @@ impl TableDisplay for SkillDetail {
         println!("Skill: {}", self.name);
         println!("  Version:      {}", self.version);
         println!("  Description:  {}", self.description);
-        println!("  Source:        {}", self.source);
-        println!("  State:         {}", self.state);
-        println!("  Capabilities: {}", self.capabilities.join(", "));
+        println!("  Source:       {}", self.source);
+        println!("  Mode:         {}", self.execution_mode);
+        println!("  State:        {}", self.state);
+        println!("  Policy:       {}", self.policy_capability);
+        if self.privileges.is_empty() {
+            println!("  Privileges:   none declared");
+        } else {
+            println!("  Privileges:");
+            for privilege in &self.privileges {
+                println!("    - {}", privilege);
+            }
+        }
     }
 }
 
@@ -245,9 +240,12 @@ pub async fn run_inspect(args: SkillInspectArgs, backend: &CliBackend) -> Result
                         name: s.name.clone(),
                         version: s.version.clone(),
                         description: s.description.clone(),
-                        capabilities: s.capabilities.clone(),
                         source: s.source.clone(),
+                        execution_mode: s.execution_mode.clone(),
+                        policy_capability: s.policy_capability.clone(),
+                        privileges: s.privileges.clone(),
                         state: s.state.clone(),
+                        capabilities: s.capabilities.clone(),
                     };
                     print_output(&detail, args.output);
                 }
@@ -259,40 +257,59 @@ pub async fn run_inspect(args: SkillInspectArgs, backend: &CliBackend) -> Result
                 }
             }
         }
-        CliBackend::Direct { .. } => {
-            // Direct: try to read from ~/.ghost/skills/<name>/manifest.json.
-            let manifest_path = format!(
-                "{}/{}/manifest.json",
-                crate::bootstrap::shellexpand_tilde("~/.ghost/skills"),
-                args.name
-            );
-            let data = std::fs::read_to_string(&manifest_path).map_err(|_| {
-                CliError::NotFound(format!(
-                    "skill '{}' not found in ~/.ghost/skills/",
-                    args.name
-                ))
-            })?;
-            let v: serde_json::Value = serde_json::from_str(&data)
-                .map_err(|e| CliError::Internal(format!("parse manifest: {e}")))?;
-
-            let detail = SkillDetail {
-                name: v["name"].as_str().unwrap_or("").to_string(),
-                version: v["version"].as_str().unwrap_or("0.0.0").to_string(),
-                description: v["description"].as_str().unwrap_or("").to_string(),
-                capabilities: v["capabilities"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|c| c.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                source: "user".to_string(),
-                state: "loaded".to_string(),
-            };
-            print_output(&detail, args.output);
-        }
+        CliBackend::Direct { .. } => return Err(direct_mode_not_supported()),
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn direct_backend() -> CliBackend {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let db = crate::db_pool::create_pool(tmp_dir.path().join("cli-skill.db")).unwrap();
+        CliBackend::Direct {
+            config: crate::config::GhostConfig::default(),
+            db,
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_backend_is_rejected_for_list_install_and_inspect() {
+        let backend = direct_backend();
+
+        let list_error = run_list(
+            SkillListArgs {
+                output: OutputFormat::Json,
+            },
+            &backend,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(list_error, CliError::Usage(_)));
+
+        let install_error = run_install(
+            SkillInstallArgs {
+                path: "note_take".into(),
+                output: OutputFormat::Json,
+            },
+            &backend,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(install_error, CliError::Usage(_)));
+
+        let inspect_error = run_inspect(
+            SkillInspectArgs {
+                name: "note_take".into(),
+                output: OutputFormat::Json,
+            },
+            &backend,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(inspect_error, CliError::Usage(_)));
+    }
 }

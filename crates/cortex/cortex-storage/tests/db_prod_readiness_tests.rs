@@ -131,6 +131,31 @@ fn latest_version_db_missing_channels_indexes_fails_verification() {
 }
 
 #[test]
+fn latest_version_db_with_wrong_column_type_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch(
+        "DROP TABLE monitor_threshold_config;
+         CREATE TABLE monitor_threshold_config (
+             config_key TEXT PRIMARY KEY,
+             critical_override_threshold TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             updated_by TEXT NOT NULL,
+             confirmed_by TEXT
+         );",
+    )
+    .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "table monitor_threshold_config column critical_override_threshold has type TEXT, expected REAL"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
 fn runtime_created_audit_log_shape_migrates_to_canonical_shape() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("runtime-audit.db");
@@ -357,10 +382,11 @@ fn migration_backup_is_restorable_under_wal_mode_and_receipt_is_written() {
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .collect::<Vec<_>>();
+    let expected_prefix = format!("{}_", migrations::LATEST_VERSION);
     assert!(
         receipts
             .iter()
-            .any(|name| name.starts_with("50_") && name.ends_with(".json")),
+            .any(|name| name.starts_with(&expected_prefix) && name.ends_with(".json")),
         "expected receipt in {:?}, got {:?}",
         receipt_dir(&db_path),
         receipts

@@ -21,6 +21,7 @@ pub mod operation_journal_queries;
 pub mod pc_control_queries;
 pub mod reflection_queries;
 pub mod revoked_token_queries;
+pub mod skill_install_state_queries;
 pub mod stream_event_queries;
 pub mod studio_chat_queries;
 pub mod timer_queries;

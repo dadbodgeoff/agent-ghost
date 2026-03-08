@@ -17,6 +17,7 @@ export interface CreateAgentParams {
   name: string;
   spending_cap?: number;
   capabilities?: string[];
+  skills?: string[];
   generate_keypair?: boolean;
 }
 

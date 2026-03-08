@@ -29,6 +29,7 @@ pub mod runtime_status;
 pub mod safety;
 pub mod session;
 pub mod shutdown;
+pub mod skill_catalog;
 pub mod state;
 
 #[cfg(feature = "otel")]

@@ -279,49 +279,39 @@ async fn run_interactive_chat_inner() {
 
     let mut stdout = io::stdout();
     let ghost_config = load_ghost_config();
+    let effective_config = ghost_config.clone().unwrap_or_default();
     let cli_agent = ghost_config
         .as_ref()
         .and_then(|cfg| cfg.agents.first().cloned());
 
-    // Wire DB connection for proposal/violation/reflection persistence.
+    // Wire DB persistence and compiled skill resolution through the same
+    // catalog path used by the gateway runtime.
     let db_path = crate::bootstrap::shellexpand_tilde("~/.ghost/data/ghost.db");
-    let db = if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-        if let Err(e) = cortex_storage::sqlite::apply_writer_pragmas(&conn) {
-            tracing::warn!(error = %e, path = %db_path, "PRAGMA setup failed — DB may have degraded performance");
+    let db_pool = match crate::db_pool::create_pool(std::path::PathBuf::from(&db_path)) {
+        Ok(pool) => {
+            let migration_result = {
+                let writer = pool.writer_for_migrations().await;
+                cortex_storage::migrations::run_migrations(&writer)
+            };
+            match migration_result {
+                Ok(()) => {
+                    tracing::info!(path = %db_path, "DB pool wired into CLI runtime");
+                    Some(pool)
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, path = %db_path, "DB migrations failed — persistence disabled");
+                    None
+                }
+            }
         }
-        let db = std::sync::Arc::new(std::sync::Mutex::new(conn));
-        tracing::info!(path = %db_path, "DB wired into AgentRunner for persistence");
-        Some(db)
-    } else {
-        tracing::warn!(path = %db_path, "Could not open DB — persistence disabled");
-        None
+        Err(error) => {
+            tracing::warn!(error = %error, path = %db_path, "Could not open DB pool — persistence disabled");
+            None
+        }
     };
-
-    // Wire skills into the agent loop as LLM-callable tools.
-    let mut all_skills: std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>> =
-        ghost_skills::safety_skills::all_safety_skills()
-            .into_iter()
-            .map(|s| (s.name().to_string(), s))
-            .collect();
-
-    for skill in ghost_skills::git_skills::all_git_skills() {
-        all_skills.insert(skill.name().to_string(), skill);
-    }
-    for skill in ghost_skills::code_analysis::all_code_analysis_skills() {
-        all_skills.insert(skill.name().to_string(), skill);
-    }
-    for skill in ghost_skills::bundled_skills::all_bundled_skills() {
-        all_skills.insert(skill.name().to_string(), skill);
-    }
-    for skill in ghost_skills::delegation_skills::all_delegation_skills() {
-        all_skills.insert(skill.name().to_string(), skill);
-    }
-    if let Some(config) = &ghost_config {
-        let pc_skills = ghost_pc_control::all_pc_control_skills(&config.pc_control);
-        for skill in pc_skills {
-            all_skills.insert(skill.name().to_string(), skill);
-        }
-    }
+    let db = db_pool
+        .as_ref()
+        .and_then(|pool| pool.legacy_connection().ok());
 
     let cost_tracker = std::sync::Arc::new(crate::cost::tracker::CostTracker::new());
     let agent_id = cli_agent
@@ -340,6 +330,7 @@ async fn run_interactive_chat_inner() {
                 .as_ref()
                 .map(|agent| agent.capabilities.clone())
                 .unwrap_or_default(),
+            skill_allowlist: cli_agent.as_ref().and_then(|agent| agent.skills.clone()),
             spending_cap: cli_agent
                 .as_ref()
                 .map(|agent| agent.spending_cap)
@@ -359,12 +350,31 @@ async fn run_interactive_chat_inner() {
             .map(|agent| agent.capabilities.clone())
             .unwrap_or_default(),
     };
-    let allowlist = cli_agent.as_ref().and_then(|agent| agent.skills.clone());
+    let resolved_skills = if let Some(pool) = &db_pool {
+        let compiled =
+            crate::skill_catalog::definitions::build_compiled_skill_definitions(&effective_config);
+        match crate::skill_catalog::service::SkillCatalogService::new(
+            compiled.definitions,
+            Arc::clone(pool),
+        )
+        .await
+        {
+            Ok(catalog) => catalog
+                .resolve_for_runtime(&runtime_ctx.agent, None)
+                .unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to initialize CLI skill catalog");
+                crate::skill_catalog::ResolvedSkillSet::default()
+            }
+        }
+    } else {
+        crate::skill_catalog::ResolvedSkillSet::default()
+    };
     let mut runner = build_live_runner_with_dependencies(
         &runtime_ctx,
         RuntimeRunnerDependencies {
             db: db.clone(),
-            skill_catalog: Arc::new(all_skills),
+            resolved_skills,
             tools_config: ghost_config
                 .as_ref()
                 .map(|cfg| cfg.tools.clone())
@@ -389,7 +399,7 @@ async fn run_interactive_chat_inner() {
         RunnerBuildOptions {
             system_prompt: None,
             conversation_history: Vec::new(),
-            skill_allowlist: allowlist,
+            skill_allowlist: None,
         },
     )
     .expect("cli runtime safety runner construction should not fail");

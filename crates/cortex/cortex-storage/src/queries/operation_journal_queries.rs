@@ -21,6 +21,8 @@ pub struct OperationJournalRow {
     pub last_seen_at: String,
     pub committed_at: Option<String>,
     pub lease_expires_at: Option<String>,
+    pub owner_token: String,
+    pub lease_epoch: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,8 @@ pub struct NewOperationJournalEntry<'a> {
     pub request_body: &'a str,
     pub created_at: &'a str,
     pub lease_expires_at: &'a str,
+    pub owner_token: &'a str,
+    pub lease_epoch: i64,
 }
 
 fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OperationJournalRow> {
@@ -57,6 +61,8 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OperationJournalRow> {
         last_seen_at: row.get(14)?,
         committed_at: row.get(15)?,
         lease_expires_at: row.get(16)?,
+        owner_token: row.get(17)?,
+        lease_epoch: row.get(18)?,
     })
 }
 
@@ -69,7 +75,8 @@ pub fn get_by_actor_and_idempotency_key(
         "SELECT id, actor_key, method, route_template, operation_id, request_id,
                 idempotency_key, request_fingerprint, request_body, status,
                 response_status_code, response_body, response_content_type,
-                created_at, last_seen_at, committed_at, lease_expires_at
+                created_at, last_seen_at, committed_at, lease_expires_at,
+                owner_token, lease_epoch
          FROM operation_journal
          WHERE actor_key = ?1 AND idempotency_key = ?2",
         params![actor_key, idempotency_key],
@@ -87,8 +94,8 @@ pub fn insert_in_progress(
         "INSERT INTO operation_journal (
             id, actor_key, method, route_template, operation_id, request_id,
             idempotency_key, request_fingerprint, request_body, status,
-            created_at, last_seen_at, lease_expires_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'in_progress', ?10, ?10, ?11)",
+            created_at, last_seen_at, lease_expires_at, owner_token, lease_epoch
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'in_progress', ?10, ?10, ?11, ?12, ?13)",
         params![
             entry.id,
             entry.actor_key,
@@ -101,6 +108,8 @@ pub fn insert_in_progress(
             entry.request_body,
             entry.created_at,
             entry.lease_expires_at,
+            entry.owner_token,
+            entry.lease_epoch,
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
@@ -112,44 +121,97 @@ pub fn take_over_in_progress(
     id: &str,
     operation_id: &str,
     request_id: Option<&str>,
+    owner_token: &str,
     last_seen_at: &str,
     lease_expires_at: &str,
-) -> CortexResult<()> {
-    conn.execute(
+) -> CortexResult<bool> {
+    let updated = conn.execute(
         "UPDATE operation_journal
          SET operation_id = ?2,
              request_id = ?3,
-             last_seen_at = ?4,
-             lease_expires_at = ?5
+             owner_token = ?4,
+             last_seen_at = ?5,
+             lease_expires_at = ?6,
+             lease_epoch = lease_epoch + 1
          WHERE id = ?1 AND status = 'in_progress'",
-        params![id, operation_id, request_id, last_seen_at, lease_expires_at],
+        params![
+            id,
+            operation_id,
+            request_id,
+            owner_token,
+            last_seen_at,
+            lease_expires_at
+        ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
-    Ok(())
+    Ok(updated > 0)
+}
+
+pub fn restart_aborted(
+    conn: &Connection,
+    id: &str,
+    operation_id: &str,
+    request_id: Option<&str>,
+    owner_token: &str,
+    last_seen_at: &str,
+    lease_expires_at: &str,
+) -> CortexResult<bool> {
+    let updated = conn.execute(
+        "UPDATE operation_journal
+         SET status = 'in_progress',
+             operation_id = ?2,
+             request_id = ?3,
+             owner_token = ?4,
+             response_status_code = NULL,
+             response_body = NULL,
+             response_content_type = NULL,
+             committed_at = NULL,
+             last_seen_at = ?5,
+             lease_expires_at = ?6,
+             lease_epoch = lease_epoch + 1
+         WHERE id = ?1 AND status = 'aborted'",
+        params![
+            id,
+            operation_id,
+            request_id,
+            owner_token,
+            last_seen_at,
+            lease_expires_at
+        ],
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
+    Ok(updated > 0)
 }
 
 pub fn mark_committed(
     conn: &Connection,
     id: &str,
+    owner_token: &str,
+    lease_epoch: i64,
     request_id: Option<&str>,
     response_status_code: i64,
     response_body: &str,
     response_content_type: &str,
     committed_at: &str,
-) -> CortexResult<()> {
-    conn.execute(
+) -> CortexResult<bool> {
+    let updated = conn.execute(
         "UPDATE operation_journal
          SET status = 'committed',
-             request_id = ?2,
-             response_status_code = ?3,
-             response_body = ?4,
-             response_content_type = ?5,
-             last_seen_at = ?6,
-             committed_at = ?6,
+             request_id = ?4,
+             response_status_code = ?5,
+             response_body = ?6,
+             response_content_type = ?7,
+             last_seen_at = ?8,
+             committed_at = ?8,
              lease_expires_at = NULL
-         WHERE id = ?1",
+         WHERE id = ?1
+           AND owner_token = ?2
+           AND lease_epoch = ?3
+           AND status = 'in_progress'",
         params![
             id,
+            owner_token,
+            lease_epoch,
             request_id,
             response_status_code,
             response_body,
@@ -158,13 +220,57 @@ pub fn mark_committed(
         ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
-    Ok(())
+    Ok(updated > 0)
 }
 
-pub fn delete_entry(conn: &Connection, id: &str) -> CortexResult<()> {
-    conn.execute("DELETE FROM operation_journal WHERE id = ?1", params![id])
-        .map_err(|e| to_storage_err(e.to_string()))?;
-    Ok(())
+pub fn mark_aborted(
+    conn: &Connection,
+    id: &str,
+    owner_token: &str,
+    lease_epoch: i64,
+    request_id: Option<&str>,
+    aborted_at: &str,
+) -> CortexResult<bool> {
+    let updated = conn.execute(
+        "UPDATE operation_journal
+         SET status = 'aborted',
+             request_id = ?4,
+             response_status_code = NULL,
+             response_body = NULL,
+             response_content_type = NULL,
+             committed_at = NULL,
+             last_seen_at = ?5,
+             lease_expires_at = NULL
+         WHERE id = ?1
+           AND owner_token = ?2
+           AND lease_epoch = ?3
+           AND status = 'in_progress'",
+        params![id, owner_token, lease_epoch, request_id, aborted_at],
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
+    Ok(updated > 0)
+}
+
+pub fn renew_lease(
+    conn: &Connection,
+    id: &str,
+    owner_token: &str,
+    lease_epoch: i64,
+    last_seen_at: &str,
+    lease_expires_at: &str,
+) -> CortexResult<bool> {
+    let updated = conn.execute(
+        "UPDATE operation_journal
+         SET last_seen_at = ?4,
+             lease_expires_at = ?5
+         WHERE id = ?1
+           AND owner_token = ?2
+           AND lease_epoch = ?3
+           AND status = 'in_progress'",
+        params![id, owner_token, lease_epoch, last_seen_at, lease_expires_at],
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
+    Ok(updated > 0)
 }
 
 pub fn get_by_operation_id(
@@ -175,7 +281,8 @@ pub fn get_by_operation_id(
         "SELECT id, actor_key, method, route_template, operation_id, request_id,
                 idempotency_key, request_fingerprint, request_body, status,
                 response_status_code, response_body, response_content_type,
-                created_at, last_seen_at, committed_at, lease_expires_at
+                created_at, last_seen_at, committed_at, lease_expires_at,
+                owner_token, lease_epoch
          FROM operation_journal
          WHERE operation_id = ?1",
         params![operation_id],

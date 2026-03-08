@@ -2,7 +2,7 @@
 
 use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 #[derive(Debug, Clone)]
 pub struct LiveExecutionRecord {
@@ -67,6 +67,18 @@ pub fn get_by_journal_id(
         Some(Err(e)) => Err(to_storage_err(e.to_string())),
         None => Ok(None),
     }
+}
+
+pub fn get_by_id(conn: &Connection, id: &str) -> CortexResult<Option<LiveExecutionRecord>> {
+    conn.query_row(
+        "SELECT id, journal_id, operation_id, route_kind, actor_key, status, state_json, created_at, updated_at
+         FROM live_execution_records
+         WHERE id = ?1",
+        params![id],
+        map_row,
+    )
+    .optional()
+    .map_err(|e| to_storage_err(e.to_string()))
 }
 
 pub fn update_status_and_state(

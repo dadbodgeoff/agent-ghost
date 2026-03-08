@@ -274,7 +274,7 @@
           <div class="empty-state">
             <p>Send a message to start the conversation.</p>
             {#if !session.system_prompt}
-              <p class="hint">SOUL.md + environment context + 44 skills auto-injected.</p>
+              <p class="hint">Default runtime prompt and environment context are injected automatically. Installed compiled skills remain subject to gateway runtime policy.</p>
             {/if}
           </div>
         {:else}

@@ -61,7 +61,15 @@ export type {
 
 // ── Skills ──
 export { SkillsAPI } from './skills.js';
-export type { Skill, ListSkillsResult } from './skills.js';
+export type {
+  Skill,
+  SkillSource,
+  SkillExecutionMode,
+  SkillState,
+  ListSkillsResult,
+  ExecuteSkillParams,
+  ExecuteSkillResult,
+} from './skills.js';
 
 // ── Safety ──
 export { SafetyAPI } from './safety.js';

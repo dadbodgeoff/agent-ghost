@@ -57,6 +57,7 @@ use utoipa::OpenApi;
         write_memory,
         archive_memory,
         unarchive_memory,
+        get_live_execution,
         get_costs,
         list_workflows,
         get_workflow,
@@ -182,6 +183,7 @@ use utoipa::OpenApi;
             AgentCostSchema,
             WorkflowSchema,
             WorkflowExecutionSchema,
+            LiveExecutionSchema,
             ChannelSchema,
             ItpEventSchema,
             OAuthProviderSchema,
@@ -199,7 +201,13 @@ use utoipa::OpenApi;
             PcControlActionLogSchema,
             PushSubscriptionSchema,
             WebhookSchema,
-            SkillSchema,
+            crate::skill_catalog::SkillStateDto,
+            crate::skill_catalog::SkillSummaryDto,
+            crate::skill_catalog::SkillListResponseDto,
+            crate::skill_catalog::ExecuteSkillRequestDto,
+            crate::skill_catalog::ExecuteSkillResponseDto,
+            crate::skill_catalog::definitions::SkillExecutionMode,
+            crate::skill_catalog::definitions::SkillSourceKind,
             A2ATaskSchema,
         )
     ),
@@ -211,6 +219,7 @@ use utoipa::OpenApi;
         (name = "sessions", description = "Session listing and replay"),
         (name = "goals", description = "Proposal/goal lifecycle"),
         (name = "memory", description = "Memory store operations"),
+        (name = "executions", description = "Accepted-boundary execution recovery status"),
         (name = "state", description = "CRDT and state inspection"),
         (name = "integrity", description = "Hash-chain integrity verification"),
         (name = "costs", description = "Per-agent cost tracking"),
@@ -224,7 +233,7 @@ use utoipa::OpenApi;
         (name = "admin", description = "Backup, restore, and administrative data operations"),
         (name = "provider-keys", description = "Provider key management"),
         (name = "webhooks", description = "Webhook configuration and testing"),
-        (name = "skills", description = "Skill marketplace management"),
+        (name = "skills", description = "Gateway-owned compiled skill catalog management and execution"),
         (name = "channels", description = "Channel lifecycle and reconnect operations"),
         (name = "itp", description = "ITP event inspection"),
         (name = "oauth", description = "OAuth provider and connection flows"),
@@ -268,6 +277,7 @@ pub struct CreateAgentRequestSchema {
     pub name: String,
     pub spending_cap: Option<f64>,
     pub capabilities: Option<Vec<String>>,
+    pub skills: Option<Vec<String>>,
     pub generate_keypair: Option<bool>,
 }
 
@@ -359,6 +369,20 @@ pub struct WorkflowExecutionSchema {
     pub input: Option<serde_json::Value>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct LiveExecutionSchema {
+    pub execution_id: String,
+    pub route_kind: String,
+    pub status: String,
+    pub operation_id: String,
+    pub accepted_response: serde_json::Value,
+    pub result_status_code: Option<u16>,
+    pub result_body: Option<serde_json::Value>,
+    pub recovery_required: bool,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -1011,6 +1035,18 @@ async fn branch_runtime_session() {}
 async fn heartbeat_runtime_session() {}
 
 #[utoipa::path(
+    get, path = "/api/live-executions/{execution_id}",
+    tag = "executions",
+    params(("execution_id" = String, Path, description = "Durable live execution identifier")),
+    responses(
+        (status = 200, description = "Accepted-boundary execution state", body = LiveExecutionSchema),
+        (status = 404, description = "Execution not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_live_execution() {}
+
+#[utoipa::path(
     get, path = "/api/workflows",
     tag = "workflows",
     responses(
@@ -1178,7 +1214,8 @@ async fn delete_studio_session() {}
     params(("id" = String, Path, description = "Studio session ID")),
     request_body = inline(serde_json::Value),
     responses(
-        (status = 200, description = "Studio message accepted", body = inline(serde_json::Value)),
+        (status = 200, description = "Studio message completed", body = inline(serde_json::Value)),
+        (status = 202, description = "Studio message accepted and requires recovery polling", body = inline(serde_json::Value)),
         (status = 404, description = "Studio session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1272,6 +1309,7 @@ async fn verify_integrity_chain() {}
     request_body = inline(serde_json::Value),
     responses(
         (status = 200, description = "Single-turn agent chat result", body = inline(serde_json::Value)),
+        (status = 202, description = "Agent chat accepted and requires recovery polling", body = inline(serde_json::Value)),
         (status = 400, description = "Invalid chat request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1464,10 +1502,13 @@ async fn oauth_callback() {}
     request_body = inline(serde_json::Value),
     responses(
         (status = 200, description = "OAuth-backed API call result", body = inline(serde_json::Value)),
+        (status = 202, description = "OAuth-backed API call accepted but recovery is required", body = inline(serde_json::Value)),
         (status = 400, description = "Invalid OAuth execute request", body = ErrorResponseSchema),
         (status = 401, description = "Connection token expired or revoked", body = ErrorResponseSchema),
         (status = 404, description = "OAuth connection not found", body = ErrorResponseSchema),
+        (status = 409, description = "Idempotency conflict", body = ErrorResponseSchema),
         (status = 502, description = "Provider error", body = ErrorResponseSchema),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1719,17 +1760,6 @@ pub struct WebhookSchema {
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct SkillSchema {
-    pub id: String,
-    pub skill_name: String,
-    pub version: String,
-    pub description: String,
-    pub capabilities: Vec<String>,
-    pub source: String,
-    pub state: String,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct A2ATaskSchema {
     pub id: String,
     pub target_agent: String,
@@ -1803,7 +1833,7 @@ async fn test_webhook() {}
     get, path = "/api/skills",
     tag = "skills",
     responses(
-        (status = 200, description = "Installed and available skills"),
+        (status = 200, description = "Installed and available skills", body = crate::skill_catalog::SkillListResponseDto),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1814,9 +1844,9 @@ async fn list_skills() {}
     tag = "skills",
     params(("id" = String, Path, description = "Skill ID")),
     responses(
-        (status = 200, description = "Skill installed"),
-        (status = 404, description = "Skill not found"),
-        (status = 409, description = "Skill already installed"),
+        (status = 200, description = "Skill installed", body = crate::skill_catalog::SkillSummaryDto),
+        (status = 404, description = "Skill not found", body = ErrorResponseSchema),
+        (status = 409, description = "Skill already installed or cannot be installed", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1827,8 +1857,9 @@ async fn install_skill() {}
     tag = "skills",
     params(("id" = String, Path, description = "Skill ID")),
     responses(
-        (status = 200, description = "Skill uninstalled"),
-        (status = 404, description = "Skill not found"),
+        (status = 200, description = "Skill uninstalled", body = crate::skill_catalog::SkillSummaryDto),
+        (status = 404, description = "Skill not found", body = ErrorResponseSchema),
+        (status = 409, description = "Skill cannot be uninstalled", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1837,12 +1868,14 @@ async fn uninstall_skill() {}
 #[utoipa::path(
     post, path = "/api/skills/{name}/execute",
     tag = "skills",
-    params(("name" = String, Path, description = "Safety skill name")),
-    request_body = inline(serde_json::Value),
+    params(("name" = String, Path, description = "Compiled skill name")),
+    request_body = crate::skill_catalog::ExecuteSkillRequestDto,
     responses(
-        (status = 200, description = "Skill execution result", body = inline(serde_json::Value)),
+        (status = 200, description = "Skill execution result", body = crate::skill_catalog::ExecuteSkillResponseDto),
         (status = 400, description = "Invalid skill request", body = ErrorResponseSchema),
+        (status = 403, description = "Skill blocked by policy or agent allowlist", body = ErrorResponseSchema),
         (status = 404, description = "Skill not found", body = ErrorResponseSchema),
+        (status = 409, description = "Skill is disabled or unavailable", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]

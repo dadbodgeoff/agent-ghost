@@ -362,6 +362,7 @@ mod registry_bootstrap_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: Vec::new(),
             capabilities: Vec::new(),
+            skills: None,
             spending_cap: 5.0,
             template: None,
         };
@@ -381,6 +382,7 @@ mod registry_bootstrap_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: Vec::new(),
             capabilities: Vec::new(),
+            skills: None,
             spending_cap: 5.0,
             template: Some("code-review".into()),
         };
@@ -400,6 +402,7 @@ mod registry_bootstrap_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: Vec::new(),
             capabilities: Vec::new(),
+            skills: None,
             spending_cap: 5.0,
             template: None,
         };
@@ -423,6 +426,7 @@ mod registry_bootstrap_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: Vec::new(),
             capabilities: Vec::new(),
+            skills: None,
             spending_cap: 5.0,
             template: None,
         });
@@ -432,6 +436,7 @@ mod registry_bootstrap_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: Vec::new(),
             capabilities: Vec::new(),
+            skills: None,
             spending_cap: 10.0,
             template: None,
         });
@@ -557,11 +562,15 @@ mod appstate_field_tests {
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
 
-        let safety_skills: std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>> =
-            ghost_skills::safety_skills::all_safety_skills()
-                .into_iter()
-                .map(|s| (s.name().to_string(), s))
-                .collect();
+        let skill_catalog = ghost_gateway::skill_catalog::SkillCatalogService::new(
+            ghost_gateway::skill_catalog::definitions::build_compiled_skill_definitions(
+                &ghost_gateway::config::GhostConfig::default(),
+            )
+            .definitions,
+            Arc::clone(&db),
+        )
+        .await
+        .unwrap();
 
         let _state = AppState {
             gateway: Arc::new(ghost_gateway::gateway::GatewaySharedState::new()),
@@ -598,7 +607,7 @@ mod appstate_field_tests {
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
-            safety_skills: Arc::new(safety_skills),
+            skill_catalog: Arc::new(skill_catalog),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
         };

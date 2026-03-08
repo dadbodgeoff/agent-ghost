@@ -6,8 +6,11 @@
 //! Vault key auto-generated on first use if not present.
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
+use age::secrecy::SecretString as AgeSecretString;
+use age::{Decryptor, Encryptor};
 use chrono::{DateTime, Utc};
 use ghost_secrets::{ExposeSecret, SecretProvider, SecretString};
 use rand::Rng;
@@ -52,6 +55,12 @@ pub(crate) struct StoredDisconnectTombstone {
     pub ref_id: OAuthRefId,
     pub provider_name: String,
     pub disconnected_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CipherFormat {
+    Age,
+    LegacyXor,
 }
 
 impl TokenStore {
@@ -287,21 +296,10 @@ impl TokenStore {
     where
         T: Serialize,
     {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| OAuthError::StorageError(format!("create dir: {e}")))?;
-        }
-
         let json = serde_json::to_vec(value)
             .map_err(|e| OAuthError::StorageError(format!("serialize: {e}")))?;
         let key = self.get_or_create_vault_key()?;
-        let encrypted = Self::encrypt(&json, key.expose_secret());
-
-        let tmp = target.with_extension("tmp");
-        fs::write(&tmp, &encrypted)
-            .map_err(|e| OAuthError::StorageError(format!("write tmp: {e}")))?;
-        fs::rename(&tmp, &target).map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
-        Ok(())
+        self.write_encrypted_bytes(&target, &json, key.expose_secret())
     }
 
     fn read_encrypted_json<T>(&self, path: &PathBuf) -> Result<Option<T>, OAuthError>
@@ -315,10 +313,24 @@ impl TokenStore {
         let encrypted =
             fs::read(path).map_err(|e| OAuthError::StorageError(format!("read: {e}")))?;
         let key = self.get_or_create_vault_key()?;
-        let decrypted = Self::decrypt(&encrypted, key.expose_secret())
+        let (decrypted, cipher_format) = Self::decrypt(&encrypted, key.expose_secret())
             .map_err(|e| OAuthError::EncryptionError(format!("decrypt: {e}")))?;
         let value = serde_json::from_slice(&decrypted)
             .map_err(|e| OAuthError::StorageError(format!("deserialize: {e}")))?;
+        if matches!(cipher_format, CipherFormat::LegacyXor) {
+            if let Err(error) = self.write_encrypted_bytes(path, &decrypted, key.expose_secret()) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "failed to upgrade legacy XOR-encrypted OAuth record to age"
+                );
+            } else {
+                tracing::info!(
+                    path = %path.display(),
+                    "upgraded legacy XOR-encrypted OAuth record to age"
+                );
+            }
+        }
         Ok(Some(value))
     }
 
@@ -357,6 +369,26 @@ impl TokenStore {
         format!("{:x}", hasher.finalize())
     }
 
+    fn write_encrypted_bytes(
+        &self,
+        target: &Path,
+        plaintext: &[u8],
+        passphrase: &str,
+    ) -> Result<(), OAuthError> {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| OAuthError::StorageError(format!("create dir: {e}")))?;
+        }
+
+        let encrypted = Self::encrypt(plaintext, passphrase)
+            .map_err(|e| OAuthError::EncryptionError(format!("encrypt: {e}")))?;
+        let tmp = target.with_extension("tmp");
+        fs::write(&tmp, &encrypted)
+            .map_err(|e| OAuthError::StorageError(format!("write tmp: {e}")))?;
+        fs::rename(&tmp, target).map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
+        Ok(())
+    }
+
     /// Retrieve the vault key from SecretProvider, or auto-generate one.
     fn get_or_create_vault_key(&self) -> Result<SecretString, OAuthError> {
         match self.secret_provider.get_secret(VAULT_KEY_NAME) {
@@ -384,44 +416,66 @@ impl TokenStore {
         }
     }
 
-    /// Encrypt data using HMAC-derived XOR stream.
-    ///
-    /// NOTE: This is a placeholder implementation. Production should use the
-    /// `age` crate for authenticated encryption (as specified in the design doc).
-    /// The current XOR-stream approach provides confidentiality but not
-    /// authentication — a corrupted ciphertext may decrypt to garbage rather
-    /// than returning an explicit error.
-    ///
-    /// Format: [16-byte salt][encrypted data]
-    /// Key derivation: SHA-256(passphrase || salt) → 32-byte stream key.
-    fn encrypt(data: &[u8], passphrase: &str) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
-        let salt: [u8; 16] = rng.gen();
-
-        let stream_key = Self::derive_key(passphrase, &salt);
-        let mut out = Vec::with_capacity(16 + data.len());
-        out.extend_from_slice(&salt);
-        for (i, byte) in data.iter().enumerate() {
-            out.push(byte ^ stream_key[i % 32]);
-        }
-        out
+    /// Encrypt data using authenticated `age` passphrase mode.
+    fn encrypt(data: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+        let encryptor =
+            Encryptor::with_user_passphrase(AgeSecretString::from(passphrase.to_string()));
+        let mut encrypted = Vec::new();
+        let mut writer = encryptor
+            .wrap_output(&mut encrypted)
+            .map_err(|error| error.to_string())?;
+        writer.write_all(data).map_err(|error| error.to_string())?;
+        writer.finish().map_err(|error| error.to_string())?;
+        Ok(encrypted)
     }
 
-    /// Decrypt data encrypted by `encrypt`.
-    fn decrypt(data: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+    /// Decrypt `age` ciphertext, with one-way fallback for the historical XOR format.
+    fn decrypt(data: &[u8], passphrase: &str) -> Result<(Vec<u8>, CipherFormat), String> {
+        match Self::decrypt_age(data, passphrase) {
+            Ok(plaintext) => Ok((plaintext, CipherFormat::Age)),
+            Err(age_error) => Self::decrypt_legacy_xor(data, passphrase)
+                .map(|plaintext| (plaintext, CipherFormat::LegacyXor))
+                .map_err(|legacy_error| {
+                    format!(
+                        "age decrypt failed: {age_error}; legacy XOR decrypt failed: {legacy_error}"
+                    )
+                }),
+        }
+    }
+
+    fn decrypt_age(data: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
+        let decryptor = Decryptor::new(data).map_err(|error| error.to_string())?;
+        let passphrase = AgeSecretString::from(passphrase.to_string());
+        if !decryptor.is_scrypt() {
+            return Err("unexpected recipient-based age ciphertext".into());
+        }
+
+        let identity = age::scrypt::Identity::new(passphrase);
+        let identities = [&identity as &dyn age::Identity];
+        let mut reader = decryptor
+            .decrypt(identities.into_iter())
+            .map_err(|error| error.to_string())?;
+
+        let mut plaintext = Vec::new();
+        reader
+            .read_to_end(&mut plaintext)
+            .map_err(|error| error.to_string())?;
+        Ok(plaintext)
+    }
+
+    /// Legacy placeholder retained for backward-compatible reads only.
+    fn decrypt_legacy_xor(data: &[u8], passphrase: &str) -> Result<Vec<u8>, String> {
         if data.len() < 16 {
             return Err("encrypted data too short".into());
         }
         let salt = &data[..16];
         let ciphertext = &data[16..];
-
         let stream_key = Self::derive_key(passphrase, salt);
-        let plain: Vec<u8> = ciphertext
+        Ok(ciphertext
             .iter()
             .enumerate()
             .map(|(i, byte)| byte ^ stream_key[i % 32])
-            .collect();
-        Ok(plain)
+            .collect())
     }
 
     fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {

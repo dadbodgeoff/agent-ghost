@@ -51,6 +51,7 @@ pub struct CreateAgentRequest {
     pub name: String,
     pub spending_cap: Option<f64>,
     pub capabilities: Option<Vec<String>>,
+    pub skills: Option<Vec<String>>,
     pub generate_keypair: Option<bool>,
 }
 
@@ -112,6 +113,7 @@ pub async fn create_agent(
         state: AgentLifecycleState::Starting,
         channel_bindings: Vec::new(),
         capabilities: body.capabilities.unwrap_or_default(),
+        skills: body.skills,
         spending_cap,
         template: None,
     };

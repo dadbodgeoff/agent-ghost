@@ -28,6 +28,7 @@ pub struct ResolvedRuntimeAgent {
     pub id: Uuid,
     pub name: String,
     pub capabilities: Vec<String>,
+    pub skill_allowlist: Option<Vec<String>>,
     pub spending_cap: f64,
 }
 
@@ -37,6 +38,7 @@ impl ResolvedRuntimeAgent {
             id: agent.id,
             name: agent.name.clone(),
             capabilities: agent.capabilities.clone(),
+            skill_allowlist: agent.skills.clone(),
             spending_cap: agent.spending_cap,
         }
     }
@@ -47,6 +49,7 @@ impl ResolvedRuntimeAgent {
             id: durable_agent_id(&name),
             name,
             capabilities: Vec::new(),
+            skill_allowlist: None,
             spending_cap: DEFAULT_SYNTHETIC_SPENDING_CAP,
         }
     }
@@ -56,6 +59,7 @@ impl ResolvedRuntimeAgent {
             id,
             name: name.into(),
             capabilities: Vec::new(),
+            skill_allowlist: None,
             spending_cap: DEFAULT_SYNTHETIC_SPENDING_CAP,
         }
     }
@@ -116,7 +120,7 @@ pub struct RunnerBuildOptions {
 #[derive(Clone)]
 pub struct RuntimeRunnerDependencies {
     pub db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
-    pub skill_catalog: Arc<std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>>>,
+    pub resolved_skills: crate::skill_catalog::ResolvedSkillSet,
     pub tools_config: ToolsConfig,
     pub convergence_profile: String,
     pub monitor_enabled: bool,
@@ -174,11 +178,32 @@ impl<'a> RuntimeSafetyBuilder<'a> {
         ))
     }
 
+    pub fn resolve_agent_by_id_or_synthetic(
+        &self,
+        agent_id: Uuid,
+        synthetic_name: &str,
+    ) -> Result<ResolvedRuntimeAgent, RuntimeSafetyError> {
+        let registry = self
+            .state
+            .agents
+            .read()
+            .map_err(|_| RuntimeSafetyError::AgentRegistryPoisoned)?;
+        Ok(registry
+            .lookup_by_id(agent_id)
+            .map(ResolvedRuntimeAgent::from_registered)
+            .unwrap_or_else(|| ResolvedRuntimeAgent::synthetic_with_id(synthetic_name, agent_id)))
+    }
+
     pub fn build_live_runner(
         &self,
         ctx: &RuntimeSafetyContext,
         options: RunnerBuildOptions,
     ) -> Result<AgentRunner, RuntimeSafetyError> {
+        let resolved_skills = self
+            .state
+            .skill_catalog
+            .resolve_for_runtime(&ctx.agent, options.skill_allowlist.as_deref())
+            .map_err(|e| RuntimeSafetyError::DbPool(e.to_string()))?;
         let deps = RuntimeRunnerDependencies {
             db: Some(
                 self.state
@@ -186,7 +211,7 @@ impl<'a> RuntimeSafetyBuilder<'a> {
                     .legacy_connection()
                     .map_err(|e| RuntimeSafetyError::DbPool(e.to_string()))?,
             ),
-            skill_catalog: Arc::clone(&self.state.safety_skills),
+            resolved_skills,
             tools_config: self.state.tools_config.clone(),
             convergence_profile: ctx.convergence_profile.clone(),
             monitor_enabled: self.state.monitor_enabled,
@@ -214,6 +239,9 @@ pub fn build_live_runner_with_dependencies(
     apply_tool_configs(&mut runner.tool_executor, &deps.tools_config);
     let mut policy_engine = PolicyEngine::new(CorpPolicy::new());
     for capability in &ctx.capability_scope {
+        policy_engine.grant_capability(ctx.agent.id, capability.clone());
+    }
+    for capability in &deps.resolved_skills.granted_policy_capabilities {
         policy_engine.grant_capability(ctx.agent.id, capability.clone());
     }
     runner.tool_executor.set_policy_engine(policy_engine);
@@ -264,14 +292,14 @@ pub fn build_live_runner_with_dependencies(
 
     if let Some(bridge_db) = deps.db.clone() {
         let bridge = ghost_agent_loop::tools::skill_bridge::SkillBridge::new(
-            Arc::clone(&deps.skill_catalog),
+            Arc::clone(&deps.resolved_skills.skills),
             bridge_db,
             deps.convergence_profile.clone(),
         );
         ghost_agent_loop::tools::skill_bridge::register_skills(
             &bridge,
             &mut runner.tool_registry,
-            options.skill_allowlist.as_deref(),
+            None,
         );
         runner.tool_executor.set_skill_bridge(bridge);
     }
@@ -352,6 +380,9 @@ fn resolve_explicit_runtime_agent(
 mod tests {
     use super::*;
     use crate::agents::registry::{AgentLifecycleState, RegisteredAgent};
+    use ghost_agent_loop::tools::skill_bridge::ExecutionContext;
+    use ghost_llm::provider::LLMToolCall;
+    use serde_json::json;
 
     fn registered(name: &str) -> RegisteredAgent {
         RegisteredAgent {
@@ -360,6 +391,7 @@ mod tests {
             state: AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
             capabilities: vec!["shell_execute".into()],
+            skills: None,
             spending_cap: 7.5,
             template: None,
         }
@@ -440,7 +472,7 @@ mod tests {
             &ctx,
             RuntimeRunnerDependencies {
                 db: None,
-                skill_catalog: Arc::new(std::collections::HashMap::new()),
+                resolved_skills: crate::skill_catalog::ResolvedSkillSet::default(),
                 tools_config: ToolsConfig::default(),
                 convergence_profile: "standard".into(),
                 monitor_enabled: false,
@@ -566,5 +598,105 @@ mod tests {
 
         crate::safety::kill_switch::PLATFORM_KILLED
             .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn runtime_runner_only_registers_visible_skills_and_auto_grants_policy() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let db_path = tmp_dir.path().join("runtime-skills.db");
+        let db = crate::db_pool::create_pool(db_path).unwrap();
+        {
+            let writer = db.writer_for_migrations().await;
+            cortex_storage::migrations::run_migrations(&writer).unwrap();
+        }
+
+        let catalog = crate::skill_catalog::SkillCatalogService::new(
+            crate::skill_catalog::definitions::build_compiled_skill_definitions(
+                &crate::config::GhostConfig::default(),
+            )
+            .definitions,
+            Arc::clone(&db),
+        )
+        .await
+        .unwrap();
+
+        let agent = ResolvedRuntimeAgent {
+            id: uuid::Uuid::now_v7(),
+            name: "runtime-agent".into(),
+            capabilities: Vec::new(),
+            skill_allowlist: Some(vec!["note_take".into()]),
+            spending_cap: 5.0,
+        };
+        let ctx = RuntimeSafetyContext {
+            capability_scope: Vec::new(),
+            agent: agent.clone(),
+            session_id: uuid::Uuid::now_v7(),
+            run_id: uuid::Uuid::now_v7(),
+            message_id: None,
+            kill_switch: Arc::new(KillSwitch::new()),
+            kill_gate: None,
+            convergence_profile: "standard".into(),
+        };
+
+        let resolved_skills = catalog.resolve_for_runtime(&agent, None).unwrap();
+        let runner = build_live_runner_with_dependencies(
+            &ctx,
+            RuntimeRunnerDependencies {
+                db: Some(db.legacy_connection().unwrap()),
+                resolved_skills,
+                tools_config: ToolsConfig::default(),
+                convergence_profile: "standard".into(),
+                monitor_enabled: false,
+                monitor_block_on_degraded: false,
+                convergence_state_stale_after: std::time::Duration::from_secs(300),
+                cost_tracker: None,
+            },
+            RunnerBuildOptions::default(),
+        )
+        .unwrap();
+
+        assert!(runner.tool_registry.lookup("skill_note_take").is_some());
+        assert!(runner
+            .tool_registry
+            .lookup("skill_convergence_check")
+            .is_some());
+        assert!(runner.tool_registry.lookup("skill_git_status").is_none());
+
+        let call = LLMToolCall {
+            id: "call-note-take".into(),
+            name: "skill_note_take".into(),
+            arguments: json!({
+                "action": "create",
+                "title": "runtime note",
+                "content": "policy grants must align with exposure"
+            }),
+        };
+        let exec_ctx = ExecutionContext {
+            agent_id: agent.id,
+            session_id: ctx.session_id,
+            intervention_level: 0,
+            session_duration: std::time::Duration::ZERO,
+            session_reflection_count: 0,
+            is_compaction_flush: false,
+        };
+
+        let result = runner
+            .tool_executor
+            .execute(&call, &runner.tool_registry, &exec_ctx)
+            .await
+            .unwrap();
+        let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        let note_id = output["note_id"].as_str().expect("note id");
+        assert_eq!(output["status"], "created");
+
+        let reader = db.read().unwrap();
+        let stored = cortex_storage::queries::note_queries::get_note(
+            &reader,
+            note_id,
+            &agent.id.to_string(),
+        )
+        .unwrap()
+        .expect("stored note");
+        assert_eq!(stored.title, "runtime note");
     }
 }

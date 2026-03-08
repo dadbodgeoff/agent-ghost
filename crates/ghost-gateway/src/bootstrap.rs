@@ -281,74 +281,29 @@ impl GatewayBootstrap {
             "Embedding engine initialized"
         );
 
-        // Register Phase 5 safety skills — platform-managed, always active.
-        let mut all_skills: std::collections::HashMap<String, Box<dyn ghost_skills::skill::Skill>> =
-            ghost_skills::safety_skills::all_safety_skills()
-                .into_iter()
-                .map(|s| (s.name().to_string(), s))
-                .collect();
+        let compiled_skills =
+            crate::skill_catalog::definitions::build_compiled_skill_definitions(&config);
+        let pc_control_circuit_breaker = Arc::clone(&compiled_skills.pc_control_circuit_breaker);
+        let skill_catalog = Arc::new(
+            crate::skill_catalog::service::SkillCatalogService::new(
+                compiled_skills.definitions,
+                Arc::clone(&db),
+            )
+            .await
+            .map_err(|e| BootstrapError::Database(format!("skill catalog: {e}")))?,
+        );
+        let skill_names = skill_catalog
+            .list_skills()
+            .map_err(|e| BootstrapError::Database(format!("skill catalog: {e}")))?
+            .installed
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<Vec<_>>();
         tracing::info!(
-            count = all_skills.len(),
-            skills = ?all_skills.keys().collect::<Vec<_>>(),
-            "Phase 5 safety skills registered"
+            count = skill_names.len(),
+            skills = ?skill_names,
+            "Compiled skill catalog initialized"
         );
-
-        // Register Phase 7 git skills — wrapped with ConvergenceGuard.
-        let git_skills = ghost_skills::git_skills::all_git_skills();
-        let git_count = git_skills.len();
-        for skill in git_skills {
-            all_skills.insert(skill.name().to_string(), skill);
-        }
-        tracing::info!(count = git_count, "Phase 7 git skills registered");
-
-        // Register Phase 7 code analysis skills — wrapped with ConvergenceGuard.
-        let code_skills = ghost_skills::code_analysis::all_code_analysis_skills();
-        let code_count = code_skills.len();
-        for skill in code_skills {
-            all_skills.insert(skill.name().to_string(), skill);
-        }
-        tracing::info!(
-            count = code_count,
-            "Phase 7 code analysis skills registered"
-        );
-
-        // Register Phase 8 bundled skills — user-installable, curated.
-        let bundled_skills = ghost_skills::bundled_skills::all_bundled_skills();
-        let bundled_count = bundled_skills.len();
-        for skill in bundled_skills {
-            all_skills.insert(skill.name().to_string(), skill);
-        }
-        tracing::info!(count = bundled_count, "Phase 8 bundled skills registered");
-
-        let pc_control_circuit_breaker = config.pc_control.circuit_breaker();
-
-        // Register Phase 9 PC control skills (disabled by default).
-        let pc_skills = ghost_pc_control::all_pc_control_skills_with_circuit_breaker(
-            &config.pc_control,
-            Arc::clone(&pc_control_circuit_breaker),
-        );
-        let pc_count = pc_skills.len();
-        for skill in pc_skills {
-            all_skills.insert(skill.name().to_string(), skill);
-        }
-        if pc_count > 0 {
-            tracing::info!(count = pc_count, "Phase 9 PC control skills registered");
-        } else {
-            tracing::debug!("Phase 9 PC control: disabled (pc_control.enabled = false)");
-        }
-
-        // Register Phase 10 delegation skills — convergence-gated, prerequisites enforced at execute time.
-        let delegation_skills = ghost_skills::delegation_skills::all_delegation_skills();
-        let delegation_count = delegation_skills.len();
-        for skill in delegation_skills {
-            all_skills.insert(skill.name().to_string(), skill);
-        }
-        tracing::info!(
-            count = delegation_count,
-            "Phase 10 delegation skills registered"
-        );
-
-        let safety_skills = all_skills;
 
         let app_state = Arc::new(AppState {
             gateway: Arc::clone(&shared_state),
@@ -382,7 +337,7 @@ impl GatewayBootstrap {
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             distributed_kill_enabled: config.mesh.distributed_kill_enabled,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
-            safety_skills: Arc::new(safety_skills),
+            skill_catalog,
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: config.gateway.session_ttl_days,
         });
@@ -742,6 +697,7 @@ impl GatewayBootstrap {
                 state: crate::agents::registry::AgentLifecycleState::Starting,
                 channel_bindings: Vec::new(),
                 capabilities: agent.capabilities.clone(),
+                skills: agent.skills.clone(),
                 spending_cap: agent.spending_cap,
                 template: agent.template.clone(),
             };

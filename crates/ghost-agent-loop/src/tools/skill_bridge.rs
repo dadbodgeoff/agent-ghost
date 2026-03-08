@@ -30,14 +30,14 @@ pub struct ExecutionContext {
 /// Holds the shared skill map, a DB connection for building `SkillContext`,
 /// and the convergence profile name.
 pub struct SkillBridge {
-    skills: Arc<HashMap<String, Box<dyn Skill>>>,
+    skills: Arc<HashMap<String, Arc<dyn Skill>>>,
     db: Arc<Mutex<Connection>>,
     convergence_profile: String,
 }
 
 impl SkillBridge {
     pub fn new(
-        skills: Arc<HashMap<String, Box<dyn Skill>>>,
+        skills: Arc<HashMap<String, Arc<dyn Skill>>>,
         db: Arc<Mutex<Connection>>,
         convergence_profile: String,
     ) -> Self {

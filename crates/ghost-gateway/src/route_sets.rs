@@ -59,6 +59,10 @@ pub fn read_routes() -> axum::Router<Arc<AppState>> {
         )
         .route("/api/memory/:id", get(crate::api::memory::get_memory))
         .route(
+            "/api/live-executions/:execution_id",
+            get(crate::api::live_executions::get_live_execution),
+        )
+        .route(
             "/api/state/crdt/:agent_id",
             get(crate::api::state::get_crdt_state),
         )

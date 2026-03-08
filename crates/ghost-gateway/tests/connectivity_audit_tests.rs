@@ -284,6 +284,7 @@ mod bootstrap_value_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: Vec::new(),
             capabilities: caps.clone(),
+            skills: None,
             spending_cap: 5.0,
             template: None,
         };
@@ -311,6 +312,7 @@ mod bootstrap_value_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: vec!["slack".into(), "email".into()],
             capabilities: Vec::new(),
+            skills: None,
             spending_cap: 5.0,
             template: None,
         };
@@ -338,6 +340,7 @@ mod bootstrap_value_tests {
             state: AgentLifecycleState::Starting,
             channel_bindings: Vec::new(),
             capabilities: Vec::new(),
+            skills: None,
             spending_cap: 5.0,
             template: None,
         };

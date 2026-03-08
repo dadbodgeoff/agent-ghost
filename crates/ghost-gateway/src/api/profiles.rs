@@ -515,7 +515,6 @@ mod tests {
     use axum::body::to_bytes;
     use axum::extract::State;
     use axum::Extension;
-    use std::collections::HashMap;
     use std::sync::{Arc, RwLock};
 
     async fn test_state(db_path: &std::path::Path) -> Arc<AppState> {
@@ -542,7 +541,7 @@ mod tests {
             quarantine: Arc::new(RwLock::new(
                 crate::safety::quarantine::QuarantineManager::new(),
             )),
-            db,
+            db: Arc::clone(&db),
             event_tx,
             replay_buffer: Arc::new(crate::api::websocket::EventReplayBuffer::new(16)),
             cost_tracker: Arc::new(crate::cost::tracker::CostTracker::new()),
@@ -568,7 +567,9 @@ mod tests {
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
-            safety_skills: Arc::new(HashMap::new()),
+            skill_catalog: Arc::new(crate::skill_catalog::SkillCatalogService::empty_for_tests(
+                Arc::clone(&db),
+            )),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
         })

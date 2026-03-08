@@ -6,15 +6,27 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use ghost_agent_loop::runner::AgentStreamEvent;
+use ghost_agent_loop::runner::{AgentRunner, AgentStreamEvent};
 
-use crate::api::error::{ApiError, ApiResult};
+use crate::api::auth::Claims;
+use crate::api::error::{ApiError, ErrorResponse};
+use crate::api::idempotency::{
+    abort_prepared_json_operation, commit_prepared_json_operation,
+    execute_idempotent_json_mutation, prepare_json_operation, PreparedOperation,
+};
+use crate::api::mutation::{
+    error_response_with_idempotency, json_response_with_idempotency, response_with_idempotency,
+    write_mutation_audit_entry,
+};
+use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::api::websocket::WsEvent;
 use crate::provider_runtime;
 use crate::runtime_safety::{
@@ -23,7 +35,11 @@ use crate::runtime_safety::{
 };
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+const AGENT_CHAT_ROUTE_TEMPLATE: &str = "/api/agent/chat";
+const AGENT_CHAT_STREAM_ROUTE_TEMPLATE: &str = "/api/agent/chat/stream";
+const AGENT_CHAT_ROUTE_KIND: &str = "agent_chat";
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AgentChatRequest {
     /// User message.
     pub message: String,
@@ -44,65 +60,346 @@ pub struct AgentChatResponse {
     pub total_cost: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgentChatExecutionState {
+    session_id: String,
+    accepted_response: serde_json::Value,
+    final_status_code: Option<u16>,
+    final_response: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentStreamAcceptance {
+    session_id: String,
+    message_id: String,
+    stream_start_seq: i64,
+}
+
+struct PreparedAgentRuntime {
+    agent_id: String,
+    runtime_ctx: RuntimeSafetyContext,
+    runner: AgentRunner,
+    providers: Vec<crate::config::ProviderConfig>,
+}
+
 /// POST /api/agent/chat
 ///
 /// Runs one turn of the full agent loop with environment awareness, SOUL.md identity,
 /// skills, tool execution, and safety gate checks.
 pub async fn agent_chat(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Json(req): Json<AgentChatRequest>,
-) -> ApiResult<AgentChatResponse> {
-    if req.message.is_empty() {
-        return Err(ApiError::bad_request("message must not be empty"));
+) -> Response {
+    if req.message.trim().is_empty() {
+        return error_response_with_idempotency(ApiError::bad_request("message must not be empty"));
     }
 
-    let builder = RuntimeSafetyBuilder::new(&state);
-    let agent = builder
-        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
-        .map_err(map_runtime_safety_error)?;
-    ensure_agent_available(&state, agent.id)?;
-    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
-    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
-    runtime_ctx
-        .ensure_execution_permitted()
-        .map_err(map_runner_error)?;
-    let mut runner = builder
-        .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
-        .map_err(map_runtime_safety_error)?;
-
-    let providers = provider_runtime::ordered_provider_configs(&state);
-    if providers.is_empty() {
-        return Err(ApiError::bad_request(
-            "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
-        ));
-    }
-
-    // 1. Build LLM fallback chain from configured providers
-    let mut fallback_chain = provider_runtime::build_fallback_chain(&providers);
-
-    // 2. Run pre_loop + run_turn
-    let mut ctx = runner
-        .pre_loop(
-            runtime_ctx.agent.id,
-            runtime_ctx.session_id,
-            "api",
-            &req.message,
+    let actor = agent_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = agent_request_body(&req);
+    let audit_agent_id = agent_audit_target_id(&state, req.agent_id.as_deref());
+    let prepared = {
+        let db = state.db.write().await;
+        prepare_json_operation(
+            &db,
+            &operation_context,
+            actor,
+            "POST",
+            AGENT_CHAT_ROUTE_TEMPLATE,
+            &request_body,
         )
-        .await
-        .map_err(map_runner_error)?;
+    };
 
-    let result = runner
-        .run_turn(&mut ctx, &mut fallback_chain, &req.message)
-        .await
-        .map_err(map_runner_error)?;
+    match prepared {
+        Ok(PreparedOperation::Replay(stored)) => {
+            let db = state.db.write().await;
+            write_mutation_audit_entry(
+                &db,
+                &audit_agent_id,
+                "agent_chat",
+                "medium",
+                actor,
+                "replayed",
+                agent_chat_audit_details(&stored.body),
+                &operation_context,
+                &IdempotencyStatus::Replayed,
+            );
+            json_response_with_idempotency(stored.status, stored.body, IdempotencyStatus::Replayed)
+        }
+        Ok(PreparedOperation::Mismatch) => error_response_with_idempotency(ApiError::with_details(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency key was reused with a different request payload",
+            serde_json::json!({
+                "route_template": AGENT_CHAT_ROUTE_TEMPLATE,
+                "method": "POST",
+            }),
+        )),
+        Ok(PreparedOperation::InProgress) => error_response_with_idempotency(ApiError::custom(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_IN_PROGRESS",
+            "An equivalent request is already in progress",
+        )),
+        Ok(PreparedOperation::Acquired { journal_id }) => {
+            let operation_id = operation_context
+                .operation_id
+                .clone()
+                .unwrap_or_else(|| operation_context.request_id.clone());
 
-    Ok(Json(AgentChatResponse {
-        content: result.output.unwrap_or_default(),
-        session_id: session_id.to_string(),
-        tool_calls_made: result.tool_calls_made,
-        total_tokens: result.total_tokens,
-        total_cost: result.total_cost,
-    }))
+            let execution_record = {
+                let db = state.db.write().await;
+                match cortex_storage::queries::live_execution_queries::get_by_journal_id(
+                    &db,
+                    &journal_id,
+                ) {
+                    Ok(Some(record)) => Some(record),
+                    Ok(None) => {
+                        let session_id = req.session_id.unwrap_or_else(Uuid::now_v7).to_string();
+                        let accepted_response = agent_chat_accepted_body(
+                            &session_id,
+                            &audit_agent_id,
+                            &Uuid::now_v7().to_string(),
+                        );
+                        let execution_id = accepted_response
+                            .get("execution_id")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let execution_state = AgentChatExecutionState {
+                            session_id,
+                            accepted_response: accepted_response.clone(),
+                            final_status_code: None,
+                            final_response: None,
+                        };
+
+                        if let Err(error) = persist_agent_execution_record(
+                            &db,
+                            &execution_id,
+                            &journal_id,
+                            &operation_id,
+                            actor,
+                            &execution_state,
+                        ) {
+                            let _ = abort_prepared_json_operation(&db, &journal_id);
+                            return error_response_with_idempotency(error);
+                        }
+
+                        Some(
+                            cortex_storage::queries::live_execution_queries::LiveExecutionRecord {
+                                id: execution_id,
+                                journal_id,
+                                operation_id: operation_id.clone(),
+                                route_kind: AGENT_CHAT_ROUTE_KIND.to_string(),
+                                actor_key: actor.to_string(),
+                                status: "accepted".to_string(),
+                                state_json: serde_json::to_string(&execution_state)
+                                    .unwrap_or_else(|_| "{}".to_string()),
+                                created_at: String::new(),
+                                updated_at: String::new(),
+                            },
+                        )
+                    }
+                    Err(error) => {
+                        let _ = abort_prepared_json_operation(&db, &journal_id);
+                        return error_response_with_idempotency(ApiError::db_error(
+                            "get_live_execution_record",
+                            error,
+                        ));
+                    }
+                }
+            };
+
+            let execution_record =
+                execution_record.expect("agent chat execution record must exist");
+            let execution_state =
+                match serde_json::from_str::<AgentChatExecutionState>(&execution_record.state_json)
+                {
+                    Ok(state) => state,
+                    Err(error) => {
+                        return error_response_with_idempotency(ApiError::internal(format!(
+                            "failed to parse agent chat execution state: {error}"
+                        )));
+                    }
+                };
+            let execution_id = execution_record.id.clone();
+            let agent_audit_id = execution_state
+                .accepted_response
+                .get("agent_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or(audit_agent_id.as_str())
+                .to_string();
+
+            match execution_record.status.as_str() {
+                "completed" => {
+                    if let Some((status, body)) =
+                        stored_agent_chat_terminal_response(&execution_state)
+                    {
+                        return finalize_agent_chat_terminal_response(
+                            &state,
+                            &execution_record.journal_id,
+                            &operation_context,
+                            &agent_audit_id,
+                            actor,
+                            &execution_id,
+                            execution_state,
+                            status,
+                            body,
+                        )
+                        .await;
+                    }
+
+                    let recovery_body = agent_chat_recovery_body(&execution_state);
+                    return finalize_agent_chat_recovery_response(
+                        &state,
+                        &execution_record.journal_id,
+                        &operation_context,
+                        &agent_audit_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        recovery_body,
+                    )
+                    .await;
+                }
+                "running" | "recovery_required" => {
+                    let recovery_body = agent_chat_recovery_body(&execution_state);
+                    return finalize_agent_chat_recovery_response(
+                        &state,
+                        &execution_record.journal_id,
+                        &operation_context,
+                        &agent_audit_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        recovery_body,
+                    )
+                    .await;
+                }
+                "accepted" => {}
+                other => {
+                    return error_response_with_idempotency(ApiError::internal(format!(
+                        "unexpected agent chat execution status: {other}"
+                    )));
+                }
+            }
+
+            let prepared_runtime = match prepare_agent_runtime(
+                &state,
+                req.agent_id.as_deref(),
+                req.session_id
+                    .unwrap_or_else(|| parse_execution_session_id(&execution_state)),
+            ) {
+                Ok(prepared_runtime) => prepared_runtime,
+                Err(error) => {
+                    let (status, body) = api_error_status_and_body(error);
+                    return finalize_agent_chat_terminal_response(
+                        &state,
+                        &execution_record.journal_id,
+                        &operation_context,
+                        &agent_audit_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        status,
+                        body,
+                    )
+                    .await;
+                }
+            };
+
+            let PreparedAgentRuntime {
+                agent_id,
+                runtime_ctx,
+                mut runner,
+                providers,
+            } = prepared_runtime;
+
+            let mut ctx = match runner
+                .pre_loop(
+                    runtime_ctx.agent.id,
+                    runtime_ctx.session_id,
+                    "api",
+                    &req.message,
+                )
+                .await
+            {
+                Ok(ctx) => ctx,
+                Err(error) => {
+                    let (status, body) = api_error_status_and_body(map_runner_error(error));
+                    return finalize_agent_chat_terminal_response(
+                        &state,
+                        &execution_record.journal_id,
+                        &operation_context,
+                        &agent_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        status,
+                        body,
+                    )
+                    .await;
+                }
+            };
+
+            if let Err(error) = {
+                let db = state.db.write().await;
+                update_agent_execution_state(&db, &execution_id, "running", &execution_state)
+            } {
+                return error_response_with_idempotency(error);
+            }
+
+            let mut fallback_chain = provider_runtime::build_fallback_chain(&providers);
+            match runner
+                .run_turn(&mut ctx, &mut fallback_chain, &req.message)
+                .await
+            {
+                Ok(result) => {
+                    let body = serde_json::to_value(AgentChatResponse {
+                        content: result.output.unwrap_or_default(),
+                        session_id: runtime_ctx.session_id.to_string(),
+                        tool_calls_made: result.tool_calls_made,
+                        total_tokens: result.total_tokens,
+                        total_cost: result.total_cost,
+                    })
+                    .unwrap_or(serde_json::Value::Null);
+                    finalize_agent_chat_terminal_response(
+                        &state,
+                        &execution_record.journal_id,
+                        &operation_context,
+                        &agent_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        StatusCode::OK,
+                        body,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    let recovery_body = agent_chat_recovery_body(&execution_state);
+                    tracing::warn!(
+                        operation_id = %operation_id,
+                        session_id = %execution_state.session_id,
+                        error = %error,
+                        "agent chat execution entered recovery-required state"
+                    );
+                    finalize_agent_chat_recovery_response(
+                        &state,
+                        &execution_record.journal_id,
+                        &operation_context,
+                        &agent_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        recovery_body,
+                    )
+                    .await
+                }
+            }
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 /// POST /api/agent/chat/stream
@@ -111,44 +408,801 @@ pub async fn agent_chat(
 /// and WebSocket milestone broadcasts for cross-client awareness.
 pub async fn agent_chat_stream(
     State(state): State<Arc<AppState>>,
+    claims: Option<Extension<Claims>>,
+    Extension(operation_context): Extension<OperationContext>,
     Json(req): Json<AgentChatRequest>,
-) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    if req.message.is_empty() {
-        return Err(ApiError::bad_request("message must not be empty"));
+) -> Response {
+    if req.message.trim().is_empty() {
+        return error_response_with_idempotency(ApiError::bad_request("message must not be empty"));
     }
 
-    let builder = RuntimeSafetyBuilder::new(&state);
+    let actor = agent_actor(claims.as_ref().map(|claims| &claims.0));
+    let request_body = agent_request_body(&req);
+    let user_message = req.message.clone();
+    let requested_agent_id = req.agent_id.clone();
+    let audit_agent_id = agent_audit_target_id(&state, requested_agent_id.as_deref());
+
+    let outcome = {
+        let db = state.db.write().await;
+        let outcome = execute_idempotent_json_mutation(
+            &db,
+            &operation_context,
+            actor,
+            "POST",
+            AGENT_CHAT_STREAM_ROUTE_TEMPLATE,
+            &request_body,
+            |conn| {
+                let agent = RuntimeSafetyBuilder::new(&state)
+                    .resolve_agent(requested_agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
+                    .map_err(map_runtime_safety_error)?;
+                ensure_agent_available(&state, agent.id)?;
+
+                let session_id = req.session_id.unwrap_or_else(Uuid::now_v7).to_string();
+                let message_id = Uuid::now_v7().to_string();
+                let start_payload = serde_json::json!({
+                    "session_id": session_id,
+                    "message_id": message_id,
+                });
+                let start_seq = cortex_storage::queries::stream_event_queries::insert_stream_event(
+                    conn,
+                    &session_id,
+                    &message_id,
+                    "stream_start",
+                    &start_payload.to_string(),
+                )
+                .map_err(|error| ApiError::db_error("insert_stream_start", error))?;
+
+                let providers = provider_runtime::ordered_provider_configs(&state);
+                if providers.is_empty() {
+                    return Ok((
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        validation_error_body(
+                            "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
+                        ),
+                    ));
+                }
+
+                Ok((
+                    StatusCode::OK,
+                    agent_stream_accepted_body(
+                        &session_id,
+                        &agent.id.to_string(),
+                        &message_id,
+                        start_seq,
+                    ),
+                ))
+            },
+        );
+
+        if let Ok(ref outcome) = outcome {
+            let audit_outcome = match (&outcome.idempotency_status, outcome.status) {
+                (IdempotencyStatus::Replayed, _) => "replayed",
+                (_, status) if status.is_success() => "accepted",
+                _ => "rejected",
+            };
+            write_mutation_audit_entry(
+                &db,
+                &audit_agent_id,
+                "agent_chat_stream",
+                "medium",
+                actor,
+                audit_outcome,
+                agent_chat_audit_details(&outcome.body),
+                &operation_context,
+                &outcome.idempotency_status,
+            );
+        }
+
+        outcome
+    };
+
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => return error_response_with_idempotency(error),
+    };
+
+    if outcome.status != StatusCode::OK {
+        return json_response_with_idempotency(
+            outcome.status,
+            outcome.body,
+            outcome.idempotency_status,
+        );
+    }
+
+    let acceptance = match parse_agent_stream_acceptance(&outcome.body) {
+        Ok(acceptance) => acceptance,
+        Err(error) => {
+            return response_with_idempotency(error.into_response(), outcome.idempotency_status);
+        }
+    };
+
+    match outcome.idempotency_status {
+        IdempotencyStatus::Executed => {
+            let (stream_rx, task_handle) = spawn_agent_chat_stream_execution(
+                Arc::clone(&state),
+                requested_agent_id,
+                acceptance.session_id.clone(),
+                acceptance.message_id.clone(),
+                user_message,
+            );
+            state.background_tasks.lock().await.push(task_handle);
+            agent_live_stream_response(
+                Arc::clone(&state),
+                acceptance,
+                stream_rx,
+                IdempotencyStatus::Executed,
+            )
+        }
+        IdempotencyStatus::Replayed => {
+            let persisted_events = {
+                let db = match state.db.read() {
+                    Ok(db) => db,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            ApiError::db_error("replay_stream_read", error).into_response(),
+                            IdempotencyStatus::Replayed,
+                        );
+                    }
+                };
+                match cortex_storage::queries::stream_event_queries::recover_events_after(
+                    &db,
+                    &acceptance.session_id,
+                    &acceptance.message_id,
+                    0,
+                ) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            ApiError::db_error("replay_stream_read", error).into_response(),
+                            IdempotencyStatus::Replayed,
+                        );
+                    }
+                }
+            };
+            agent_replay_stream_response(acceptance, persisted_events, IdempotencyStatus::Replayed)
+        }
+        IdempotencyStatus::InProgress | IdempotencyStatus::Mismatch => unreachable!(),
+    }
+}
+
+fn agent_actor(claims: Option<&Claims>) -> &str {
+    claims
+        .map(|claims| claims.sub.as_str())
+        .unwrap_or("unknown")
+}
+
+fn agent_request_body(req: &AgentChatRequest) -> serde_json::Value {
+    serde_json::json!({
+        "message": req.message,
+        "agent_id": req.agent_id,
+        "session_id": req.session_id.map(|session_id| session_id.to_string()),
+        "model": req.model,
+    })
+}
+
+fn agent_audit_target_id(state: &AppState, requested_agent_id: Option<&str>) -> String {
+    RuntimeSafetyBuilder::new(state)
+        .resolve_agent(requested_agent_id, API_SYNTHETIC_AGENT_NAME)
+        .map(|agent| agent.id.to_string())
+        .unwrap_or_else(|_| {
+            requested_agent_id
+                .unwrap_or(API_SYNTHETIC_AGENT_NAME)
+                .to_string()
+        })
+}
+
+fn validation_error_body(message: &str) -> serde_json::Value {
+    serde_json::to_value(ErrorResponse::new("VALIDATION_ERROR", message)).unwrap_or_else(
+        |_| serde_json::json!({ "error": { "code": "VALIDATION_ERROR", "message": message } }),
+    )
+}
+
+fn agent_chat_accepted_body(
+    session_id: &str,
+    agent_id: &str,
+    execution_id: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": "accepted",
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "execution_id": execution_id,
+    })
+}
+
+fn agent_chat_recovery_body(state: &AgentChatExecutionState) -> serde_json::Value {
+    let mut body = state.accepted_response.clone();
+    if let Some(object) = body.as_object_mut() {
+        object.insert("recovery_required".into(), serde_json::Value::Bool(true));
+    }
+    body
+}
+
+fn parse_execution_session_id(state: &AgentChatExecutionState) -> Uuid {
+    Uuid::parse_str(&state.session_id).unwrap_or_else(|_| Uuid::now_v7())
+}
+
+fn api_error_status_and_body(error: ApiError) -> (StatusCode, serde_json::Value) {
+    match error {
+        ApiError::NotFound { entity, id } => (
+            StatusCode::NOT_FOUND,
+            serde_json::to_value(ErrorResponse::new(
+                "NOT_FOUND",
+                format!("Not found: {entity} {id}"),
+            ))
+            .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Validation(message) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            serde_json::to_value(ErrorResponse::new("VALIDATION_ERROR", message))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Unauthorized(message) => (
+            StatusCode::UNAUTHORIZED,
+            serde_json::to_value(ErrorResponse::new("UNAUTHORIZED", message))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Forbidden(message) => (
+            StatusCode::FORBIDDEN,
+            serde_json::to_value(ErrorResponse::new("FORBIDDEN", message))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            serde_json::to_value(ErrorResponse::new("CONFLICT", message))
+                .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::KillSwitchActive => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::to_value(ErrorResponse::new(
+                "KILL_SWITCH_ACTIVE",
+                "Kill switch active",
+            ))
+            .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Database(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::to_value(ErrorResponse::new(
+                "DATABASE_ERROR",
+                "An internal database error occurred",
+            ))
+            .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::LockPoisoned(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::to_value(ErrorResponse::new(
+                "INTERNAL_ERROR",
+                "An internal error occurred — please retry or restart the service",
+            ))
+            .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Provider(_) => (
+            StatusCode::BAD_GATEWAY,
+            serde_json::to_value(ErrorResponse::new(
+                "PROVIDER_ERROR",
+                "An upstream provider error occurred",
+            ))
+            .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Internal(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::to_value(ErrorResponse::new(
+                "INTERNAL_ERROR",
+                "An internal error occurred",
+            ))
+            .unwrap_or(serde_json::Value::Null),
+        ),
+        ApiError::Custom {
+            status,
+            code,
+            message,
+            details,
+        } => (
+            status,
+            serde_json::to_value(if let Some(details) = details {
+                ErrorResponse::with_details(code, message, details)
+            } else {
+                ErrorResponse::new(code, message)
+            })
+            .unwrap_or(serde_json::Value::Null),
+        ),
+    }
+}
+
+fn persist_agent_execution_record(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    journal_id: &str,
+    operation_id: &str,
+    actor: &str,
+    state: &AgentChatExecutionState,
+) -> Result<(), ApiError> {
+    let state_json =
+        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
+    cortex_storage::queries::live_execution_queries::insert(
+        conn,
+        &cortex_storage::queries::live_execution_queries::NewLiveExecutionRecord {
+            id: execution_id,
+            journal_id,
+            operation_id,
+            route_kind: AGENT_CHAT_ROUTE_KIND,
+            actor_key: actor,
+            status: "accepted",
+            state_json: &state_json,
+        },
+    )
+    .map_err(|error| ApiError::db_error("insert_live_execution_record", error))
+}
+
+fn update_agent_execution_state(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    status: &str,
+    state: &AgentChatExecutionState,
+) -> Result<(), ApiError> {
+    let state_json =
+        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
+    cortex_storage::queries::live_execution_queries::update_status_and_state(
+        conn,
+        execution_id,
+        status,
+        &state_json,
+    )
+    .map_err(|error| ApiError::db_error("update_live_execution_record", error))
+}
+
+fn stored_agent_chat_terminal_response(
+    state: &AgentChatExecutionState,
+) -> Option<(StatusCode, serde_json::Value)> {
+    let status = StatusCode::from_u16(state.final_status_code?).ok()?;
+    let body = state.final_response.clone()?;
+    Some((status, body))
+}
+
+async fn finalize_agent_chat_terminal_response(
+    state: &Arc<AppState>,
+    journal_id: &str,
+    operation_context: &OperationContext,
+    agent_id: &str,
+    actor: &str,
+    execution_id: &str,
+    mut execution_state: AgentChatExecutionState,
+    status: StatusCode,
+    body: serde_json::Value,
+) -> Response {
+    execution_state.final_status_code = Some(status.as_u16());
+    execution_state.final_response = Some(body.clone());
+
+    let db = state.db.write().await;
+    if let Err(error) =
+        update_agent_execution_state(&db, execution_id, "completed", &execution_state)
+    {
+        return error_response_with_idempotency(error);
+    }
+
+    match commit_prepared_json_operation(&db, operation_context, journal_id, status, &body) {
+        Ok(outcome) => {
+            let audit_outcome = if status == StatusCode::OK {
+                "completed"
+            } else {
+                "rejected"
+            };
+            write_mutation_audit_entry(
+                &db,
+                agent_id,
+                "agent_chat",
+                "medium",
+                actor,
+                audit_outcome,
+                agent_chat_audit_details(&outcome.body),
+                operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
+}
+
+async fn finalize_agent_chat_recovery_response(
+    state: &Arc<AppState>,
+    journal_id: &str,
+    operation_context: &OperationContext,
+    agent_id: &str,
+    actor: &str,
+    execution_id: &str,
+    execution_state: AgentChatExecutionState,
+    body: serde_json::Value,
+) -> Response {
+    let db = state.db.write().await;
+    if let Err(error) =
+        update_agent_execution_state(&db, execution_id, "recovery_required", &execution_state)
+    {
+        return error_response_with_idempotency(error);
+    }
+
+    match commit_prepared_json_operation(
+        &db,
+        operation_context,
+        journal_id,
+        StatusCode::ACCEPTED,
+        &body,
+    ) {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                agent_id,
+                "agent_chat",
+                "medium",
+                actor,
+                "accepted",
+                agent_chat_audit_details(&outcome.body),
+                operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
+}
+
+fn agent_chat_audit_details(body: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "status": body.get("status").cloned().unwrap_or(serde_json::Value::Null),
+        "session_id": body.get("session_id").cloned().unwrap_or(serde_json::Value::Null),
+        "agent_id": body.get("agent_id").cloned().unwrap_or(serde_json::Value::Null),
+        "execution_id": body.get("execution_id").cloned().unwrap_or(serde_json::Value::Null),
+        "message_id": body.get("message_id").cloned().unwrap_or(serde_json::Value::Null),
+        "recovery_required": body.get("recovery_required").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        "error": body.get("error").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
+fn prepare_agent_runtime(
+    state: &AppState,
+    requested_agent_id: Option<&str>,
+    session_id: Uuid,
+) -> Result<PreparedAgentRuntime, ApiError> {
+    let builder = RuntimeSafetyBuilder::new(state);
     let agent = builder
-        .resolve_agent(req.agent_id.as_deref(), API_SYNTHETIC_AGENT_NAME)
+        .resolve_agent(requested_agent_id, API_SYNTHETIC_AGENT_NAME)
         .map_err(map_runtime_safety_error)?;
-    ensure_agent_available(&state, agent.id)?;
-    let session_id = req.session_id.unwrap_or_else(Uuid::now_v7);
-    let runtime_ctx = RuntimeSafetyContext::from_state(&state, agent, session_id, None);
+    ensure_agent_available(state, agent.id)?;
+
+    let runtime_ctx = RuntimeSafetyContext::from_state(state, agent.clone(), session_id, None);
     runtime_ctx
         .ensure_execution_permitted()
         .map_err(map_runner_error)?;
-    let mut runner = builder
+
+    let runner = builder
         .build_live_runner(&runtime_ctx, RunnerBuildOptions::default())
         .map_err(map_runtime_safety_error)?;
-
-    let providers = provider_runtime::ordered_provider_configs(&state);
+    let providers = provider_runtime::ordered_provider_configs(state);
     if providers.is_empty() {
         return Err(ApiError::bad_request(
             "No model providers configured. Add provider config to ghost.yml to enable agent chat.",
         ));
     }
 
-    // 2. IDs
-    let session_id_str = session_id.to_string();
-    let message_id = Uuid::now_v7().to_string();
+    Ok(PreparedAgentRuntime {
+        agent_id: agent.id.to_string(),
+        runtime_ctx,
+        runner,
+        providers,
+    })
+}
 
-    // 4. Create channel for streaming events
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(64);
-    let user_message = req.message.clone();
-    let all_providers = providers.clone();
+fn agent_stream_accepted_body(
+    session_id: &str,
+    agent_id: &str,
+    message_id: &str,
+    stream_start_seq: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": "accepted",
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "message_id": message_id,
+        "stream_start_seq": stream_start_seq,
+    })
+}
 
-    // 5. Spawn agent run as background task with timeout
-    tokio::spawn(async move {
+fn parse_agent_stream_acceptance(
+    body: &serde_json::Value,
+) -> Result<AgentStreamAcceptance, ApiError> {
+    Ok(AgentStreamAcceptance {
+        session_id: body
+            .get("session_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ApiError::internal("missing accepted session_id"))?
+            .to_string(),
+        message_id: body
+            .get("message_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ApiError::internal("missing accepted message_id"))?
+            .to_string(),
+        stream_start_seq: body
+            .get("stream_start_seq")
+            .and_then(|value| value.as_i64())
+            .ok_or_else(|| ApiError::internal("missing accepted stream_start_seq"))?,
+    })
+}
+
+fn agent_stream_keep_alive() -> axum::response::sse::KeepAlive {
+    axum::response::sse::KeepAlive::new()
+        .interval(std::time::Duration::from_secs(15))
+        .text("ping")
+}
+
+fn agent_stream_start_event(acceptance: &AgentStreamAcceptance) -> Event {
+    Event::default()
+        .event("stream_start")
+        .id(acceptance.stream_start_seq.to_string())
+        .data(
+            serde_json::json!({
+                "session_id": acceptance.session_id.clone(),
+                "message_id": acceptance.message_id.clone(),
+            })
+            .to_string(),
+        )
+}
+
+fn replay_stream_event(
+    row: cortex_storage::queries::stream_event_queries::StreamEventRow,
+) -> Option<Event> {
+    let event_name = match row.event_type.as_str() {
+        "stream_start" => "stream_start",
+        "text_chunk" => "text_delta",
+        "tool_use" => "tool_use",
+        "tool_result" => "tool_result",
+        "turn_complete" => "stream_end",
+        "error" => "error",
+        _ => return None,
+    };
+
+    Some(
+        Event::default()
+            .event(event_name)
+            .id(row.id.to_string())
+            .data(row.payload),
+    )
+}
+
+fn agent_replay_stream_response(
+    acceptance: AgentStreamAcceptance,
+    persisted_events: Vec<cortex_storage::queries::stream_event_queries::StreamEventRow>,
+    idempotency_status: IdempotencyStatus,
+) -> Response {
+    let replay_missing_start = persisted_events
+        .first()
+        .map(|row| row.event_type.as_str() != "stream_start")
+        .unwrap_or(true);
+    let sse_stream = async_stream::stream! {
+        if replay_missing_start {
+            yield Ok::<Event, Infallible>(agent_stream_start_event(&acceptance));
+        }
+        for event in persisted_events {
+            if let Some(event) = replay_stream_event(event) {
+                yield Ok(event);
+            }
+        }
+    };
+
+    response_with_idempotency(
+        Sse::new(sse_stream)
+            .keep_alive(agent_stream_keep_alive())
+            .into_response(),
+        idempotency_status,
+    )
+}
+
+fn agent_live_stream_response(
+    state: Arc<AppState>,
+    acceptance: AgentStreamAcceptance,
+    mut rx: tokio::sync::mpsc::Receiver<AgentStreamEvent>,
+    idempotency_status: IdempotencyStatus,
+) -> Response {
+    let session_id_sse = acceptance.session_id.clone();
+    let message_id_sse = acceptance.message_id.clone();
+    let db_for_stream = Arc::clone(&state.db);
+    let state_for_stream = Arc::clone(&state);
+    let start_event = agent_stream_start_event(&acceptance);
+
+    let sse_stream = async_stream::stream! {
+        let mut text_buffer = String::new();
+        const TEXT_FLUSH_THRESHOLD: usize = 2048;
+
+        let persist_event = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, etype: &str, payload: &serde_json::Value| -> Option<i64> {
+            match db.read() {
+                Ok(conn) => cortex_storage::queries::stream_event_queries::insert_stream_event(
+                    &conn,
+                    sid,
+                    mid,
+                    etype,
+                    &payload.to_string(),
+                )
+                .ok(),
+                Err(_) => None,
+            }
+        };
+
+        let flush_text = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, buf: &mut String| -> Option<i64> {
+            if buf.is_empty() {
+                return None;
+            }
+            let payload = serde_json::json!({ "content": buf.as_str() });
+            let seq = match db.read() {
+                Ok(conn) => cortex_storage::queries::stream_event_queries::insert_stream_event(
+                    &conn,
+                    sid,
+                    mid,
+                    "text_chunk",
+                    &payload.to_string(),
+                )
+                .ok(),
+                Err(_) => None,
+            };
+            buf.clear();
+            seq
+        };
+
+        yield Ok::<Event, Infallible>(start_event);
+
+        let mut stream_ended = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                AgentStreamEvent::StreamStart { message_id } => {
+                    yield Ok(Event::default()
+                        .event("stream_start")
+                        .data(serde_json::json!({ "message_id": message_id }).to_string()));
+                }
+                AgentStreamEvent::TextDelta { content } => {
+                    text_buffer.push_str(&content);
+                    let mut seq = None;
+                    if text_buffer.len() >= TEXT_FLUSH_THRESHOLD {
+                        seq = flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
+                    }
+                    let mut ev = Event::default()
+                        .event("text_delta")
+                        .data(serde_json::json!({ "content": content }).to_string());
+                    if let Some(seq) = seq {
+                        ev = ev.id(seq.to_string());
+                    }
+                    yield Ok(ev);
+                }
+                AgentStreamEvent::ToolUse { tool, tool_id, status } => {
+                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
+                    let payload = serde_json::json!({
+                        "tool": tool,
+                        "tool_id": tool_id,
+                        "status": status,
+                    });
+                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "tool_use", &payload);
+
+                    crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
+                        session_id: session_id_sse.clone(),
+                        event_id: tool_id.clone(),
+                        event_type: format!("tool_use:{}", tool),
+                        sender: Some(tool.clone()),
+                        sequence_number: seq.unwrap_or(0),
+                    });
+
+                    let mut ev = Event::default().event("tool_use").data(payload.to_string());
+                    if let Some(seq) = seq {
+                        ev = ev.id(seq.to_string());
+                    }
+                    yield Ok(ev);
+                }
+                AgentStreamEvent::ToolResult { tool, tool_id, status, preview } => {
+                    let payload = serde_json::json!({
+                        "tool": tool,
+                        "tool_id": tool_id,
+                        "status": status,
+                        "preview": preview,
+                    });
+                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "tool_result", &payload);
+
+                    crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
+                        session_id: session_id_sse.clone(),
+                        event_id: tool_id.clone(),
+                        event_type: format!("tool_result:{}", tool),
+                        sender: Some(tool.clone()),
+                        sequence_number: seq.unwrap_or(0),
+                    });
+
+                    let mut ev = Event::default().event("tool_result").data(payload.to_string());
+                    if let Some(seq) = seq {
+                        ev = ev.id(seq.to_string());
+                    }
+                    yield Ok(ev);
+                }
+                AgentStreamEvent::Heartbeat { phase } => {
+                    yield Ok(Event::default()
+                        .event("heartbeat")
+                        .data(serde_json::json!({ "phase": phase }).to_string()));
+                }
+                AgentStreamEvent::TurnComplete { token_count, safety_status } => {
+                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
+                    let payload = serde_json::json!({
+                        "message_id": message_id_sse,
+                        "session_id": session_id_sse,
+                        "token_count": token_count,
+                        "safety_status": safety_status,
+                    });
+                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "turn_complete", &payload);
+                    let mut ev = Event::default().event("stream_end").data(payload.to_string());
+                    if let Some(seq) = seq {
+                        ev = ev.id(seq.to_string());
+                    }
+                    yield Ok(ev);
+                    stream_ended = true;
+                    break;
+                }
+                AgentStreamEvent::Error { message } => {
+                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
+                    let payload = serde_json::json!({ "message": message });
+                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "error", &payload);
+                    let mut ev = Event::default().event("error").data(payload.to_string());
+                    if let Some(seq) = seq {
+                        ev = ev.id(seq.to_string());
+                    }
+                    yield Ok(ev);
+                    stream_ended = true;
+                    break;
+                }
+            }
+        }
+
+        if !stream_ended {
+            flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
+        }
+    };
+
+    response_with_idempotency(
+        Sse::new(sse_stream)
+            .keep_alive(agent_stream_keep_alive())
+            .into_response(),
+        idempotency_status,
+    )
+}
+
+fn spawn_agent_chat_stream_execution(
+    state: Arc<AppState>,
+    requested_agent_id: Option<String>,
+    session_id: String,
+    message_id: String,
+    user_message: String,
+) -> (
+    tokio::sync::mpsc::Receiver<AgentStreamEvent>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(256);
+    let state_for_task = Arc::clone(&state);
+    let handle = tokio::spawn(async move {
+        let runtime_session_id = Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::now_v7());
+        let prepared_runtime = match prepare_agent_runtime(
+            &state_for_task,
+            requested_agent_id.as_deref(),
+            runtime_session_id,
+        ) {
+            Ok(prepared_runtime) => prepared_runtime,
+            Err(error) => {
+                let _ = tx
+                    .send(AgentStreamEvent::Error {
+                        message: error.to_string(),
+                    })
+                    .await;
+                return;
+            }
+        };
+
+        let PreparedAgentRuntime {
+            runtime_ctx,
+            mut runner,
+            providers,
+            ..
+        } = prepared_runtime;
+
         let tx_timeout = tx.clone();
         let turn_result = tokio::time::timeout(std::time::Duration::from_secs(300), async move {
             let mut ctx = match runner
@@ -161,10 +1215,10 @@ pub async fn agent_chat_stream(
                 .await
             {
                 Ok(ctx) => ctx,
-                Err(e) => {
+                Err(error) => {
                     let _ = tx
                         .send(AgentStreamEvent::Error {
-                            message: format!("agent pre-loop failed: {e}"),
+                            message: format!("agent pre-loop failed: {error}"),
                         })
                         .await;
                     return;
@@ -174,7 +1228,7 @@ pub async fn agent_chat_stream(
             let mut result = Err(ghost_agent_loop::runner::RunError::LLMError(
                 "no providers configured".into(),
             ));
-            for provider_config in &all_providers {
+            for provider_config in &providers {
                 let provider = provider_config.clone();
                 let get_stream = move |messages: Vec<ghost_llm::provider::ChatMessage>,
                                        tools: Vec<ghost_llm::provider::ToolSchema>|
@@ -201,13 +1255,28 @@ pub async fn agent_chat_stream(
                 }
             }
 
-            if let Err(e) = result {
-                let _ = tx
-                    .send(AgentStreamEvent::Error {
-                        message: format!("agent run failed: {e}"),
-                    })
-                    .await;
-                return;
+            match result {
+                Ok(run_result) => {
+                    let safety_status =
+                        if run_result.output.as_deref().unwrap_or_default().is_empty() {
+                            "unknown"
+                        } else {
+                            "clean"
+                        };
+                    let _ = tx
+                        .send(AgentStreamEvent::TurnComplete {
+                            token_count: run_result.total_tokens,
+                            safety_status: safety_status.to_string(),
+                        })
+                        .await;
+                }
+                Err(error) => {
+                    let _ = tx
+                        .send(AgentStreamEvent::Error {
+                            message: format!("agent run failed: {error}"),
+                        })
+                        .await;
+                }
             }
         })
         .await;
@@ -215,161 +1284,15 @@ pub async fn agent_chat_stream(
         if turn_result.is_err() {
             let _ = tx_timeout
                 .send(AgentStreamEvent::Error {
-                    message: "Agent turn timed out after 5 minutes".into(),
+                    message: format!(
+                        "Agent turn timed out after 5 minutes for message {message_id}"
+                    ),
                 })
                 .await;
         }
     });
 
-    // 6. Build SSE stream with event persistence
-    let db_for_stream = Arc::clone(&state.db);
-    let state_for_stream = Arc::clone(&state);
-    let session_id_sse = session_id_str.clone();
-    let message_id_sse = message_id.clone();
-
-    let sse_stream = async_stream::stream! {
-        let mut text_buffer = String::new();
-        const TEXT_FLUSH_THRESHOLD: usize = 2048;
-
-        let persist_event = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, etype: &str, payload: &serde_json::Value| -> Option<i64> {
-            match db.read() {
-                Ok(conn) => {
-                    cortex_storage::queries::stream_event_queries::insert_stream_event(
-                        &conn, sid, mid, etype, &payload.to_string(),
-                    ).ok()
-                }
-                Err(_) => None,
-            }
-        };
-
-        let flush_text = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, buf: &mut String| -> Option<i64> {
-            if buf.is_empty() { return None; }
-            let payload = serde_json::json!({ "content": buf.as_str() });
-            let seq = match db.read() {
-                Ok(conn) => cortex_storage::queries::stream_event_queries::insert_stream_event(
-                    &conn, sid, mid, "text_chunk", &payload.to_string(),
-                ).ok(),
-                Err(_) => None,
-            };
-            buf.clear();
-            seq
-        };
-
-        // stream_start
-        let start_payload = serde_json::json!({
-            "session_id": session_id_sse,
-            "message_id": message_id_sse,
-        });
-        let start_seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "stream_start", &start_payload);
-        let mut start_event = Event::default().event("stream_start").data(start_payload.to_string());
-        if let Some(seq) = start_seq { start_event = start_event.id(seq.to_string()); }
-        yield Ok(start_event);
-
-        let mut stream_ended = false;
-
-        while let Some(event) = rx.recv().await {
-            match event {
-                AgentStreamEvent::StreamStart { message_id } => {
-                    yield Ok(Event::default()
-                        .event("stream_start")
-                        .data(serde_json::json!({ "message_id": message_id }).to_string()));
-                }
-                AgentStreamEvent::TextDelta { content } => {
-                    text_buffer.push_str(&content);
-                    let mut seq = None;
-                    if text_buffer.len() >= TEXT_FLUSH_THRESHOLD {
-                        seq = flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
-                    }
-                    let mut ev = Event::default()
-                        .event("text_delta")
-                        .data(serde_json::json!({ "content": content }).to_string());
-                    if let Some(s) = seq { ev = ev.id(s.to_string()); }
-                    yield Ok(ev);
-                }
-                AgentStreamEvent::ToolUse { tool, tool_id, status } => {
-                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
-                    let payload = serde_json::json!({ "tool": tool, "tool_id": tool_id, "status": status });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "tool_use", &payload);
-
-                    crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
-                        session_id: session_id_sse.clone(),
-                        event_id: tool_id.clone(),
-                        event_type: format!("tool_use:{}", tool),
-                        sender: Some(tool.clone()),
-                        sequence_number: seq.unwrap_or(0),
-                    });
-
-                    let mut ev = Event::default().event("tool_use").data(payload.to_string());
-                    if let Some(s) = seq { ev = ev.id(s.to_string()); }
-                    yield Ok(ev);
-                }
-                AgentStreamEvent::ToolResult { tool, tool_id, status, preview } => {
-                    let payload = serde_json::json!({ "tool": tool, "tool_id": tool_id, "status": status, "preview": preview });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "tool_result", &payload);
-
-                    crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
-                        session_id: session_id_sse.clone(),
-                        event_id: tool_id.clone(),
-                        event_type: format!("tool_result:{}", tool),
-                        sender: Some(tool.clone()),
-                        sequence_number: seq.unwrap_or(0),
-                    });
-
-                    let mut ev = Event::default().event("tool_result").data(payload.to_string());
-                    if let Some(s) = seq { ev = ev.id(s.to_string()); }
-                    yield Ok(ev);
-                }
-                AgentStreamEvent::Heartbeat { phase } => {
-                    yield Ok(Event::default()
-                        .event("heartbeat")
-                        .data(serde_json::json!({ "phase": phase }).to_string()));
-                }
-                AgentStreamEvent::TurnComplete { token_count, safety_status } => {
-                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
-                    let payload = serde_json::json!({
-                        "message_id": message_id_sse,
-                        "session_id": session_id_sse,
-                        "token_count": token_count,
-                        "safety_status": safety_status,
-                    });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "turn_complete", &payload);
-                    let mut ev = Event::default().event("stream_end").data(payload.to_string());
-                    if let Some(s) = seq { ev = ev.id(s.to_string()); }
-                    yield Ok(ev);
-                    stream_ended = true;
-                    break;
-                }
-                AgentStreamEvent::Error { message } => {
-                    flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
-                    let payload = serde_json::json!({ "message": message });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &message_id_sse, "error", &payload);
-                    let mut ev = Event::default().event("error").data(payload.to_string());
-                    if let Some(s) = seq { ev = ev.id(s.to_string()); }
-                    yield Ok(ev);
-                    stream_ended = true;
-                    break;
-                }
-            }
-        }
-
-        if !stream_ended {
-            flush_text(&db_for_stream, &session_id_sse, &message_id_sse, &mut text_buffer);
-            yield Ok(Event::default()
-                .event("stream_end")
-                .data(serde_json::json!({
-                    "message_id": message_id_sse,
-                    "session_id": session_id_sse,
-                    "token_count": 0,
-                    "safety_status": "unknown",
-                }).to_string()));
-        }
-    };
-
-    Ok(Sse::new(sse_stream).keep_alive(
-        axum::response::sse::KeepAlive::new()
-            .interval(std::time::Duration::from_secs(15))
-            .text("ping"),
-    ))
+    (rx, handle)
 }
 
 fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {

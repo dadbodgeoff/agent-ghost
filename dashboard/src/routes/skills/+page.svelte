@@ -40,6 +40,9 @@
   let confirmSkill = $state<Skill | null>(null);
 
   async function handleAction(skill: Skill, action: 'install' | 'uninstall') {
+    if (action === 'install' && !skill.installable) return;
+    if (action === 'uninstall' && !skill.removable) return;
+
     if (action === 'install') {
       confirmSkill = skill;
       return;
@@ -75,7 +78,7 @@
 <div class="page">
   <header class="page-header">
     <h1>Skills</h1>
-    <p class="subtitle">Manage installed and available agent skills</p>
+    <p class="subtitle">Manage the compiled skill catalog exposed by the gateway runtime</p>
   </header>
 
   <div class="tabs">
@@ -153,17 +156,25 @@
       role="dialog"
       tabindex="-1"
       aria-modal="true"
-      aria-label="Review capabilities"
+      aria-label="Review privileges"
     >
-      <h2>Review Capabilities</h2>
-      <p>The skill <strong>{confirmSkill.name}</strong> requests the following capabilities:</p>
-      <div class="capability-list">
-        {#each confirmSkill.capabilities as cap}
-          <CapabilityBadge capability={cap} size="md" />
-        {/each}
-        {#if confirmSkill.capabilities.length === 0}
-          <span class="no-caps">No special capabilities required.</span>
-        {/if}
+      <h2>Review Install Access</h2>
+      <p>
+        Installing <strong>{confirmSkill.name}</strong> exposes the skill to eligible runtimes and grants
+        the following declared privileges:
+      </p>
+      {#if confirmSkill.privileges.length > 0}
+        <ul class="privilege-list">
+          {#each confirmSkill.privileges as privilege}
+            <li>{privilege}</li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="no-caps">No elevated privileges declared.</p>
+      {/if}
+      <div class="policy-review">
+        <span class="policy-label">Runtime policy capability</span>
+        <CapabilityBadge capability={confirmSkill.policy_capability} size="md" />
       </div>
       <div class="confirm-actions">
         <button class="cancel-btn" onclick={() => (confirmSkill = null)}>Cancel</button>
@@ -209,20 +220,38 @@
     margin: 0 0 var(--spacing-4);
   }
 
-  .capability-list {
+  .privilege-list {
+    margin: 0 0 var(--spacing-4);
+    padding-left: 1.25rem;
+    display: grid;
+    gap: var(--spacing-2);
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+  }
+
+  .policy-review {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
     gap: var(--spacing-2);
     padding: var(--spacing-3);
     background: var(--color-bg-elevated-2);
     border-radius: var(--radius-sm);
     margin-bottom: var(--spacing-4);
-    min-height: 32px;
+  }
+
+  .policy-label {
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .no-caps {
-    font-size: var(--font-size-xs);
+    font-size: var(--font-size-sm);
     color: var(--color-text-muted);
+    margin: 0 0 var(--spacing-4);
   }
 
   .confirm-actions {

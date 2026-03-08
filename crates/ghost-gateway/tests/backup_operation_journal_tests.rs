@@ -1,6 +1,5 @@
 mod common;
 
-use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -167,7 +166,7 @@ impl PersistentGateway {
             quarantine: Arc::new(RwLock::new(
                 ghost_gateway::safety::quarantine::QuarantineManager::new(),
             )),
-            db,
+            db: Arc::clone(&db),
             event_tx,
             replay_buffer,
             cost_tracker,
@@ -193,7 +192,9 @@ impl PersistentGateway {
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
-            safety_skills: Arc::new(HashMap::new()),
+            skill_catalog: Arc::new(
+                ghost_gateway::skill_catalog::SkillCatalogService::empty_for_tests(Arc::clone(&db)),
+            ),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
         });

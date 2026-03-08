@@ -305,6 +305,7 @@ fn very_long_state_parameter_no_truncation() {
 mod storage_tests {
     use super::*;
     use ghost_oauth::storage::TokenStore;
+    use sha2::{Digest, Sha256};
 
     /// A SecretProvider backed by a shared Arc<MockSecretProvider>.
     /// Ensures all threads use the same vault key.
@@ -341,6 +342,21 @@ mod storage_tests {
             expires_at: Utc::now() + Duration::hours(hours_until_expiry),
             scopes: vec!["read".into(), "write".into()],
         }
+    }
+
+    fn legacy_xor_encrypt(data: &[u8], passphrase: &str) -> Vec<u8> {
+        let salt = [0x5au8; 16];
+        let mut hasher = Sha256::new();
+        hasher.update(passphrase.as_bytes());
+        hasher.update(salt);
+        let derived = hasher.finalize();
+
+        let mut out = Vec::with_capacity(16 + data.len());
+        out.extend_from_slice(&salt);
+        for (index, byte) in data.iter().enumerate() {
+            out.push(byte ^ derived[index % derived.len()]);
+        }
+        out
     }
 
     // ─── Spec: "Integration: Store token, load it back → matches original" ──
@@ -458,6 +474,27 @@ mod storage_tests {
         );
     }
 
+    #[test]
+    fn encrypted_file_uses_age_header() {
+        let (store, dir) = temp_store();
+        let ref_id = OAuthRefId::new();
+        let ts = sample_token_set(1);
+
+        store.store_token(&ref_id, "google", &ts).unwrap();
+
+        let file_path = dir
+            .path()
+            .join("google")
+            .join(format!("{}.age", ref_id.as_uuid()));
+        let raw = std::fs::read(&file_path).unwrap();
+
+        assert!(
+            raw.starts_with(b"age-encryption.org/v1\n"),
+            "expected age header, got {:?}",
+            &raw[..raw.len().min(24)]
+        );
+    }
+
     // ─── Spec: "Unit: Atomic write: crash during write → old file preserved (simulate via temp file check)" ──
 
     #[test]
@@ -500,6 +537,48 @@ mod storage_tests {
         let result = store.load_token(&ref_id, "google");
         assert!(result.is_err());
         // Should be a storage or encryption error, not a panic
+    }
+
+    #[test]
+    fn legacy_xor_ciphertext_is_read_and_upgraded_to_age() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TokenStore::new(
+            dir.path().to_path_buf(),
+            Box::new(MockSecretProvider::with_entries(vec![(
+                "ghost-oauth-vault-key",
+                "legacy-passphrase",
+            )])),
+        );
+        let ref_id = OAuthRefId::new();
+        let expires_at = Utc::now() + Duration::hours(1);
+        let plaintext = serde_json::to_vec(&serde_json::json!({
+            "access_token": "legacy-access",
+            "refresh_token": "legacy-refresh",
+            "expires_at": expires_at,
+            "scopes": ["read"],
+        }))
+        .unwrap();
+
+        let file_path = dir
+            .path()
+            .join("google")
+            .join(format!("{}.age", ref_id.as_uuid()));
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file_path,
+            legacy_xor_encrypt(&plaintext, "legacy-passphrase"),
+        )
+        .unwrap();
+
+        let loaded = store.load_token(&ref_id, "google").unwrap();
+        assert_eq!(loaded.access_token.expose_secret(), "legacy-access");
+        assert_eq!(
+            loaded.refresh_token.as_ref().unwrap().expose_secret(),
+            "legacy-refresh"
+        );
+
+        let upgraded = std::fs::read(&file_path).unwrap();
+        assert!(upgraded.starts_with(b"age-encryption.org/v1\n"));
     }
 
     // ─── Spec: "Adversarial: Missing vault key in SecretProvider → auto-generate and store" ──

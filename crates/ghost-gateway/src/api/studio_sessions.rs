@@ -50,6 +50,7 @@ const DELETE_SESSION_ROUTE_TEMPLATE: &str = "/api/studio/sessions/:id";
 const SEND_MESSAGE_ROUTE_TEMPLATE: &str = "/api/studio/sessions/:id/messages";
 const SEND_MESSAGE_STREAM_ROUTE_TEMPLATE: &str = "/api/studio/sessions/:id/messages/stream";
 const STUDIO_MESSAGE_ROUTE_KIND: &str = "studio_send_message";
+const STUDIO_MESSAGE_EXECUTION_STATE_VERSION: u32 = 1;
 
 // ── Request / Response types ───────────────────────────────────────
 
@@ -604,9 +605,15 @@ pub async fn send_message(
 
                 let user_msg_id = Uuid::now_v7().to_string();
                 let assistant_msg_id = Uuid::now_v7().to_string();
-                let accepted_response =
-                    studio_message_accepted_body(&session_id, &user_msg_id, &assistant_msg_id);
+                let execution_id = Uuid::now_v7().to_string();
+                let accepted_response = studio_message_accepted_body(
+                    &session_id,
+                    &user_msg_id,
+                    &assistant_msg_id,
+                    &execution_id,
+                );
                 let execution_state = StudioMessageExecutionState {
+                    version: STUDIO_MESSAGE_EXECUTION_STATE_VERSION,
                     session_id: session_id.clone(),
                     user_message_id: user_msg_id.clone(),
                     assistant_message_id: assistant_msg_id.clone(),
@@ -614,7 +621,6 @@ pub async fn send_message(
                     final_status_code: None,
                     final_response: None,
                 };
-                let execution_id = Uuid::now_v7().to_string();
 
                 {
                     let db = state.db.write().await;
@@ -730,16 +736,13 @@ pub async fn send_message(
             }
 
             let execution_record = execution_record.expect("execution record must exist");
-            let execution_state = match serde_json::from_str::<StudioMessageExecutionState>(
-                &execution_record.state_json,
-            ) {
-                Ok(state) => state,
-                Err(error) => {
-                    return error_response_with_idempotency(ApiError::internal(format!(
-                        "failed to parse studio execution state: {error}"
-                    )));
-                }
-            };
+            let execution_state =
+                match parse_studio_message_execution_state(&execution_record.state_json) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        return error_response_with_idempotency(error);
+                    }
+                };
 
             match execution_record.status.as_str() {
                 "completed" => {
@@ -1097,6 +1100,8 @@ pub async fn send_message(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StudioMessageExecutionState {
+    #[serde(default = "studio_message_execution_state_version")]
+    version: u32,
     session_id: String,
     user_message_id: String,
     assistant_message_id: String,
@@ -1105,16 +1110,38 @@ struct StudioMessageExecutionState {
     final_response: Option<serde_json::Value>,
 }
 
+fn studio_message_execution_state_version() -> u32 {
+    STUDIO_MESSAGE_EXECUTION_STATE_VERSION
+}
+
+fn parse_studio_message_execution_state(
+    state_json: &str,
+) -> Result<StudioMessageExecutionState, ApiError> {
+    let state =
+        serde_json::from_str::<StudioMessageExecutionState>(state_json).map_err(|error| {
+            ApiError::internal(format!("failed to parse studio execution state: {error}"))
+        })?;
+    if state.version != STUDIO_MESSAGE_EXECUTION_STATE_VERSION {
+        return Err(ApiError::internal(format!(
+            "unsupported studio execution state version: {}",
+            state.version
+        )));
+    }
+    Ok(state)
+}
+
 fn studio_message_accepted_body(
     session_id: &str,
     user_message_id: &str,
     assistant_message_id: &str,
+    execution_id: &str,
 ) -> serde_json::Value {
     serde_json::json!({
         "status": "accepted",
         "session_id": session_id,
         "user_message_id": user_message_id,
         "assistant_message_id": assistant_message_id,
+        "execution_id": execution_id,
     })
 }
 
@@ -2485,5 +2512,62 @@ fn truncate_preview(s: &str, max: usize) -> String {
             end -= 1;
         }
         format!("{}…", &s[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn studio_execution_state_parser_defaults_missing_version_to_v1() {
+        let state = parse_studio_message_execution_state(
+            &serde_json::json!({
+                "session_id": "session-1",
+                "user_message_id": "user-1",
+                "assistant_message_id": "assistant-1",
+                "accepted_response": {
+                    "status": "accepted",
+                    "session_id": "session-1",
+                    "user_message_id": "user-1",
+                    "assistant_message_id": "assistant-1",
+                },
+                "final_status_code": serde_json::Value::Null,
+                "final_response": serde_json::Value::Null,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(state.version, STUDIO_MESSAGE_EXECUTION_STATE_VERSION);
+    }
+
+    #[test]
+    fn studio_execution_state_parser_rejects_unknown_version() {
+        let error = parse_studio_message_execution_state(
+            &serde_json::json!({
+                "version": STUDIO_MESSAGE_EXECUTION_STATE_VERSION + 1,
+                "session_id": "session-1",
+                "user_message_id": "user-1",
+                "assistant_message_id": "assistant-1",
+                "accepted_response": {
+                    "status": "accepted",
+                    "session_id": "session-1",
+                    "user_message_id": "user-1",
+                    "assistant_message_id": "assistant-1",
+                },
+                "final_status_code": serde_json::Value::Null,
+                "final_response": serde_json::Value::Null,
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported studio execution state version"),
+            "{error}"
+        );
     }
 }

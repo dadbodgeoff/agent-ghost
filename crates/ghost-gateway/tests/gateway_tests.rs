@@ -205,6 +205,7 @@ mod agent_registry {
             state: AgentLifecycleState::Starting,
             channel_bindings: vec![format!("cli:{name}")],
             capabilities: vec!["memory_read".into()],
+            skills: None,
             spending_cap: 5.0,
             template: None,
         }

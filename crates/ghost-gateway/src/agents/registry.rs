@@ -39,6 +39,7 @@ pub struct RegisteredAgent {
     pub state: AgentLifecycleState,
     pub channel_bindings: Vec<String>,
     pub capabilities: Vec<String>,
+    pub skills: Option<Vec<String>>,
     pub spending_cap: f64,
     /// Optional template name for agent initialization (Finding #16).
     pub template: Option<String>,

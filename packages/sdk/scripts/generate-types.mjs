@@ -10,8 +10,8 @@
  *   - openapi-typescript installed: pnpm add -D openapi-typescript
  */
 
-import { execSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { execFileSync, execSync } from 'node:child_process';
+import { unlinkSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,10 +41,10 @@ writeFileSync(tempSpec, spec);
 // Step 3: Generate TypeScript types
 console.log('Generating TypeScript types...');
 try {
-  execSync(
-    `npx openapi-typescript ${tempSpec} -o ${TYPES_OUTPUT}`,
-    { cwd: SDK_ROOT, stdio: 'inherit' },
-  );
+  execFileSync('npx', ['openapi-typescript', tempSpec, '-o', TYPES_OUTPUT], {
+    cwd: SDK_ROOT,
+    stdio: 'inherit',
+  });
 } catch (err) {
   console.error('Failed to generate TypeScript types.');
   process.exit(1);
@@ -52,7 +52,7 @@ try {
 
 // Step 4: Clean up temp file
 try {
-  execSync(`rm ${tempSpec}`);
+  unlinkSync(tempSpec);
 } catch {
   // ignore
 }

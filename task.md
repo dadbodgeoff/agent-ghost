@@ -1,254 +1,275 @@
-# Active Task Entry Point
+# Production Audit Remediation
 
-## Mission
+## Objective
 
-Close the validated release gaps from [RELEASE_GAP_VALIDATION_2026-03-07.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/docs/RELEASE_GAP_VALIDATION_2026-03-07.md) and ship a production-grade hardening wave with truthful contracts, deterministic behavior, adversarial coverage, and no silent degradation paths.
+Close the verified production-risk gaps in idempotency, crash recovery, workflow durability, backup integrity, messaging authenticity, distributed kill-gate coordination, skill-catalog mutation safety, and persisted-state/schema contracts.
 
 ## Scope
 
-In scope:
-- PC control admin API correctness and forensic fidelity
-- SDK hardening
-- convergence monitor expiry and pruning
-- gateway-level pause coverage
-- provider-construction deduplication
-- stale audit retirement
+Primary code paths:
+- `crates/ghost-backup`
+- `crates/ghost-gateway/src/messaging`
+- `crates/ghost-gateway/src/api/agent_chat.rs`
+- `crates/ghost-gateway/src/api/workflows.rs`
+- `crates/ghost-gateway/src/api/skills.rs`
+- `crates/ghost-gateway/src/api/skill_execute.rs`
+- `crates/ghost-gateway/src/skill_catalog`
+- `crates/cortex/cortex-storage`
+- `crates/ghost-kill-gates`
+- `crates/ghost-gateway/src/safety`
 
-Out of scope unless explicitly reopened:
-- OpenAPI route parity gap
-- fake `ApprovalsAPI` contract
-- missing `MemoryAPI.graph()` route
-- stale WebSocket wire docs
+Related contracts:
+- operation journal
+- live execution records
+- stream event log
+- workflow execution persistence
+- migration/schema verification
+- distributed kill-gate quorum/resume
 
-## Confirmed Workstreams
+## Constraints
 
-### W1. PC Control Hardening
+- Fail closed on persistence, auth, ownership, schema, and replay uncertainty.
+- No placeholders in production paths for encryption, signatures, or quorum trust.
+- No silent defaulting for persisted recovery state.
+- No replayable API or stream event may be emitted before durable persistence succeeds.
+- Mixed-version deploys must have an explicit compatibility plan or a temporary feature gate.
+- Every remediation task must land with adversarial tests, not only happy-path tests.
 
-Deliver:
-- truthful `pc-control/status` response separating persisted config from live runtime state
-- circuit breaker state from runtime, not config synthesis
-- safe-zone contract with no silent data loss
-- geometry validation for persisted safe zones
-- forensic action API exposing reconstructable audit detail
+## Findings Summary
 
-Required parameters:
-- single source of truth for runtime breaker state
-- explicit API contract for one safe zone or true multi-zone support
-- zero-width and zero-height rejection
-- overflow-safe rectangle validation
-- preserve raw action fields: `input_json`, `result_json`, `target_app`, `coordinates`, `blocked`, `block_reason`, `agent_id`, `session_id`
+1. Operation-journal lease takeover is unsafe: stale owners can still commit after takeover and overwrite the winning result.
+2. Agent chat stream replay durability is false in the live SSE path: event persistence writes through read-only connections and failures are silently ignored.
+3. Workflow durability/recovery is largely fake: resume reruns from scratch, persist failures are ignored, corrupt JSON silently defaults, and unknown/skipped nodes can still produce `"completed"`.
+4. Backup export/import ships security placeholders and restore integrity holes: XOR “encryption”, unsigned archives, path traversal restore, extra-entry restore, non-atomic restore, and no SQLite-consistent snapshot.
+5. Inter-agent messaging authenticity/confidentiality is fake: unsigned messages are accepted, “encryption” is plaintext pass-through, and key registration is only claimed in comments/logs.
+6. Distributed kill-gate quorum is unauthenticated and fail-open: any UUID can count as a resume vote, and the bridge still contains transport placeholders.
+7. Messaging replay prevention has an hourly-reset replay hole that re-admits recent messages across the reset boundary.
+8. Skill-catalog install/uninstall/execute routes mutate state without the operation journal, durable provenance, or retry-safe contracts.
+9. Persisted recovery state and schema verification are under-specified: recovery-critical JSON is unversioned and migration “schema verified” only proves table existence for several critical tables.
 
-Non-negotiables:
-- no silent truncation of client input
-- no hardcoded `"closed"` breaker state
-- no summary-only audit response for admin forensic use
+## Phased Implementation Plan
 
-### W2. SDK Hardening
+### Phase 0: Containment
 
-Deliver:
-- typed workflow graph DTOs
-- bounded retry/backoff for safe idempotent requests
-- secure request/operation ID generation
-- WebSocket auth path that does not expose bearer material in handshake metadata
-- timeout parity for blob export
+Goal: stop claiming guarantees the code does not provide.
 
-Required parameters:
-- explicit `WorkflowNode` and `WorkflowEdge` interfaces
-- retry policy limited to safe/idempotent operations
-- capped exponential backoff with jitter
-- no `Math.random()` fallback for security-relevant IDs
-- request timeout applied uniformly across standard and blob paths
+1. Gate or disable unsafe resume/replay surfaces until they are truthful.
+   Dependencies: none.
+   Tasks:
+   - Return `409`/`501` for workflow resume until real step-level resume exists.
+   - Return explicit recovery-required/error on stream persistence failure instead of silently continuing.
+   - Disable distributed kill-gate resume unless authenticated cluster membership is enforced.
+   Acceptance criteria:
+   - `/api/workflows/:id/resume/:execution_id` no longer reruns from scratch under the name “resume”.
+   - SSE replay contract is either real or explicitly refused.
+   - Distributed resume cannot reopen the gate with unauthenticated votes.
 
-Non-negotiables:
-- do not auto-retry semantic `4xx`
-- do not hide auth failure as transport retry noise
-- do not keep subprotocol bearer tokens as the long-term production contract
+### Phase 1: Ownership, Idempotency, and Crash-Recovery Correctness
 
-### W3. Convergence Monitor Hardening
+Goal: exactly-once semantics under retries, contention, slow execution, and restart.
 
-Deliver:
-- real dual-key expiry enforcement
-- stale-session pruning
-- stale rate-limit bucket pruning
-- deterministic rate-limit refill logic
+2. Harden `operation_journal` ownership and lease semantics.
+   Dependencies: Phase 0.
+   Tasks:
+   - Add durable owner token / lease epoch to `operation_journal`.
+   - Make takeover, commit, and abort compare-and-set on `(id, owner_token, status='in_progress')`.
+   - Add lease renewal/heartbeat for long-running mutations.
+   - Treat ownership loss as a hard error; stale owners must not commit.
+   Acceptance criteria:
+   - A worker that loses ownership cannot commit or delete the row.
+   - A long-running request that is still healthy renews its lease and is not spuriously taken over.
+   - Concurrent retries produce one committed response body and one authoritative audit trail.
 
-Required parameters:
-- store pending dual-key metadata: token hash, issued time, expiry time, initiator, intended action
-- configurable session idle horizon
-- pruning of empty agent-session indexes
-- integer or equivalent deterministic refill logic
+3. Make agent chat stream replay durable and fail closed.
+   Dependencies: task 2.
+   Tasks:
+   - Persist replayable stream events with a write-capable connection.
+   - Persist before emitting replayable SSE events or broadcasting replay-relevant websocket sequence numbers.
+   - Record durable terminal/recovery-required state for the stream route.
+   - Remove `unwrap_or(0)` sequence-number fallback for persisted stream events.
+   Acceptance criteria:
+   - Restart replay returns `stream_start`, all persisted text/tool events, and terminal event without provider re-execution.
+   - Persistence failure produces an explicit recovery-required contract, not silent live-only delivery.
+   - No live event with replay semantics is emitted without durable storage success.
 
-Non-negotiables:
-- no doc/implementation mismatch on token expiry
-- no unbounded in-memory registry growth
-- no indefinite validity window for critical-change confirmation
+4. Replace fake workflow durability with real resumable execution state.
+   Dependencies: tasks 2-3.
+   Tasks:
+   - Introduce typed/versioned execution records with step-level durable progress and outcome state.
+   - Link workflow execution state to operation-journal ownership.
+   - Resume from the last durably committed step only; do not rerun completed side effects.
+   - Route workflow agent/tool execution through the same runtime-safety and provider construction path as live chat/studio execution.
+   - Treat unknown node types, missing providers, skipped critical nodes, and state-persist failures as execution failure, not `"completed"`.
+   Acceptance criteria:
+   - Crash after step N resumes at step N+1 when safe, or returns explicit manual-recovery requirement when not safe.
+   - Duplicate retry does not rerun completed steps or duplicate side effects.
+   - Workflow status cannot be `"completed"` if any required node was skipped, unknown, or semantically invalid.
 
-### W4. Gateway Safety Coverage
+### Phase 2: Security Truthfulness
 
-Deliver:
-- gateway-level tests proving pause blocks both agent chat and studio execution
+Goal: no fake crypto, no fake signatures, no unauthenticated coordination.
 
-Required parameters:
-- cover `/api/agent/chat`
-- cover `/api/studio/sessions/:id/messages`
-- assert surfaced lock/error contract, not just lower-level runner behavior
+5. Replace backup placeholders with authenticated, crash-safe backup/restore.
+   Dependencies: none.
+   Tasks:
+   - Define backup format v2 with explicit versioning and authenticated encryption.
+   - Refuse empty-passphrase/unsigned production backups.
+   - Validate exact manifest/data set equality.
+   - Constrain restore paths to a staged subtree and atomically swap into place.
+   - Use SQLite backup API or equivalent consistent snapshot for live DB state.
+   Acceptance criteria:
+   - Tampered archive fails before restore.
+   - Path traversal and extra archive entries are rejected.
+   - Restore either completes fully or leaves the original state untouched.
 
-Non-negotiables:
-- unit proof alone is insufficient for this workstream
+6. Make inter-agent messaging actually authenticated and confidential.
+   Dependencies: none.
+   Tasks:
+   - Require valid signatures for accepted messages; reject empty signatures.
+   - Implement real key registration/loading instead of bootstrap-only log messages.
+   - Replace plaintext “encryption” with AEAD or remove the encrypted flag until real crypto exists.
+   - Bind replay protection to authenticated sender identity.
+   Acceptance criteria:
+   - Unsigned, forged, and tampered messages are rejected.
+   - “Encrypted” messages are not plaintext and fail to decrypt on tamper.
+   - Bootstrap/runtime key registry is exercised by tests, not only comments.
 
-### W5. Provider Construction Consolidation
+7. Fix distributed kill-gate quorum and transport trust.
+   Dependencies: none.
+   Tasks:
+   - Enforce cluster membership validation for acks and resume votes.
+   - Authenticate relay messages and bind votes to known node identities.
+   - Remove or gate code paths that only build relay messages without transport delivery.
+   - Define partition/rejoin behavior and chain verification requirements for resume.
+   Acceptance criteria:
+   - Fake node IDs cannot reach quorum.
+   - Duplicate votes and unknown peers do not affect quorum.
+   - Resume requires authenticated votes from current cluster members only.
 
-Deliver:
-- one shared provider construction path for agent chat and studio flows
+8. Close the dispatcher replay hole.
+   Dependencies: task 6.
+   Tasks:
+   - Replace hourly wholesale nonce reset with timestamped eviction bounded by replay window.
+   - Separate replay cache cleanup from rate-limit counter cleanup.
+   Acceptance criteria:
+   - A message accepted immediately before the cleanup boundary is still rejected on replay immediately after the boundary if it remains inside the replay window.
 
-Required parameters:
-- shared model defaulting
-- shared key resolution
-- shared fallback assembly
-- shared streaming adapter path
+### Phase 3: Contracted Mutation Surfaces and Persisted-State Compatibility
 
-Non-negotiables:
-- no drift between chat surfaces on provider setup semantics
+Goal: retry-safe APIs, versioned recovery state, and migrations that actually verify the contract.
 
-### W6. Audit Hygiene
+9. Put skill-catalog mutations/execution under the same mutation contract as other write paths.
+   Dependencies: task 2.
+   Tasks:
+   - Require operation context for install/uninstall/execute routes.
+   - Journal and audit skill-catalog mutations and write-capable executions.
+   - Define which skills require client-generated ids or explicit idempotency keys for side effects.
+   Acceptance criteria:
+   - Retried install/uninstall requests replay the same response instead of mutating twice.
+   - Retried write-capable skill execution is exactly-once or explicitly rejected as non-idempotent.
+   - Audit records reconstruct actor, request, operation, and idempotency provenance.
 
-Deliver:
-- stale audit artifacts marked superseded or regenerated
+10. Version persisted recovery state and strengthen schema verification.
+    Dependencies: tasks 2-4.
+    Tasks:
+    - Add `state_version` or typed columns for `workflow_executions` and `live_execution_records`.
+    - Reject unknown state versions/shapes instead of silently defaulting.
+    - Expand schema contract checks for `workflows`, `stream_event_log`, `workflow_executions`, `operation_journal`, and `live_execution_records` to verify required columns, indexes, and constraints.
+    - Make migration receipts truthful: “schema verified” must mean the recovery contract is actually present.
+    Acceptance criteria:
+    - Corrupt or unknown persisted state fails closed with explicit diagnostics.
+    - A database missing a critical recovery column/index fails schema verification.
+    - Mixed-version fixtures either migrate cleanly or are explicitly rejected with actionable errors.
 
-Required parameters:
-- old blocker docs must not remain active release truth after closure
+### Phase 4: Rollout and Verification
 
-## Contracts
+Goal: land high-risk fixes without corrupting existing state or breaking mixed-version deployments.
 
-Authoritative contracts:
-- REST: OpenAPI plus live mounted behavior
-- WebSocket: live gateway wire behavior and SDK canonical client
-- Dashboard: only consume server-owned or explicitly documented convenience contracts
-- Admin safety surfaces: must expose enough detail for incident reconstruction
+11. Execute staged rollout with migration and recovery drills.
+    Dependencies: tasks 2-10.
+    Tasks:
+    - Add forward-compatible migrations first, then flip enforcement behind feature flags.
+    - Run canary with metrics on takeover conflicts, replay failures, recovery-required transitions, backup verify failures, signature reject counts, and quorum vote rejects.
+    - Perform crash/restart drills and mixed-version upgrade tests before broad rollout.
+    Acceptance criteria:
+    - No canary duplicate execution under forced retry/timeout scenarios.
+    - Recovery drills produce deterministic post-restart state.
+    - Feature flags allow rapid fail-closed rollback of new contracts if verification fails.
 
-Contract rules:
-- no public API accepts data it silently discards
-- no SDK export may imply stability that the server contract does not own
-- no docs may claim expiry, replay, auth, or state behavior the implementation does not enforce
-- runtime state and persisted config must be distinguishable in responses
+## Test Matrix
 
-## Conventions
+- Operation journal:
+  - stale owner commit after takeover
+  - lease renewal during >30s execution
+  - crash after side effect before journal commit
+  - crash after journal commit before HTTP response
+  - concurrent retries from two workers
+- Agent chat stream:
+  - read-only/write failure during event append
+  - crash after `stream_start`, mid-text, mid-tool event, and before terminal event
+  - replay after restart with no provider re-execution
+  - websocket sequence numbers remain monotonic and persisted
+- Workflows:
+  - crash between steps
+  - resume from prior execution id
+  - unknown node type
+  - missing API key/provider
+  - corrupt stored JSON
+  - mixed-version stored state fixture
+- Backup:
+  - tampered ciphertext
+  - wrong passphrase
+  - extra data entries
+  - `../` traversal path
+  - restore interrupted mid-run
+  - live SQLite/WAL writes during backup
+- Messaging:
+  - unsigned message
+  - wrong-key signature
+  - ciphertext tamper
+  - replay across cleanup boundary
+  - future-dated and expired messages
+- Kill gate:
+  - fake node IDs
+  - duplicate vote from same node
+  - unknown peer ack
+  - partition then rejoin
+  - resume with stale membership view
+- Skill catalog:
+  - duplicate install retry
+  - duplicate uninstall retry
+  - write-capable execute retry
+  - audit provenance presence
+- Migrations/schema:
+  - missing critical columns/indexes
+  - upgrade from pre-v051/v052/v053 states
+  - migration receipt emitted only after full contract verification
 
-Implementation conventions:
-- prefer one canonical seam per concern
-- fail closed on missing safety config
-- keep convenience layers explicitly labeled
-- preserve backward compatibility unless a shim is already declared non-canonical
-- avoid adding new transitional abstractions during remediation
+## Migration and Rollout Notes
 
-Documentation conventions:
-- each changed surface must declare owner, source of truth, and deprecation posture
-- stale findings must be marked superseded, not left ambiguous
+- `operation_journal` changes require additive migration first. Do not remove legacy columns until all writers compare-and-set on the new ownership fields.
+- `workflow_executions` and `live_execution_records` need explicit state versioning. Old rows must either be upgraded in place or marked non-resumable.
+- Backup format change should be versioned. Keep legacy import behind an explicit compatibility flag and never restore legacy archives silently.
+- Distributed kill-gate resume must remain disabled unless authenticated cluster membership is configured and verified.
+- Skill route enforcement can roll out in two steps:
+  - accept missing idempotency headers with warnings for existing clients
+  - switch to hard enforcement once clients are updated
 
-Testing conventions:
-- happy-path only coverage is invalid
-- mocks cannot be the only evidence on critical boundaries
-- restart, replay, stale-state, and malformed-input paths must be exercised where relevant
+## Open Questions
 
-## Elections
+- Is `ghost-backup` currently reachable in production deployments or only via operator tooling? The code must still be fixed before treating exported archives as trustworthy.
+- Do any external clients rely on the current broken behavior of workflow “resume”? If yes, they need a compatibility notice before the route is changed or gated.
+- What is the authoritative cluster-membership source for distributed kill-gate quorum? The current code has no trusted membership binding.
+- Which skill executions are intended to be replay-safe, and which require caller-supplied ids for exactly-once writes?
 
-Leader-election and coordination requirements:
-- single-owner realtime behavior must remain deterministic across tabs/clients
-- reconnect owner must preserve replay cursor integrity
-- leader change must not duplicate or drop state transitions
-- retry, replay, and reconnect behavior must be idempotent under election churn
+## Do Not Regress
 
-Minimum election-related checks:
-- reconnect with valid replay cursor
-- reconnect outside replay buffer
-- leader/follower handoff without duplicate proposal or safety state transitions
-- concurrent approval/status updates do not corrupt final state
-
-## Security
-
-Mandatory security posture:
-- admin-only safety mutations remain admin-only
-- no bearer material in URLs
-- remove bearer material from long-term WebSocket handshake design
-- no insecure randomness for request identity
-- critical dual-key actions must expire and be auditable
-
-## Adversarial Test Matrix
-
-PC control:
-- malformed safe-zone payload
-- zero-area safe zone
-- overflow-prone coordinates
-- conflicting multi-zone payload against single-zone contract
-- breaker open, half-open, and cooldown transitions
-- action log reconstruction from API output alone
-
-SDK:
-- transient network failure with bounded retry
-- auth failure with no retry loop
-- timeout on blob export
-- malformed WebSocket frame
-- replay gap inside buffer
-- replay gap outside buffer
-
-Convergence monitor:
-- expired dual-key token
-- reused dual-key token
-- stale-session accumulation
-- idle rate-limit bucket accumulation
-- sustained rate-limit edge behavior under long runtime
-
-Gateway/runtime safety:
-- paused agent via agent chat
-- paused agent via studio message path
-- degraded monitor mode with configured block behavior
-- stale convergence state behavior by profile
-
-Election/realtime:
-- reconnect during ownership handoff
-- duplicate event delivery
-- out-of-order replay boundary
-- resync after lag
-
-## Production Evidence Gates
-
-Release is blocked until all are true:
-- PC control contract is truthful and lossless
-- SDK hardening changes are covered by deterministic tests
-- convergence dual-key expiry is implemented and tested
-- stale registries are pruned under test
-- gateway pause behavior is proven at HTTP boundary
-- old audit blockers are retired or regenerated
-
-Evidence required:
-- source tests
-- integration tests
-- adversarial tests
-- CI guard coverage where drift can recur
-
-## CI Guardrails
-
-CI must fail on:
-- router/schema drift
-- stale or broken public contract assertions
-- forbidden insecure randomness in SDK identity path
-- missing timeout coverage for blob export path
-- regression in gateway pause enforcement tests
-
-## Execution Order
-
-1. PC control hardening
-2. SDK hardening
-3. convergence monitor hardening
-4. gateway pause integration coverage
-5. provider path consolidation
-6. stale audit retirement
-
-## Definition Of Done
-
-This task is complete when:
-- every confirmed gap in the validation doc is either fixed or explicitly retired
-- no false flag remains treated as active release truth
-- all touched surfaces have adversarial evidence
-- contracts, conventions, and election behavior are explicit and test-backed
-- an implementation agent can execute from this file without needing a design rewrite
+- No stale owner may commit after lease takeover.
+- No replayable stream event may be emitted before durable append succeeds.
+- No workflow may report `"completed"` when a required node failed, was skipped, or was unknown.
+- No backup restore may write outside the staged ghost root.
+- No unsigned or forged inter-agent message may be accepted.
+- No unauthenticated node ID may count toward kill-gate quorum.
+- No mutating skill route may bypass operation journal and mutation audit.
+- No recovery-critical persisted JSON may silently default on parse/version mismatch.
+- No migration receipt may claim schema verification without verifying the recovery-critical columns and indexes.

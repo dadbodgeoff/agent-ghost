@@ -1,7 +1,6 @@
 //! Test gateway harness -- boots a real gateway on a random port
 //! with a temp database for integration testing.
 
-use std::collections::HashMap;
 use std::net::TcpListener;
 use std::sync::{Arc, RwLock};
 
@@ -33,8 +32,16 @@ impl TestGateway {
         Self::start_with_replay_capacity(100).await
     }
 
+    pub async fn start_with_compiled_skills() -> Self {
+        Self::start_internal(100, true).await
+    }
+
     /// Boot a gateway with a custom WebSocket replay buffer capacity.
     pub async fn start_with_replay_capacity(replay_capacity: usize) -> Self {
+        Self::start_internal(replay_capacity, false).await
+    }
+
+    async fn start_internal(replay_capacity: usize, include_compiled_skills: bool) -> Self {
         // Find an available port.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -84,6 +91,23 @@ impl TestGateway {
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
 
+        let skill_catalog = if include_compiled_skills {
+            let definitions =
+                ghost_gateway::skill_catalog::build_compiled_skill_definitions(&config).definitions;
+            Arc::new(
+                ghost_gateway::skill_catalog::SkillCatalogService::new(
+                    definitions,
+                    Arc::clone(&db),
+                )
+                .await
+                .expect("compiled test skill catalog"),
+            )
+        } else {
+            Arc::new(
+                ghost_gateway::skill_catalog::SkillCatalogService::empty_for_tests(Arc::clone(&db)),
+            )
+        };
+
         let app_state = Arc::new(ghost_gateway::state::AppState {
             gateway: Arc::clone(&shared_state),
             agents: Arc::new(RwLock::new(
@@ -93,7 +117,7 @@ impl TestGateway {
             quarantine: Arc::new(RwLock::new(
                 ghost_gateway::safety::quarantine::QuarantineManager::new(),
             )),
-            db,
+            db: Arc::clone(&db),
             event_tx,
             replay_buffer,
             cost_tracker,
@@ -119,7 +143,7 @@ impl TestGateway {
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
-            safety_skills: Arc::new(HashMap::new()),
+            skill_catalog,
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
         });
