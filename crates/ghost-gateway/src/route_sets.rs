@@ -66,6 +66,10 @@ pub fn public_routes() -> axum::Router<Arc<AppState>> {
         .route("/api/auth/login", post(crate::api::auth::login))
         .route("/api/auth/refresh", post(crate::api::auth::refresh))
         .route("/api/auth/logout", post(crate::api::auth::logout))
+        .route(
+            "/api/oauth/callback",
+            get(crate::api::oauth_routes::callback),
+        )
         .route("/api/openapi.json", get(crate::api::openapi::openapi_spec))
 }
 
@@ -320,12 +324,6 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         Method::GET,
         get(crate::api::oauth_routes::list_providers),
         spec(RouteId::OAuthProviders, Method::GET),
-    ))
-    .merge(action_route(
-        "/api/oauth/callback",
-        Method::GET,
-        get(crate::api::oauth_routes::callback),
-        spec(RouteId::OAuthCallback, Method::GET),
     ))
     .merge(action_route(
         "/api/oauth/connections",

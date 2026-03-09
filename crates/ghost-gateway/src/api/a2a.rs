@@ -12,6 +12,7 @@ use axum::response::sse::{Event, Sse};
 use axum::response::Response;
 use axum::Extension;
 use axum::Json;
+use base64::Engine;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
@@ -121,19 +122,37 @@ pub async fn send_task(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| verified_agent.name.clone());
     let created_at = chrono::Utc::now().to_rfc3339();
+    let input_str = serde_json::to_string(&req.input).unwrap_or_else(|_| "null".into());
 
     let jsonrpc_req = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": task_id,
-        "method": method,
+        "id": task_id.clone(),
+        "method": method.clone(),
         "params": {
-            "id": task_id,
+            "task_id": task_id.clone(),
+            "task": input_str.clone(),
+            "sender_id": actor,
+            "recipient_id": agent_name.clone(),
+            "id": task_id.clone(),
             "message": {
                 "role": "user",
-                "parts": [{ "type": "text", "text": req.input }],
+                "parts": [{ "type": "text", "text": req.input.clone() }],
             }
         }
     });
+    let jsonrpc_body = match serde_json::to_vec(&jsonrpc_req) {
+        Ok(body) => body,
+        Err(error) => {
+            return error_response_with_idempotency(ApiError::internal(format!(
+                "failed to serialize A2A request: {error}"
+            )));
+        }
+    };
+    let dispatch_url = format!("{}/a2a", verified_agent.endpoint_url.trim_end_matches('/'));
+    let signature = match sign_a2a_request(&state, &jsonrpc_body) {
+        Ok(signature) => signature,
+        Err(error) => return error_response_with_idempotency(error),
+    };
 
     let prepared = {
         let db = state.db.write().await;
@@ -181,7 +200,6 @@ pub async fn send_task(
             "An equivalent request is already in progress",
         )),
         Ok(PreparedOperation::Acquired { lease }) => {
-            let input_str = serde_json::to_string(&req.input).unwrap_or_else(|_| "null".into());
             {
                 let db = state.db.write().await;
                 if let Err(error) = db.execute(
@@ -207,10 +225,11 @@ pub async fn send_task(
             let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
             let client = reqwest::Client::new();
             let resp = match client
-                .post(&verified_agent.endpoint_url)
+                .post(&dispatch_url)
                 .header("Content-Type", "application/json")
+                .header("X-Ghost-Signature", signature)
                 .timeout(std::time::Duration::from_secs(30))
-                .json(&jsonrpc_req)
+                .body(jsonrpc_body.clone())
                 .send()
                 .await
             {
@@ -624,69 +643,23 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
     Ok(Json(DiscoverResponse { agents }))
 }
 
-/// T-5.2.3: Verify the Ed25519 signature on an agent card JSON.
-///
-/// The agent card should contain `public_key` (hex-encoded 32 bytes) and
-/// `signature` (hex-encoded 64 bytes). The signature is verified against
-/// the card body minus the signature field itself.
 fn verify_agent_card_signature(card: &serde_json::Value) -> bool {
-    let public_key_hex = match card.get("public_key").and_then(|v| v.as_str()) {
-        Some(k) => k,
-        None => return false, // No public key in card
-    };
-
-    let signature_hex = match card.get("signature").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return false, // No signature in card
-    };
-
-    // Decode public key from hex.
-    let pk_bytes: Vec<u8> = match (0..public_key_hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&public_key_hex[i..i + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
-    {
-        Ok(b) if b.len() == 32 => b,
-        _ => return false,
-    };
-
-    let pk_array: [u8; 32] = match pk_bytes.try_into() {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-
-    let verifying_key = match ghost_signing::VerifyingKey::from_bytes(&pk_array) {
-        Some(k) => k,
-        None => return false,
-    };
-
-    // Decode signature from hex.
-    let sig_bytes: Vec<u8> = match (0..signature_hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&signature_hex[i..i + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
-    {
-        Ok(b) if b.len() == 64 => b,
-        _ => return false,
-    };
-
-    let signature = match ghost_signing::Signature::from_bytes(&sig_bytes) {
-        Some(s) => s,
-        None => return false,
-    };
-
-    // Build the canonical card body (card without the signature field) for verification.
-    let mut card_for_signing = card.clone();
-    if let Some(obj) = card_for_signing.as_object_mut() {
-        obj.remove("signature");
-    }
-    let canonical = serde_json::to_string(&card_for_signing).unwrap_or_default();
-
-    ghost_signing::verify(canonical.as_bytes(), &signature, &verifying_key)
+    serde_json::from_value::<ghost_mesh::types::AgentCard>(card.clone())
+        .map(|card| card.verify_signature())
+        .unwrap_or(false)
 }
 
 fn normalize_a2a_endpoint_url(url: &str) -> String {
-    url.trim().trim_end_matches('/').to_string()
+    let trimmed = url.trim().trim_end_matches('/');
+    let without_agent_card = trimmed
+        .strip_suffix("/.well-known/agent.json")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    without_agent_card
+        .strip_suffix("/a2a")
+        .unwrap_or(without_agent_card)
+        .trim_end_matches('/')
+        .to_string()
 }
 
 fn load_verified_discovered_agent(
@@ -743,5 +716,75 @@ fn load_verified_discovered_agent(
                 "next_step": "Run A2A discovery and choose a reachable verified agent.",
             }),
         )),
+    }
+}
+
+fn sign_a2a_request(state: &AppState, body: &[u8]) -> Result<String, ApiError> {
+    let Some(signing_key) = state.mesh_signing_key.as_ref() else {
+        return Err(ApiError::with_details(
+            StatusCode::PRECONDITION_FAILED,
+            "MESH_NOT_ENABLED",
+            "Mesh signing is not configured for outbound A2A dispatch",
+            serde_json::json!({
+                "next_step": "Enable mesh networking on the sending gateway before dispatching A2A tasks.",
+            }),
+        ));
+    };
+    let signing_key = signing_key
+        .lock()
+        .map_err(|_| ApiError::internal("mesh signing key lock poisoned"))?;
+    let signature = ghost_signing::sign(body, &signing_key);
+    Ok(base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_agent_card_signature;
+
+    #[test]
+    fn signed_mesh_card_json_verifies() {
+        let (signing_key, verifying_key) = ghost_signing::generate_keypair();
+        let mut card = ghost_mesh::types::AgentCard {
+            name: "mesh-test".into(),
+            description: "Signed mesh card".into(),
+            capabilities: vec!["testing".into()],
+            capability_flags: 0,
+            input_types: vec!["text/plain".into()],
+            output_types: vec!["application/json".into()],
+            auth_schemes: vec!["ed25519".into()],
+            endpoint_url: "http://127.0.0.1:39780".into(),
+            public_key: verifying_key.to_bytes().to_vec(),
+            convergence_profile: "standard".into(),
+            trust_score: 1.0,
+            sybil_lineage_hash: String::new(),
+            version: "1.0.0".into(),
+            signed_at: chrono::Utc::now(),
+            signature: Vec::new(),
+            supported_task_types: vec!["analysis".into()],
+            default_input_modes: vec!["text/plain".into()],
+            default_output_modes: vec!["application/json".into()],
+            provider: "ghost-platform".into(),
+            a2a_protocol_version: "0.2.0".into(),
+        };
+        card.sign(&signing_key);
+
+        let card_json = serde_json::to_value(card).unwrap();
+        assert!(verify_agent_card_signature(&card_json));
+    }
+
+    #[test]
+    fn normalize_endpoint_url_accepts_agent_card_and_a2a_urls() {
+        assert_eq!(
+            super::normalize_a2a_endpoint_url("http://127.0.0.1:39780/.well-known/agent.json"),
+            "http://127.0.0.1:39780"
+        );
+        assert_eq!(
+            super::normalize_a2a_endpoint_url("http://127.0.0.1:39780/a2a"),
+            "http://127.0.0.1:39780"
+        );
+        assert_eq!(
+            super::normalize_a2a_endpoint_url("http://127.0.0.1:39780/"),
+            "http://127.0.0.1:39780"
+        );
     }
 }

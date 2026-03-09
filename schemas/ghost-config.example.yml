@@ -52,6 +52,15 @@ models:
       api_key: "${OPENAI_API_KEY}"
       model: "gpt-4o"
 
+oauth:
+  providers:
+    - name: "local-mock"
+      client_id: "ghost-local-client"
+      client_secret_env: "GHOST_LOCAL_OAUTH_CLIENT_SECRET"
+      auth_url: "http://127.0.0.1:40100/authorize"
+      token_url: "http://127.0.0.1:40100/token"
+      revoke_url: "http://127.0.0.1:40100/revoke"
+
 security:
   ghost_token: "${GHOST_TOKEN}"
   mtls_enabled: false

@@ -9,6 +9,21 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 
+fn host_is_explicitly_allowed(host: &str) -> bool {
+    ["GHOST_SSRF_ALLOWED_HOSTS", "GHOST_WEBHOOK_ALLOWED_HOSTS"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .any(|allowed_host| allowed_host.eq_ignore_ascii_case(host))
+}
+
 /// Check if an IP address is in a private/internal range.
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
@@ -80,11 +95,8 @@ pub fn validate_url(url_str: &str) -> Result<(), String> {
     }
 
     // 4. Check allowed hosts override.
-    if let Ok(allowed) = std::env::var("GHOST_WEBHOOK_ALLOWED_HOSTS") {
-        let allowed_hosts: Vec<&str> = allowed.split(',').map(|h| h.trim()).collect();
-        if allowed_hosts.contains(&host) {
-            return Ok(());
-        }
+    if host_is_explicitly_allowed(host) {
+        return Ok(());
     }
 
     // 5. Resolve hostname and check all IPs against blocklist.
@@ -112,4 +124,51 @@ pub fn validate_url(url_str: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_url;
+    use std::ffi::OsString;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            // SAFETY: These tests mutate process env in a short single-threaded scope.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => {
+                    // SAFETY: These tests restore process env in a short single-threaded scope.
+                    unsafe { std::env::set_var(self.key, value) };
+                }
+                None => {
+                    // SAFETY: These tests restore process env in a short single-threaded scope.
+                    unsafe { std::env::remove_var(self.key) };
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generic_allowed_hosts_override_allows_loopback_target() {
+        let _guard = EnvVarGuard::set("GHOST_SSRF_ALLOWED_HOSTS", "127.0.0.1,localhost");
+        assert!(validate_url("http://127.0.0.1:40123/callback").is_ok());
+    }
+
+    #[test]
+    fn legacy_webhook_allowed_hosts_override_still_works() {
+        let _guard = EnvVarGuard::set("GHOST_WEBHOOK_ALLOWED_HOSTS", "127.0.0.1,localhost");
+        assert!(validate_url("http://127.0.0.1:40123/callback").is_ok());
+    }
 }

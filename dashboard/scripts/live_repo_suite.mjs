@@ -6,21 +6,11 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { nowIso, timestampLabel, writeJson } from './lib/live_harness.mjs';
+import { generateLiveReport } from './lib/live_reporting.mjs';
 import { removeIfPresent, runChildSuite } from './lib/live_suite.mjs';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
-const DEFAULT_COMPONENTS = [
-  'poc',
-  'infra',
-  'runtime',
-  'knowledge',
-  'io',
-  'distributed',
-  'convergence',
-  'database',
-  'surface',
-  'ops',
-];
+const DEFAULT_SUITES = ['preflight', 'critical'];
 
 function parseArgs(argv) {
   const options = {
@@ -28,7 +18,9 @@ function parseArgs(argv) {
     headed: false,
     keepArtifacts: false,
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    components: DEFAULT_COMPONENTS,
+    suites: DEFAULT_SUITES,
+    pruneOldArtifacts: false,
+    keepRecentRuns: 20,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -52,11 +44,19 @@ function parseArgs(argv) {
         options.timeoutMs = Number.parseInt(argv[index + 1] ?? '', 10) || options.timeoutMs;
         index += 1;
         break;
-      case '--components':
-        options.components = (argv[index + 1] ?? '')
+      case '--suites':
+        options.suites = (argv[index + 1] ?? '')
           .split(',')
           .map((value) => value.trim())
           .filter(Boolean);
+        index += 1;
+        break;
+      case '--prune-old-artifacts':
+        options.pruneOldArtifacts = true;
+        break;
+      case '--keep-recent-runs':
+        options.keepRecentRuns =
+          Number.parseInt(argv[index + 1] ?? '', 10) || options.keepRecentRuns;
         index += 1;
         break;
       case '--help':
@@ -72,67 +72,59 @@ function parseArgs(argv) {
     throw new Error(`Unsupported mode: ${options.mode}`);
   }
 
-  const unsupportedComponents = options.components.filter(
-    (component) => !DEFAULT_COMPONENTS.includes(component),
-  );
-  if (unsupportedComponents.length > 0) {
-    throw new Error(`Unsupported components: ${unsupportedComponents.join(', ')}`);
+  const unsupportedSuites = options.suites.filter((suite) => !DEFAULT_SUITES.includes(suite));
+  if (unsupportedSuites.length > 0) {
+    throw new Error(`Unsupported suites: ${unsupportedSuites.join(', ')}`);
   }
-  if (options.components.length === 0) {
-    throw new Error('At least one component is required');
+  if (options.suites.length === 0) {
+    throw new Error('At least one suite is required');
   }
 
   return options;
 }
 
 function printHelp() {
-  process.stdout.write(`Live critical suite
+  process.stdout.write(`Live repo suite
 
 Usage:
-  pnpm audit:critical-live [-- --mode dev|preview] [--headed] [--keep-artifacts]
-                           [--timeout-ms 45000]
-                           [--components ${DEFAULT_COMPONENTS.join(',')}]
+  pnpm audit:repo-live [-- --mode dev|preview] [--headed] [--keep-artifacts]
+                       [--timeout-ms 45000]
+                       [--suites ${DEFAULT_SUITES.join(',')}]
+                       [--prune-old-artifacts]
+                       [--keep-recent-runs 20]
 
 What it does:
-  1. Runs the current critical live verification components one by one
-  2. Starts with the full Studio POC suite
-  3. Continues into the infra/auth/bootstrap audit
-  4. Produces a single suite summary with child artifact references
+  1. Runs preflight checks for local toolchain, disk, ports, browser, and gateway build
+  2. Runs the critical live suite on the current repo
+  3. Produces a single top-level summary with child suite references
 `);
 }
 
-function componentCommand(component) {
-  if (component === 'poc') {
-    return ['dashboard/scripts/live_poc_suite.mjs'];
+function suiteArgs(suite, options) {
+  if (suite === 'preflight') {
+    const args = ['dashboard/scripts/live_preflight_audit.mjs', '--keep-artifacts'];
+    if (options.pruneOldArtifacts) {
+      args.push('--prune-old-artifacts', '--keep-recent-runs', String(options.keepRecentRuns));
+    }
+    return args;
   }
-  if (component === 'infra') {
-    return ['dashboard/scripts/live_infra_audit.mjs'];
+
+  if (suite === 'critical') {
+    const args = [
+      'dashboard/scripts/live_critical_suite.mjs',
+      '--mode',
+      options.mode,
+      '--timeout-ms',
+      String(options.timeoutMs),
+      '--keep-artifacts',
+    ];
+    if (options.headed) {
+      args.push('--headed');
+    }
+    return args;
   }
-  if (component === 'runtime') {
-    return ['dashboard/scripts/live_runtime_audit.mjs'];
-  }
-  if (component === 'knowledge') {
-    return ['dashboard/scripts/live_knowledge_audit.mjs'];
-  }
-  if (component === 'io') {
-    return ['dashboard/scripts/live_io_audit.mjs'];
-  }
-  if (component === 'distributed') {
-    return ['dashboard/scripts/live_distributed_audit.mjs'];
-  }
-  if (component === 'convergence') {
-    return ['dashboard/scripts/live_convergence_audit.mjs'];
-  }
-  if (component === 'database') {
-    return ['dashboard/scripts/live_database_audit.mjs'];
-  }
-  if (component === 'surface') {
-    return ['dashboard/scripts/live_surface_audit.mjs'];
-  }
-  if (component === 'ops') {
-    return ['dashboard/scripts/live_ops_audit.mjs'];
-  }
-  throw new Error(`Unsupported component: ${component}`);
+
+  throw new Error(`Unsupported suite: ${suite}`);
 }
 
 async function main() {
@@ -143,7 +135,7 @@ async function main() {
   const suiteDir = path.join(
     repoRoot,
     'artifacts',
-    'live-critical-suites',
+    'live-repo-suites',
     timestampLabel(),
   );
 
@@ -152,38 +144,26 @@ async function main() {
   const summary = {
     started_at: nowIso(),
     mode: options.mode,
-    components: options.components,
+    suites: options.suites,
     artifact_dir: suiteDir,
     results: [],
+    reporting: null,
     status: 'running',
   };
 
   try {
-    for (const component of options.components) {
-      const childArgs = [
-        ...componentCommand(component),
-        '--mode',
-        options.mode,
-        '--timeout-ms',
-        String(options.timeoutMs),
-        '--keep-artifacts',
-      ];
-      if (options.headed) {
-        childArgs.push('--headed');
-      }
-
+    for (const suite of options.suites) {
       const result = await runChildSuite({
         repoRoot,
         suiteDir,
-        label: component,
-        args: childArgs,
+        label: suite,
+        args: suiteArgs(suite, options),
       });
-      result.component = component;
       summary.results.push(result);
       await writeJson(path.join(suiteDir, 'summary.json'), summary);
 
       if (result.status !== 'passed') {
-        throw new Error(`${component} component failed`);
+        throw new Error(`${suite} suite failed`);
       }
     }
 
@@ -194,6 +174,8 @@ async function main() {
   } finally {
     summary.finished_at = nowIso();
     await writeJson(path.join(suiteDir, 'summary.json'), summary);
+    summary.reporting = await generateLiveReport(repoRoot);
+    await writeJson(path.join(suiteDir, 'summary.json'), summary);
   }
 
   if (summary.status === 'passed' && !options.keepArtifacts) {
@@ -201,16 +183,18 @@ async function main() {
       await removeIfPresent(result.artifact_dir);
     }
     await removeIfPresent(suiteDir);
-    process.stdout.write(`Live critical suite passed
-Components: ${options.components.join(', ')}
+    process.stdout.write(`Live repo suite passed
+Suites: ${options.suites.join(', ')}
 Artifacts: not kept (use --keep-artifacts to preserve them)
+Report: ${summary.reporting?.report_path ?? 'not available'}
 `);
     return;
   }
 
-  process.stdout.write(`Live critical suite ${summary.status}
-Components: ${options.components.join(', ')}
+  process.stdout.write(`Live repo suite ${summary.status}
+Suites: ${options.suites.join(', ')}
 Artifacts: ${suiteDir}
+Report: ${summary.reporting?.report_path ?? 'not available'}
 `);
 
   if (summary.status !== 'passed') {

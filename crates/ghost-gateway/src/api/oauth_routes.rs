@@ -30,6 +30,7 @@ use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::state::AppState;
 use axum::extract::State;
 use std::sync::Arc;
+use tokio::task::block_in_place;
 
 const CONNECT_ROUTE_TEMPLATE: &str = "/api/oauth/connect";
 const EXECUTE_ROUTE_TEMPLATE: &str = "/api/oauth/execute";
@@ -503,7 +504,7 @@ pub async fn callback(
         .into_response();
     }
 
-    match state.oauth_broker.callback(&params.state, &params.code) {
+    match block_in_place(|| state.oauth_broker.callback(&params.state, &params.code)) {
         Ok(ref_id) => Json(OAuthConnectionStatusResponse {
             status: "connected".to_string(),
             ref_id: ref_id.to_string(),
@@ -788,7 +789,7 @@ pub async fn execute_api_call(
             }
 
             let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
-            match state.oauth_broker.execute(&ref_id, &req.api_request) {
+            match block_in_place(|| state.oauth_broker.execute(&ref_id, &req.api_request)) {
                 Ok(response) => {
                     if let Err(error) = heartbeat.stop().await {
                         return error_response_with_idempotency(error);
@@ -892,9 +893,7 @@ pub async fn disconnect(
         DISCONNECT_ROUTE_TEMPLATE,
         &request_body,
         |_| {
-            state
-                .oauth_broker
-                .disconnect(&ref_id)
+            block_in_place(|| state.oauth_broker.disconnect(&ref_id))
                 .map_err(oauth_disconnect_error)?;
             tracing::info!(ref_id = %ref_id_str, "OAuth connection disconnected");
             Ok((

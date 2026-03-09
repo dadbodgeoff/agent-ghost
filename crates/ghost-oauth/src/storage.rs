@@ -8,6 +8,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use age::secrecy::SecretString as AgeSecretString;
 use age::{Decryptor, Encryptor};
@@ -29,6 +30,8 @@ pub struct TokenStore {
     base_dir: PathBuf,
     /// Secret provider for encryption key retrieval.
     secret_provider: Box<dyn SecretProvider>,
+    /// Session-local cache for the vault key when the backing provider is read-only.
+    cached_vault_key: Mutex<Option<SecretString>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +75,7 @@ impl TokenStore {
         Self {
             base_dir,
             secret_provider,
+            cached_vault_key: Mutex::new(None),
         }
     }
 
@@ -399,7 +403,16 @@ impl TokenStore {
 
     /// Retrieve the vault key from SecretProvider, or auto-generate one.
     fn get_or_create_vault_key(&self) -> Result<SecretString, OAuthError> {
-        match self.secret_provider.get_secret(VAULT_KEY_NAME) {
+        if let Some(key) = self
+            .cached_vault_key
+            .lock()
+            .map_err(|_| OAuthError::EncryptionError("vault key cache lock poisoned".into()))?
+            .clone()
+        {
+            return Ok(key);
+        }
+
+        let resolved = match self.secret_provider.get_secret(VAULT_KEY_NAME) {
             Ok(key) => Ok(key),
             Err(ghost_secrets::SecretsError::NotFound(_)) => {
                 // Auto-generate a 256-bit random key
@@ -421,7 +434,20 @@ impl TokenStore {
             Err(e) => Err(OAuthError::EncryptionError(format!(
                 "failed to retrieve vault key: {e}"
             ))),
+        }?;
+
+        let mut cached = self
+            .cached_vault_key
+            .lock()
+            .map_err(|_| OAuthError::EncryptionError("vault key cache lock poisoned".into()))?;
+        if let Some(existing) = cached.as_ref() {
+            return Ok(existing.clone());
         }
+        *cached = Some(resolved);
+        Ok(cached
+            .as_ref()
+            .expect("vault key cache should contain a resolved key")
+            .clone())
     }
 
     /// Encrypt data using authenticated `age` passphrase mode.

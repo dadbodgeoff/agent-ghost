@@ -133,15 +133,16 @@ fn native_containment_for_skill(
     mutation_kind: SkillMutationKind,
 ) -> NativeContainmentProfile {
     let mut capabilities = vec!["skill_execute".to_string()];
-    match mutation_kind {
-        SkillMutationKind::ReadOnly => {
+    let mode = native_containment_mode_for_skill(name, mutation_kind);
+    match mode {
+        NativeContainmentMode::ReadOnly => {
             capabilities.push("db_read".into());
         }
-        SkillMutationKind::Transactional => {
+        NativeContainmentMode::Transactional => {
             capabilities.push("db_read".into());
             capabilities.push("db_write".into());
         }
-        SkillMutationKind::ExternalSideEffect => {
+        NativeContainmentMode::HostInteraction => {
             capabilities.push("host_interaction".into());
         }
     }
@@ -167,13 +168,36 @@ fn native_containment_for_skill(
         _ => {}
     }
 
-    let mode = match mutation_kind {
+    NativeContainmentProfile::new(mode, true, capabilities)
+}
+
+fn native_containment_mode_for_skill(
+    name: &str,
+    mutation_kind: SkillMutationKind,
+) -> NativeContainmentMode {
+    if mutation_kind == SkillMutationKind::ReadOnly && audited_read_only_pc_control_skill(name) {
+        // These skills are user-visible read-only operations, but they always append
+        // forensic rows to `pc_control_actions`. They therefore need a writable DB
+        // handle even though the functional route remains read-only.
+        return NativeContainmentMode::Transactional;
+    }
+
+    match mutation_kind {
         SkillMutationKind::ReadOnly => NativeContainmentMode::ReadOnly,
         SkillMutationKind::Transactional => NativeContainmentMode::Transactional,
         SkillMutationKind::ExternalSideEffect => NativeContainmentMode::HostInteraction,
-    };
+    }
+}
 
-    NativeContainmentProfile::new(mode, true, capabilities)
+fn audited_read_only_pc_control_skill(name: &str) -> bool {
+    matches!(
+        name,
+        "clipboard_read"
+            | "accessibility_tree"
+            | "ocr_extract"
+            | "list_windows"
+            | "list_processes"
+    )
 }
 
 fn privileges_for_skill(name: &str) -> Vec<String> {
@@ -314,5 +338,25 @@ mod tests {
         assert!(containment
             .allowed_capabilities
             .contains("host_interaction"));
+    }
+
+    #[test]
+    fn audited_read_only_pc_control_skills_use_transactional_db_containment() {
+        let mut config = GhostConfig::default();
+        config.pc_control.enabled = true;
+        let seed = build_compiled_skill_definitions(&config);
+        let list_windows = seed
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "list_windows")
+            .expect("compiled list_windows definition");
+        let containment = list_windows
+            .native_containment
+            .as_ref()
+            .expect("native containment profile");
+
+        assert_eq!(list_windows.mutation_kind, SkillMutationKind::ReadOnly);
+        assert_eq!(containment.mode, NativeContainmentMode::Transactional);
+        assert!(containment.allowed_capabilities.contains("db_write"));
     }
 }

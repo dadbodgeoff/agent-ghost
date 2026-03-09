@@ -142,9 +142,16 @@ impl Drop for EnvVarGuard {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CapturedA2ARequest {
+    path: String,
+    signature: Option<String>,
+}
+
 struct CaptureServer {
     url: String,
     hits: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<CapturedA2ARequest>>>,
     shutdown: CancellationToken,
     handle: tokio::task::JoinHandle<()>,
 }
@@ -157,24 +164,41 @@ impl CaptureServer {
 
         let hits = Arc::new(AtomicUsize::new(0));
         let app_hits = Arc::clone(&hits);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let app_requests = Arc::clone(&requests);
         let shutdown = CancellationToken::new();
         let shutdown_token = shutdown.clone();
         let app = Router::new().route(
             "/a2a",
-            post(move |Json(payload): Json<serde_json::Value>| {
-                let hits = Arc::clone(&app_hits);
-                async move {
-                    hits.fetch_add(1, Ordering::SeqCst);
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": payload.get("id").cloned().unwrap_or(serde_json::Value::Null),
-                            "result": { "accepted": true }
-                        })),
-                    )
-                }
-            }),
+            post(
+                move |headers: axum::http::HeaderMap,
+                      uri: axum::http::Uri,
+                      Json(payload): Json<serde_json::Value>| {
+                    let hits = Arc::clone(&app_hits);
+                    let requests = Arc::clone(&app_requests);
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        requests
+                            .lock()
+                            .unwrap()
+                            .push(CapturedA2ARequest {
+                                path: uri.path().to_string(),
+                                signature: headers
+                                    .get("X-Ghost-Signature")
+                                    .and_then(|value| value.to_str().ok())
+                                    .map(ToString::to_string),
+                            });
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": payload.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                                "result": { "accepted": true }
+                            })),
+                        )
+                    }
+                },
+            ),
         );
 
         let bind_addr = format!("127.0.0.1:{port}");
@@ -189,11 +213,16 @@ impl CaptureServer {
         });
 
         Self {
-            url: format!("http://127.0.0.1:{port}/a2a"),
+            url: format!("http://127.0.0.1:{port}"),
             hits,
+            requests,
             shutdown,
             handle,
         }
+    }
+
+    fn requests(&self) -> Vec<CapturedA2ARequest> {
+        self.requests.lock().unwrap().clone()
     }
 
     async fn stop(self) {
@@ -836,6 +865,7 @@ impl PersistentGateway {
 
         let app_state = Arc::new(ghost_gateway::state::AppState {
             gateway: Arc::clone(&shared_state),
+            config_path: std::path::PathBuf::from("ghost.yml"),
             agents: Arc::new(RwLock::new(
                 ghost_gateway::agents::registry::AgentRegistry::new(),
             )),
@@ -850,6 +880,7 @@ impl PersistentGateway {
             kill_gate: None,
             secret_provider: Arc::from(secret_provider),
             oauth_broker,
+            mesh_signing_key: None,
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".to_string(),
             model_providers,
@@ -2773,6 +2804,16 @@ async fn send_a2a_task_replay_does_not_refire_side_effect() {
         Some("executed")
     );
     assert_eq!(capture.hits.load(Ordering::SeqCst), 1);
+    let captured_requests = capture.requests();
+    assert_eq!(captured_requests.len(), 1);
+    assert_eq!(captured_requests[0].path, "/a2a");
+    assert!(
+        captured_requests[0]
+            .signature
+            .as_ref()
+            .is_some_and(|value| !value.is_empty()),
+        "A2A dispatch should include X-Ghost-Signature"
+    );
 
     let replay = gateway
         .client

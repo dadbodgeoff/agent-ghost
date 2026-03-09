@@ -56,7 +56,7 @@
       <span class="chain-status" class:valid={chainValid} class:broken={!chainValid}>
         Chain: {chainValid ? 'Valid' : 'Broken'}
       </span>
-      <a href="/sessions/{sessionId}/replay" class="replay-link">Replay →</a>
+      <a href={`/sessions/${sessionId}/replay`} class="replay-link">Replay →</a>
     </div>
   </div>
 

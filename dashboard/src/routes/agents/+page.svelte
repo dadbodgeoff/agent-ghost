@@ -81,7 +81,7 @@
   <div class="grid">
     {#each agents as agent (agent.id)}
       {@const agentScore = getScore(agent.id)}
-      <a href="/agents/{agent.id}" class="agent-card" class:inactive={agent.status === 'Stopped'}>
+      <a href={`/agents/${agent.id}`} class="agent-card" class:inactive={agent.status === 'Stopped'}>
         <div class="agent-header">
           <span class="agent-name">{agent.name}</span>
           <span class="status-badge" style="color: {statusColor(agent.status)}">

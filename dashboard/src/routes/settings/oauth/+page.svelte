@@ -18,10 +18,13 @@
   let connections: OAuthConnection[] = [];
   let loading = true;
   let error = '';
+  let disconnectingRefId: string | null = null;
 
-  async function loadData() {
+  async function loadData(showSpinner = true) {
     try {
-      loading = true;
+      if (showSpinner) {
+        loading = true;
+      }
       error = '';
       const client = await getGhostClient();
       [providers, connections] = await Promise.all([
@@ -46,12 +49,19 @@
   }
 
   async function disconnectConnection(refId: string) {
+    const previousConnections = connections;
     try {
+      error = '';
+      disconnectingRefId = refId;
       const client = await getGhostClient();
       await client.oauth.disconnect(refId);
-      await loadData();
+      connections = connections.filter((connection) => connection.ref_id !== refId);
+      await loadData(false);
     } catch (e: unknown) {
+      connections = previousConnections;
       error = `Disconnect failed: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      disconnectingRefId = null;
     }
   }
 
@@ -138,6 +148,7 @@
           <button
             class="btn-disconnect"
             onclick={() => disconnectConnection(conn.ref_id)}
+            disabled={disconnectingRefId === conn.ref_id}
             aria-label="Disconnect {conn.provider}"
           >
             Disconnect

@@ -22,6 +22,10 @@
   let graphNodes: MemoryGraphNode[] = $state([]);
   let graphEdges: MemoryGraphEdge[] = $state([]);
   let filteredNodeIds: Set<string> | null = $state(null);
+  let simulation: ReturnType<typeof d3.forceSimulation<MemoryGraphNode>> | null = null;
+  let linkSelection: any = null;
+  let nodeSelection: any = null;
+  let nodeLabelSelection: any = null;
 
   const TYPE_COLORS: Record<string, string> = {
     entity: '#7c3aed',
@@ -62,8 +66,48 @@
     }
   }
 
+  function applySearchFilter() {
+    if (!nodeSelection || !nodeLabelSelection || !linkSelection) {
+      filteredNodeIds = null;
+      return;
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchIds = new Set(
+        graphNodes
+          .filter((node) => node.label.toLowerCase().includes(q) || node.type.includes(q))
+          .map((node) => node.id),
+      );
+      filteredNodeIds = matchIds;
+      nodeSelection.attr('opacity', (node: MemoryGraphNode) => (matchIds.has(node.id) ? 1 : 0.15));
+      nodeLabelSelection.attr('opacity', (node: MemoryGraphNode) => (matchIds.has(node.id) ? 1 : 0.1));
+      linkSelection.attr('opacity', (edge: MemoryGraphEdge) => {
+        const sourceId = typeof edge.source === 'string' ? edge.source : edge.source.id;
+        const targetId = typeof edge.target === 'string' ? edge.target : edge.target.id;
+        return matchIds.has(sourceId) || matchIds.has(targetId) ? 0.6 : 0.05;
+      });
+      return;
+    }
+
+    filteredNodeIds = null;
+    nodeSelection.attr('opacity', (node: MemoryGraphNode) => nodeOpacity(node.decayFactor));
+    nodeLabelSelection.attr('opacity', 1);
+    linkSelection.attr('opacity', 0.6);
+  }
+
   function renderGraph() {
-    if (!svgEl || graphNodes.length === 0) return;
+    if (!svgEl || graphNodes.length === 0) {
+      simulation?.stop();
+      simulation = null;
+      linkSelection = null;
+      nodeSelection = null;
+      nodeLabelSelection = null;
+      filteredNodeIds = null;
+      return;
+    }
+
+    simulation?.stop();
 
     const width = svgEl.clientWidth || 800;
     const height = svgEl.clientHeight || 600;
@@ -82,7 +126,7 @@
     svg.call(zoomBehavior);
 
     // Simulation
-    const simulation = d3.forceSimulation<MemoryGraphNode>(graphNodes)
+    simulation = d3.forceSimulation<MemoryGraphNode>(graphNodes)
       .force('link', d3.forceLink<MemoryGraphNode, MemoryGraphEdge>(graphEdges)
         .id(d => d.id)
         .distance(80)
@@ -90,6 +134,7 @@
       .force('charge', d3.forceManyBody().strength(-120))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collision', d3.forceCollide<MemoryGraphNode>().radius(d => nodeRadius(d.importance) + 4));
+    const activeSimulation = simulation;
 
     // Edges
     const link = g.append('g')
@@ -128,7 +173,7 @@
       })
       .call(d3Drag<SVGCircleElement, MemoryGraphNode>()
         .on('start', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0.3).restart();
+          if (!event.active) activeSimulation.alphaTarget(0.3).restart();
           d.fx = d.x;
           d.fy = d.y;
         })
@@ -137,7 +182,7 @@
           d.fy = event.y;
         })
         .on('end', (event, d) => {
-          if (!event.active) simulation.alphaTarget(0);
+          if (!event.active) activeSimulation.alphaTarget(0);
           d.fx = null;
           d.fy = null;
         })
@@ -155,7 +200,7 @@
       .attr('dy', d => nodeRadius(d.importance) + 12)
       .attr('pointer-events', 'none');
 
-    simulation.on('tick', () => {
+    activeSimulation.on('tick', () => {
       link
         .attr('x1', d => (d.source as MemoryGraphNode).x!)
         .attr('y1', d => (d.source as MemoryGraphNode).y!)
@@ -175,30 +220,17 @@
         .attr('y', d => d.y!);
     });
 
-    // Search filter effect
-    $effect(() => {
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchIds = new Set(graphNodes.filter(n => n.label.toLowerCase().includes(q) || n.type.includes(q)).map(n => n.id));
-        filteredNodeIds = matchIds;
-        node.attr('opacity', d => matchIds.has(d.id) ? 1 : 0.15);
-        label.attr('opacity', d => matchIds.has(d.id) ? 1 : 0.1);
-        link.attr('opacity', d => {
-          const sid = typeof d.source === 'string' ? d.source : d.source.id;
-          const tid = typeof d.target === 'string' ? d.target : d.target.id;
-          return matchIds.has(sid) || matchIds.has(tid) ? 0.6 : 0.05;
-        });
-      } else {
-        filteredNodeIds = null;
-        node.attr('opacity', d => nodeOpacity(d.decayFactor));
-        label.attr('opacity', 1);
-        link.attr('opacity', 0.6);
-      }
-    });
+    linkSelection = link;
+    nodeSelection = node;
+    nodeLabelSelection = label;
+    applySearchFilter();
   }
 
   onMount(() => {
     loadGraph();
+    return () => {
+      simulation?.stop();
+    };
   });
 
   $effect(() => {
@@ -206,6 +238,11 @@
       // Defer rendering to next tick so SVG is mounted
       requestAnimationFrame(renderGraph);
     }
+  });
+
+  $effect(() => {
+    searchQuery;
+    applySearchFilter();
   });
 </script>
 

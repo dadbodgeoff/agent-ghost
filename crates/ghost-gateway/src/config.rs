@@ -36,6 +36,8 @@ pub struct GhostConfig {
     #[serde(default)]
     pub models: ModelsConfig,
     #[serde(default)]
+    pub oauth: OAuthConfig,
+    #[serde(default)]
     pub secrets: SecretsConfig,
     /// Mesh networking configuration (Task 22.1). Disabled by default.
     #[serde(default)]
@@ -429,6 +431,23 @@ pub struct ProviderConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OAuthConfig {
+    #[serde(default)]
+    pub providers: Vec<OAuthProviderConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthProviderConfig {
+    pub name: String,
+    pub client_id: String,
+    pub client_secret_env: String,
+    pub auth_url: String,
+    pub token_url: String,
+    #[serde(default)]
+    pub revoke_url: Option<String>,
 }
 
 /// Tool configuration — web_search, web_fetch, http_request, shell.
@@ -856,6 +875,44 @@ impl GhostConfig {
                         "external_skills.trusted_signers[].public_key cannot be empty".into(),
                     ));
                 }
+            }
+        }
+        let mut seen_oauth_provider_names = std::collections::BTreeSet::new();
+        for provider in &self.oauth.providers {
+            if provider.name.trim().is_empty() {
+                return Err(ConfigError::ValidationError(
+                    "oauth.providers[].name cannot be empty".into(),
+                ));
+            }
+            if !seen_oauth_provider_names.insert(provider.name.as_str()) {
+                return Err(ConfigError::ValidationError(format!(
+                    "Duplicate oauth provider name: '{}'",
+                    provider.name
+                )));
+            }
+            if provider.client_id.trim().is_empty() {
+                return Err(ConfigError::ValidationError(format!(
+                    "oauth provider '{}' client_id cannot be empty",
+                    provider.name
+                )));
+            }
+            if provider.client_secret_env.trim().is_empty() {
+                return Err(ConfigError::ValidationError(format!(
+                    "oauth provider '{}' client_secret_env cannot be empty",
+                    provider.name
+                )));
+            }
+            if provider.auth_url.trim().is_empty() {
+                return Err(ConfigError::ValidationError(format!(
+                    "oauth provider '{}' auth_url cannot be empty",
+                    provider.name
+                )));
+            }
+            if provider.token_url.trim().is_empty() {
+                return Err(ConfigError::ValidationError(format!(
+                    "oauth provider '{}' token_url cannot be empty",
+                    provider.name
+                )));
             }
         }
         Ok(())

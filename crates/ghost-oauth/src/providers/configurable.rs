@@ -1,11 +1,8 @@
-//! Microsoft OAuth 2.0 provider (Azure AD / Microsoft Identity Platform).
+//! Configurable OAuth 2.0 provider for standard authorization-code flows.
 //!
-//! Endpoints (with configurable tenant):
-//! - Auth: `https://login.microsoftonline.com/{tenant}/oauth2/v2/authorize`
-//! - Token: `https://login.microsoftonline.com/{tenant}/oauth2/v2/token`
-//!
-//! Default scopes: Mail.Read, Calendars.Read, User.Read.
-//! Multi-tenant support via configurable tenant ID.
+//! This is primarily used by the gateway when providers are declared in
+//! `ghost.yml`, and by local live-audit mocks that expose OAuth-compatible
+//! authorize/token/revoke endpoints.
 
 use std::time::Duration;
 
@@ -17,19 +14,27 @@ use crate::types::{ApiRequest, ApiResponse, PkceChallenge, TokenSet};
 
 use super::google::{execute_bearer_request, parse_token_response, urlencod};
 
-pub struct MicrosoftOAuthProvider {
+pub struct ConfigurableOAuthProvider {
+    name: String,
     client_id: String,
     client_secret: SecretString,
-    tenant: String,
+    auth_url: String,
+    token_url: String,
+    revoke_url: Option<String>,
     http: &'static reqwest::blocking::Client,
 }
 
-impl MicrosoftOAuthProvider {
+impl ConfigurableOAuthProvider {
     pub fn new(
+        name: String,
         client_id: String,
         client_secret: SecretString,
-        tenant: String,
+        auth_url: String,
+        token_url: String,
+        revoke_url: Option<String>,
     ) -> Result<Self, OAuthError> {
+        // `reqwest::blocking::Client` owns a Tokio runtime internally. Leaking the
+        // client avoids dropping that runtime inside the gateway's async shutdown.
         let http = Box::leak(Box::new(
             reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -37,31 +42,20 @@ impl MicrosoftOAuthProvider {
                 .map_err(|e| OAuthError::ProviderError(format!("HTTP client init: {e}")))?,
         ));
         Ok(Self {
+            name,
             client_id,
             client_secret,
-            tenant,
+            auth_url,
+            token_url,
+            revoke_url,
             http,
         })
     }
-
-    fn auth_url(&self) -> String {
-        format!(
-            "https://login.microsoftonline.com/{}/oauth2/v2/authorize",
-            self.tenant
-        )
-    }
-
-    fn token_url(&self) -> String {
-        format!(
-            "https://login.microsoftonline.com/{}/oauth2/v2/token",
-            self.tenant
-        )
-    }
 }
 
-impl OAuthProvider for MicrosoftOAuthProvider {
+impl OAuthProvider for ConfigurableOAuthProvider {
     fn name(&self) -> &str {
-        "microsoft"
+        &self.name
     }
 
     fn authorization_url(
@@ -71,18 +65,19 @@ impl OAuthProvider for MicrosoftOAuthProvider {
         redirect_uri: &str,
     ) -> Result<(String, PkceChallenge), OAuthError> {
         let pkce = PkceChallenge::generate();
-        let scope_str = if scopes.is_empty() {
-            "openid profile".to_string()
+        let scope_str = scopes.join(" ");
+        let scope_query = if scope_str.is_empty() {
+            String::new()
         } else {
-            scopes.join(" ")
+            format!("&scope={}", urlencod(&scope_str))
         };
 
         let url = format!(
-            "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256&response_mode=query",
-            self.auth_url(),
+            "{}?client_id={}&redirect_uri={}&response_type=code{}&state={}&code_challenge={}&code_challenge_method=S256",
+            self.auth_url,
             urlencod(&self.client_id),
             urlencod(redirect_uri),
-            urlencod(&scope_str),
+            scope_query,
             urlencod(state),
             urlencod(&pkce.code_challenge),
         );
@@ -106,7 +101,7 @@ impl OAuthProvider for MicrosoftOAuthProvider {
 
         let resp = self
             .http
-            .post(self.token_url())
+            .post(&self.token_url)
             .form(&params)
             .send()
             .map_err(|e| OAuthError::FlowFailed(format!("token exchange: {e}")))?;
@@ -124,7 +119,7 @@ impl OAuthProvider for MicrosoftOAuthProvider {
 
         let resp = self
             .http
-            .post(self.token_url())
+            .post(&self.token_url)
             .form(&params)
             .send()
             .map_err(|e| OAuthError::RefreshFailed(format!("refresh: {e}")))?;
@@ -132,12 +127,26 @@ impl OAuthProvider for MicrosoftOAuthProvider {
         parse_token_response(resp)
     }
 
-    fn revoke_token(&self, _token: &str) -> Result<(), OAuthError> {
-        // Microsoft Identity Platform doesn't have a standard token revocation
-        // endpoint for v2.0. Tokens expire naturally. For immediate revocation,
-        // the admin must revoke refresh tokens via Microsoft Graph API.
-        tracing::info!("Microsoft token revocation requested (tokens expire naturally)");
-        Ok(())
+    fn revoke_token(&self, token: &str) -> Result<(), OAuthError> {
+        let Some(revoke_url) = &self.revoke_url else {
+            return Ok(());
+        };
+
+        let resp = self
+            .http
+            .post(revoke_url)
+            .form(&[("token", token)])
+            .send()
+            .map_err(|e| OAuthError::ProviderError(format!("revoke: {e}")))?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(OAuthError::ProviderError(format!(
+                "revoke returned HTTP {}",
+                resp.status()
+            )))
+        }
     }
 
     fn execute_api_call(

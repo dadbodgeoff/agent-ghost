@@ -190,7 +190,7 @@
           onapprove={handleApprove}
           onreject={handleReject}
         />
-        <a href="/goals/{proposal.id}" class="detail-link">View Details →</a>
+        <a href={`/goals/${proposal.id}`} class="detail-link">View Details →</a>
       </div>
     {/each}
   </div>

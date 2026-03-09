@@ -20,6 +20,14 @@ Autonomous execution charter:
 
 - [OVERNIGHT_AUTONOMOUS_PLAN.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/OVERNIGHT_AUTONOMOUS_PLAN.md)
 
+Post-coverage hardening plan:
+
+- [LIVE_HARDENING_PHASE2_PLAN.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/LIVE_HARDENING_PHASE2_PLAN.md)
+
+Operator runbook:
+
+- [LIVE_OPERATOR_RUNBOOK.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/LIVE_OPERATOR_RUNBOOK.md)
+
 ## Current Baseline
 
 The current foundation is:
@@ -324,6 +332,30 @@ The finished live verification layer should have these properties:
 - safe cleanup behavior for temp storage pressure
 - a narrow `audit:critical-live` for release-confidence checks
 - a broad `audit:repo-live` for full-system validation
+
+## Post-Coverage Phase 2
+
+The workspace now has full mapped live POC coverage.
+
+That changes the next problem:
+
+- before: expand coverage to zero uncovered surfaces
+- now: harden the verifier so it is trustworthy under repetition, automation, and real interruptions
+
+Phase 2 is defined in:
+
+- [LIVE_HARDENING_PHASE2_PLAN.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/LIVE_HARDENING_PHASE2_PLAN.md)
+
+The required workstreams are:
+
+- soak and flake validation
+- CI and nightly wiring
+- fault injection and recovery journeys
+- external integration certification
+- performance budgets and trend tracking
+- artifact lifecycle and operator UX
+
+The immediate next move is soak validation plus artifact lifecycle, not more coverage expansion.
 
 ## Definition of Done For A Section
 

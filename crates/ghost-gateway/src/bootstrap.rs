@@ -215,7 +215,8 @@ impl GatewayBootstrap {
 
         // Step 4c: Initialize mesh networking if enabled (Task 22.1)
         // Pass DB for delegation state persistence.
-        let mesh_router = Self::step4c_init_mesh(&config, Some(Arc::clone(&db)))?;
+        let (mesh_router, mesh_signing_key) =
+            Self::step4c_init_mesh(&config, Some(Arc::clone(&db))).await?;
         if mesh_router.is_some() {
             tracing::info!("Step 4c: Mesh networking initialized (A2A endpoints active)");
         } else {
@@ -284,11 +285,14 @@ impl GatewayBootstrap {
             crate::config::build_secret_provider(&config.secrets)
                 .map_err(|e| BootstrapError::Config(format!("oauth token store: {e}")))?,
         );
-        let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(
-            std::collections::BTreeMap::new(), // Providers registered at runtime via config
-            token_store,
-        ));
-        tracing::info!("OAuth broker initialized");
+        let oauth_providers = tokio::task::block_in_place(|| Self::build_oauth_providers(&config))?;
+        let oauth_provider_names = oauth_providers.keys().cloned().collect::<Vec<_>>();
+        let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(oauth_providers, token_store));
+        tracing::info!(
+            count = oauth_provider_names.len(),
+            providers = ?oauth_provider_names,
+            "OAuth broker initialized"
+        );
 
         // Initialize embedding engine (TF-IDF provider, in-memory cache).
         let embedding_engine =
@@ -332,6 +336,7 @@ impl GatewayBootstrap {
 
         let app_state = Arc::new(AppState {
             gateway: Arc::clone(&shared_state),
+            config_path: crate::config::GhostConfig::default_path(config_path),
             agents: Arc::new(RwLock::new(agent_registry)),
             kill_switch,
             quarantine: Arc::new(RwLock::new(QuarantineManager::new())),
@@ -342,6 +347,7 @@ impl GatewayBootstrap {
             kill_gate,
             secret_provider: Arc::from(secret_provider),
             oauth_broker,
+            mesh_signing_key,
             soul_drift_threshold: config.security.soul_drift_threshold,
             convergence_profile: config.convergence.profile.clone(),
             model_providers: config.models.providers.clone(),
@@ -1125,14 +1131,53 @@ impl GatewayBootstrap {
             .map_err(|e| BootstrapError::Config(format!("secrets provider: {e}")))
     }
 
+    fn build_oauth_providers(
+        config: &GhostConfig,
+    ) -> Result<
+        std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>>,
+        BootstrapError,
+    > {
+        let mut providers: std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>> =
+            std::collections::BTreeMap::new();
+
+        for provider in &config.oauth.providers {
+            let client_secret = std::env::var(&provider.client_secret_env).map_err(|_| {
+                BootstrapError::Config(format!(
+                    "oauth provider '{}' client_secret_env not found: {}",
+                    provider.name, provider.client_secret_env
+                ))
+            })?;
+            let handler = ghost_oauth::providers::ConfigurableOAuthProvider::new(
+                provider.name.clone(),
+                provider.client_id.clone(),
+                secrecy::SecretString::from(client_secret),
+                provider.auth_url.clone(),
+                provider.token_url.clone(),
+                provider.revoke_url.clone(),
+            )
+            .map_err(|error| {
+                BootstrapError::Config(format!("oauth provider '{}': {error}", provider.name))
+            })?;
+            providers.insert(provider.name.clone(), Box::new(handler));
+        }
+
+        Ok(providers)
+    }
+
     /// Initialize mesh networking if enabled (Task 22.1).
     /// Returns the mesh axum Router to merge into the main router, or None if disabled.
-    fn step4c_init_mesh(
+    async fn step4c_init_mesh(
         config: &GhostConfig,
         db: Option<Arc<crate::db_pool::DbPool>>,
-    ) -> Result<Option<axum::Router>, BootstrapError> {
+    ) -> Result<
+        (
+            Option<axum::Router>,
+            Option<Arc<std::sync::Mutex<ghost_signing::SigningKey>>>,
+        ),
+        BootstrapError,
+    > {
         if !config.mesh.enabled {
-            return Ok(None);
+            return Ok((None, None));
         }
 
         // Decode known agent public keys from base64
@@ -1171,9 +1216,27 @@ impl GatewayBootstrap {
             config.mesh.max_delegation_depth,
         );
 
-        // Build a placeholder AgentCard for this gateway.
-        // In production, this would be loaded from the agent's signing key.
-        let card = ghost_mesh::types::AgentCard {
+        if let Some(db) = db.as_ref() {
+            let conn = db.write().await;
+            for agent in &config.mesh.known_agents {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO discovered_agents \
+                     (name, description, endpoint_url, capabilities, trust_score, version) \
+                     VALUES (?1, ?2, ?3, COALESCE((SELECT capabilities FROM discovered_agents WHERE name = ?1), '[]'), \
+                             COALESCE((SELECT trust_score FROM discovered_agents WHERE name = ?1), 0.0), \
+                             COALESCE((SELECT version FROM discovered_agents WHERE name = ?1), ''))",
+                    rusqlite::params![
+                        agent.name,
+                        "Configured mesh peer",
+                        agent.endpoint.trim_end_matches('/'),
+                    ],
+                );
+            }
+        }
+
+        let (signing_key, verifying_key) = load_or_create_mesh_signing_key()?;
+
+        let mut card = ghost_mesh::types::AgentCard {
             name: "ghost-gateway".to_string(),
             description: "GHOST platform gateway".to_string(),
             capabilities: Vec::new(),
@@ -1182,7 +1245,7 @@ impl GatewayBootstrap {
             output_types: vec!["text".to_string()],
             auth_schemes: vec!["ed25519".to_string()],
             endpoint_url: format!("http://{}:{}", config.gateway.bind, config.gateway.port),
-            public_key: Vec::new(), // Populated from signing key in production
+            public_key: verifying_key.to_bytes().to_vec(),
             convergence_profile: "standard".to_string(),
             trust_score: 1.0,
             sybil_lineage_hash: String::new(),
@@ -1199,14 +1262,100 @@ impl GatewayBootstrap {
             provider: "ghost-platform".to_string(),
             a2a_protocol_version: "0.2.0".to_string(),
         };
+        let guard = signing_key
+            .lock()
+            .map_err(|_| BootstrapError::AgentInit("mesh signing key lock poisoned".into()))?;
+        card.sign(&guard);
+        drop(guard);
 
         let state = std::sync::Arc::new(std::sync::Mutex::new(
             ghost_mesh::transport::a2a_server::A2AServerState::new(card),
         ));
 
         let router = crate::api::mesh_routes::mesh_router_with_db(state, known_keys, db);
-        Ok(Some(router))
+        Ok((Some(router), Some(signing_key)))
     }
+}
+
+fn mesh_keys_dir() -> std::path::PathBuf {
+    ghost_home().join("agents").join("platform").join("keys")
+}
+
+fn load_or_create_mesh_signing_key(
+) -> Result<
+    (
+        Arc<std::sync::Mutex<ghost_signing::SigningKey>>,
+        ghost_signing::VerifyingKey,
+    ),
+    BootstrapError,
+> {
+    let keys_dir = mesh_keys_dir();
+    std::fs::create_dir_all(&keys_dir).map_err(|error| {
+        BootstrapError::AgentInit(format!("create mesh key directory '{}': {error}", keys_dir.display()))
+    })?;
+
+    let seed_path = keys_dir.join("agent.key");
+    let signing_key = if seed_path.exists() {
+        let seed = std::fs::read(&seed_path).map_err(|error| {
+            BootstrapError::AgentInit(format!("read mesh signing seed '{}': {error}", seed_path.display()))
+        })?;
+        let seed_bytes: [u8; 32] = seed.try_into().map_err(|_| {
+            BootstrapError::AgentInit(format!(
+                "mesh signing seed '{}' must be exactly 32 bytes",
+                seed_path.display()
+            ))
+        })?;
+        ghost_signing::SigningKey::from_bytes(&seed_bytes)
+    } else {
+        let (signing_key, _) = ghost_signing::generate_keypair();
+        persist_mesh_signing_seed(&seed_path, &signing_key.to_bytes())?;
+        signing_key
+    };
+
+    let verifying_key = signing_key.verifying_key();
+    persist_mesh_public_key(&verifying_key.to_bytes())?;
+
+    Ok((Arc::new(std::sync::Mutex::new(signing_key)), verifying_key))
+}
+
+fn persist_mesh_signing_seed(
+    seed_path: &std::path::Path,
+    signing_seed: &[u8; 32],
+) -> Result<(), BootstrapError> {
+    std::fs::write(seed_path, signing_seed).map_err(|error| {
+        BootstrapError::AgentInit(format!(
+            "persist mesh signing seed '{}': {error}",
+            seed_path.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(seed_path, permissions).map_err(|error| {
+            BootstrapError::AgentInit(format!(
+                "restrict mesh signing seed permissions '{}': {error}",
+                seed_path.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn persist_mesh_public_key(public_key: &[u8; 32]) -> Result<(), BootstrapError> {
+    let keys_dir = mesh_keys_dir();
+    std::fs::create_dir_all(&keys_dir).map_err(|error| {
+        BootstrapError::AgentInit(format!("create mesh key directory '{}': {error}", keys_dir.display()))
+    })?;
+    let public_key_path = keys_dir.join("agent.pub");
+    std::fs::write(&public_key_path, public_key).map_err(|error| {
+        BootstrapError::AgentInit(format!(
+            "persist mesh public key '{}': {error}",
+            public_key_path.display()
+        ))
+    })?;
+    Ok(())
 }
 
 fn build_push_state() -> crate::api::push_routes::PushState {
@@ -1257,6 +1406,36 @@ pub fn shellexpand_tilde(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            // SAFETY: These tests set process env in a short, single-threaded scope.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => {
+                    // SAFETY: These tests restore process env in a short, single-threaded scope.
+                    unsafe { std::env::set_var(self.key, value) };
+                }
+                None => {
+                    // SAFETY: These tests restore process env in a short, single-threaded scope.
+                    unsafe { std::env::remove_var(self.key) };
+                }
+            }
+        }
+    }
 
     fn schema_snapshot(conn: &rusqlite::Connection) -> Vec<(String, String, Option<String>)> {
         conn.prepare(
@@ -1306,5 +1485,51 @@ mod tests {
     fn push_state_uses_non_empty_vapid_key() {
         let push_state = build_push_state();
         assert!(!push_state.vapid_public_key.is_empty());
+    }
+
+    #[test]
+    fn build_oauth_providers_registers_configured_provider() {
+        let _secret = EnvVarGuard::set("BOOTSTRAP_OAUTH_CLIENT_SECRET", "top-secret");
+        let mut config = GhostConfig::default();
+        config
+            .oauth
+            .providers
+            .push(crate::config::OAuthProviderConfig {
+                name: "mock".into(),
+                client_id: "client-id".into(),
+                client_secret_env: "BOOTSTRAP_OAUTH_CLIENT_SECRET".into(),
+                auth_url: "http://127.0.0.1:40100/authorize".into(),
+                token_url: "http://127.0.0.1:40100/token".into(),
+                revoke_url: Some("http://127.0.0.1:40100/revoke".into()),
+            });
+
+        let providers = GatewayBootstrap::build_oauth_providers(&config).unwrap();
+
+        assert_eq!(providers.keys().cloned().collect::<Vec<_>>(), vec!["mock"]);
+    }
+
+    #[test]
+    fn build_oauth_providers_fails_when_secret_env_is_missing() {
+        let mut config = GhostConfig::default();
+        config
+            .oauth
+            .providers
+            .push(crate::config::OAuthProviderConfig {
+                name: "mock".into(),
+                client_id: "client-id".into(),
+                client_secret_env: "BOOTSTRAP_OAUTH_CLIENT_SECRET_MISSING".into(),
+                auth_url: "http://127.0.0.1:40100/authorize".into(),
+                token_url: "http://127.0.0.1:40100/token".into(),
+                revoke_url: None,
+            });
+
+        let error = match GatewayBootstrap::build_oauth_providers(&config) {
+            Ok(_) => panic!("expected missing oauth secret env to fail"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("client_secret_env not found: BOOTSTRAP_OAUTH_CLIENT_SECRET_MISSING"));
     }
 }

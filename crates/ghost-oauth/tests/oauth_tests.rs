@@ -326,6 +326,30 @@ mod storage_tests {
         }
     }
 
+    struct ReadOnlyMissingSecretProvider;
+
+    impl SecretProvider for ReadOnlyMissingSecretProvider {
+        fn get_secret(&self, key: &str) -> Result<SecretString, SecretsError> {
+            Err(SecretsError::NotFound(key.to_string()))
+        }
+
+        fn set_secret(&self, _key: &str, _value: &str) -> Result<(), SecretsError> {
+            Err(SecretsError::StorageUnavailable(
+                "environment variables are read-only at runtime".into(),
+            ))
+        }
+
+        fn delete_secret(&self, _key: &str) -> Result<(), SecretsError> {
+            Err(SecretsError::StorageUnavailable(
+                "environment variables are read-only at runtime".into(),
+            ))
+        }
+
+        fn has_secret(&self, _key: &str) -> bool {
+            false
+        }
+    }
+
     fn temp_store() -> (TokenStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = TokenStore::new(
@@ -614,6 +638,26 @@ mod storage_tests {
         store.store_token(&ref_id, "google", &ts).unwrap();
         let loaded = store.load_token(&ref_id, "google").unwrap();
         assert_eq!(loaded.access_token.expose_secret(), "access-tok-12345");
+    }
+
+    #[test]
+    fn read_only_secret_provider_reuses_generated_vault_key_within_store_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TokenStore::new(
+            dir.path().to_path_buf(),
+            Box::new(ReadOnlyMissingSecretProvider),
+        );
+        let ref_id = OAuthRefId::new();
+        let ts = sample_token_set(1);
+
+        store.store_token(&ref_id, "google", &ts).unwrap();
+        let loaded = store.load_token(&ref_id, "google").unwrap();
+
+        assert_eq!(loaded.access_token.expose_secret(), "access-tok-12345");
+        assert_eq!(
+            loaded.refresh_token.as_ref().unwrap().expose_secret(),
+            "refresh-tok-67890"
+        );
     }
 
     // ─── Spec: "Adversarial: Concurrent store/load for same ref_id → no corruption (file locking)" ──

@@ -395,3 +395,28 @@ Each completed phase should leave:
 
 - [LIVE_REPO_VERIFICATION_PLAN.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/LIVE_REPO_VERIFICATION_PLAN.md)
 - [LIVE_CRATE_COVERAGE_AUDIT.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/LIVE_CRATE_COVERAGE_AUDIT.md)
+- [LIVE_HARDENING_PHASE2_PLAN.md](/Users/geoffreyfernald/Documents/New%20project/agent-ghost/LIVE_HARDENING_PHASE2_PLAN.md)
+
+## Post-Coverage Continuation Rule
+
+Once the live report shows:
+
+- `0` uncovered crates
+- `0` uncovered dashboard pages
+- `0` uncovered gateway route families
+
+shift out of coverage expansion and into hardening work.
+
+Hardening order:
+
+1. soak and flake validation
+2. artifact lifecycle and operator UX
+3. CI and nightly wiring
+4. fault injection and recovery journeys
+5. performance budgets and trend tracking
+6. external integration certification
+
+Rule:
+
+- do not keep adding new coverage journeys just to add volume once uncovered counts are zero
+- prefer trust, repeatability, observability, and operator ergonomics

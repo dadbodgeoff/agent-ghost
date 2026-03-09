@@ -1274,7 +1274,12 @@ async function main() {
     summary.checks.restore_created_target = restoreResult.stdout.includes('Backup restored into fresh target');
     summary.checks.restore_target_exists = await fs.stat(restoredGhostDir).then(() => true).catch(() => false);
 
-    const restoredConfigText = buildTempConfig(baseConfigText, gatewayPort + 1000, path.join(restoredGhostDir, 'data', 'ghost.db'));
+    const restoredGatewayPort = await getFreePort();
+    const restoredConfigText = buildTempConfig(
+      baseConfigText,
+      restoredGatewayPort,
+      path.join(restoredGhostDir, 'data', 'ghost.db'),
+    );
     await fs.writeFile(restoredConfigPath, restoredConfigText);
 
     const restoredStatus = await runLoggedCaptureCommand(

@@ -575,6 +575,7 @@ mod appstate_field_tests {
 
         let _state = AppState {
             gateway: Arc::new(ghost_gateway::gateway::GatewaySharedState::new()),
+            config_path: std::path::PathBuf::from("ghost.yml"),
             agents: Arc::new(RwLock::new(
                 ghost_gateway::agents::registry::AgentRegistry::new(),
             )),
@@ -589,6 +590,7 @@ mod appstate_field_tests {
             kill_gate: None,
             secret_provider: Arc::new(ghost_secrets::EnvProvider),
             oauth_broker,
+            mesh_signing_key: None,
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".into(),
             model_providers: Vec::new(),

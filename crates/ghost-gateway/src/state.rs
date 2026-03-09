@@ -25,6 +25,9 @@ pub struct AppState {
     /// Gateway FSM state (Initializing, Healthy, Degraded, etc.)
     pub gateway: Arc<GatewaySharedState>,
 
+    /// Resolved config path for the running gateway instance.
+    pub config_path: std::path::PathBuf,
+
     /// Live agent registry — populated during step 4 of bootstrap.
     pub agents: Arc<RwLock<AgentRegistry>>,
 
@@ -54,6 +57,9 @@ pub struct AppState {
 
     /// OAuth broker for third-party API connections (Phase 12).
     pub oauth_broker: Arc<ghost_oauth::OAuthBroker>,
+
+    /// Local mesh signing key used for A2A card signing and outbound dispatch auth.
+    pub mesh_signing_key: Option<Arc<std::sync::Mutex<ghost_signing::SigningKey>>>,
 
     /// Soul drift threshold from security config (Finding #17).
     pub soul_drift_threshold: f64,

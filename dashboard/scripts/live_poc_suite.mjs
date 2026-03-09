@@ -18,6 +18,7 @@ const DEFAULT_JOURNEYS = [
   'studio-ws-reconnect',
   'skills',
 ];
+const MAX_TRANSIENT_RETRIES = 1;
 
 function parseArgs(argv) {
   const options = {
@@ -138,12 +139,16 @@ function relayOutput(targetStream, journey, chunk, logStream, buffer) {
   }
 }
 
-async function runJourney(repoRoot, journey, options, suiteDir) {
-  const logPath = path.join(suiteDir, `${journey}.log`);
+async function runJourney(repoRoot, journey, options, suiteDir, attempt = 0) {
+  const logPath =
+    attempt === 0
+      ? path.join(suiteDir, `${journey}.log`)
+      : path.join(suiteDir, `${journey}.retry-${attempt}.log`);
   const logStream = createWriteStream(logPath, { flags: 'a' });
   const output = [];
   const startedAt = nowIso();
   const startedMs = Date.now();
+  const outputLabel = attempt === 0 ? journey : `${journey}#retry${attempt}`;
 
   const childArgs = [
     'dashboard/scripts/live_studio_audit.mjs',
@@ -167,10 +172,10 @@ async function runJourney(repoRoot, journey, options, suiteDir) {
   });
 
   child.stdout.on('data', (chunk) => {
-    relayOutput(process.stdout, journey, chunk, logStream, output);
+    relayOutput(process.stdout, outputLabel, chunk, logStream, output);
   });
   child.stderr.on('data', (chunk) => {
-    relayOutput(process.stderr, journey, chunk, logStream, output);
+    relayOutput(process.stderr, outputLabel, chunk, logStream, output);
   });
 
   const exitCode = await new Promise((resolve, reject) => {
@@ -188,6 +193,7 @@ async function runJourney(repoRoot, journey, options, suiteDir) {
 
   return {
     journey,
+    attempt,
     status: exitCode === 0 ? 'passed' : 'failed',
     started_at: startedAt,
     finished_at: finishedAt,
@@ -196,6 +202,39 @@ async function runJourney(repoRoot, journey, options, suiteDir) {
     artifact_dir: childArtifactDir,
     log_path: logPath,
     summary: childSummary,
+  };
+}
+
+async function runJourneyWithRetry(repoRoot, journey, options, suiteDir) {
+  const attempts = [];
+
+  for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt += 1) {
+    const result = await runJourney(repoRoot, journey, options, suiteDir, attempt);
+    attempts.push(result);
+
+    const transientFailure =
+      result.status !== 'passed' &&
+      result.summary?.failure_classification === 'environment_transient';
+    if (!transientFailure || attempt === MAX_TRANSIENT_RETRIES) {
+      return {
+        ...result,
+        duration_ms: attempts.reduce((total, entry) => total + entry.duration_ms, 0),
+        retry_count: attempt,
+        attempts,
+      };
+    }
+
+    process.stdout.write(
+      `[${journey}] retrying after transient environment failure (${result.summary?.failure_reason ?? 'unknown'})\n`,
+    );
+  }
+
+  return {
+    journey,
+    retry_count: MAX_TRANSIENT_RETRIES,
+    attempts,
+    status: 'failed',
+    summary: attempts.at(-1)?.summary ?? null,
   };
 }
 
@@ -233,8 +272,17 @@ async function main() {
 
   try {
     for (const journey of options.journeys) {
-      const result = await runJourney(repoRoot, journey, options, suiteDir);
+      const result = await runJourneyWithRetry(repoRoot, journey, options, suiteDir);
       const childSummary = result.summary;
+      const firstTransientAttempt = result.attempts.find(
+        (attemptResult) =>
+          attemptResult.summary?.failure_classification === 'environment_transient',
+      );
+      if (result.retry_count > 0) {
+        summary.warnings.push(
+          `${journey} required ${result.retry_count} retry after ${firstTransientAttempt?.summary?.failure_reason ?? 'transient'} failure`,
+        );
+      }
       summary.runs.push({
         journey,
         status: childSummary?.status ?? result.status,
@@ -243,6 +291,20 @@ async function main() {
         duration_ms: result.duration_ms,
         artifact_dir: result.artifact_dir,
         log_path: result.log_path,
+        retry_count: result.retry_count,
+        attempts: result.attempts.map((attemptResult) => ({
+          attempt: attemptResult.attempt,
+          status: attemptResult.summary?.status ?? attemptResult.status,
+          artifact_dir: attemptResult.artifact_dir,
+          log_path: attemptResult.log_path,
+          error:
+            attemptResult.summary?.error ??
+            (attemptResult.exit_code === 0
+              ? null
+              : `Exited with code ${attemptResult.exit_code}`),
+          failure_classification: attemptResult.summary?.failure_classification ?? null,
+          failure_reason: attemptResult.summary?.failure_reason ?? null,
+        })),
         checks: childSummary?.checks ?? {},
         warnings: childSummary?.warnings ?? [],
         error: childSummary?.error ?? (result.exit_code === 0 ? null : `Exited with code ${result.exit_code}`),

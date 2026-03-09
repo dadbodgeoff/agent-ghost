@@ -246,6 +246,7 @@ impl PersistentGateway {
 
         let app_state = Arc::new(ghost_gateway::state::AppState {
             gateway: Arc::clone(&shared_state),
+            config_path: std::path::PathBuf::from("ghost.yml"),
             agents: Arc::new(RwLock::new(
                 ghost_gateway::agents::registry::AgentRegistry::new(),
             )),
@@ -260,6 +261,7 @@ impl PersistentGateway {
             kill_gate: None,
             secret_provider: Arc::from(secret_provider),
             oauth_broker,
+            mesh_signing_key: None,
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".to_string(),
             model_providers: Vec::new(),

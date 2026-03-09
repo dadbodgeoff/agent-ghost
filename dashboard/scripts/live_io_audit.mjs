@@ -130,21 +130,43 @@ function explicitMutationHeaders(accessToken, operationId, idempotencyKey, extra
   });
 }
 
-function buildIoTempConfig(baseConfigText, gatewayPort, dbPath, managedStoragePath) {
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function buildIoTempConfig(
+  baseConfigText,
+  gatewayPort,
+  dbPath,
+  managedStoragePath,
+  oauthProviderConfig = null,
+) {
   const config = buildTempConfig(baseConfigText, gatewayPort, dbPath);
   const normalizedManagedPath = managedStoragePath.replace(/\\/g, '/');
+  const oauthBlock = oauthProviderConfig
+    ? `
 
-  if (/^\s*external_skills:\s*$/m.test(config)) {
-    return config;
-  }
+oauth:
+  providers:
+    - name: "${oauthProviderConfig.name}"
+      client_id: "${oauthProviderConfig.clientId}"
+      client_secret_env: "${oauthProviderConfig.clientSecretEnv}"
+      auth_url: "${oauthProviderConfig.authUrl}"
+      token_url: "${oauthProviderConfig.tokenUrl}"
+      revoke_url: "${oauthProviderConfig.revokeUrl}"
+`
+    : '';
 
-  return `${config}
+  const externalSkillsBlock = /^\s*external_skills:\s*$/m.test(config)
+    ? ''
+    : `
 
 external_skills:
   enabled: true
   execution_enabled: true
-  managed_storage_path: "${normalizedManagedPath}"
-`;
+  managed_storage_path: "${normalizedManagedPath}"`;
+
+  return `${config}${externalSkillsBlock}${oauthBlock}`;
 }
 
 function sqlString(value) {
@@ -211,6 +233,140 @@ async function createWebhookReceiver(port) {
 
   return {
     deliveries,
+    server,
+    async stop() {
+      await new Promise((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    },
+  };
+}
+
+async function createOAuthMockServer(port) {
+  const captures = {
+    authorize: [],
+    token: [],
+    revoke: [],
+    resource: [],
+  };
+
+  const server = http.createServer(async (request, response) => {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const requestUrl = new URL(request.url ?? '/', baseUrl);
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const rawBody = Buffer.concat(chunks).toString('utf8');
+
+    if (requestUrl.pathname === '/authorize') {
+      const redirectUri = requestUrl.searchParams.get('redirect_uri') ?? '';
+      const state = requestUrl.searchParams.get('state') ?? '';
+      const code = `oauth-live-${randomUUID()}`;
+      captures.authorize.push({
+        captured_at: nowIso(),
+        method: request.method ?? 'GET',
+        url: requestUrl.toString(),
+        state,
+        redirect_uri: redirectUri,
+      });
+
+      const callbackUrl = new URL(redirectUri);
+      callbackUrl.searchParams.set('code', code);
+      callbackUrl.searchParams.set('state', state);
+      response.statusCode = 302;
+      response.setHeader('location', callbackUrl.toString());
+      response.end();
+      return;
+    }
+
+    if (requestUrl.pathname === '/token') {
+      const params = new URLSearchParams(rawBody);
+      const grantType = params.get('grant_type') ?? '';
+      captures.token.push({
+        captured_at: nowIso(),
+        method: request.method ?? 'POST',
+        url: requestUrl.toString(),
+        grant_type: grantType,
+        code: params.get('code'),
+        refresh_token: params.get('refresh_token'),
+      });
+
+      const payload =
+        grantType === 'refresh_token'
+          ? {
+              access_token: `refreshed-${randomUUID()}`,
+              refresh_token: `refresh-${randomUUID()}`,
+              expires_in: 3600,
+              scope: 'profile.read',
+              token_type: 'Bearer',
+            }
+          : {
+              access_token: `access-${randomUUID()}`,
+              refresh_token: `refresh-${randomUUID()}`,
+              expires_in: 3600,
+              scope: 'profile.read',
+              token_type: 'Bearer',
+            };
+
+      response.statusCode = 200;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(payload));
+      return;
+    }
+
+    if (requestUrl.pathname === '/revoke') {
+      const params = new URLSearchParams(rawBody);
+      captures.revoke.push({
+        captured_at: nowIso(),
+        method: request.method ?? 'POST',
+        url: requestUrl.toString(),
+        token: params.get('token'),
+      });
+      response.statusCode = 200;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ revoked: true }));
+      return;
+    }
+
+    if (requestUrl.pathname === '/resource') {
+      const authorization = String(request.headers.authorization ?? '');
+      captures.resource.push({
+        captured_at: nowIso(),
+        method: request.method ?? 'GET',
+        url: requestUrl.toString(),
+        authorization,
+        suite_marker: request.headers['x-suite-marker'] ?? null,
+      });
+      response.statusCode = authorization.startsWith('Bearer ') ? 200 : 401;
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        JSON.stringify({
+          ok: authorization.startsWith('Bearer '),
+          method: request.method ?? 'GET',
+          authorization,
+        }),
+      );
+      return;
+    }
+
+    response.statusCode = 404;
+    response.end('not found');
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve());
+  });
+
+  return {
+    captures,
     server,
     async stop() {
       await new Promise((resolve, reject) => {
@@ -319,15 +475,19 @@ async function main() {
   const gatewayPort = await getFreePort();
   const dashboardPort = await getFreePort();
   const webhookPort = await getFreePort();
+  const oauthMockPort = await getFreePort();
   const gatewayUrl = `http://127.0.0.1:${gatewayPort}`;
   const dashboardUrl = `http://127.0.0.1:${dashboardPort}`;
   const webhookUrl = `http://127.0.0.1:${webhookPort}/hook`;
+  const oauthMockUrl = `http://127.0.0.1:${oauthMockPort}`;
   const configPath = path.join(tempDir, 'ghost-live.yml');
   const dbPath = path.join(tempDir, 'ghost-live.db');
   const managedSkillsPath = path.join(tempDir, 'managed-skills');
   const marker = `io-live-${runLabel.toLowerCase()}`;
   const agentName = `${marker}-agent`;
   const agentSessionId = randomUUID();
+  const oauthProviderName = 'local-mock';
+  const oauthClientSecretEnv = 'GHOST_IO_LIVE_OAUTH_CLIENT_SECRET';
 
   const summary = {
     started_at: nowIso(),
@@ -335,6 +495,7 @@ async function main() {
     gateway_url: gatewayUrl,
     dashboard_url: dashboardUrl,
     webhook_url: webhookUrl,
+    oauth_mock_url: oauthMockUrl,
     artifact_dir: runDir,
     marker,
     agent: {},
@@ -353,6 +514,7 @@ async function main() {
   let gatewayProcess = null;
   let dashboardProcess = null;
   let webhookReceiver = null;
+  let oauthMockServer = null;
   let browser = null;
   let context = null;
   let page = null;
@@ -363,7 +525,14 @@ async function main() {
     const baseConfigText = await fs.readFile(baseConfigPath, 'utf8');
     await fs.writeFile(
       configPath,
-      buildIoTempConfig(baseConfigText, gatewayPort, dbPath, managedSkillsPath),
+      buildIoTempConfig(baseConfigText, gatewayPort, dbPath, managedSkillsPath, {
+        name: oauthProviderName,
+        clientId: 'ghost-io-live-client',
+        clientSecretEnv: oauthClientSecretEnv,
+        authUrl: `${oauthMockUrl}/authorize`,
+        tokenUrl: `${oauthMockUrl}/token`,
+        revokeUrl: `${oauthMockUrl}/revoke`,
+      }),
     );
 
     const buildLogPath = path.join(runDir, 'gateway-build.log');
@@ -378,6 +547,7 @@ async function main() {
       HOME: tempHome,
       GHOST_CORS_ORIGINS: `${dashboardUrl},http://localhost:${dashboardPort}`,
       GHOST_JWT_SECRET: DEFAULT_JWT_SECRET,
+      [oauthClientSecretEnv]: 'ghost-io-live-client-secret',
       GHOST_WEBHOOK_ALLOWED_HOSTS: '127.0.0.1,localhost',
       RUST_LOG: process.env.RUST_LOG ?? 'ghost_gateway=info',
     };
@@ -385,6 +555,8 @@ async function main() {
     delete gatewayEnv.OPENAI_API_KEY;
     delete gatewayEnv.ANTHROPIC_API_KEY;
     delete gatewayEnv.GEMINI_API_KEY;
+
+    oauthMockServer = await createOAuthMockServer(oauthMockPort);
 
     await runLoggedCommand(gatewayBinary, ['-c', configPath, 'db', 'migrate'], {
       cwd: repoRoot,
@@ -1021,19 +1193,22 @@ async function main() {
     const oauthConnections = await fetchJson(`${gatewayUrl}/api/oauth/connections`, {
       headers: authHeaders(accessToken),
     });
+    const oauthProviderRegistered =
+      oauthProviders.status === 200 &&
+      (oauthProviders.body ?? []).some((provider) => provider.name === oauthProviderName);
+    const initialOAuthPagePath = '/settings/oauth';
+
     summary.oauth = {
+      provider_name: oauthProviderName,
       providers: oauthProviders.body,
-      connections: oauthConnections.body,
+      initial_connections: oauthConnections.body,
+      mock_captures: oauthMockServer?.captures ?? null,
     };
     Object.assign(summary.checks, {
       oauth_providers_list_loaded: oauthProviders.status === 200,
       oauth_connections_list_loaded: oauthConnections.status === 200,
+      oauth_provider_registered: oauthProviderRegistered,
     });
-    if ((oauthProviders.body ?? []).length === 0) {
-      summary.warnings.push(
-        'OAuth broker has no registered providers in live bootstrap; connect/execute flow was not exercised.',
-      );
-    }
 
     await page.goto('/skills', { waitUntil: 'networkidle', timeout: options.timeoutMs });
     await page.getByRole('heading', { name: 'Skills' }).waitFor({
@@ -1047,16 +1222,135 @@ async function main() {
         (await page.locator('body', { hasText: 'note_take' }).count()) > 0,
     };
 
-    await page.goto('/settings/oauth', { waitUntil: 'networkidle', timeout: options.timeoutMs });
+    await page.goto(initialOAuthPagePath, { waitUntil: 'networkidle', timeout: options.timeoutMs });
     await page.getByRole('heading', { name: 'OAuth Connections' }).waitFor({
       state: 'visible',
       timeout: options.timeoutMs,
     });
     summary.pages.oauth = {
       loaded_without_error: await waitForPageWithoutError(page, options.timeoutMs),
-      empty_or_list_visible:
-        (await page.locator('.empty-state, .provider-card, .connection-card').count()) > 0,
+      provider_visible:
+        (await page.locator('.provider-card', { hasText: oauthProviderName }).count()) > 0,
+      connect_button_visible:
+        (await page.getByRole('button', { name: `Connect ${oauthProviderName}` }).count()) > 0,
+      callback_connected: false,
+      connection_visible: false,
+      connect_button_visible_after_disconnect: false,
     };
+    const oauthConnectButton = page.getByRole('button', { name: `Connect ${oauthProviderName}` });
+    await oauthConnectButton.waitFor({ state: 'visible', timeout: options.timeoutMs });
+    await oauthConnectButton.click();
+    await page.waitForURL(/\/api\/oauth\/callback\?/, { timeout: options.timeoutMs });
+    await page.waitForLoadState('networkidle', { timeout: options.timeoutMs });
+    const oauthCallbackText = (await page.locator('body').textContent())?.trim() ?? '';
+    summary.oauth.browser_callback = {
+      url: page.url(),
+      body: oauthCallbackText,
+    };
+    summary.pages.oauth.callback_connected =
+      oauthCallbackText.includes('"status":"connected"') ||
+      oauthCallbackText.includes('"status": "connected"');
+
+    const oauthConnectionsAfterConnect = await fetchJson(`${gatewayUrl}/api/oauth/connections`, {
+      headers: authHeaders(accessToken),
+    });
+    const oauthConnectionsAfterConnectList = asArray(oauthConnectionsAfterConnect.body);
+    const oauthConnection = oauthConnectionsAfterConnectList.find(
+      (connection) =>
+        connection.provider === oauthProviderName && connection.status === 'connected',
+    );
+
+    let oauthExecute = { status: 0, body: null };
+    let oauthExecuteBody = null;
+    if (oauthConnection?.ref_id) {
+      oauthExecute = await fetchJson(`${gatewayUrl}/api/oauth/execute`, {
+        method: 'POST',
+        headers: mutationHeaders(accessToken, `${marker}-oauth-execute`),
+        body: JSON.stringify({
+          ref_id: oauthConnection.ref_id,
+          api_request: {
+            method: 'GET',
+            url: `${oauthMockUrl}/resource`,
+            headers: {
+              'x-suite-marker': marker,
+            },
+            body: null,
+          },
+        }),
+      });
+      try {
+        oauthExecuteBody = JSON.parse(String(oauthExecute.body?.body ?? 'null'));
+      } catch {
+        oauthExecuteBody = null;
+      }
+    }
+
+    await page.goto(initialOAuthPagePath, {
+      waitUntil: 'networkidle',
+      timeout: options.timeoutMs,
+    });
+    await page.getByRole('heading', { name: 'OAuth Connections' }).waitFor({
+      state: 'visible',
+      timeout: options.timeoutMs,
+    });
+    summary.pages.oauth.connection_visible =
+      (await page.locator('.connection-card', { hasText: oauthProviderName }).count()) > 0;
+
+    const oauthDisconnectButton = page.getByRole('button', {
+      name: `Disconnect ${oauthProviderName}`,
+    });
+    if (await oauthDisconnectButton.count()) {
+      await oauthDisconnectButton.click();
+      await page
+        .getByRole('button', { name: `Connect ${oauthProviderName}` })
+        .waitFor({ state: 'visible', timeout: options.timeoutMs });
+    }
+
+    const oauthConnectionsAfterDisconnect = await fetchJson(`${gatewayUrl}/api/oauth/connections`, {
+      headers: authHeaders(accessToken),
+    });
+    const oauthConnectionsAfterDisconnectList = asArray(oauthConnectionsAfterDisconnect.body);
+    summary.pages.oauth.connect_button_visible_after_disconnect =
+      (await page.getByRole('button', { name: `Connect ${oauthProviderName}` }).count()) > 0;
+    summary.oauth = {
+      ...summary.oauth,
+      after_connect_connections_status: oauthConnectionsAfterConnect.status,
+      after_connect_connections: oauthConnectionsAfterConnect.body,
+      execute: oauthExecute.body,
+      execute_resource_body: oauthExecuteBody,
+      after_disconnect_connections_status: oauthConnectionsAfterDisconnect.status,
+      after_disconnect_connections: oauthConnectionsAfterDisconnect.body,
+      mock_captures: oauthMockServer?.captures ?? null,
+    };
+
+    Object.assign(summary.checks, {
+      oauth_page_loaded: summary.pages.oauth.loaded_without_error,
+      oauth_page_shows_provider: summary.pages.oauth.provider_visible,
+      oauth_connect_button_visible: summary.pages.oauth.connect_button_visible,
+      oauth_browser_callback_reports_connected: summary.pages.oauth.callback_connected,
+      oauth_connection_created: typeof oauthConnection?.ref_id === 'string',
+      oauth_execute_succeeds:
+        oauthExecute.status === 200 &&
+        oauthExecute.body?.status === 200 &&
+        oauthExecuteBody?.ok === true,
+      oauth_page_shows_connection: summary.pages.oauth.connection_visible,
+      oauth_disconnect_clears_connection:
+        oauthConnectionsAfterDisconnect.status === 200 &&
+        !oauthConnectionsAfterDisconnectList.some(
+          (connection) => connection.provider === oauthProviderName,
+        ),
+      oauth_page_shows_connect_after_disconnect:
+        summary.pages.oauth.connect_button_visible_after_disconnect,
+      oauth_authorize_hit_mock: (oauthMockServer?.captures.authorize.length ?? 0) > 0,
+      oauth_token_exchange_hit_mock: (oauthMockServer?.captures.token.length ?? 0) > 0,
+      oauth_execute_hit_mock_resource:
+        (oauthMockServer?.captures.resource ?? []).some(
+          (capture) =>
+            capture.authorization.startsWith('Bearer ') &&
+            capture.suite_marker === marker,
+        ),
+      oauth_revoke_hit_mock: (oauthMockServer?.captures.revoke.length ?? 0) > 0,
+    });
 
     await page.goto('/settings/notifications', {
       waitUntil: 'networkidle',
@@ -1077,8 +1371,6 @@ async function main() {
       skills_page_shows_note_take: summary.pages.skills.note_take_visible,
       channels_page_loaded: summary.pages.channels.loaded_without_error,
       channels_page_shows_cli: summary.pages.channels.cli_visible,
-      oauth_page_loaded: summary.pages.oauth.loaded_without_error,
-      oauth_page_has_content: summary.pages.oauth.empty_or_list_visible,
       notifications_page_loaded: summary.pages.notifications.loaded_without_error,
       notifications_page_has_content: summary.pages.notifications.content_visible,
     });
@@ -1097,6 +1389,7 @@ async function main() {
     );
     await writeJsonLines(path.join(runDir, 'browser-ws-frames.jsonl'), browserEvents.wsFrames);
     await writeJson(path.join(runDir, 'webhook-deliveries.json'), webhookReceiver.deliveries);
+    await writeJson(path.join(runDir, 'oauth-mock-captures.json'), oauthMockServer?.captures ?? {});
 
     summary.checks.page_errors = browserEvents.pageErrors.length === 0;
     if (browserEvents.console.some((event) => event.type === 'error')) {
@@ -1125,6 +1418,9 @@ async function main() {
     if (webhookReceiver) {
       await webhookReceiver.stop().catch(() => {});
     }
+    if (oauthMockServer) {
+      await oauthMockServer.stop().catch(() => {});
+    }
     if (dashboardProcess) {
       await dashboardProcess.stop();
     }
@@ -1145,6 +1441,9 @@ async function main() {
     }
     if (webhookReceiver) {
       await writeJson(path.join(runDir, 'webhook-deliveries.json'), webhookReceiver.deliveries).catch(() => {});
+    }
+    if (oauthMockServer) {
+      await writeJson(path.join(runDir, 'oauth-mock-captures.json'), oauthMockServer.captures).catch(() => {});
     }
 
     summary.finished_at = nowIso();

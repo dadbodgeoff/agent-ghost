@@ -37,6 +37,14 @@ build/
 /artifacts/live-runtime-audits/
 /artifacts/live-knowledge-audits/
 /artifacts/live-io-audits/
+/artifacts/live-distributed-audits/
 /artifacts/live-convergence-audits/
 /artifacts/live-database-audits/
+/artifacts/live-surface-audits/
+/artifacts/live-ops-audits/
+/artifacts/live-preflight-audits/
+/artifacts/live-soak-audits/
+/artifacts/live-prune-audits/
 /artifacts/live-critical-suites/
+/artifacts/live-repo-suites/
+/artifacts/live-reporting/

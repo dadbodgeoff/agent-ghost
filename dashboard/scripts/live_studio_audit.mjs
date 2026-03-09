@@ -358,6 +358,42 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+async function classifyStudioFailure(error, summary, gatewayLogPath) {
+  const errorText = error instanceof Error ? error.stack ?? error.message : String(error);
+  let gatewayLog = '';
+
+  try {
+    gatewayLog = await fs.readFile(gatewayLogPath, 'utf8');
+  } catch {
+    gatewayLog = '';
+  }
+
+  if (
+    /streaming provider failed|provider error: HTTP request failed|error sending request for url \((https?:\/\/[^)]+)\)/i.test(
+      gatewayLog,
+    )
+  ) {
+    return {
+      classification: 'environment_transient',
+      reason: 'external_provider_request_failed',
+    };
+  }
+
+  if (
+    /sendStudioMessage/.test(errorText) &&
+    /Timeout \d+ms exceeded/.test(errorText) &&
+    summary.checks.gateway_healthy === true &&
+    summary.checks.dashboard_ready === true
+  ) {
+    return {
+      classification: 'environment_transient',
+      reason: 'studio_message_timeout',
+    };
+  }
+
+  return null;
+}
+
 async function collectGatewayState(gatewayUrl) {
   const sessionsResponse = await fetch(`${gatewayUrl}/api/studio/sessions?limit=10`);
   const sessions = await sessionsResponse.json();
@@ -1090,6 +1126,11 @@ async function main() {
   } catch (error) {
     summary.status = 'failed';
     summary.error = error instanceof Error ? error.stack ?? error.message : String(error);
+    const classification = await classifyStudioFailure(error, summary, gatewayLogPath);
+    if (classification) {
+      summary.failure_classification = classification.classification;
+      summary.failure_reason = classification.reason;
+    }
   } finally {
     if (dashboardProcess) {
       await dashboardProcess.stop();

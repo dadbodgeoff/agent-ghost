@@ -164,11 +164,11 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <a href="/sessions/{sessionId}">Back to Session</a>
+    <a href={`/sessions/${sessionId}`}>Back to Session</a>
   </div>
 {:else}
   <div class="replay-header">
-    <a href="/sessions/{sessionId}" class="back-link">Session {sessionId.slice(0, 8)}...</a>
+    <a href={`/sessions/${sessionId}`} class="back-link">Session {sessionId.slice(0, 8)}...</a>
     <h1>Replay</h1>
     <div class="header-actions">
       <button class="btn-secondary" onclick={() => (showBookmarkForm = !showBookmarkForm)}>

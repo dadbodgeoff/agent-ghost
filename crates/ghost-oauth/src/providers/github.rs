@@ -25,15 +25,17 @@ const TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 pub struct GitHubOAuthProvider {
     client_id: String,
     client_secret: SecretString,
-    http: reqwest::blocking::Client,
+    http: &'static reqwest::blocking::Client,
 }
 
 impl GitHubOAuthProvider {
     pub fn new(client_id: String, client_secret: SecretString) -> Result<Self, OAuthError> {
-        let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| OAuthError::ProviderError(format!("HTTP client init: {e}")))?;
+        let http = Box::leak(Box::new(
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|e| OAuthError::ProviderError(format!("HTTP client init: {e}")))?,
+        ));
         Ok(Self {
             client_id,
             client_secret,

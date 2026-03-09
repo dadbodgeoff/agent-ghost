@@ -548,6 +548,7 @@ mod tests {
 
         Arc::new(AppState {
             gateway: Arc::new(crate::gateway::GatewaySharedState::new()),
+            config_path: std::path::PathBuf::from("ghost.yml"),
             agents: Arc::new(RwLock::new(crate::agents::registry::AgentRegistry::new())),
             kill_switch: Arc::new(crate::safety::kill_switch::KillSwitch::new()),
             quarantine: Arc::new(RwLock::new(
@@ -560,6 +561,7 @@ mod tests {
             kill_gate: None,
             secret_provider: Arc::new(ghost_secrets::EnvProvider),
             oauth_broker,
+            mesh_signing_key: None,
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".to_string(),
             model_providers: Vec::new(),

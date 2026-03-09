@@ -2,7 +2,7 @@
 //! with a temp database for integration testing.
 
 use std::net::TcpListener;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use reqwest::Client;
 use tokio_util::sync::CancellationToken;
@@ -92,6 +92,7 @@ impl TestGateway {
         ));
         let kill_switch = Arc::new(ghost_gateway::safety::kill_switch::KillSwitch::new());
         let cost_tracker = Arc::new(ghost_gateway::cost::tracker::CostTracker::new());
+        let mesh_signing_key = Arc::new(Mutex::new(ghost_signing::generate_keypair().0));
 
         // Use env-based secret provider (no secrets needed for tests).
         let secret_provider: Box<dyn ghost_secrets::SecretProvider> =
@@ -137,6 +138,7 @@ impl TestGateway {
 
         let app_state = Arc::new(ghost_gateway::state::AppState {
             gateway: Arc::clone(&shared_state),
+            config_path: std::path::PathBuf::from("ghost.yml"),
             agents: Arc::new(RwLock::new(
                 ghost_gateway::agents::registry::AgentRegistry::new(),
             )),
@@ -151,6 +153,7 @@ impl TestGateway {
             kill_gate: None,
             secret_provider: Arc::from(secret_provider),
             oauth_broker,
+            mesh_signing_key: Some(mesh_signing_key),
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".to_string(),
             model_providers: Vec::new(),

@@ -345,6 +345,7 @@ fn extract_refresh_cookie(request: &Request<Body>) -> Option<String> {
 /// - `GET /api/health`, `GET /api/ready`, and `GET /api/compatibility` (bootstrap probes)
 /// - `POST /api/auth/login` (login endpoint itself)
 /// - `POST /api/auth/refresh` (token refresh — uses cookie, not Bearer)
+/// - `GET /api/oauth/callback` (browser redirect target from external OAuth provider)
 /// - `GET /api/ws` (WebSocket has its own auth in the handler)
 /// - `GET /.well-known/agent.json` and `POST /a2a` (mesh has Ed25519 auth)
 pub async fn auth_middleware(request: Request<Body>, next: Next) -> Response {
@@ -359,6 +360,7 @@ pub async fn auth_middleware(request: Request<Body>, next: Next) -> Response {
             | "/api/auth/login"
             | "/api/auth/refresh"
             | "/api/auth/logout"
+            | "/api/oauth/callback"
             | "/api/openapi.json"
             | "/api/ws"
             | "/.well-known/agent.json"
@@ -1036,6 +1038,32 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/api/compatibility")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_is_public_when_auth_is_enabled() {
+        let auth_config = Arc::new(AuthConfig {
+            jwt_secret: Some("jwt-test-secret".into()),
+            legacy_token: None,
+            is_production: false,
+        });
+        let revocation_set = Arc::new(RevocationSet::new());
+
+        let response = Router::new()
+            .route("/api/oauth/callback", get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn(auth_middleware))
+            .layer(Extension(auth_config))
+            .layer(Extension(revocation_set))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/oauth/callback?code=test&state=test")
                     .body(Body::empty())
                     .unwrap(),
             )

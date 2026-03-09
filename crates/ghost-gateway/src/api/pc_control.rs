@@ -262,8 +262,8 @@ fn status_from_config(
     })
 }
 
-fn read_pc_control_config() -> Result<ghost_pc_control::safety::PcControlConfig, ApiError> {
-    Ok(GhostConfig::load_default(None)
+fn read_pc_control_config(state: &AppState) -> Result<ghost_pc_control::safety::PcControlConfig, ApiError> {
+    Ok(GhostConfig::load(&state.config_path)
         .map_err(|e| ApiError::internal(format!("load config: {e}")))?
         .pc_control)
 }
@@ -338,11 +338,10 @@ fn persist_pc_control_config(
     state: &Arc<AppState>,
     mutate: impl FnOnce(&mut ghost_pc_control::safety::PcControlConfig),
 ) -> Result<PcControlStatus, ApiError> {
-    let path = GhostConfig::default_path(None);
-    let mut full_config = GhostConfig::load_default(None)
+    let mut full_config = GhostConfig::load(&state.config_path)
         .map_err(|e| ApiError::internal(format!("load config: {e}")))?;
     mutate(&mut full_config.pc_control);
-    write_pc_control_config(&path, &full_config.pc_control)?;
+    write_pc_control_config(&state.config_path, &full_config.pc_control)?;
 
     crate::api::websocket::broadcast_event(
         state,
@@ -366,7 +365,7 @@ fn pc_control_actor(claims: Option<&Claims>) -> &str {
 }
 
 pub async fn get_status(State(state): State<Arc<AppState>>) -> ApiResult<PcControlStatus> {
-    let config = read_pc_control_config()?;
+    let config = read_pc_control_config(&state)?;
     let db = state
         .db
         .read()
@@ -673,12 +672,18 @@ mod tests {
     }
 
     fn write_test_config(path: &Path) {
-        let yaml = serde_yaml::to_string(&crate::config::GhostConfig::default()).unwrap();
+        write_test_config_with(path, crate::config::GhostConfig::default());
+    }
+
+    fn write_test_config_with(path: &Path, config: crate::config::GhostConfig) {
+        let yaml = serde_yaml::to_string(&config).unwrap();
         std::fs::write(path, yaml).unwrap();
     }
 
     async fn test_state() -> (Arc<AppState>, TempDir) {
         let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("ghost.yml");
+        write_test_config(&config_path);
         let db_path = temp_dir.path().join("ghost.db");
         let db = crate::db_pool::create_pool(db_path).unwrap();
         {
@@ -699,6 +704,7 @@ mod tests {
 
         let state = Arc::new(AppState {
             gateway: shared_state,
+            config_path: config_path.clone(),
             agents: Arc::new(RwLock::new(crate::agents::registry::AgentRegistry::new())),
             kill_switch: Arc::new(crate::safety::kill_switch::KillSwitch::new()),
             quarantine: Arc::new(RwLock::new(
@@ -711,6 +717,7 @@ mod tests {
             kill_gate: None,
             secret_provider: Arc::new(ghost_secrets::EnvProvider),
             oauth_broker,
+            mesh_signing_key: None,
             soul_drift_threshold: 0.15,
             convergence_profile: "standard".into(),
             model_providers: Vec::new(),
@@ -743,11 +750,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_reports_runtime_breaker_state_separately() {
-        let _guard = env_lock().lock().unwrap();
-        let (state, temp_dir) = test_state().await;
-        let config_path = temp_dir.path().join("ghost.yml");
-        write_test_config(&config_path);
-        let _env = EnvVarGuard::set("GHOST_CONFIG", config_path.to_str().unwrap());
+        let (state, _temp_dir) = test_state().await;
 
         {
             let mut breaker = state.pc_control_circuit_breaker.lock().unwrap();
@@ -780,11 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_safe_zones_rejects_multiple_entries() {
-        let _guard = env_lock().lock().unwrap();
-        let (state, temp_dir) = test_state().await;
-        let config_path = temp_dir.path().join("ghost.yml");
-        write_test_config(&config_path);
-        let _env = EnvVarGuard::set("GHOST_CONFIG", config_path.to_str().unwrap());
+        let (state, _temp_dir) = test_state().await;
 
         let response = update_safe_zones(
             State(state),
@@ -817,11 +816,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_safe_zones_rejects_zero_area_and_overflow() {
-        let _guard = env_lock().lock().unwrap();
-        let (state, temp_dir) = test_state().await;
-        let config_path = temp_dir.path().join("ghost.yml");
-        write_test_config(&config_path);
-        let _env = EnvVarGuard::set("GHOST_CONFIG", config_path.to_str().unwrap());
+        let (state, _temp_dir) = test_state().await;
 
         let zero_area = update_safe_zones(
             State(Arc::clone(&state)),
@@ -866,11 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_safe_zones_replays_committed_response_with_audit_provenance() {
-        let _guard = env_lock().lock().unwrap();
-        let (state, temp_dir) = test_state().await;
-        let config_path = temp_dir.path().join("ghost.yml");
-        write_test_config(&config_path);
-        let _env = EnvVarGuard::set("GHOST_CONFIG", config_path.to_str().unwrap());
+        let (state, _temp_dir) = test_state().await;
 
         let request = SafeZonesRequest {
             zones: Some(vec![SafeZone {
@@ -954,11 +945,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_safe_zones_rejects_idempotency_key_reuse_with_different_payload() {
-        let _guard = env_lock().lock().unwrap();
-        let (state, temp_dir) = test_state().await;
-        let config_path = temp_dir.path().join("ghost.yml");
-        write_test_config(&config_path);
-        let _env = EnvVarGuard::set("GHOST_CONFIG", config_path.to_str().unwrap());
+        let (state, _temp_dir) = test_state().await;
 
         let first = update_safe_zones(
             State(Arc::clone(&state)),
@@ -1012,6 +999,29 @@ mod tests {
         );
         let body = response_json(conflict).await;
         assert_eq!(body["error"]["code"], "IDEMPOTENCY_KEY_REUSED");
+    }
+
+    #[tokio::test]
+    async fn pc_control_reads_state_config_path_even_when_env_points_elsewhere() {
+        let _guard = env_lock().lock().unwrap();
+        let (state, temp_dir) = test_state().await;
+
+        let mut primary = crate::config::GhostConfig::default();
+        primary.pc_control.enabled = true;
+        primary.pc_control.allowed_apps = vec!["GhostApp".into()];
+        write_test_config_with(&state.config_path, primary);
+
+        let decoy_path = temp_dir.path().join("decoy.yml");
+        let mut decoy = crate::config::GhostConfig::default();
+        decoy.pc_control.enabled = false;
+        decoy.pc_control.allowed_apps = vec!["WrongApp".into()];
+        write_test_config_with(&decoy_path, decoy);
+        let _env = EnvVarGuard::set("GHOST_CONFIG", decoy_path.to_str().unwrap());
+
+        let Json(status) = get_status(State(state)).await.unwrap();
+
+        assert!(status.enabled);
+        assert_eq!(status.allowed_apps, vec!["GhostApp"]);
     }
 
     #[tokio::test]
