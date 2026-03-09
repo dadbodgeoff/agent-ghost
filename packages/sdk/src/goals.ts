@@ -1,41 +1,26 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components, operations } from './generated-types.js';
 
 // ── Types ──
 
-export interface Proposal {
-  id: string;
-  agent_id: string;
-  session_id: string;
-  proposer_type: 'agent' | 'human';
-  operation: string;
-  target_type: string;
+export type Proposal = Omit<
+  components['schemas']['GoalProposalSummary'],
+  'decision' | 'resolved_at'
+> & {
   decision: string | null;
-  dimension_scores: Record<string, number>;
-  flags: string[];
-  created_at: string;
   resolved_at: string | null;
-  current_state?: string | null;
-}
-
-export interface ProposalDetail extends Proposal {
-  content: Record<string, unknown>;
-  cited_memory_ids: string[];
-  resolver: string | null;
-  denial_reason?: string;
-  lineage_id?: string | null;
-  subject_type?: string | null;
-  subject_key?: string | null;
-  reviewed_revision?: string | null;
-  validation_disposition?: string | null;
-  supersedes_proposal_id?: string | null;
-  current_state?: string | null;
-  transition_history?: GoalProposalTransition[];
-}
-
-export interface GoalProposalTransition {
-  from_state: string | null;
-  to_state: string;
-  actor_type: string;
+};
+export type GoalProposalTransition = Omit<
+  components['schemas']['GoalProposalTransition'],
+  | 'actor_id'
+  | 'reason_code'
+  | 'rationale'
+  | 'expected_state'
+  | 'expected_revision'
+  | 'operation_id'
+  | 'request_id'
+  | 'idempotency_key'
+> & {
   actor_id: string | null;
   reason_code: string | null;
   rationale: string | null;
@@ -44,8 +29,21 @@ export interface GoalProposalTransition {
   operation_id: string | null;
   request_id: string | null;
   idempotency_key: string | null;
-  created_at: string;
-}
+};
+export type ProposalDetail = Omit<
+  components['schemas']['GoalProposalDetail'],
+  | 'decision'
+  | 'resolved_at'
+  | 'resolver'
+  | 'transition_history'
+  | 'content'
+> & {
+  decision: string | null;
+  resolved_at: string | null;
+  resolver: string | null;
+  content: Record<string, unknown>;
+  transition_history?: GoalProposalTransition[];
+};
 
 export interface GoalDecisionRequest {
   expectedState: string;
@@ -55,19 +53,15 @@ export interface GoalDecisionRequest {
   rationale?: string;
 }
 
-export interface ListGoalsParams {
-  status?: 'pending' | 'approved' | 'rejected';
-  agent_id?: string;
-  page?: number;
-  page_size?: number;
-}
-
-export interface ListGoalsResult {
+export type GoalDecisionResult =
+  operations['approve_goal']['responses'][200]['content']['application/json'];
+export type ListGoalsParams = NonNullable<operations['list_goals']['parameters']['query']>;
+export type ListGoalsResult = Omit<
+  operations['list_goals']['responses'][200]['content']['application/json'],
+  'proposals'
+> & {
   proposals: Proposal[];
-  page: number;
-  page_size: number;
-  total: number;
-}
+};
 
 // ── API ──
 
@@ -95,8 +89,8 @@ export class GoalsAPI {
     id: string,
     request: GoalDecisionRequest,
     options?: GhostRequestOptions,
-  ): Promise<{ status: 'approved'; id: string }> {
-    return this.request<{ status: 'approved'; id: string }>(
+  ): Promise<GoalDecisionResult> {
+    return this.request<GoalDecisionResult>(
       'POST',
       `/api/goals/${encodeURIComponent(id)}/approve`,
       {
@@ -115,8 +109,8 @@ export class GoalsAPI {
     id: string,
     request: GoalDecisionRequest,
     options?: GhostRequestOptions,
-  ): Promise<{ status: 'rejected'; id: string }> {
-    return this.request<{ status: 'rejected'; id: string }>(
+  ): Promise<GoalDecisionResult> {
+    return this.request<GoalDecisionResult>(
       'POST',
       `/api/goals/${encodeURIComponent(id)}/reject`,
       {

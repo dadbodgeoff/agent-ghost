@@ -1,100 +1,39 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface RuntimeSession {
-  session_id: string;
-  started_at: string;
-  last_event_at: string;
-  event_count: number;
-  agents: string[] | string;
-}
-
-export interface SessionEvent {
-  id: string;
-  event_type: string;
-  sender?: string | null;
-  timestamp: string;
-  sequence_number: number;
-  content_hash?: string | null;
-  content_length?: number | null;
-  privacy_level: string;
-  latency_ms?: number | null;
-  token_count?: number | null;
-  event_hash: string;
-  previous_hash: string;
+export type RuntimeSession = components['schemas']['RuntimeSessionSummary'];
+export type SessionEvent = Omit<components['schemas']['SessionEvent'], 'attributes'> & {
   attributes: Record<string, unknown>;
-}
-
-export interface SessionEventsParams {
-  offset?: number;
-  limit?: number;
-}
-
-export interface SessionEventsResult {
-  session_id: string;
+};
+export type SessionEventsParams = NonNullable<
+  operations['get_session_events']['parameters']['query']
+>;
+export type SessionEventsResult = Omit<
+  components['schemas']['SessionEventsResponse'],
+  'events'
+> & {
   events: SessionEvent[];
-  total: number;
-  offset: number;
-  limit: number;
-  chain_valid: boolean;
-  cumulative_cost: number;
-}
-
-export interface SessionBookmark {
-  id: string;
-  eventIndex: number;
-  label: string;
-  createdAt: string;
-}
-
-export interface SessionBookmarksResult {
-  bookmarks: SessionBookmark[];
-}
-
-export interface CreateSessionBookmarkParams {
-  id?: string;
-  eventIndex: number;
-  label: string;
-}
-
-export interface CreateSessionBookmarkResult {
-  id: string;
-  status: 'created';
-}
-
-export interface DeleteSessionBookmarkResult {
-  status: 'deleted';
-}
-
-export interface BranchSessionParams {
-  from_event_index: number;
-}
-
-export interface BranchSessionResult {
-  session_id: string;
-  branched_from: string;
-  events_copied: number;
-}
-
-export interface ListRuntimeSessionsParams {
-  page?: number;
-  page_size?: number;
-  cursor?: string;
-  limit?: number;
-}
-
-export interface ListRuntimeSessionsPageResult {
-  sessions: RuntimeSession[];
-  page: number;
-  page_size: number;
-  total: number;
-}
-
-export interface ListRuntimeSessionsCursorResult {
-  data: RuntimeSession[];
-  next_cursor: string | null;
-  has_more: boolean;
-  total_count: number;
-}
+};
+export type SessionBookmark = components['schemas']['SessionBookmark'];
+export type SessionBookmarksResult =
+  operations['list_session_bookmarks']['responses'][200]['content']['application/json'];
+export type CreateSessionBookmarkParams =
+  operations['create_session_bookmark']['requestBody']['content']['application/json'];
+export type CreateSessionBookmarkResult =
+  operations['create_session_bookmark']['responses'][201]['content']['application/json'];
+export type DeleteSessionBookmarkResult =
+  operations['delete_session_bookmark']['responses'][200]['content']['application/json'];
+export type BranchSessionParams =
+  operations['branch_runtime_session']['requestBody']['content']['application/json'];
+export type BranchSessionResult =
+  operations['branch_runtime_session']['responses'][201]['content']['application/json'];
+export type ListRuntimeSessionsParams = NonNullable<
+  operations['list_sessions']['parameters']['query']
+>;
+export type ListRuntimeSessionsPageResult =
+  components['schemas']['RuntimeSessionsPageResponse'];
+export type ListRuntimeSessionsCursorResult =
+  components['schemas']['RuntimeSessionsCursorResponse'];
 
 export class RuntimeSessionsAPI {
   constructor(private request: GhostRequestFn) {}

@@ -3,6 +3,7 @@
 use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
 use rusqlite::{params, Connection};
+use std::collections::HashSet;
 
 /// Search memories using FTS5 with BM25 ranking.
 ///
@@ -23,18 +24,25 @@ pub fn fts_search(
     let archived_filter = if include_archived {
         ""
     } else {
-        "AND ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)"
+        "AND latest.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)"
     };
 
     let sql = format!(
-        "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at,
+        "SELECT latest.id, latest.memory_id, latest.snapshot, latest.created_at,
                 bm25(memory_fts) AS fts_rank
-         FROM memory_fts f
-         JOIN memory_snapshots ms ON f.memory_id = ms.memory_id
+         FROM memory_fts
+         JOIN (
+             SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at
+             FROM memory_snapshots ms
+             JOIN (
+                 SELECT memory_id, MAX(id) AS max_id
+                 FROM memory_snapshots
+                 GROUP BY memory_id
+             ) newest ON newest.max_id = ms.id
+         ) latest ON latest.memory_id = memory_fts.memory_id
          WHERE memory_fts MATCH ?1
          {archived_filter}
-         GROUP BY ms.memory_id
-         ORDER BY fts_rank
+         ORDER BY fts_rank, latest.id DESC
          LIMIT ?2"
     );
 
@@ -56,7 +64,13 @@ pub fn fts_search(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| to_storage_err(e.to_string()))?;
 
-    Ok(rows)
+    let mut seen_memory_ids = HashSet::new();
+    let deduped = rows
+        .into_iter()
+        .filter(|row| seen_memory_ids.insert(row.memory_id.clone()))
+        .collect();
+
+    Ok(deduped)
 }
 
 /// Check if the FTS5 table exists (for graceful fallback).
@@ -70,21 +84,9 @@ pub fn fts_available(conn: &Connection) -> bool {
 /// from user input containing special characters.
 fn sanitize_fts_query(query: &str) -> String {
     query
-        .split_whitespace()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
-        .map(|w| {
-            // Remove FTS5 operators and special chars
-            let clean: String = w
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect();
-            if clean.is_empty() {
-                String::new()
-            } else {
-                format!("\"{clean}\"")
-            }
-        })
-        .filter(|s| !s.is_empty())
+        .map(|w| format!("\"{w}\""))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -120,5 +122,48 @@ mod tests {
     #[test]
     fn sanitize_special_chars() {
         assert_eq!(sanitize_fts_query("hello* (world)"), "\"hello\" \"world\"");
+    }
+
+    #[test]
+    fn sanitize_hyphenated_query() {
+        assert_eq!(
+            sanitize_fts_query("knowledge-live-20260309-131129"),
+            "\"knowledge\" \"live\" \"20260309\" \"131129\""
+        );
+    }
+
+    #[test]
+    fn fts_search_returns_latest_snapshot_once_per_memory() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::run_all_migrations(&conn).unwrap();
+
+        crate::queries::memory_snapshot_queries::insert_snapshot(
+            &conn,
+            "memory-alpha",
+            r#"{"summary":"older alpha summary","content":"knowledge alpha","tags":["knowledge"]}"#,
+            None,
+        )
+        .unwrap();
+        crate::queries::memory_snapshot_queries::insert_snapshot(
+            &conn,
+            "memory-alpha",
+            r#"{"summary":"latest alpha summary","content":"knowledge alpha latest","tags":["knowledge"]}"#,
+            None,
+        )
+        .unwrap();
+        crate::queries::memory_snapshot_queries::insert_snapshot(
+            &conn,
+            "memory-beta",
+            r#"{"summary":"beta summary","content":"knowledge beta","tags":["knowledge"]}"#,
+            None,
+        )
+        .unwrap();
+
+        let results = fts_search(&conn, "knowledge", 10, true).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|row| {
+            row.memory_id == "memory-alpha" && row.snapshot.contains("latest alpha summary")
+        }));
+        assert!(results.iter().any(|row| row.memory_id == "memory-beta"));
     }
 }

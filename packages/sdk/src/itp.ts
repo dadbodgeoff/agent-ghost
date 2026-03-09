@@ -1,23 +1,12 @@
 import type { GhostRequestFn } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface ItpEvent {
-  id: string;
-  event_type: string;
-  platform: string;
-  session_id: string;
-  timestamp: string;
-  source: string;
-}
-
-export interface ListItpEventsParams {
-  limit?: number;
-}
-
-export interface ListItpEventsResult {
-  events: ItpEvent[];
-  buffer_count: number;
-  extension_connected: boolean;
-}
+export type ItpEvent = components['schemas']['ItpEvent'];
+export type ListItpEventsParams = NonNullable<
+  operations['list_itp_events']['parameters']['query']
+>;
+export type ListItpEventsResult =
+  operations['list_itp_events']['responses'][200]['content']['application/json'];
 
 export class ItpAPI {
   constructor(private request: GhostRequestFn) {}

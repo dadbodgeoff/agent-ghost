@@ -1,7 +1,6 @@
 import { GhostClient } from '@ghost/sdk';
 import type { GhostClientOptions } from '@ghost/sdk';
 import { getRuntime } from '$lib/platform/runtime';
-import packageJson from '../../package.json';
 
 let cachedClient: GhostClient | null = null;
 let cachedKey = '';
@@ -14,7 +13,7 @@ async function resolveOptions(): Promise<GhostClientOptions> {
     baseUrl: await runtime.getBaseUrl(),
     token: (await runtime.getToken()) ?? undefined,
     clientName: runtime.kind === 'tauri' ? 'desktop' : 'dashboard',
-    clientVersion: packageJson.version,
+    clientVersion: __APP_VERSION__,
   };
 }
 

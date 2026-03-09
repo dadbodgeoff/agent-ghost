@@ -1,6 +1,7 @@
 //! Admin endpoints for backup/restore/export (T-3.4.1–3.4.4).
 //!
-//! All endpoints require `role == "admin"` in JWT claims.
+//! Endpoints require admin-or-higher JWT claims, with restore reserved for
+//! superadmin.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use axum::response::Response;
 use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -25,7 +27,7 @@ const RESTORE_BACKUP_ROUTE_TEMPLATE: &str = "/api/admin/restore";
 
 // ── Types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BackupResponse {
     pub backup_id: String,
     pub created_at: String,
@@ -35,12 +37,12 @@ pub struct BackupResponse {
     pub status: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct RestoreRequest {
     pub backup_path: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct RestoreVerification {
     pub valid: bool,
     pub entry_count: usize,
@@ -48,7 +50,7 @@ pub struct RestoreVerification {
     pub message: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ExportParams {
     #[serde(default = "default_format")]
     pub format: String,
@@ -58,37 +60,23 @@ fn default_format() -> String {
     "jsonl".into()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ExportResponse {
     pub format: String,
     pub entities: Vec<ExportEntity>,
     pub total: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ExportEntity {
     pub entity_type: String,
     pub count: usize,
     pub data: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BackupListResponse {
     pub backups: Vec<BackupResponse>,
-}
-
-// ── Auth helper ─────────────────────────────────────────────────────
-
-fn require_role(claims: Option<&Claims>, role: &str) -> Result<(), ApiError> {
-    if let Some(claims) = claims {
-        if claims.role == role {
-            return Ok(());
-        }
-    }
-    Err(ApiError::Forbidden(format!(
-        "{} role required for this operation",
-        role.to_ascii_uppercase()
-    )))
 }
 
 fn backup_actor(claims: Option<&Claims>) -> &str {
@@ -122,6 +110,50 @@ fn backup_paths(backup_dir: &str, backup_id: &str) -> (PathBuf, PathBuf) {
     (final_path, temp_path)
 }
 
+fn cleanup_backup_temp_path(temp_path: &Path) {
+    let cleanup_result = match std::fs::metadata(temp_path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(temp_path),
+        Ok(_) => std::fs::remove_file(temp_path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    };
+
+    if let Err(error) = cleanup_result {
+        tracing::warn!(
+            path = %temp_path.display(),
+            error = %error,
+            "failed to clean up staged backup archive"
+        );
+    }
+}
+
+fn finalize_backup_archive(temp_path: &Path, output_path: &Path) -> Result<(), ApiError> {
+    let finalize_result = (|| -> Result<(), ApiError> {
+        let temp_file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(temp_path)
+            .map_err(|e| ApiError::internal(format!("open backup temp file: {e}")))?;
+        temp_file
+            .sync_all()
+            .map_err(|e| ApiError::internal(format!("fsync backup temp file: {e}")))?;
+
+        if output_path.exists() {
+            std::fs::remove_file(output_path)
+                .map_err(|e| ApiError::internal(format!("replace prior backup archive: {e}")))?;
+        }
+        std::fs::rename(temp_path, output_path)
+            .map_err(|e| ApiError::internal(format!("finalize backup archive: {e}")))?;
+        Ok(())
+    })();
+
+    if let Err(error) = finalize_result {
+        cleanup_backup_temp_path(temp_path);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
 fn checksum_file(path: &Path) -> Result<(String, u64), ApiError> {
     let data =
         std::fs::read(path).map_err(|e| ApiError::internal(format!("read backup archive: {e}")))?;
@@ -151,9 +183,6 @@ pub async fn create_backup(
     Extension(operation_context): Extension<OperationContext>,
 ) -> Response {
     let claims = claims.as_ref().map(|claims| &claims.0);
-    if let Err(error) = require_role(claims, "admin") {
-        return error_response_with_idempotency(error);
-    }
     let actor = backup_actor(claims);
     let backup_dir = std::env::var("GHOST_BACKUP_DIR").unwrap_or_else(|_| "./backups".into());
     let ghost_dir = std::env::var("GHOST_DIR").unwrap_or_else(|_| ".".into());
@@ -189,21 +218,7 @@ pub async fn create_backup(
                 .export(&temp_path, &passphrase)
                 .map_err(|e| ApiError::internal(format!("Backup failed: {e}")))?;
 
-            let temp_file = std::fs::OpenOptions::new()
-                .read(true)
-                .open(&temp_path)
-                .map_err(|e| ApiError::internal(format!("open backup temp file: {e}")))?;
-            temp_file
-                .sync_all()
-                .map_err(|e| ApiError::internal(format!("fsync backup temp file: {e}")))?;
-
-            if output_path.exists() {
-                std::fs::remove_file(&output_path).map_err(|e| {
-                    ApiError::internal(format!("replace prior backup archive: {e}"))
-                })?;
-            }
-            std::fs::rename(&temp_path, &output_path)
-                .map_err(|e| ApiError::internal(format!("finalize backup archive: {e}")))?;
+            finalize_backup_archive(&temp_path, &output_path)?;
 
             let (checksum, size_bytes) = checksum_file(&output_path)?;
             let created_at = chrono::Utc::now().to_rfc3339();
@@ -290,9 +305,6 @@ pub async fn restore_backup(
     Json(req): Json<RestoreRequest>,
 ) -> Response {
     let claims = claims.as_ref().map(|claims| &claims.0);
-    if let Err(error) = require_role(claims, "superadmin") {
-        return error_response_with_idempotency(error);
-    }
     let actor = backup_actor(claims);
     let request_body = serde_json::json!({
         "backup_path": req.backup_path,
@@ -358,8 +370,6 @@ pub async fn export_data(
     State(state): State<Arc<AppState>>,
     request: axum::http::Request<axum::body::Body>,
 ) -> Result<axum::response::Response, ApiError> {
-    require_role(request.extensions().get::<Claims>(), "admin")?;
-
     // Parse format from query string manually.
     let format = request
         .uri()
@@ -383,10 +393,7 @@ pub async fn export_data(
 
     let table_queries: &[(&str, &str)] = &[
         ("agents", "SELECT id, name FROM agents LIMIT 10000"),
-        (
-            "memories",
-            "SELECT id, memory_type, summary FROM memory_snapshots LIMIT 10000",
-        ),
+        ("memories", MEMORY_EXPORT_QUERY),
         (
             "proposals",
             "SELECT id, operation, decision FROM goal_proposals LIMIT 10000",
@@ -445,10 +452,8 @@ pub async fn export_data(
 /// GET /api/admin/backups — list existing backup manifests.
 pub async fn list_backups(
     State(state): State<Arc<AppState>>,
-    request: axum::http::Request<axum::body::Body>,
+    _request: axum::http::Request<axum::body::Body>,
 ) -> ApiResult<BackupListResponse> {
-    require_role(request.extensions().get::<Claims>(), "admin")?;
-
     let db = state
         .db
         .read()
@@ -479,6 +484,18 @@ pub async fn list_backups(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+const MEMORY_EXPORT_QUERY: &str = "\
+SELECT ms.memory_id, \
+       COALESCE(json_extract(ms.snapshot, '$.memory_type'), '') AS memory_type, \
+       COALESCE(json_extract(ms.snapshot, '$.summary'), '') AS summary \
+FROM memory_snapshots ms \
+JOIN (\
+    SELECT memory_id, MAX(id) AS max_id \
+    FROM memory_snapshots \
+    GROUP BY memory_id\
+) latest ON latest.max_id = ms.id \
+LIMIT 10000";
 
 /// T-5.8.1: Generate a random 32-byte backup key and persist to the given path.
 fn generate_backup_key(key_path: &str) -> String {
@@ -537,4 +554,50 @@ fn export_table(
     };
 
     rows.filter_map(|r| r.ok()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finalize_backup_archive_cleans_up_temp_file_on_rename_failure() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_path = temp_dir.path().join(".ghost-backup.tmp");
+        let output_path = temp_dir.path().join("final-archive");
+
+        std::fs::write(&temp_path, b"backup-bytes").unwrap();
+        std::fs::create_dir_all(&output_path).unwrap();
+
+        let error = finalize_backup_archive(&temp_path, &output_path).unwrap_err();
+        assert!(matches!(error, ApiError::Internal(_)));
+        assert!(!temp_path.exists());
+        assert!(output_path.is_dir());
+    }
+
+    #[test]
+    fn export_table_includes_latest_memory_snapshot_fields() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+
+        cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+            &conn,
+            "memory-export-alpha",
+            r#"{"memory_type":"Semantic","summary":"older summary"}"#,
+            None,
+        )
+        .unwrap();
+        cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+            &conn,
+            "memory-export-alpha",
+            r#"{"memory_type":"Semantic","summary":"latest summary marker"}"#,
+            None,
+        )
+        .unwrap();
+
+        let rows = export_table(&conn, "memories", MEMORY_EXPORT_QUERY);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["memory_id"], "memory-export-alpha");
+        assert_eq!(rows[0]["summary"], "latest summary marker");
+    }
 }

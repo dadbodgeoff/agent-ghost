@@ -5,13 +5,14 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 // ── Request / Response Types ──
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RegisterAgentRequest {
     pub agent_id: String,
     pub description: String,
@@ -32,12 +33,12 @@ fn default_base_price() -> i64 {
     100
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateAgentStatusRequest {
     pub status: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentListingResponse {
     pub agent_id: String,
     pub description: String,
@@ -55,7 +56,7 @@ pub struct AgentListingResponse {
     pub updated_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ListAgentsQuery {
     pub status: Option<String>,
     pub min_trust: Option<f64>,
@@ -64,12 +65,12 @@ pub struct ListAgentsQuery {
     pub offset: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentListResponse {
     pub agents: Vec<AgentListingResponse>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct PublishSkillRequest {
     pub skill_name: String,
     #[serde(default = "default_version")]
@@ -85,7 +86,7 @@ fn default_version() -> String {
     "0.1.0".to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SkillListingResponse {
     pub skill_name: String,
     pub version: String,
@@ -97,18 +98,18 @@ pub struct SkillListingResponse {
     pub created_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ListSkillsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SkillListResponse {
     pub skills: Vec<SkillListingResponse>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ProposeContractRequest {
     pub hirer_agent_id: String,
     pub worker_agent_id: String,
@@ -117,7 +118,7 @@ pub struct ProposeContractRequest {
     pub max_duration_secs: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ContractResponse {
     pub id: String,
     pub hirer_agent_id: String,
@@ -132,7 +133,7 @@ pub struct ContractResponse {
     pub updated_at: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ListContractsQuery {
     pub agent_id: Option<String>,
     pub state: Option<String>,
@@ -140,17 +141,17 @@ pub struct ListContractsQuery {
     pub offset: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ContractListResponse {
     pub contracts: Vec<ContractResponse>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CompleteContractRequest {
     pub result: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct WalletResponse {
     pub agent_id: String,
     pub balance: i64,
@@ -159,7 +160,7 @@ pub struct WalletResponse {
     pub total_spent: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SeedWalletRequest {
     pub agent_id: String,
     #[serde(default = "default_seed_amount")]
@@ -170,14 +171,14 @@ fn default_seed_amount() -> i64 {
     10_000
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ListTransactionsQuery {
     pub agent_id: String,
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TransactionResponse {
     pub id: i64,
     pub from_agent: Option<String>,
@@ -188,12 +189,12 @@ pub struct TransactionResponse {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TransactionListResponse {
     pub transactions: Vec<TransactionResponse>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct SubmitReviewRequest {
     pub contract_id: String,
     pub reviewer_agent_id: String,
@@ -203,7 +204,7 @@ pub struct SubmitReviewRequest {
     pub comment: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ReviewResponse {
     pub id: i64,
     pub contract_id: String,
@@ -214,18 +215,18 @@ pub struct ReviewResponse {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ReviewListResponse {
     pub reviews: Vec<ReviewResponse>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ListReviewsQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct DiscoverRequest {
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -235,15 +236,71 @@ pub struct DiscoverRequest {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DiscoverResponse {
     pub agents: Vec<AgentListingResponse>,
     pub total_matches: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct WalletQuery {
     pub agent_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentStatusUpdateResponse {
+    pub updated: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentDelistResponse {
+    pub delisted: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SkillPublishResponse {
+    pub published: bool,
+    pub skill_name: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContractAcceptedResponse {
+    pub accepted: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContractRejectedResponse {
+    pub rejected: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContractStartedResponse {
+    pub started: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContractCompletedResponse {
+    pub completed: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContractDisputedResponse {
+    pub disputed: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContractCanceledResponse {
+    pub canceled: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ContractResolvedResponse {
+    pub resolved: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReviewSubmittedResponse {
+    pub submitted: bool,
 }
 
 // ── Agent Listing Handlers ──
@@ -323,7 +380,7 @@ pub async fn update_agent_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateAgentStatusRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<AgentStatusUpdateResponse> {
     let db = state.db.write().await;
 
     let valid_statuses = ["active", "busy", "offline", "suspended"];
@@ -342,20 +399,20 @@ pub async fn update_agent_status(
         return Err(ApiError::not_found(format!("agent listing {id}")));
     }
 
-    Ok(Json(serde_json::json!({ "updated": true })))
+    Ok(Json(AgentStatusUpdateResponse { updated: true }))
 }
 
 /// DELETE /api/marketplace/agents/:id — delist agent.
 pub async fn delist_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<AgentDelistResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::listings::set_agent_status(&db, &id, "offline")
         .map_err(|e| ApiError::db_error("delist_agent", e))?;
 
-    Ok(Json(serde_json::json!({ "delisted": true })))
+    Ok(Json(AgentDelistResponse { delisted: true }))
 }
 
 // ── Skill Listing Handlers ──
@@ -364,7 +421,7 @@ pub async fn delist_agent(
 pub async fn publish_skill(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PublishSkillRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<SkillPublishResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::listings::upsert_skill(
@@ -378,9 +435,10 @@ pub async fn publish_skill(
     )
     .map_err(|e| ApiError::db_error("publish_skill", e))?;
 
-    Ok(Json(
-        serde_json::json!({ "published": true, "skill_name": req.skill_name }),
-    ))
+    Ok(Json(SkillPublishResponse {
+        published: true,
+        skill_name: req.skill_name,
+    }))
 }
 
 /// GET /api/marketplace/skills — browse skills.
@@ -514,7 +572,7 @@ pub async fn get_contract(
 pub async fn accept_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ContractAcceptedResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::contracts::transition_contract(
@@ -525,14 +583,14 @@ pub async fn accept_contract(
     )
     .map_err(|e| map_marketplace_error("accept_contract", e))?;
 
-    Ok(Json(serde_json::json!({ "accepted": true })))
+    Ok(Json(ContractAcceptedResponse { accepted: true }))
 }
 
 /// POST /api/marketplace/contracts/:id/reject — worker rejects.
 pub async fn reject_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ContractRejectedResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::contracts::transition_contract(
@@ -543,14 +601,14 @@ pub async fn reject_contract(
     )
     .map_err(|e| map_marketplace_error("reject_contract", e))?;
 
-    Ok(Json(serde_json::json!({ "rejected": true })))
+    Ok(Json(ContractRejectedResponse { rejected: true }))
 }
 
 /// POST /api/marketplace/contracts/:id/start — begin work.
 pub async fn start_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ContractStartedResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::contracts::transition_contract(
@@ -561,7 +619,7 @@ pub async fn start_contract(
     )
     .map_err(|e| map_marketplace_error("start_contract", e))?;
 
-    Ok(Json(serde_json::json!({ "started": true })))
+    Ok(Json(ContractStartedResponse { started: true }))
 }
 
 /// POST /api/marketplace/contracts/:id/complete — deliver result, release escrow.
@@ -569,7 +627,7 @@ pub async fn complete_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<CompleteContractRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ContractCompletedResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::contracts::transition_contract(
@@ -580,14 +638,14 @@ pub async fn complete_contract(
     )
     .map_err(|e| map_marketplace_error("complete_contract", e))?;
 
-    Ok(Json(serde_json::json!({ "completed": true })))
+    Ok(Json(ContractCompletedResponse { completed: true }))
 }
 
 /// POST /api/marketplace/contracts/:id/dispute — dispute contract.
 pub async fn dispute_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ContractDisputedResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::contracts::transition_contract(
@@ -598,14 +656,14 @@ pub async fn dispute_contract(
     )
     .map_err(|e| map_marketplace_error("dispute_contract", e))?;
 
-    Ok(Json(serde_json::json!({ "disputed": true })))
+    Ok(Json(ContractDisputedResponse { disputed: true }))
 }
 
 /// POST /api/marketplace/contracts/:id/cancel — hirer cancels, refund escrow.
 pub async fn cancel_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ContractCanceledResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::contracts::transition_contract(
@@ -616,7 +674,7 @@ pub async fn cancel_contract(
     )
     .map_err(|e| map_marketplace_error("cancel_contract", e))?;
 
-    Ok(Json(serde_json::json!({ "canceled": true })))
+    Ok(Json(ContractCanceledResponse { canceled: true }))
 }
 
 /// POST /api/marketplace/contracts/:id/resolve — resolve disputed contract.
@@ -625,7 +683,7 @@ pub async fn resolve_contract(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<CompleteContractRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ContractResolvedResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::contracts::transition_contract(
@@ -636,7 +694,7 @@ pub async fn resolve_contract(
     )
     .map_err(|e| map_marketplace_error("resolve_contract", e))?;
 
-    Ok(Json(serde_json::json!({ "resolved": true })))
+    Ok(Json(ContractResolvedResponse { resolved: true }))
 }
 
 // ── Wallet Handlers ──
@@ -729,7 +787,7 @@ pub async fn list_transactions(
 pub async fn submit_review(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SubmitReviewRequest>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ReviewSubmittedResponse> {
     let db = state.db.write().await;
 
     ghost_marketplace::reviews::submit_review(
@@ -742,7 +800,7 @@ pub async fn submit_review(
     )
     .map_err(|e| map_marketplace_error("submit_review", e))?;
 
-    Ok(Json(serde_json::json!({ "submitted": true })))
+    Ok(Json(ReviewSubmittedResponse { submitted: true }))
 }
 
 /// GET /api/marketplace/reviews/:agent_id — reviews for an agent.

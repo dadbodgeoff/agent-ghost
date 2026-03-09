@@ -383,9 +383,17 @@ impl TokenStore {
         let encrypted = Self::encrypt(plaintext, passphrase)
             .map_err(|e| OAuthError::EncryptionError(format!("encrypt: {e}")))?;
         let tmp = target.with_extension("tmp");
-        fs::write(&tmp, &encrypted)
-            .map_err(|e| OAuthError::StorageError(format!("write tmp: {e}")))?;
-        fs::rename(&tmp, target).map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
+        let write_result = (|| {
+            fs::write(&tmp, &encrypted)
+                .map_err(|e| OAuthError::StorageError(format!("write tmp: {e}")))?;
+            fs::rename(&tmp, target)
+                .map_err(|e| OAuthError::StorageError(format!("rename: {e}")))?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            cleanup_encrypted_temp_path(&tmp);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -499,4 +507,8 @@ fn dirs_home() -> Option<PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
         .map(PathBuf::from)
+}
+
+fn cleanup_encrypted_temp_path(path: &Path) {
+    let _ = fs::remove_file(path);
 }

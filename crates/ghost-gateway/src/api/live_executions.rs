@@ -1,12 +1,12 @@
-use axum::extract::{Path, State};
 use axum::Extension;
 use axum::Json;
-use std::sync::Arc;
 
-use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
-use crate::api::rbac::Role;
-use crate::state::AppState;
+
+#[derive(Debug, Clone)]
+pub struct AuthorizedLiveExecutionRecord(
+    pub cortex_storage::queries::live_execution_queries::LiveExecutionRecord,
+);
 
 fn expected_live_execution_state_version(route_kind: &str) -> Option<i64> {
     match route_kind {
@@ -17,45 +17,11 @@ fn expected_live_execution_state_version(route_kind: &str) -> Option<i64> {
     }
 }
 
-fn can_view_execution(
-    record: &cortex_storage::queries::live_execution_queries::LiveExecutionRecord,
-    claims: Option<&Claims>,
-) -> bool {
-    let Some(claims) = claims else {
-        return false;
-    };
-
-    match claims.role.parse::<Role>() {
-        Ok(Role::Admin) | Ok(Role::SuperAdmin) => true,
-        _ => record.actor_key == claims.sub,
-    }
-}
-
 /// GET /api/live-executions/:execution_id — inspect accepted-boundary execution state.
 pub async fn get_live_execution(
-    State(state): State<Arc<AppState>>,
-    claims: Option<Extension<Claims>>,
-    Path(execution_id): Path<String>,
+    Extension(authorized_record): Extension<AuthorizedLiveExecutionRecord>,
 ) -> ApiResult<serde_json::Value> {
-    let db = state
-        .db
-        .read()
-        .map_err(|error| ApiError::db_error("get_live_execution", error))?;
-
-    let Some(record) =
-        cortex_storage::queries::live_execution_queries::get_by_id(&db, &execution_id)
-            .map_err(|error| ApiError::db_error("get_live_execution", error))?
-    else {
-        return Err(ApiError::not_found(format!(
-            "live execution {execution_id} not found"
-        )));
-    };
-
-    if !can_view_execution(&record, claims.as_ref().map(|claims| &claims.0)) {
-        return Err(ApiError::not_found(format!(
-            "live execution {execution_id} not found"
-        )));
-    }
+    let record = authorized_record.0;
 
     let expected_state_version = expected_live_execution_state_version(&record.route_kind)
         .ok_or_else(|| {

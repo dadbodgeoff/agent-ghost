@@ -1,26 +1,19 @@
 import type { GhostRequestFn } from './client.js';
+import type { components } from './generated-types.js';
 
-export interface TraceSpanRecord {
-  span_id: string;
-  trace_id: string;
-  parent_span_id: string | null;
-  operation_name: string;
-  start_time: string;
+export type TraceSpanRecord = Omit<
+  components['schemas']['SpanRecord'],
+  'end_time' | 'parent_span_id'
+> & {
   end_time: string | null;
-  attributes: Record<string, unknown>;
-  status: string;
-}
-
-export interface TraceGroup {
-  trace_id: string;
+  parent_span_id: string | null;
+};
+export type TraceGroup = Omit<components['schemas']['TraceGroup'], 'spans'> & {
   spans: TraceSpanRecord[];
-}
-
-export interface SessionTrace {
-  session_id: string;
+};
+export type SessionTrace = Omit<components['schemas']['TraceResponse'], 'traces'> & {
   traces: TraceGroup[];
-  total_spans: number;
-}
+};
 
 export class TracesAPI {
   constructor(private request: GhostRequestFn) {}

@@ -7,6 +7,7 @@
   } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
+  import { wsStore } from '$lib/stores/websocket.svelte';
 
   let token = $state('');
   let error = $state('');
@@ -32,7 +33,9 @@
       await rotateAuthBoundarySession();
       invalidateAuthClientState();
       await notifyAuthBoundary('ghost-auth-changed');
-      goto('/');
+      wsStore.disconnect();
+      await wsStore.connect();
+      await goto('/');
     } catch (e: unknown) {
       error = e instanceof Error
         ? e.message

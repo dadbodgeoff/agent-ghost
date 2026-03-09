@@ -7,7 +7,6 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import ScoreGauge from '../../components/ScoreGauge.svelte';
-  import SignalChart from '../../components/SignalChart.svelte';
 
   interface AgentScore {
     agent_id: string;
@@ -19,13 +18,26 @@
     computed_at: string | null;
   }
 
+  interface AgentHistoryEntry {
+    session_id: string | null;
+    score: number;
+    level: number;
+    profile: string;
+    signal_scores: Record<string, number>;
+    computed_at: string;
+  }
+
   let scores: AgentScore[] = $state([]);
+  let history: AgentHistoryEntry[] = $state([]);
   let loading = $state(true);
+  let historyLoading = $state(false);
   let error = $state('');
+  let historyError = $state('');
   let monitorOnline = $state(true);
   let lastMonitorUpdate = $state<string | null>(null);
   let selectedAgentId = $state<string | null>(null);
   let showThresholdConfig = $state(false);
+  let historyRequestSeq = 0;
 
   // Threshold config
   let thresholds = $state({ normal: 0.4, elevated: 0.6, high: 0.8 });
@@ -89,6 +101,30 @@
     loading = false;
   }
 
+  async function loadHistory(agentId: string) {
+    const requestSeq = ++historyRequestSeq;
+    historyLoading = true;
+    historyError = '';
+
+    try {
+      const client = await getGhostClient();
+      const result = await client.convergence.history(agentId, { limit: 24 });
+      if (requestSeq !== historyRequestSeq) return;
+      history = (result.entries ?? []).map((entry) => ({
+        ...entry,
+        session_id: entry.session_id ?? null,
+      }));
+    } catch (e: unknown) {
+      if (requestSeq !== historyRequestSeq) return;
+      history = [];
+      historyError = e instanceof Error ? e.message : 'Failed to load convergence history';
+    } finally {
+      if (requestSeq === historyRequestSeq) {
+        historyLoading = false;
+      }
+    }
+  }
+
   // Radar chart SVG rendering
   function radarPoints(signals: number[], radius: number): string {
     const n = signals.length;
@@ -122,14 +158,8 @@
     }).join(' ');
   }
 
-  // Fake sparkline data (24 points for 24h)
-  function fakeSparkline(current: number): number[] {
-    const points: number[] = [];
-    for (let i = 0; i < 24; i++) {
-      points.push(Math.max(0, Math.min(1, current + (Math.random() - 0.5) * 0.3)));
-    }
-    points[23] = current;
-    return points;
+  function historySignalValues(name: string): number[] {
+    return history.map((entry) => Math.max(0, Math.min(1, entry.signal_scores?.[name] ?? 0)));
   }
 
   onMount(() => {
@@ -140,6 +170,20 @@
       unsub();
       unsubResync();
     };
+  });
+
+  $effect(() => {
+    const agentId = selectedAgentId;
+    const latestComputedAt = selectedAgent?.computed_at;
+    void latestComputedAt;
+
+    if (!agentId) {
+      history = [];
+      historyError = '';
+      return;
+    }
+
+    void loadHistory(agentId);
   });
 </script>
 
@@ -239,16 +283,25 @@
   <!-- Signal Trends -->
   <div class="card">
     <h2>Signal Trends (24h)</h2>
+    {#if historyError}
+      <div class="history-error" role="alert">{historyError}</div>
+    {/if}
     <div class="signal-grid">
       {#each SIGNAL_NAMES as name, i}
         {@const val = selectedAgent.signal_scores?.[name] ?? 0}
-        {@const sparkline = fakeSparkline(val)}
+        {@const signalHistory = historySignalValues(name)}
         <div class="signal-row">
           <span class="signal-id">{SIGNAL_SHORT[i]}</span>
           <span class="signal-name">{SIGNAL_LABELS[i]}</span>
-          <svg class="sparkline" viewBox="0 0 100 20">
-            <path d={sparklinePath(sparkline, 100, 20)} fill="none" stroke="var(--color-interactive-primary)" stroke-width="1.5" />
-          </svg>
+          {#if signalHistory.length > 1}
+            <svg class="sparkline" viewBox="0 0 100 20" aria-label={`Persisted history for ${SIGNAL_LABELS[i]}`}>
+              <path d={sparklinePath(signalHistory, 100, 20)} fill="none" stroke="var(--color-interactive-primary)" stroke-width="1.5" />
+            </svg>
+          {:else}
+            <span class="signal-history-empty">
+              {historyLoading ? 'Loading…' : 'Awaiting history'}
+            </span>
+          {/if}
           <span class="signal-value" class:signal-high={val > 0.5}>{val.toFixed(2)}</span>
         </div>
       {/each}
@@ -366,11 +419,24 @@
     margin-bottom: var(--spacing-3);
   }
 
+  .history-error {
+    margin-bottom: var(--spacing-3);
+    color: var(--color-severity-hard);
+    font-size: var(--font-size-sm);
+  }
+
   .gauge-card {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
+  }
+
+  .signal-history-empty {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    min-width: 100px;
+    text-align: center;
   }
 
   .gauge-label {

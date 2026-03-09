@@ -9,9 +9,11 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use ghost_agent_loop::runner::{AgentStreamErrorType, AgentStreamEvent};
@@ -28,8 +30,8 @@ use crate::api::mutation::{
 };
 use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::api::runtime_execution::{
-    execute_blocking_turn, map_runner_error, pre_loop_blocking_turn,
-    prepare_requested_runtime_execution, PreparedRuntimeExecution,
+    execute_blocking_turn, inspect_text_safety, inspection_safety_status, map_runner_error,
+    pre_loop_blocking_turn, prepare_requested_runtime_execution, PreparedRuntimeExecution,
 };
 use crate::api::stream_runtime::execute_streaming_turn;
 use crate::api::websocket::WsEvent;
@@ -43,25 +45,36 @@ const AGENT_CHAT_STREAM_ROUTE_KIND: &str = "agent_chat_stream";
 const AGENT_CHAT_EXECUTION_STATE_VERSION: u32 = 1;
 const AGENT_STREAM_EXECUTION_STATE_VERSION: u32 = 1;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct AgentChatRequest {
     /// User message.
     pub message: String,
     /// Optional durable agent identity (UUID or registered agent name).
     pub agent_id: Option<String>,
     /// Optional session ID for multi-turn conversations.
+    #[schema(value_type = String)]
     pub session_id: Option<Uuid>,
     /// Optional model override.
     pub model: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AgentChatResponse {
     pub content: String,
     pub session_id: String,
     pub tool_calls_made: u32,
     pub total_tokens: usize,
     pub total_cost: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentChatAcceptedResponse {
+    pub status: String,
+    pub session_id: String,
+    pub agent_id: String,
+    pub execution_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_required: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -423,14 +436,27 @@ pub async fn agent_chat(
                 }
             };
 
+            let response_content = result.output.clone().unwrap_or_default();
             let body = serde_json::to_value(AgentChatResponse {
-                content: result.output.unwrap_or_default(),
+                content: response_content,
                 session_id: runtime_ctx.session_id.to_string(),
                 tool_calls_made: result.tool_calls_made,
                 total_tokens: result.total_tokens,
                 total_cost: result.total_cost,
             })
             .unwrap_or(serde_json::Value::Null);
+            {
+                let db = state.db.write().await;
+                if let Err(error) = persist_blocking_runtime_session_turn(
+                    &db,
+                    &runtime_ctx.session_id.to_string(),
+                    &agent_id,
+                    &req.message,
+                    &result,
+                ) {
+                    return error_response_with_idempotency(error);
+                }
+            }
             finalize_agent_chat_terminal_response(
                 &state,
                 &lease,
@@ -666,6 +692,21 @@ pub async fn agent_chat_stream(
                                     ));
                                 }
                             };
+                        if let Err(error) = persist_runtime_session_event(
+                            &db,
+                            &session_id,
+                            &prepared_runtime.agent_id,
+                            "stream_start",
+                            &start_payload,
+                            None,
+                        ) {
+                            let _ = cortex_storage::queries::stream_event_queries::delete_events_for_message(
+                                &db,
+                                &message_id,
+                            );
+                            let _ = abort_prepared_json_operation(&db, &operation_context, &lease);
+                            return error_response_with_idempotency(error);
+                        }
                         let execution_state = agent_stream_execution_state(
                             &session_id,
                             &prepared_runtime.agent_id,
@@ -782,12 +823,14 @@ fn agent_chat_accepted_body(
     agent_id: &str,
     execution_id: &str,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "status": "accepted",
-        "session_id": session_id,
-        "agent_id": agent_id,
-        "execution_id": execution_id,
+    serde_json::to_value(AgentChatAcceptedResponse {
+        status: "accepted".to_string(),
+        session_id: session_id.to_string(),
+        agent_id: agent_id.to_string(),
+        execution_id: execution_id.to_string(),
+        recovery_required: None,
     })
+    .unwrap_or(serde_json::Value::Null)
 }
 
 fn agent_chat_recovery_body(state: &AgentChatExecutionState) -> serde_json::Value {
@@ -1228,6 +1271,13 @@ fn agent_stream_recovery_payload(message: impl Into<String>) -> serde_json::Valu
     })
 }
 
+fn mark_reconstructed_payload(mut payload: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("reconstructed".into(), serde_json::Value::Bool(true));
+    }
+    payload
+}
+
 fn agent_stream_error_payload(
     message: &str,
     error_type: Option<AgentStreamErrorType>,
@@ -1235,6 +1285,7 @@ fn agent_stream_error_payload(
     fallback: bool,
     terminal: bool,
     recovery_required: bool,
+    reconstructed: bool,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({ "message": message });
     if let Some(error_type) = error_type {
@@ -1252,13 +1303,139 @@ fn agent_stream_error_payload(
     if recovery_required {
         payload["recovery_required"] = serde_json::json!(true);
     }
+    if reconstructed {
+        payload = mark_reconstructed_payload(payload);
+    }
     payload
+}
+
+fn load_runtime_session_chain_state(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<(i64, [u8; 32]), ApiError> {
+    let latest = conn
+        .query_row(
+            "SELECT sequence_number, event_hash
+             FROM itp_events
+             WHERE session_id = ?1
+             ORDER BY sequence_number DESC
+             LIMIT 1",
+            rusqlite::params![session_id],
+            |row| {
+                let sequence_number = row.get::<_, i64>(0)?;
+                let event_hash = row.get::<_, Vec<u8>>(1)?;
+                Ok((sequence_number, event_hash))
+            },
+        )
+        .optional()
+        .map_err(|error| ApiError::db_error("load_runtime_session_chain_state", error))?;
+
+    if let Some((sequence_number, event_hash)) = latest {
+        let mut previous_hash = [0u8; 32];
+        if event_hash.len() == previous_hash.len() {
+            previous_hash.copy_from_slice(&event_hash);
+        }
+        Ok((sequence_number, previous_hash))
+    } else {
+        Ok((0, [0u8; 32]))
+    }
+}
+
+fn compute_runtime_session_event_hash(
+    content_hash_hex: &str,
+    previous_hash: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(content_hash_hex.as_bytes());
+    hasher.update(previous_hash);
+    *hasher.finalize().as_bytes()
+}
+
+fn persist_runtime_session_event(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    sender: &str,
+    event_type: &str,
+    attributes: &serde_json::Value,
+    token_count: Option<i64>,
+) -> Result<i64, ApiError> {
+    let (last_sequence_number, previous_hash) = load_runtime_session_chain_state(conn, session_id)?;
+    let sequence_number = last_sequence_number + 1;
+    let attributes_json =
+        serde_json::to_string(attributes).map_err(|error| ApiError::internal(error.to_string()))?;
+    let content_hash = blake3::hash(attributes_json.as_bytes())
+        .to_hex()
+        .to_string();
+    let event_hash = compute_runtime_session_event_hash(&content_hash, &previous_hash);
+
+    conn.execute(
+        "INSERT INTO itp_events (
+             id,
+             session_id,
+             event_type,
+             sender,
+             timestamp,
+             sequence_number,
+             content_hash,
+             content_length,
+             privacy_level,
+             latency_ms,
+             token_count,
+             event_hash,
+             previous_hash,
+             attributes
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        rusqlite::params![
+            Uuid::now_v7().to_string(),
+            session_id,
+            event_type,
+            sender,
+            chrono::Utc::now().to_rfc3339(),
+            sequence_number,
+            content_hash,
+            attributes_json.len() as i64,
+            "standard",
+            Option::<i64>::None,
+            token_count,
+            event_hash.to_vec(),
+            previous_hash.to_vec(),
+            attributes_json,
+        ],
+    )
+    .map_err(|error| ApiError::db_error("persist_runtime_session_event", error))?;
+
+    Ok(sequence_number)
+}
+
+fn persist_blocking_runtime_session_turn(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    agent_id: &str,
+    user_message: &str,
+    result: &ghost_agent_loop::runner::RunResult,
+) -> Result<i64, ApiError> {
+    persist_runtime_session_event(
+        conn,
+        session_id,
+        agent_id,
+        "turn_complete",
+        &serde_json::json!({
+            "route": "agent_chat",
+            "message": user_message,
+            "content": result.output.clone().unwrap_or_default(),
+            "tool_calls_made": result.tool_calls_made,
+            "total_tokens": result.total_tokens,
+            "total_cost": result.total_cost,
+        }),
+        Some(result.total_tokens as i64),
+    )
 }
 
 async fn persist_stream_event_durable(
     db: &Arc<crate::db_pool::DbPool>,
     session_id: &str,
     message_id: &str,
+    agent_id: &str,
     event_type: &str,
     payload: &serde_json::Value,
 ) -> Result<i64, ApiError> {
@@ -1270,7 +1447,19 @@ async fn persist_stream_event_durable(
         event_type,
         &payload.to_string(),
     )
-    .map_err(|error| ApiError::db_error("persist_stream_event", error))
+    .map_err(|error| ApiError::db_error("persist_stream_event", error))?;
+
+    persist_runtime_session_event(
+        &conn,
+        session_id,
+        agent_id,
+        event_type,
+        payload,
+        match event_type {
+            "turn_complete" => payload.get("token_count").and_then(|value| value.as_i64()),
+            _ => None,
+        },
+    )
 }
 
 async fn persist_agent_stream_terminal_state(
@@ -1313,7 +1502,7 @@ fn agent_replay_stream_response(
                         .unwrap_or_else(|| agent_stream_recovery_payload(
                             "Stream replay requires recovery because durable persistence did not complete",
                         ));
-                    yield Ok(Event::default().event("error").data(payload.to_string()));
+                    yield Ok(Event::default().event("error").data(mark_reconstructed_payload(payload).to_string()));
                 }
             }
         }
@@ -1375,6 +1564,7 @@ fn agent_live_stream_response(
                         &db_for_stream,
                         &session_id_sse,
                         &message_id_sse,
+                        &execution_state.agent_id,
                         "text_chunk",
                         &payload,
                     ).await {
@@ -1413,6 +1603,7 @@ fn agent_live_stream_response(
                         &db_for_stream,
                         &session_id_sse,
                         &message_id_sse,
+                        &execution_state.agent_id,
                         "tool_use",
                         &payload,
                     ).await {
@@ -1458,6 +1649,7 @@ fn agent_live_stream_response(
                         &db_for_stream,
                         &session_id_sse,
                         &message_id_sse,
+                        &execution_state.agent_id,
                         "tool_result",
                         &payload,
                     ).await {
@@ -1508,6 +1700,7 @@ fn agent_live_stream_response(
                         &db_for_stream,
                         &session_id_sse,
                         &message_id_sse,
+                        &execution_state.agent_id,
                         "turn_complete",
                         &payload,
                     ).await {
@@ -1558,6 +1751,7 @@ fn agent_live_stream_response(
                         fallback,
                         terminal,
                         terminal,
+                        false,
                     );
 
                     if !terminal {
@@ -1569,6 +1763,7 @@ fn agent_live_stream_response(
                         &db_for_stream,
                         &session_id_sse,
                         &message_id_sse,
+                        &execution_state.agent_id,
                         "error",
                         &payload,
                     ).await.ok();
@@ -1666,11 +1861,11 @@ fn spawn_agent_chat_stream_execution(
         )
         .await
         {
-            let safety_status = if run_result.output.as_deref().unwrap_or_default().is_empty() {
-                "unknown"
-            } else {
-                "clean"
-            };
+            let output_inspection = inspect_text_safety(
+                run_result.output.as_deref().unwrap_or_default(),
+                runtime_ctx.agent.id,
+            );
+            let safety_status = inspection_safety_status(&output_inspection);
             let _ = tx
                 .send(AgentStreamEvent::TurnComplete {
                     token_count: run_result.total_tokens,
@@ -1681,4 +1876,56 @@ fn spawn_agent_chat_stream_execution(
     });
 
     (rx, handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[test]
+    fn agent_chat_stream_uses_real_output_inspection_for_terminal_safety() {
+        let inspection = inspect_text_safety(
+            "leaked credential sk-proj-1234567890abcdefghijklmn",
+            Uuid::nil(),
+        );
+
+        assert_eq!(inspection_safety_status(&inspection), "warning");
+    }
+
+    #[tokio::test]
+    async fn replayed_agent_stream_terminal_errors_are_marked_reconstructed() {
+        let acceptance = AgentStreamAcceptance {
+            session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            stream_start_seq: 7,
+        };
+        let execution_state = AgentStreamExecutionState {
+            version: AGENT_STREAM_EXECUTION_STATE_VERSION,
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            message_id: "message-1".to_string(),
+            stream_start_seq: 7,
+            recovery_required: true,
+            terminal_event_type: Some("error".to_string()),
+            terminal_payload: Some(serde_json::json!({
+                "message": "Recovered from execution state",
+                "recovery_required": true,
+            })),
+        };
+
+        let response = agent_replay_stream_response(
+            acceptance,
+            Vec::new(),
+            Some(execution_state),
+            IdempotencyStatus::Replayed,
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(body.contains("event: stream_start"));
+        assert!(body.contains("event: error"));
+        assert!(body.contains("\"message\":\"Recovered from execution state\""));
+        assert!(body.contains("\"reconstructed\":true"));
+    }
 }

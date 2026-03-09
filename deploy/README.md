@@ -69,11 +69,13 @@ ghost status
 
 ```bash
 export GHOST_BACKUP_KEY=your-secret-key
-ghost backup --output ./my-backup.ghost-backup
+ghost backup --output-path ./my-backup.ghost-backup
 ```
 
 ## Restore
 
 ```bash
 ghost restore --input ./my-backup.ghost-backup
+# or restore into an explicit fresh target
+ghost restore --input ./my-backup.ghost-backup --target ./restored-ghost
 ```

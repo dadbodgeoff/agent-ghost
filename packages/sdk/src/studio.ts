@@ -1,24 +1,18 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface StudioRunMessageInput {
+export type StudioRunMessageInput = Omit<components['schemas']['StudioMessage'], 'role'> & {
   role: 'user' | 'assistant' | 'system';
-  content: string;
-}
+};
 
-export interface StudioRunParams {
-  system_prompt?: string;
+export type StudioRunParams = Omit<
+  operations['studio_run']['requestBody']['content']['application/json'],
+  'messages'
+> & {
   messages: StudioRunMessageInput[];
-  model?: string;
-  temperature?: number;
-  max_tokens?: number;
-}
+};
 
-export interface StudioRunResult {
-  content: string;
-  model: string;
-  token_count: number;
-  finish_reason: string;
-}
+export type StudioRunResult = components['schemas']['StudioRunResponse'];
 
 export class StudioAPI {
   constructor(private request: GhostRequestFn) {}

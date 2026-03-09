@@ -3,6 +3,7 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
 use std::path::Path;
 
 fn ghost_cmd() -> Command {
@@ -269,4 +270,61 @@ fn output_json_flag_accepted() {
         .args(["--output", "json", "--help"])
         .assert()
         .success();
+}
+
+#[test]
+fn backup_and_restore_commands_work_with_output_and_target_flags() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_dir = temp_dir.path().join("source-home");
+    let archive_path = temp_dir.path().join("backup.ghost-backup");
+    let restore_dir = temp_dir.path().join("restored-home");
+
+    fs::create_dir_all(source_dir.join("data")).unwrap();
+    fs::write(source_dir.join("data/payload.txt"), "cli smoke").unwrap();
+
+    ghost_cmd()
+        .env("GHOST_DIR", &source_dir)
+        .env("GHOST_BACKUP_PASSPHRASE", "cli-smoke-passphrase")
+        .args(["backup", "--output-path", archive_path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Backup created:"));
+
+    ghost_cmd()
+        .env("GHOST_DIR", &source_dir)
+        .env("GHOST_BACKUP_PASSPHRASE", "cli-smoke-passphrase")
+        .args([
+            "restore",
+            "--input",
+            archive_path.to_str().unwrap(),
+            "--target",
+            restore_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Backup restored into fresh target:",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(restore_dir.join("data/payload.txt")).unwrap(),
+        "cli smoke"
+    );
+}
+
+#[test]
+fn audit_export_output_flag_does_not_panic() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let export_path = temp_dir.path().join("audit.json");
+
+    let assert = ghost_cmd()
+        .args([
+            "audit",
+            "export",
+            "--output-path",
+            export_path.to_str().unwrap(),
+        ])
+        .assert();
+    let code = assert.get_output().status.code().unwrap_or(-1);
+    assert_ne!(code, 101, "audit export --output-path should not panic");
 }

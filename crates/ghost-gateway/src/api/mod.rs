@@ -54,6 +54,8 @@ pub mod agent_chat;
 pub mod agents;
 pub mod audit;
 pub mod auth;
+pub mod authz;
+pub mod authz_policy;
 pub mod channels;
 pub mod compatibility;
 pub mod convergence;

@@ -1,30 +1,12 @@
 import type { GhostRequestFn } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface CrdtDelta {
-  event_id: number;
-  memory_id: string;
-  event_type: string;
-  delta: string;
-  actor_id: string;
-  recorded_at: string;
-  event_hash: string;
-  previous_hash: string;
-}
-
-export interface GetCrdtStateParams {
-  memory_id?: string;
-  limit?: number;
-  offset?: number;
-}
-
-export interface CrdtStateResult {
-  agent_id: string;
-  deltas: CrdtDelta[];
-  total: number;
-  limit: number;
-  offset: number;
-  chain_valid: boolean;
-}
+export type CrdtDelta = components['schemas']['CrdtDelta'];
+export type GetCrdtStateParams = NonNullable<
+  operations['get_crdt_state']['parameters']['query']
+>;
+export type CrdtStateResult =
+  operations['get_crdt_state']['responses'][200]['content']['application/json'];
 
 export class StateAPI {
   constructor(private request: GhostRequestFn) {}

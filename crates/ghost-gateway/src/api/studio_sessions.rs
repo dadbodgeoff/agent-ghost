@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use ghost_agent_loop::output_inspector::{InspectionResult, OutputInspector};
+use ghost_agent_loop::output_inspector::InspectionResult;
 use ghost_agent_loop::runner::{AgentStreamErrorType, AgentStreamEvent};
 
 use crate::api::auth::Claims;
@@ -41,8 +41,9 @@ use crate::api::mutation::{
 };
 use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::api::runtime_execution::{
-    execute_blocking_turn, map_runner_error, map_runtime_safety_error, pre_loop_blocking_turn,
-    prepare_stored_runtime_execution, PreparedRuntimeExecution,
+    execute_blocking_turn, inspect_text_safety, inspection_safety_status, map_runner_error,
+    map_runtime_safety_error, pre_loop_blocking_turn, prepare_stored_runtime_execution,
+    PreparedRuntimeExecution,
 };
 use crate::api::stream_runtime::execute_streaming_turn;
 use crate::api::websocket::WsEvent;
@@ -153,6 +154,8 @@ pub struct StreamEventApiResponse {
     pub event_type: String,
     pub payload: serde_json::Value,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconstructed: Option<bool>,
 }
 
 // ── Handlers ───────────────────────────────────────────────────────
@@ -394,16 +397,30 @@ pub async fn recover_stream(
         .read()
         .map_err(|e| ApiError::db_error("recover_stream", e))?;
 
-    let events = cortex_storage::queries::stream_event_queries::recover_events_after(
+    let session = cortex_storage::queries::studio_chat_queries::get_session(&db, &session_id)
+        .map_err(|e| ApiError::db_error("recover_stream", e))?;
+    if session.is_none() {
+        return Err(ApiError::not_found(format!(
+            "session {session_id} not found"
+        )));
+    }
+
+    let all_events = cortex_storage::queries::stream_event_queries::recover_events_after(
         &db,
         &session_id,
         &params.message_id,
-        after_seq,
+        0,
     )
     .map_err(|e| ApiError::db_error("recover_stream", e))?;
 
-    let api_events = events
+    let assistant_message =
+        cortex_storage::queries::studio_chat_queries::get_message(&db, &params.message_id)
+            .map_err(|e| ApiError::db_error("recover_stream", e))?
+            .filter(|message| message.session_id == session_id && message.role == "assistant");
+
+    let mut api_events: Vec<_> = all_events
         .into_iter()
+        .filter(|row| row.id > after_seq)
         .filter_map(|row| {
             let event_type = public_stream_event_type(&row.event_type)?;
             Some(StreamEventApiResponse {
@@ -411,9 +428,23 @@ pub async fn recover_stream(
                 event_type: event_type.to_string(),
                 payload: serde_json::from_str(&row.payload).unwrap_or(serde_json::json!({})),
                 created_at: normalize_public_timestamp(&row.created_at),
+                reconstructed: None,
             })
         })
         .collect();
+
+    append_reconstructed_recover_events(
+        &mut api_events,
+        &cortex_storage::queries::stream_event_queries::recover_events_after(
+            &db,
+            &session_id,
+            &params.message_id,
+            0,
+        )
+        .map_err(|e| ApiError::db_error("recover_stream", e))?,
+        after_seq,
+        assistant_message.as_ref(),
+    );
 
     Ok(Json(RecoverStreamResponse { events: api_events }))
 }
@@ -603,13 +634,8 @@ pub async fn send_message(
                     ..
                 } = prepared_runtime;
 
-                let inspector = OutputInspector::new();
-                let input_inspection = inspector.scan(&req.content, runtime_ctx.agent.id);
-                let user_safety_status = match &input_inspection {
-                    InspectionResult::Clean => "clean",
-                    InspectionResult::Warning { .. } => "warning",
-                    InspectionResult::KillAll { .. } => "blocked",
-                };
+                let input_inspection = inspect_text_safety(&req.content, runtime_ctx.agent.id);
+                let user_safety_status = inspection_safety_status(&input_inspection);
 
                 let pre_loop_ctx = runner
                     .pre_loop(
@@ -1016,13 +1042,8 @@ pub async fn send_message(
 
             let response_content = result.output.unwrap_or_default();
             let token_count = result.total_tokens as i64;
-            let inspector = OutputInspector::new();
-            let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
-            let output_safety_status = match &output_inspection {
-                InspectionResult::Clean => "clean",
-                InspectionResult::Warning { .. } => "warning",
-                InspectionResult::KillAll { .. } => "blocked",
-            };
+            let output_inspection = inspect_text_safety(&response_content, runtime_ctx.agent.id);
+            let output_safety_status = inspection_safety_status(&output_inspection);
 
             {
                 let db = state.db.write().await;
@@ -1438,14 +1459,9 @@ pub async fn send_message_stream(
                     RunnerBuildOptions::default(),
                 )?;
 
-                let inspector = OutputInspector::new();
                 let input_inspection =
-                    inspector.scan(&user_content, prepared_runtime.runtime_ctx.agent.id);
-                let user_safety_status = match &input_inspection {
-                    InspectionResult::Clean => "clean",
-                    InspectionResult::Warning { .. } => "warning",
-                    InspectionResult::KillAll { .. } => "blocked",
-                };
+                    inspect_text_safety(&user_content, prepared_runtime.runtime_ctx.agent.id);
+                let user_safety_status = inspection_safety_status(&input_inspection);
 
                 let user_msg_id = Uuid::now_v7().to_string();
                 let audit_id = Uuid::now_v7().to_string();
@@ -1762,15 +1778,19 @@ fn replay_has_text_output(
 fn replay_fallback_text_event(
     message: &cortex_storage::queries::studio_chat_queries::StudioMessageRow,
 ) -> Option<Event> {
-    if message.content.is_empty() {
+    replay_fallback_text_event_with_content(&message.content)
+}
+
+fn replay_fallback_text_event_with_content(content: &str) -> Option<Event> {
+    if content.is_empty() {
         return None;
     }
 
     Some(
         Event::default().event("text_delta").data(
-            serde_json::json!({
-                "content": message.content,
-            })
+            mark_reconstructed_payload(serde_json::json!({
+                "content": content,
+            }))
             .to_string(),
         ),
     )
@@ -1780,11 +1800,11 @@ fn replay_fallback_stream_end_event(
     message: &cortex_storage::queries::studio_chat_queries::StudioMessageRow,
 ) -> Event {
     Event::default().event("stream_end").data(
-        serde_json::json!({
+        mark_reconstructed_payload(serde_json::json!({
             "message_id": message.id,
             "token_count": message.token_count,
             "safety_status": message.safety_status,
-        })
+        }))
         .to_string(),
     )
 }
@@ -1848,72 +1868,6 @@ fn studio_live_stream_response(
         let mut consecutive_persist_failures: u32 = 0;
         const PERSIST_FAILURE_WARN_THRESHOLD: u32 = 3;
 
-        let persist_event = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, etype: &str, payload: &serde_json::Value, fail_count: &mut u32| -> Option<i64> {
-            match db.read() {
-                Ok(conn) => {
-                    match cortex_storage::queries::stream_event_queries::insert_stream_event(
-                        &conn, sid, mid, etype, &payload.to_string(),
-                    ) {
-                        Ok(seq) => {
-                            *fail_count = 0;
-                            Some(seq)
-                        }
-                        Err(e) => {
-                            *fail_count += 1;
-                            tracing::warn!(
-                                error = %e,
-                                event_type = etype,
-                                consecutive_failures = *fail_count,
-                                "failed to persist stream event"
-                            );
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    *fail_count += 1;
-                    tracing::warn!(
-                        error = %e,
-                        event_type = etype,
-                        consecutive_failures = *fail_count,
-                        "failed to acquire DB for stream event persistence"
-                    );
-                    None
-                }
-            }
-        };
-
-        let flush_text = |db: &Arc<crate::db_pool::DbPool>, sid: &str, mid: &str, buf: &mut String, fail_count: &mut u32| -> Option<i64> {
-            if buf.is_empty() {
-                return None;
-            }
-            let payload = serde_json::json!({ "content": buf.as_str() });
-            let seq = match db.read() {
-                Ok(conn) => {
-                    match cortex_storage::queries::stream_event_queries::insert_stream_event(
-                        &conn, sid, mid, "text_chunk", &payload.to_string(),
-                    ) {
-                        Ok(seq) => {
-                            *fail_count = 0;
-                            Some(seq)
-                        }
-                        Err(e) => {
-                            *fail_count += 1;
-                            tracing::warn!(error = %e, consecutive_failures = *fail_count, "failed to persist text_chunk");
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    *fail_count += 1;
-                    tracing::warn!(error = %e, consecutive_failures = *fail_count, "failed to acquire DB for text_chunk persistence");
-                    None
-                }
-            };
-            buf.clear();
-            seq
-        };
-
         yield Ok::<Event, std::convert::Infallible>(start_event);
 
         state_for_stream.client_heartbeats.insert(session_id_sse.clone(), std::time::Instant::now());
@@ -1940,7 +1894,30 @@ fn studio_live_stream_response(
                     text_buffer.push_str(&content);
                     let mut seq = None;
                     if text_buffer.len() >= TEXT_FLUSH_THRESHOLD {
-                        seq = flush_text(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, &mut text_buffer, &mut consecutive_persist_failures);
+                        seq = match flush_studio_stream_text_durable(
+                            &db_for_stream,
+                            &session_id_sse,
+                            &assistant_msg_id_sse,
+                            &mut text_buffer,
+                        )
+                        .await
+                        {
+                            Ok(seq) => {
+                                if seq.is_some() {
+                                    consecutive_persist_failures = 0;
+                                }
+                                seq
+                            }
+                            Err(error) => {
+                                consecutive_persist_failures += 1;
+                                tracing::warn!(
+                                    error = %error,
+                                    consecutive_failures = consecutive_persist_failures,
+                                    "failed to persist text_chunk"
+                                );
+                                None
+                            }
+                        };
                     }
 
                     let mut ev = Event::default()
@@ -1952,14 +1929,55 @@ fn studio_live_stream_response(
                     yield Ok(ev);
                 }
                 AgentStreamEvent::ToolUse { tool, tool_id, status } => {
-                    flush_text(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, &mut text_buffer, &mut consecutive_persist_failures);
+                    match flush_studio_stream_text_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &assistant_msg_id_sse,
+                        &mut text_buffer,
+                    )
+                    .await
+                    {
+                        Ok(Some(_)) => consecutive_persist_failures = 0,
+                        Ok(None) => {}
+                        Err(error) => {
+                            consecutive_persist_failures += 1;
+                            tracing::warn!(
+                                error = %error,
+                                consecutive_failures = consecutive_persist_failures,
+                                "failed to persist text_chunk"
+                            );
+                        }
+                    }
 
                     let payload = serde_json::json!({
                         "tool": tool,
                         "tool_id": tool_id,
                         "status": status,
                     });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, "tool_use", &payload, &mut consecutive_persist_failures);
+                    let seq = match persist_studio_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &assistant_msg_id_sse,
+                        "tool_use",
+                        &payload,
+                    )
+                    .await
+                    {
+                        Ok(seq) => {
+                            consecutive_persist_failures = 0;
+                            Some(seq)
+                        }
+                        Err(error) => {
+                            consecutive_persist_failures += 1;
+                            tracing::warn!(
+                                error = %error,
+                                event_type = "tool_use",
+                                consecutive_failures = consecutive_persist_failures,
+                                "failed to persist stream event"
+                            );
+                            None
+                        }
+                    };
                     if consecutive_persist_failures == PERSIST_FAILURE_WARN_THRESHOLD {
                         yield Ok(Event::default()
                             .event("warning")
@@ -1993,7 +2011,30 @@ fn studio_live_stream_response(
                         "status": status,
                         "preview": preview,
                     });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, "tool_result", &payload, &mut consecutive_persist_failures);
+                    let seq = match persist_studio_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &assistant_msg_id_sse,
+                        "tool_result",
+                        &payload,
+                    )
+                    .await
+                    {
+                        Ok(seq) => {
+                            consecutive_persist_failures = 0;
+                            Some(seq)
+                        }
+                        Err(error) => {
+                            consecutive_persist_failures += 1;
+                            tracing::warn!(
+                                error = %error,
+                                event_type = "tool_result",
+                                consecutive_failures = consecutive_persist_failures,
+                                "failed to persist stream event"
+                            );
+                            None
+                        }
+                    };
                     if consecutive_persist_failures == PERSIST_FAILURE_WARN_THRESHOLD {
                         yield Ok(Event::default()
                             .event("warning")
@@ -2026,14 +2067,55 @@ fn studio_live_stream_response(
                         .data(serde_json::json!({ "phase": phase }).to_string()));
                 }
                 AgentStreamEvent::TurnComplete { token_count, safety_status } => {
-                    flush_text(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, &mut text_buffer, &mut consecutive_persist_failures);
+                    match flush_studio_stream_text_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &assistant_msg_id_sse,
+                        &mut text_buffer,
+                    )
+                    .await
+                    {
+                        Ok(Some(_)) => consecutive_persist_failures = 0,
+                        Ok(None) => {}
+                        Err(error) => {
+                            consecutive_persist_failures += 1;
+                            tracing::warn!(
+                                error = %error,
+                                consecutive_failures = consecutive_persist_failures,
+                                "failed to persist text_chunk"
+                            );
+                        }
+                    }
 
                     let payload = serde_json::json!({
                         "message_id": assistant_msg_id_sse,
                         "token_count": token_count,
                         "safety_status": safety_status,
                     });
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, "turn_complete", &payload, &mut consecutive_persist_failures);
+                    let seq = match persist_studio_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &assistant_msg_id_sse,
+                        "turn_complete",
+                        &payload,
+                    )
+                    .await
+                    {
+                        Ok(seq) => {
+                            consecutive_persist_failures = 0;
+                            Some(seq)
+                        }
+                        Err(error) => {
+                            consecutive_persist_failures += 1;
+                            tracing::warn!(
+                                error = %error,
+                                event_type = "turn_complete",
+                                consecutive_failures = consecutive_persist_failures,
+                                "failed to persist stream event"
+                            );
+                            None
+                        }
+                    };
 
                     let mut ev = Event::default()
                         .event("stream_end")
@@ -2067,9 +2149,50 @@ fn studio_live_stream_response(
                         continue;
                     }
 
-                    flush_text(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, &mut text_buffer, &mut consecutive_persist_failures);
+                    match flush_studio_stream_text_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &assistant_msg_id_sse,
+                        &mut text_buffer,
+                    )
+                    .await
+                    {
+                        Ok(Some(_)) => consecutive_persist_failures = 0,
+                        Ok(None) => {}
+                        Err(error) => {
+                            consecutive_persist_failures += 1;
+                            tracing::warn!(
+                                error = %error,
+                                consecutive_failures = consecutive_persist_failures,
+                                "failed to persist text_chunk"
+                            );
+                        }
+                    }
 
-                    let seq = persist_event(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, "error", &payload, &mut consecutive_persist_failures);
+                    let seq = match persist_studio_stream_event_durable(
+                        &db_for_stream,
+                        &session_id_sse,
+                        &assistant_msg_id_sse,
+                        "error",
+                        &payload,
+                    )
+                    .await
+                    {
+                        Ok(seq) => {
+                            consecutive_persist_failures = 0;
+                            Some(seq)
+                        }
+                        Err(error) => {
+                            consecutive_persist_failures += 1;
+                            tracing::warn!(
+                                error = %error,
+                                event_type = "error",
+                                consecutive_failures = consecutive_persist_failures,
+                                "failed to persist stream event"
+                            );
+                            None
+                        }
+                    };
 
                     let mut ev = Event::default()
                         .event("error")
@@ -2085,7 +2208,25 @@ fn studio_live_stream_response(
         }
 
         if !stream_ended {
-            flush_text(&db_for_stream, &session_id_sse, &assistant_msg_id_sse, &mut text_buffer, &mut consecutive_persist_failures);
+            match flush_studio_stream_text_durable(
+                &db_for_stream,
+                &session_id_sse,
+                &assistant_msg_id_sse,
+                &mut text_buffer,
+            )
+            .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => {}
+                Err(error) => {
+                    consecutive_persist_failures += 1;
+                    tracing::warn!(
+                        error = %error,
+                        consecutive_failures = consecutive_persist_failures,
+                        "failed to persist text_chunk"
+                    );
+                }
+            }
 
             yield Ok(Event::default()
                 .event("stream_end")
@@ -2105,6 +2246,43 @@ fn studio_live_stream_response(
             .into_response(),
         idempotency_status,
     )
+}
+
+async fn persist_studio_stream_event_durable(
+    db: &Arc<crate::db_pool::DbPool>,
+    session_id: &str,
+    message_id: &str,
+    event_type: &str,
+    payload: &serde_json::Value,
+) -> Result<i64, ApiError> {
+    let conn = db.write().await;
+    cortex_storage::queries::stream_event_queries::insert_stream_event(
+        &conn,
+        session_id,
+        message_id,
+        event_type,
+        &payload.to_string(),
+    )
+    .map_err(|error| ApiError::db_error("persist_stream_event", error))
+}
+
+async fn flush_studio_stream_text_durable(
+    db: &Arc<crate::db_pool::DbPool>,
+    session_id: &str,
+    message_id: &str,
+    buffer: &mut String,
+) -> Result<Option<i64>, ApiError> {
+    if buffer.is_empty() {
+        return Ok(None);
+    }
+
+    let payload = serde_json::json!({ "content": buffer.as_str() });
+    let result =
+        persist_studio_stream_event_durable(db, session_id, message_id, "text_chunk", &payload)
+            .await
+            .map(Some);
+    buffer.clear();
+    result
 }
 
 fn spawn_studio_stream_execution(
@@ -2237,13 +2415,8 @@ fn spawn_studio_stream_execution(
         {
             let response_content = run_result.output.unwrap_or_default();
             let token_count = run_result.total_tokens as i64;
-            let inspector = OutputInspector::new();
-            let output_inspection = inspector.scan(&response_content, runtime_ctx.agent.id);
-            let output_safety_status = match &output_inspection {
-                InspectionResult::Clean => "clean",
-                InspectionResult::Warning { .. } => "warning",
-                InspectionResult::KillAll { .. } => "blocked",
-            };
+            let output_inspection = inspect_text_safety(&response_content, runtime_ctx.agent.id);
+            let output_safety_status = inspection_safety_status(&output_inspection);
 
             {
                 let db = db_clone.write().await;
@@ -2371,6 +2544,103 @@ fn public_stream_event_type(event_type: &str) -> Option<&'static str> {
         "turn_complete" => Some("stream_end"),
         "error" => Some("error"),
         _ => None,
+    }
+}
+
+fn mark_reconstructed_payload(mut payload: serde_json::Value) -> serde_json::Value {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("reconstructed".into(), serde_json::Value::Bool(true));
+    }
+    payload
+}
+
+fn durable_text_prefix(
+    events: &[cortex_storage::queries::stream_event_queries::StreamEventRow],
+    up_to_seq: i64,
+) -> String {
+    let mut prefix = String::new();
+    for event in events
+        .iter()
+        .filter(|event| event.id <= up_to_seq && event.event_type == "text_chunk")
+    {
+        let payload: serde_json::Value =
+            serde_json::from_str(&event.payload).unwrap_or(serde_json::json!({}));
+        if let Some(content) = payload.get("content").and_then(|value| value.as_str()) {
+            prefix.push_str(content);
+        }
+    }
+    prefix
+}
+
+fn reconstructed_text_suffix(full_content: &str, delivered_prefix: &str) -> Option<String> {
+    if full_content.is_empty() {
+        return None;
+    }
+    if delivered_prefix.is_empty() {
+        return Some(full_content.to_string());
+    }
+    if let Some(suffix) = full_content.strip_prefix(delivered_prefix) {
+        if suffix.is_empty() {
+            return None;
+        }
+        return Some(suffix.to_string());
+    }
+    Some(full_content.to_string())
+}
+
+fn append_reconstructed_recover_events(
+    api_events: &mut Vec<StreamEventApiResponse>,
+    all_events: &[cortex_storage::queries::stream_event_queries::StreamEventRow],
+    after_seq: i64,
+    assistant_message: Option<&cortex_storage::queries::studio_chat_queries::StudioMessageRow>,
+) {
+    let Some(assistant_message) = assistant_message else {
+        return;
+    };
+
+    let remaining_has_text = all_events
+        .iter()
+        .any(|event| event.id > after_seq && event.event_type == "text_chunk");
+    let remaining_has_terminal = all_events.iter().any(|event| {
+        event.id > after_seq && matches!(event.event_type.as_str(), "turn_complete" | "error")
+    });
+    let delivered_prefix = durable_text_prefix(all_events, after_seq);
+    let mut next_seq = all_events.last().map(|event| event.id).unwrap_or(0);
+
+    if !remaining_has_text {
+        if let Some(content) =
+            reconstructed_text_suffix(&assistant_message.content, &delivered_prefix)
+        {
+            next_seq += 1;
+            if next_seq > after_seq {
+                api_events.push(StreamEventApiResponse {
+                    seq: next_seq,
+                    event_type: "text_delta".to_string(),
+                    payload: mark_reconstructed_payload(serde_json::json!({
+                        "content": content,
+                    })),
+                    created_at: normalize_public_timestamp(&assistant_message.created_at),
+                    reconstructed: Some(true),
+                });
+            }
+        }
+    }
+
+    if !remaining_has_terminal {
+        next_seq += 1;
+        if next_seq > after_seq {
+            api_events.push(StreamEventApiResponse {
+                seq: next_seq,
+                event_type: "stream_end".to_string(),
+                payload: mark_reconstructed_payload(serde_json::json!({
+                    "message_id": assistant_message.id,
+                    "token_count": assistant_message.token_count,
+                    "safety_status": assistant_message.safety_status,
+                })),
+                created_at: normalize_public_timestamp(&assistant_message.created_at),
+                reconstructed: Some(true),
+            });
+        }
     }
 }
 

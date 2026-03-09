@@ -11,6 +11,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -24,19 +25,6 @@ use crate::state::AppState;
 const SET_PROVIDER_KEY_ROUTE_TEMPLATE: &str = "/api/admin/provider-keys";
 const DELETE_PROVIDER_KEY_ROUTE_TEMPLATE: &str = "/api/admin/provider-keys/:env_name";
 
-// ── Auth helper (mirrors admin.rs) ──────────────────────────────────
-
-fn require_admin(ext: &axum::http::Extensions) -> Result<(), ApiError> {
-    if let Some(claims) = ext.get::<Claims>() {
-        if claims.role == "admin" {
-            return Ok(());
-        }
-    }
-    Err(ApiError::Forbidden(
-        "Admin role required for this operation".to_owned(),
-    ))
-}
-
 fn actor_id(ext: &axum::http::Extensions) -> &str {
     ext.get::<Claims>()
         .map(|claims| claims.sub.as_str())
@@ -45,7 +33,7 @@ fn actor_id(ext: &axum::http::Extensions) -> &str {
 
 // ── Types ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProviderKeyInfo {
     /// Provider name from config (e.g. "openai_compat", "anthropic").
     pub provider_name: String,
@@ -59,12 +47,12 @@ pub struct ProviderKeyInfo {
     pub preview: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ProviderKeysResponse {
     pub providers: Vec<ProviderKeyInfo>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct SetKeyRequest {
     /// The environment variable name (must match a configured provider).
     pub env_name: String,
@@ -72,10 +60,16 @@ pub struct SetKeyRequest {
     pub value: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SetKeyResponse {
     pub env_name: String,
     pub preview: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeleteKeyResponse {
+    pub env_name: String,
     pub message: String,
 }
 
@@ -111,10 +105,8 @@ fn default_key_env(provider_name: &str) -> &str {
 /// GET /api/admin/provider-keys — list all configured providers and key status.
 pub async fn list_provider_keys(
     State(state): State<Arc<AppState>>,
-    request: axum::http::Request<axum::body::Body>,
+    _request: axum::http::Request<axum::body::Body>,
 ) -> ApiResult<ProviderKeysResponse> {
-    require_admin(request.extensions())?;
-
     let mut providers = Vec::new();
 
     for p in &state.model_providers {
@@ -154,9 +146,6 @@ pub async fn set_provider_key(
     axum::Extension(operation_context): axum::Extension<OperationContext>,
     request: axum::http::Request<axum::body::Body>,
 ) -> Response {
-    if let Err(error) = require_admin(request.extensions()) {
-        return error_response_with_idempotency(error);
-    }
     let actor = actor_id(request.extensions()).to_string();
 
     let body_bytes = match axum::body::to_bytes(request.into_body(), 4096).await {
@@ -229,11 +218,12 @@ pub async fn set_provider_key(
 
             Ok((
                 axum::http::StatusCode::OK,
-                serde_json::json!({
-                    "env_name": body.env_name,
-                    "preview": preview,
-                    "message": "API key saved successfully",
-                }),
+                serde_json::to_value(SetKeyResponse {
+                    env_name: body.env_name.clone(),
+                    preview: preview.clone(),
+                    message: "API key saved successfully".to_string(),
+                })
+                .unwrap_or(serde_json::Value::Null),
             ))
         },
     ) {
@@ -265,9 +255,6 @@ pub async fn delete_provider_key(
     Path(env_name): Path<String>,
     request: axum::http::Request<axum::body::Body>,
 ) -> Response {
-    if let Err(error) = require_admin(request.extensions()) {
-        return error_response_with_idempotency(error);
-    }
     let actor = actor_id(request.extensions()).to_string();
 
     // Validate env_name matches a configured provider.
@@ -312,10 +299,11 @@ pub async fn delete_provider_key(
 
             Ok((
                 axum::http::StatusCode::OK,
-                serde_json::json!({
-                    "env_name": env_name,
-                    "message": "API key removed",
-                }),
+                serde_json::to_value(DeleteKeyResponse {
+                    env_name: env_name.clone(),
+                    message: "API key removed".to_string(),
+                })
+                .unwrap_or(serde_json::Value::Null),
             ))
         },
     ) {

@@ -420,6 +420,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/convergence/history/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_convergence_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/convergence/scores": {
         parameters: {
             query?: never;
@@ -1951,6 +1967,57 @@ export interface components {
             status: string;
             target_agent: string;
         };
+        ActionBudget: {
+            /** Format: int32 */
+            max_per_hour: number;
+            /** Format: int32 */
+            max_per_minute: number;
+            /** Format: int32 */
+            used_this_hour: number;
+            /** Format: int32 */
+            used_this_minute: number;
+        };
+        ActionLogEntry: {
+            action_type: string;
+            agent_id: string;
+            block_reason?: string | null;
+            blocked: boolean;
+            coordinates?: string | null;
+            id: string;
+            input_json: string;
+            result: string;
+            result_json: string;
+            session_id: string;
+            target: string;
+            target_app?: string | null;
+            timestamp: string;
+        };
+        AgentChatAcceptedResponse: {
+            agent_id: string;
+            execution_id: string;
+            recovery_required?: boolean | null;
+            session_id: string;
+            status: string;
+        };
+        AgentChatRequest: {
+            /** @description Optional durable agent identity (UUID or registered agent name). */
+            agent_id?: string | null;
+            /** @description User message. */
+            message: string;
+            /** @description Optional model override. */
+            model?: string | null;
+            /** @description Optional session ID for multi-turn conversations. */
+            session_id: string;
+        };
+        AgentChatResponse: {
+            content: string;
+            session_id: string;
+            /** Format: int32 */
+            tool_calls_made: number;
+            /** Format: double */
+            total_cost: number;
+            total_tokens: number;
+        };
         AgentCostSchema: {
             agent_id: string;
             agent_name: string;
@@ -1965,6 +2032,9 @@ export interface components {
             /** Format: double */
             spending_cap: number;
         };
+        AgentDelistResponse: {
+            delisted: boolean;
+        };
         AgentInfoSchema: {
             id: string;
             name: string;
@@ -1972,9 +2042,98 @@ export interface components {
             spending_cap: number;
             status: string;
         };
-        ChannelSchema: {
+        AgentListResponse: {
+            agents: components["schemas"]["AgentListingResponse"][];
+        };
+        AgentListingResponse: {
             agent_id: string;
-            agent_name?: string | null;
+            /** Format: double */
+            average_rating: number;
+            /** Format: int64 */
+            base_price: number;
+            capabilities: string[];
+            created_at: string;
+            description: string;
+            endpoint_url?: string | null;
+            pricing_model: string;
+            status: string;
+            /** Format: int64 */
+            total_completed: number;
+            /** Format: int64 */
+            total_failed: number;
+            /** Format: int64 */
+            total_reviews: number;
+            /** Format: double */
+            trust_score: number;
+            updated_at: string;
+        };
+        AgentStatusUpdateResponse: {
+            updated: boolean;
+        };
+        AllowedAppsRequest: {
+            apps: string[];
+        };
+        ApiCallRequest: {
+            /** @description The upstream API request to execute through this OAuth connection. */
+            api_request: components["schemas"]["OAuthApiRequestSchema"];
+            /** @description OAuth connection reference (UUID string from a prior `/connect` flow). */
+            ref_id: string;
+        };
+        /** @description Request body for archiving a memory. */
+        ArchiveMemoryRequest: {
+            /** Format: double */
+            decayed_confidence?: number | null;
+            /** Format: double */
+            original_confidence?: number | null;
+            reason: string;
+        };
+        ArchivedMemoryEntry: {
+            archived_at: string;
+            /** Format: double */
+            decayed_confidence: number;
+            memory_id: string;
+            /** Format: double */
+            original_confidence: number;
+            reason: string;
+        };
+        ArchivedMemoryListResponse: {
+            archived: components["schemas"]["ArchivedMemoryEntry"][];
+            count: number;
+        };
+        AssignProfileRequest: {
+            profile_name: string;
+        };
+        AssignProfileResponse: {
+            agent_id: string;
+            profile_name: string;
+        };
+        BackupListResponse: {
+            backups: components["schemas"]["BackupResponse"][];
+        };
+        BackupResponse: {
+            backup_id: string;
+            blake3_checksum: string;
+            created_at: string;
+            entry_count: number;
+            /** Format: int64 */
+            size_bytes: number;
+            status: string;
+        };
+        BlockedHotkeysRequest: {
+            hotkeys: string[];
+        };
+        /** @description POST /api/sessions/:id/branch — branch a new session from a checkpoint. */
+        BranchRequest: {
+            /** Format: int32 */
+            from_event_index: number;
+        };
+        BranchSessionResponse: {
+            branched_from: string;
+            events_copied: number;
+            session_id: string;
+        };
+        ChannelListItem: {
+            agent_id: string;
             channel_type: string;
             config: unknown;
             id: string;
@@ -1984,7 +2143,96 @@ export interface components {
             status: string;
             status_message?: string | null;
         };
-        ConvergenceScoreSchema: {
+        ChannelListResponse: {
+            channels: components["schemas"]["ChannelListItem"][];
+        };
+        ChannelStatusResponse: {
+            id: string;
+            status: string;
+        };
+        CompleteContractRequest: {
+            result?: string | null;
+        };
+        /** @description Request body for POST /api/oauth/connect. */
+        ConnectRequest: {
+            provider: string;
+            redirect_uri?: string;
+            scopes: string[];
+        };
+        ConsensusResponse: {
+            rounds: components["schemas"]["ConsensusRound"][];
+        };
+        ConsensusRound: {
+            /** Format: int32 */
+            approvals: number;
+            proposal_id: string;
+            /** Format: int32 */
+            rejections: number;
+            status: string;
+            /** Format: int32 */
+            threshold: number;
+        };
+        ContractAcceptedResponse: {
+            accepted: boolean;
+        };
+        ContractCanceledResponse: {
+            canceled: boolean;
+        };
+        ContractCompletedResponse: {
+            completed: boolean;
+        };
+        ContractDisputedResponse: {
+            disputed: boolean;
+        };
+        ContractListResponse: {
+            contracts: components["schemas"]["ContractResponse"][];
+        };
+        ContractRejectedResponse: {
+            rejected: boolean;
+        };
+        ContractResolvedResponse: {
+            resolved: boolean;
+        };
+        ContractResponse: {
+            /** Format: int64 */
+            agreed_price: number;
+            created_at: string;
+            escrow_id?: string | null;
+            hirer_agent_id: string;
+            id: string;
+            /** Format: int64 */
+            max_duration_secs?: number | null;
+            result?: string | null;
+            state: string;
+            task_description: string;
+            updated_at: string;
+            worker_agent_id: string;
+        };
+        ContractStartedResponse: {
+            started: boolean;
+        };
+        ConvergenceErrorResponse: {
+            agent_id: string;
+            agent_name: string;
+            error: string;
+        };
+        ConvergenceHistoryEntryResponse: {
+            computed_at: string;
+            /** Format: int32 */
+            level: number;
+            profile: string;
+            /** Format: double */
+            score: number;
+            session_id?: string | null;
+            signal_scores: {
+                [key: string]: number;
+            };
+        };
+        ConvergenceHistoryResponse: {
+            agent_id: string;
+            entries: components["schemas"]["ConvergenceHistoryEntryResponse"][];
+        };
+        ConvergenceScoreResponse: {
             agent_id: string;
             agent_name: string;
             computed_at?: string | null;
@@ -1993,7 +2241,35 @@ export interface components {
             profile: string;
             /** Format: double */
             score: number;
-            signal_scores: unknown;
+            signal_scores: {
+                [key: string]: number;
+            };
+        };
+        ConvergenceScoresResponse: {
+            errors?: components["schemas"]["ConvergenceErrorResponse"][] | null;
+            scores: components["schemas"]["ConvergenceScoreResponse"][];
+        };
+        CrdtDelta: {
+            actor_id: string;
+            delta: string;
+            event_hash: string;
+            /** Format: int64 */
+            event_id: number;
+            event_type: string;
+            memory_id: string;
+            previous_hash: string;
+            recorded_at: string;
+        };
+        CrdtStateResponse: {
+            agent_id: string;
+            chain_valid: boolean;
+            deltas: components["schemas"]["CrdtDelta"][];
+            /** Format: int32 */
+            limit: number;
+            /** Format: int32 */
+            offset: number;
+            /** Format: int32 */
+            total: number;
         };
         CreateAgentRequestSchema: {
             capabilities?: string[] | null;
@@ -2002,6 +2278,76 @@ export interface components {
             skills?: string[] | null;
             /** Format: double */
             spending_cap?: number | null;
+        };
+        CreateBookmarkRequest: {
+            /** Format: int32 */
+            eventIndex: number;
+            id?: string | null;
+            label: string;
+        };
+        CreateBookmarkResponse: {
+            id: string;
+            status: string;
+        };
+        CreateChannelRequest: {
+            agent_id: string;
+            channel_type: string;
+            config?: unknown;
+        };
+        CreateChannelResponse: {
+            agent_id: string;
+            channel_type: string;
+            id: string;
+            status: string;
+        };
+        CreateProfileRequest: {
+            description?: string | null;
+            name: string;
+            thresholds: number[];
+            weights: number[];
+        };
+        /** @description Request body for creating a workflow. */
+        CreateWorkflowRequest: {
+            description?: string | null;
+            edges?: unknown;
+            name: string;
+            nodes?: unknown;
+        };
+        Delegation: {
+            created_at: string;
+            delegate_id: string;
+            delegator_id: string;
+            scope: string;
+            state: string;
+        };
+        DelegationsResponse: {
+            delegations: components["schemas"]["Delegation"][];
+            sybil_metrics: components["schemas"]["SybilMetrics"];
+        };
+        DeleteBookmarkResponse: {
+            status: string;
+        };
+        DeleteKeyResponse: {
+            env_name: string;
+            message: string;
+        };
+        DeleteProfileResponse: {
+            deleted: string;
+        };
+        DiscoverRequest: {
+            capabilities?: string[];
+            /** Format: int32 */
+            limit?: number | null;
+            /** Format: int64 */
+            max_price?: number | null;
+            /** Format: double */
+            min_rating?: number | null;
+            /** Format: double */
+            min_trust?: number | null;
+        };
+        DiscoverResponse: {
+            agents: components["schemas"]["AgentListingResponse"][];
+            total_matches: number;
         };
         ErrorBodySchema: {
             code: string;
@@ -2021,13 +2367,174 @@ export interface components {
             result: unknown;
             skill: string;
         };
-        ItpEventSchema: {
+        /** @description Request body for executing a workflow. */
+        ExecuteWorkflowRequest: {
+            /** @description Input payload for the first node. */
+            input?: unknown;
+        };
+        ExportEntity: {
+            count: number;
+            data: unknown[];
+            entity_type: string;
+        };
+        ExportResponse: {
+            entities: components["schemas"]["ExportEntity"][];
+            format: string;
+            total: number;
+        };
+        GoalDecisionRequestBody: {
+            expected_lineage_id: string;
+            expected_reviewed_revision: string;
+            expected_state: string;
+            expected_subject_key: string;
+            rationale?: string | null;
+        };
+        GoalDecisionResponse: {
+            id: string;
+            status: string;
+        };
+        GoalListResponse: {
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            page_size: number;
+            proposals: components["schemas"]["GoalProposalSummary"][];
+            /** Format: int32 */
+            total: number;
+        };
+        GoalProposalDetail: components["schemas"]["GoalProposalSummary"] & {
+            cited_memory_ids: string[];
+            content: unknown;
+            denial_reason?: string | null;
+            lineage_id?: string | null;
+            resolver?: string | null;
+            reviewed_revision?: string | null;
+            subject_key?: string | null;
+            subject_type?: string | null;
+            supersedes_proposal_id?: string | null;
+            transition_history: components["schemas"]["GoalProposalTransition"][];
+            validation_disposition?: string | null;
+        };
+        GoalProposalSummary: {
+            agent_id: string;
+            created_at: string;
+            current_state?: string | null;
+            decision?: string | null;
+            dimension_scores: {
+                [key: string]: number;
+            };
+            flags: string[];
+            id: string;
+            operation: string;
+            proposer_type: string;
+            resolved_at?: string | null;
+            session_id: string;
+            target_type: string;
+        };
+        GoalProposalTransition: {
+            actor_id?: string | null;
+            actor_type: string;
+            created_at: string;
+            expected_revision?: string | null;
+            expected_state?: string | null;
+            from_state?: string | null;
+            idempotency_key?: string | null;
+            operation_id?: string | null;
+            rationale?: string | null;
+            reason_code?: string | null;
+            request_id?: string | null;
+            to_state: string;
+        };
+        InjectMessageRequest: {
+            agent_id?: string | null;
+            content: string;
+            sender?: string;
+        };
+        InjectMessageResponse: {
+            agent_id: string;
+            message_id: string;
+            routed: boolean;
+        };
+        IntegrityBreak: {
+            actual_prev: string;
+            event_id: components["schemas"]["IntegrityEventId"];
+            expected_prev: string;
+            memory_id?: string | null;
+            position: number;
+            session_id?: string | null;
+        };
+        IntegrityChains: {
+            itp_events?: null | components["schemas"]["ItpEventsIntegrity"];
+            memory_events?: null | components["schemas"]["MemoryEventsIntegrity"];
+        };
+        IntegrityEventId: string | number;
+        ItpEvent: {
             event_type: string;
             id: string;
             platform: string;
             session_id: string;
             source: string;
             timestamp: string;
+        };
+        ItpEventsIntegrity: {
+            breaks: components["schemas"]["IntegrityBreak"][];
+            is_valid: boolean;
+            sessions_checked: number;
+            total_events: number;
+            verified_events: number;
+        };
+        ItpEventsResponse: {
+            /** Format: int64 */
+            buffer_count: number;
+            events: components["schemas"]["ItpEvent"][];
+            extension_connected: boolean;
+        };
+        ListAgentsQuery: {
+            /** Format: int32 */
+            limit?: number | null;
+            /** Format: double */
+            min_rating?: number | null;
+            /** Format: double */
+            min_trust?: number | null;
+            /** Format: int32 */
+            offset?: number | null;
+            status?: string | null;
+        };
+        ListContractsQuery: {
+            agent_id?: string | null;
+            /** Format: int32 */
+            limit?: number | null;
+            /** Format: int32 */
+            offset?: number | null;
+            state?: string | null;
+        };
+        ListMemoriesResponse: {
+            memories: components["schemas"]["MemoryEntry"][];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            page_size: number;
+            /** Format: int32 */
+            total: number;
+        };
+        ListReviewsQuery: {
+            /** Format: int32 */
+            limit?: number | null;
+            /** Format: int32 */
+            offset?: number | null;
+        };
+        ListSkillsQuery: {
+            /** Format: int32 */
+            limit?: number | null;
+            /** Format: int32 */
+            offset?: number | null;
+        };
+        ListTransactionsQuery: {
+            agent_id: string;
+            /** Format: int32 */
+            limit?: number | null;
+            /** Format: int32 */
+            offset?: number | null;
         };
         LiveExecutionSchema: {
             accepted_response: unknown;
@@ -2042,14 +2549,32 @@ export interface components {
             status: string;
             updated_at: string;
         };
-        MemoryGraphEdgeSchema: {
+        MemoryArchiveStatusResponse: {
+            memory_id: string;
+            status: string;
+        };
+        MemoryEntry: {
+            created_at: string;
+            /** Format: int64 */
+            id: number;
+            memory_id: string;
+            snapshot: string;
+        };
+        MemoryEventsIntegrity: {
+            breaks: components["schemas"]["IntegrityBreak"][];
+            is_valid: boolean;
+            memory_chains_checked: number;
+            total_events: number;
+            verified_events: number;
+        };
+        MemoryGraphEdge: {
             relationship: string;
             source: string;
             /** Format: double */
             strength: number;
             target: string;
         };
-        MemoryGraphNodeSchema: {
+        MemoryGraphNode: {
             /** Format: double */
             decayFactor: number;
             id: string;
@@ -2058,9 +2583,40 @@ export interface components {
             label: string;
             type: string;
         };
-        MemoryGraphResponseSchema: {
-            edges: components["schemas"]["MemoryGraphEdgeSchema"][];
-            nodes: components["schemas"]["MemoryGraphNodeSchema"][];
+        MemoryGraphResponse: {
+            edges: components["schemas"]["MemoryGraphEdge"][];
+            nodes: components["schemas"]["MemoryGraphNode"][];
+        };
+        MemorySearchFilters: {
+            agent_id?: string | null;
+            /** Format: double */
+            confidence_max?: number | null;
+            /** Format: double */
+            confidence_min?: number | null;
+            importance?: string | null;
+            memory_type?: string | null;
+        };
+        MemorySearchResultEntry: {
+            created_at: string;
+            /** Format: int64 */
+            id: number;
+            memory_id: string;
+            /** Format: double */
+            score: number;
+            snapshot: unknown;
+        };
+        /** @description Request body for POST /api/oauth/execute. */
+        OAuthApiRequestSchema: {
+            body?: string | null;
+            headers: {
+                [key: string]: string;
+            };
+            method: string;
+            url: string;
+        };
+        OAuthConnectResponse: {
+            authorization_url: string;
+            ref_id: string;
         };
         OAuthConnectionSchema: {
             connected_at: string;
@@ -2069,83 +2625,185 @@ export interface components {
             scopes: string[];
             status: string;
         };
+        OAuthConnectionStatusResponse: {
+            ref_id: string;
+            status: string;
+        };
+        OAuthExecuteAcceptedResponse: {
+            execution_id: string;
+            recovery_required?: boolean | null;
+            ref_id: string;
+            status: string;
+        };
+        OAuthExecuteResponse: {
+            body: string;
+            headers: {
+                [key: string]: string;
+            };
+            /** Format: int32 */
+            status: number;
+        };
         OAuthProviderSchema: {
             name: string;
         };
-        PcControlActionBudgetSchema: {
-            /** Format: int64 */
-            max_per_hour: number;
-            /** Format: int64 */
-            max_per_minute: number;
-            /** Format: int64 */
-            used_this_hour: number;
-            /** Format: int64 */
-            used_this_minute: number;
+        PcControlActionsResponse: {
+            actions: components["schemas"]["ActionLogEntry"][];
         };
-        PcControlActionLogSchema: {
-            action_type: string;
-            agent_id: string;
-            block_reason?: string | null;
-            blocked: boolean;
-            coordinates?: string | null;
-            id: string;
-            input_json: string;
-            result: string;
-            result_json: string;
-            session_id: string;
-            target: string;
-            target_app?: string | null;
-            timestamp: string;
-        };
-        PcControlPersistedStateSchema: {
-            action_budget: components["schemas"]["PcControlActionBudgetSchema"];
+        PcControlPersistedState: {
+            action_budget: components["schemas"]["ActionBudget"];
             allowed_apps: string[];
             blocked_hotkeys: string[];
             enabled: boolean;
-            safe_zone?: null | components["schemas"]["PcControlSafeZoneSchema"];
+            safe_zone?: null | components["schemas"]["SafeZone"];
         };
-        PcControlRuntimeStateSchema: {
+        PcControlRuntimeState: {
             circuit_breaker_state: string;
         };
-        PcControlSafeZoneSchema: {
-            /** Format: int64 */
-            height: number;
-            label: string;
-            /** Format: int64 */
-            width: number;
-            /** Format: int64 */
-            x: number;
-            /** Format: int64 */
-            y: number;
-        };
-        PcControlStatusSchema: {
-            action_budget: components["schemas"]["PcControlActionBudgetSchema"];
+        PcControlStatus: {
+            action_budget: components["schemas"]["ActionBudget"];
             allowed_apps: string[];
             blocked_hotkeys: string[];
             circuit_breaker_state: string;
             enabled: boolean;
-            persisted: components["schemas"]["PcControlPersistedStateSchema"];
-            runtime: components["schemas"]["PcControlRuntimeStateSchema"];
-            safe_zone?: null | components["schemas"]["PcControlSafeZoneSchema"];
-            safe_zones: components["schemas"]["PcControlSafeZoneSchema"][];
+            persisted: components["schemas"]["PcControlPersistedState"];
+            runtime: components["schemas"]["PcControlRuntimeState"];
+            safe_zone?: null | components["schemas"]["SafeZone"];
+            safe_zones: components["schemas"]["SafeZone"][];
         };
-        ProfileSchema: {
+        ProfileListResponse: {
+            profiles: components["schemas"]["ProfileSummary"][];
+        };
+        ProfileSummary: {
             description: string;
             is_preset: boolean;
             name: string;
             thresholds: number[];
             weights: number[];
         };
-        ProviderKeyInfoSchema: {
+        ProposeContractRequest: {
+            /** Format: int64 */
+            agreed_price: number;
+            hirer_agent_id: string;
+            /** Format: int64 */
+            max_duration_secs?: number | null;
+            task_description: string;
+            worker_agent_id: string;
+        };
+        ProviderKeyInfo: {
+            /** @description Environment variable name for the API key. */
             env_name: string;
+            /** @description Whether the key is currently set. */
             is_set: boolean;
+            /** @description Model configured for this provider. */
             model: string;
+            /** @description Masked preview (e.g. "xai-...zkZKu"), null if not set. */
             preview?: string | null;
+            /** @description Provider name from config (e.g. "openai_compat", "anthropic"). */
             provider_name: string;
         };
-        PushSubscriptionSchema: {
+        ProviderKeysResponse: {
+            providers: components["schemas"]["ProviderKeyInfo"][];
+        };
+        PublishSkillRequest: {
+            author_agent_id?: string | null;
+            description: string;
+            /** Format: int64 */
+            price_credits?: number;
+            signature?: string | null;
+            skill_name: string;
+            version?: string;
+        };
+        /** @description Encryption keys for a push subscription. */
+        PushKeys: {
+            auth?: string;
+            p256dh?: string;
+        };
+        /** @description A Web Push subscription from a client. */
+        PushSubscription: {
             endpoint: string;
-            keys?: unknown;
+            keys?: components["schemas"]["PushKeys"];
+        };
+        RegisterAgentRequest: {
+            agent_id: string;
+            /** Format: int64 */
+            base_price?: number;
+            capabilities?: string[];
+            description: string;
+            endpoint_url?: string | null;
+            pricing_model?: string;
+            public_key?: string | null;
+        };
+        RestoreRequest: {
+            backup_path: string;
+        };
+        RestoreVerification: {
+            entry_count: number;
+            message: string;
+            valid: boolean;
+            version: string;
+        };
+        ReviewListResponse: {
+            reviews: components["schemas"]["ReviewResponse"][];
+        };
+        ReviewResponse: {
+            comment: string;
+            contract_id: string;
+            created_at: string;
+            /** Format: int64 */
+            id: number;
+            /** Format: int32 */
+            rating: number;
+            reviewee_agent_id: string;
+            reviewer_agent_id: string;
+        };
+        ReviewSubmittedResponse: {
+            submitted: boolean;
+        };
+        RuntimeSessionSummary: {
+            agents: string;
+            /** Format: int64 */
+            event_count: number;
+            last_event_at: string;
+            session_id: string;
+            started_at: string;
+        };
+        RuntimeSessionsCursorResponse: {
+            data: components["schemas"]["RuntimeSessionSummary"][];
+            has_more: boolean;
+            next_cursor?: string | null;
+            /** Format: int64 */
+            total_count: number;
+        };
+        RuntimeSessionsPageResponse: {
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            page_size: number;
+            sessions: components["schemas"]["RuntimeSessionSummary"][];
+            /** Format: int64 */
+            total: number;
+        };
+        SafeZone: {
+            /** Format: int32 */
+            height: number;
+            label: string;
+            /** Format: int32 */
+            width: number;
+            /** Format: int32 */
+            x: number;
+            /** Format: int32 */
+            y: number;
+        };
+        SafeZonesRequest: {
+            safe_zone?: null | components["schemas"]["SafeZone"];
+            zones?: components["schemas"]["SafeZone"][] | null;
+        };
+        SearchMemoriesResponse: {
+            count: number;
+            filters: components["schemas"]["MemorySearchFilters"];
+            query?: string | null;
+            results: components["schemas"]["MemorySearchResultEntry"][];
+            search_mode: string;
         };
         SearchResponseSchema: {
             query: string;
@@ -2161,14 +2819,22 @@ export interface components {
             snippet: string;
             title: string;
         };
-        SessionBookmarkSchema: {
-            createdAt: string;
+        SeedWalletRequest: {
+            agent_id: string;
             /** Format: int64 */
+            amount?: number;
+        };
+        SessionBookmark: {
+            createdAt: string;
+            /** Format: int32 */
             eventIndex: number;
             id: string;
             label: string;
         };
-        SessionEventSchema: {
+        SessionBookmarksResponse: {
+            bookmarks: components["schemas"]["SessionBookmark"][];
+        };
+        SessionEvent: {
             attributes: unknown;
             content_hash?: string | null;
             /** Format: int64 */
@@ -2187,30 +2853,67 @@ export interface components {
             /** Format: int64 */
             token_count?: number | null;
         };
+        SessionEventsResponse: {
+            chain_valid: boolean;
+            /** Format: double */
+            cumulative_cost: number;
+            events: components["schemas"]["SessionEvent"][];
+            /** Format: int32 */
+            limit: number;
+            /** Format: int32 */
+            offset: number;
+            session_id: string;
+            /** Format: int32 */
+            total: number;
+        };
+        SessionListResponse: components["schemas"]["RuntimeSessionsPageResponse"] | components["schemas"]["RuntimeSessionsCursorResponse"];
         SessionResponseSchema: {
             authenticated: boolean;
             mode: string;
             role: string;
             subject: string;
         };
-        SessionSchema: {
-            agents: string;
-            /** Format: int64 */
-            event_count: number;
-            last_event_at: string;
-            session_id: string;
-            started_at: string;
+        SetKeyRequest: {
+            /** @description The environment variable name (must match a configured provider). */
+            env_name: string;
+            /** @description The API key value. */
+            value: string;
+        };
+        SetKeyResponse: {
+            env_name: string;
+            message: string;
+            preview: string;
         };
         /** @enum {string} */
         SkillExecutionMode: "native" | "wasm";
         /** @enum {string} */
         SkillInstallStateDto: "always_on" | "installed" | "disabled" | "not_installed";
+        SkillListResponse: {
+            skills: components["schemas"]["SkillListingResponse"][];
+        };
         SkillListResponseDto: {
             available: components["schemas"]["SkillSummaryDto"][];
             installed: components["schemas"]["SkillSummaryDto"][];
         };
+        SkillListingResponse: {
+            author_agent_id?: string | null;
+            /** Format: double */
+            average_rating: number;
+            created_at: string;
+            description: string;
+            /** Format: int64 */
+            install_count: number;
+            /** Format: int64 */
+            price_credits: number;
+            skill_name: string;
+            version: string;
+        };
         /** @enum {string} */
         SkillMutationKind: "read_only" | "transactional" | "external_side_effect";
+        SkillPublishResponse: {
+            published: boolean;
+            skill_name: string;
+        };
         SkillQuarantineRequestDto: {
             reason: string;
         };
@@ -2255,6 +2958,18 @@ export interface components {
         };
         /** @enum {string} */
         SkillVerificationStatusDto: "not_applicable" | "verified" | "validation_failed" | "digest_mismatch" | "missing_signature" | "invalid_signature" | "unknown_signer" | "revoked_signer" | "unsupported_capability" | "unsupported_execution_mode";
+        SpanRecord: {
+            attributes: {
+                [key: string]: unknown;
+            };
+            end_time?: string | null;
+            operation_name: string;
+            parent_span_id?: string | null;
+            span_id: string;
+            start_time: string;
+            status: string;
+            trace_id: string;
+        };
         StudioCreateSessionRequestSchema: {
             agent_id?: string | null;
             /** Format: int64 */
@@ -2267,6 +2982,11 @@ export interface components {
         };
         StudioDeleteSessionResponseSchema: {
             deleted: boolean;
+        };
+        /** @description A single message in the conversation. */
+        StudioMessage: {
+            content: string;
+            role: string;
         };
         StudioMessageAcceptedResponseSchema: {
             assistant_message_id: string;
@@ -2289,11 +3009,30 @@ export interface components {
             created_at: string;
             event_type: string;
             payload: unknown;
+            reconstructed?: boolean | null;
             /** Format: int64 */
             seq: number;
         };
         StudioRecoverStreamResponseSchema: {
             events: components["schemas"]["StudioRecoverStreamEventSchema"][];
+        };
+        /** @description Request body for studio prompt run. */
+        StudioRunRequest: {
+            /** Format: int32 */
+            max_tokens?: number | null;
+            messages: components["schemas"]["StudioMessage"][];
+            model?: string | null;
+            system_prompt?: string | null;
+            /** Format: double */
+            temperature?: number | null;
+        };
+        /** @description Response from studio run. */
+        StudioRunResponse: {
+            content: string;
+            finish_reason: string;
+            model: string;
+            /** Format: int32 */
+            token_count: number;
         };
         StudioSendMessageRequestSchema: {
             content: string;
@@ -2340,12 +3079,117 @@ export interface components {
             title: string;
             updated_at: string;
         };
+        SubmitReviewRequest: {
+            comment?: string;
+            contract_id: string;
+            /** Format: int32 */
+            rating: number;
+            reviewee_agent_id: string;
+            reviewer_agent_id: string;
+        };
+        SybilMetrics: {
+            /** Format: int32 */
+            max_chain_depth: number;
+            total_delegations: number;
+            unique_delegators: number;
+        };
+        TraceGroup: {
+            spans: components["schemas"]["SpanRecord"][];
+            trace_id: string;
+        };
+        TraceResponse: {
+            session_id: string;
+            total_spans: number;
+            traces: components["schemas"]["TraceGroup"][];
+        };
+        TransactionListResponse: {
+            transactions: components["schemas"]["TransactionResponse"][];
+        };
+        TransactionResponse: {
+            /** Format: int64 */
+            amount: number;
+            created_at: string;
+            from_agent?: string | null;
+            /** Format: int64 */
+            id: number;
+            reference_id?: string | null;
+            to_agent?: string | null;
+            tx_type: string;
+        };
+        TrustEdge: {
+            source: string;
+            target: string;
+            /** Format: double */
+            trust_score: number;
+        };
+        TrustGraphResponse: {
+            edges: components["schemas"]["TrustEdge"][];
+            nodes: components["schemas"]["TrustNode"][];
+        };
+        TrustNode: {
+            /** Format: double */
+            activity: number;
+            /** Format: int32 */
+            convergence_level: number;
+            id: string;
+            name: string;
+        };
+        UpdateAgentStatusRequest: {
+            status: string;
+        };
+        UpdatePcControlStatusRequest: {
+            enabled: boolean;
+        };
+        UpdateProfileRequest: {
+            description?: string | null;
+            thresholds?: number[] | null;
+            weights?: number[] | null;
+        };
+        /** @description Request body for updating a workflow. */
+        UpdateWorkflowRequest: {
+            description?: string | null;
+            edges?: unknown;
+            name?: string | null;
+            nodes?: unknown;
+        };
+        VapidKeyResponse: {
+            key: string;
+        };
+        VerifyChainResponse: {
+            agent_id: string;
+            chain_type: string;
+            chains: components["schemas"]["IntegrityChains"];
+        };
+        WalletQuery: {
+            agent_id: string;
+        };
+        WalletResponse: {
+            agent_id: string;
+            /** Format: int64 */
+            balance: number;
+            /** Format: int64 */
+            escrowed: number;
+            /** Format: int64 */
+            total_earned: number;
+            /** Format: int64 */
+            total_spent: number;
+        };
         WebhookSchema: {
             active: boolean;
             events: string[];
             id: string;
             name: string;
             url: string;
+        };
+        WorkflowCreateResponse: {
+            description: string;
+            id: string;
+            name: string;
+            status: string;
+        };
+        WorkflowExecutionListResponse: {
+            executions: components["schemas"]["WorkflowExecutionSummary"][];
+            workflow_id: string;
         };
         WorkflowExecutionSchema: {
             completed_at?: string | null;
@@ -2358,6 +3202,40 @@ export interface components {
             workflow_id: string;
             workflow_name: string;
         };
+        WorkflowExecutionSummary: {
+            completed_at?: string | null;
+            current_node_id?: string | null;
+            /** Format: int64 */
+            current_step_index?: number | null;
+            execution_id: string;
+            recovery_action?: string | null;
+            recovery_required: boolean;
+            started_at: string;
+            /** Format: int64 */
+            state_version: number;
+            status: string;
+            updated_at: string;
+        };
+        WorkflowListResponse: {
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            page_size: number;
+            /** Format: int32 */
+            total: number;
+            workflows: components["schemas"]["WorkflowResponse"][];
+        };
+        /** @description Workflow response shape. */
+        WorkflowResponse: {
+            created_at: string;
+            created_by?: string | null;
+            description: string;
+            edges: unknown;
+            id: string;
+            name: string;
+            nodes: unknown;
+            updated_at: string;
+        };
         WorkflowSchema: {
             created_at?: string | null;
             created_by?: string | null;
@@ -2367,6 +3245,10 @@ export interface components {
             name: string;
             nodes: unknown;
             updated_at?: string | null;
+        };
+        WorkflowUpdateResponse: {
+            id: string;
+            status: string;
         };
         WsAuthTicketResponseSchema: {
             expires_at: string;
@@ -2528,7 +3410,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["BackupResponse"];
                 };
             };
             /** @description Admin role required */
@@ -2557,7 +3439,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["BackupListResponse"];
                 };
             };
             /** @description Admin role required */
@@ -2588,7 +3470,10 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ExportResponse"];
+                    "application/x-ndjson": string;
+                };
             };
             /** @description Admin role required */
             403: {
@@ -2616,7 +3501,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProviderKeysResponse"];
                 };
             };
             /** @description Admin role required */
@@ -2639,7 +3524,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["SetKeyRequest"];
             };
         };
         responses: {
@@ -2649,7 +3534,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SetKeyResponse"];
                 };
             };
             /** @description Invalid provider key request */
@@ -2690,7 +3575,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DeleteKeyResponse"];
                 };
             };
             /** @description Invalid provider key name */
@@ -2722,7 +3607,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["RestoreRequest"];
             };
         };
         responses: {
@@ -2732,10 +3617,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["RestoreVerification"];
                 };
             };
-            /** @description Admin role required */
+            /** @description Superadmin role required */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2764,7 +3649,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["AgentChatRequest"];
             };
         };
         responses: {
@@ -2774,7 +3659,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentChatResponse"];
                 };
             };
             /** @description Agent chat accepted and requires recovery polling */
@@ -2783,7 +3668,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentChatAcceptedResponse"];
                 };
             };
             /** @description Invalid chat request */
@@ -2806,7 +3691,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["AgentChatRequest"];
             };
         };
         responses: {
@@ -2940,7 +3825,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["AssignProfileRequest"];
             };
         };
         responses: {
@@ -2950,7 +3835,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AssignProfileResponse"];
                 };
             };
             /** @description Invalid assign-profile request */
@@ -2962,8 +3847,8 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponseSchema"];
                 };
             };
-            /** @description Agent or profile not found */
-            404: {
+            /** @description Internal error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3166,7 +4051,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ChannelListResponse"];
                 };
             };
             /** @description Internal error */
@@ -3189,17 +4074,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["CreateChannelRequest"];
             };
         };
         responses: {
             /** @description Channel created */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["CreateChannelResponse"];
                 };
             };
             /** @description Invalid channel request */
@@ -3231,7 +4116,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ChannelStatusResponse"];
                 };
             };
             /** @description Channel not found */
@@ -3263,7 +4148,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ChannelStatusResponse"];
                 };
             };
             /** @description Channel not found */
@@ -3289,7 +4174,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["InjectMessageRequest"];
             };
         };
         responses: {
@@ -3299,7 +4184,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["InjectMessageResponse"];
                 };
             };
             /** @description Target channel or agent not found */
@@ -3310,6 +4195,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ErrorResponseSchema"];
                 };
+            };
+        };
+    };
+    get_convergence_history: {
+        parameters: {
+            query?: {
+                /** @description Only include rows at or after this ISO 8601 timestamp */
+                since?: string;
+                /** @description Maximum rows to return (default 100, max 500) */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Agent UUID */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Persisted convergence history for a single agent */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConvergenceHistoryResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -3328,7 +4248,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ConvergenceScoresResponse"];
                 };
             };
             /** @description Internal error */
@@ -3369,7 +4289,16 @@ export interface operations {
     };
     list_goals: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Goal status filter: pending, approved, or rejected */
+                status?: string;
+                /** @description Filter by agent ID */
+                agent_id?: string;
+                /** @description Page number (1-based) */
+                page?: number;
+                /** @description Items per page (max 200) */
+                page_size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3381,7 +4310,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["GoalListResponse"];
+                };
             };
             /** @description Internal error */
             500: {
@@ -3410,7 +4341,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["GoalProposalDetail"];
                 };
             };
             /** @description Goal not found */
@@ -3434,28 +4365,38 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoalDecisionRequestBody"];
+            };
+        };
         responses: {
             /** @description Goal approved */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["GoalDecisionResponse"];
+                };
             };
             /** @description Goal not found */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
             };
             /** @description Already resolved */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
             };
         };
     };
@@ -3469,28 +4410,38 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoalDecisionRequestBody"];
+            };
+        };
         responses: {
             /** @description Goal rejected */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["GoalDecisionResponse"];
+                };
             };
             /** @description Goal not found */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
             };
             /** @description Already resolved */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
             };
         };
     };
@@ -3540,7 +4491,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["VerifyChainResponse"];
                 };
             };
             /** @description Internal error */
@@ -3572,7 +4523,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ItpEventsResponse"];
                 };
             };
             /** @description Internal error */
@@ -3644,7 +4595,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentListResponse"];
                 };
             };
         };
@@ -3658,7 +4609,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["RegisterAgentRequest"];
             };
         };
         responses: {
@@ -3668,7 +4619,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentListingResponse"];
                 };
             };
             /** @description Invalid listing request */
@@ -3700,7 +4651,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentListingResponse"];
                 };
             };
             /** @description Agent listing not found */
@@ -3732,7 +4683,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentDelistResponse"];
                 };
             };
             /** @description Agent listing not found */
@@ -3758,7 +4709,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["UpdateAgentStatusRequest"];
             };
         };
         responses: {
@@ -3768,7 +4719,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["AgentStatusUpdateResponse"];
                 };
             };
             /** @description Invalid status update */
@@ -3815,7 +4766,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractListResponse"];
                 };
             };
         };
@@ -3829,7 +4780,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ProposeContractRequest"];
             };
         };
         responses: {
@@ -3839,7 +4790,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractResponse"];
                 };
             };
             /** @description Invalid contract request */
@@ -3889,7 +4840,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -3921,7 +4872,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractAcceptedResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -3962,7 +4913,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractCanceledResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -3997,7 +4948,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["CompleteContractRequest"];
             };
         };
         responses: {
@@ -4007,7 +4958,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractCompletedResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -4048,7 +4999,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractDisputedResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -4089,7 +5040,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractRejectedResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -4124,7 +5075,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["CompleteContractRequest"];
             };
         };
         responses: {
@@ -4134,7 +5085,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractResolvedResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -4175,7 +5126,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ContractStartedResponse"];
                 };
             };
             /** @description Marketplace contract not found */
@@ -4207,7 +5158,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["DiscoverRequest"];
             };
         };
         responses: {
@@ -4217,7 +5168,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DiscoverResponse"];
                 };
             };
             /** @description Invalid discovery request */
@@ -4240,7 +5191,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["SubmitReviewRequest"];
             };
         };
         responses: {
@@ -4250,7 +5201,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ReviewSubmittedResponse"];
                 };
             };
             /** @description Invalid review request */
@@ -4305,7 +5256,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ReviewListResponse"];
                 };
             };
         };
@@ -4330,7 +5281,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SkillListResponse"];
                 };
             };
         };
@@ -4344,7 +5295,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["PublishSkillRequest"];
             };
         };
         responses: {
@@ -4354,7 +5305,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SkillPublishResponse"];
                 };
             };
             /** @description Invalid skill publish request */
@@ -4386,7 +5337,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SkillListingResponse"];
                 };
             };
             /** @description Marketplace skill not found */
@@ -4418,7 +5369,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["WalletResponse"];
                 };
             };
             /** @description Marketplace wallet not found */
@@ -4441,7 +5392,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["SeedWalletRequest"];
             };
         };
         responses: {
@@ -4451,7 +5402,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["WalletResponse"];
                 };
             };
             /** @description Invalid wallet seed request */
@@ -4487,14 +5438,23 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["TransactionListResponse"];
                 };
             };
         };
     };
     list_memories: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Filter by agent ID */
+                agent_id?: string;
+                /** @description Page number (1-based) */
+                page?: number;
+                /** @description Items per page (max 200) */
+                page_size?: number;
+                /** @description Include archived memories in results */
+                include_archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4506,14 +5466,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ListMemoriesResponse"];
+                };
             };
             /** @description Internal error */
             500: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
             };
         };
     };
@@ -4557,7 +5521,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ArchivedMemoryListResponse"];
                 };
             };
             /** @description Internal error */
@@ -4573,7 +5537,14 @@ export interface operations {
     };
     get_memory_graph: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Filter the graph to a specific agent */
+                agent_id?: string;
+                /** @description Maximum number of memories to include */
+                limit?: number;
+                /** @description Include archived memories in the graph */
+                include_archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4586,7 +5557,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MemoryGraphResponseSchema"];
+                    "application/json": components["schemas"]["MemoryGraphResponse"];
                 };
             };
             /** @description Internal error */
@@ -4602,7 +5573,24 @@ export interface operations {
     };
     search_memories: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Search query */
+                q?: string;
+                /** @description Filter by agent ID */
+                agent_id?: string;
+                /** @description Filter by memory type */
+                memory_type?: string;
+                /** @description Filter by memory importance */
+                importance?: string;
+                /** @description Minimum confidence */
+                confidence_min?: number;
+                /** @description Maximum confidence */
+                confidence_max?: number;
+                /** @description Maximum number of results */
+                limit?: number;
+                /** @description Include archived memories */
+                include_archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4615,7 +5603,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SearchMemoriesResponse"];
                 };
             };
             /** @description Internal error */
@@ -4646,7 +5634,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
             };
             /** @description Memory not found */
             404: {
@@ -4669,7 +5659,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ArchiveMemoryRequest"];
             };
         };
         responses: {
@@ -4679,7 +5669,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MemoryArchiveStatusResponse"];
                 };
             };
             /** @description Invalid archive request */
@@ -4720,7 +5710,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["MemoryArchiveStatusResponse"];
                 };
             };
             /** @description Invalid unarchive request */
@@ -4758,7 +5748,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ConsensusResponse"];
                 };
             };
             /** @description Internal error */
@@ -4787,7 +5777,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DelegationsResponse"];
                 };
             };
             /** @description Internal error */
@@ -4816,7 +5806,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["TrustGraphResponse"];
                 };
             };
             /** @description Internal error */
@@ -4850,7 +5840,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OAuthConnectionStatusResponse"];
                 };
             };
             /** @description Invalid callback parameters */
@@ -4873,7 +5863,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ConnectRequest"];
             };
         };
         responses: {
@@ -4883,7 +5873,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OAuthConnectResponse"];
                 };
             };
             /** @description Invalid OAuth connect request */
@@ -4944,7 +5934,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OAuthConnectionStatusResponse"];
                 };
             };
             /** @description Invalid OAuth reference */
@@ -4967,7 +5957,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ApiCallRequest"];
             };
         };
         responses: {
@@ -4977,7 +5967,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OAuthExecuteResponse"];
                 };
             };
             /** @description OAuth-backed API call accepted but recovery is required */
@@ -4986,7 +5976,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OAuthExecuteAcceptedResponse"];
                 };
             };
             /** @description Invalid OAuth execute request */
@@ -5083,7 +6073,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["PcControlActionsResponse"];
                 };
             };
             /** @description Admin role required */
@@ -5106,7 +6096,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["AllowedAppsRequest"];
             };
         };
         responses: {
@@ -5116,7 +6106,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PcControlStatusSchema"];
+                    "application/json": components["schemas"]["PcControlStatus"];
                 };
             };
             /** @description Invalid allowed-app update */
@@ -5148,7 +6138,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["BlockedHotkeysRequest"];
             };
         };
         responses: {
@@ -5158,7 +6148,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PcControlStatusSchema"];
+                    "application/json": components["schemas"]["PcControlStatus"];
                 };
             };
             /** @description Invalid blocked-hotkey update */
@@ -5190,7 +6180,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["SafeZonesRequest"];
             };
         };
         responses: {
@@ -5200,7 +6190,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PcControlStatusSchema"];
+                    "application/json": components["schemas"]["PcControlStatus"];
                 };
             };
             /** @description Invalid safe-zone update */
@@ -5238,7 +6228,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PcControlStatusSchema"];
+                    "application/json": components["schemas"]["PcControlStatus"];
                 };
             };
             /** @description Admin role required */
@@ -5261,7 +6251,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["UpdatePcControlStatusRequest"];
             };
         };
         responses: {
@@ -5271,7 +6261,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PcControlStatusSchema"];
+                    "application/json": components["schemas"]["PcControlStatus"];
                 };
             };
             /** @description Invalid PC control update */
@@ -5309,7 +6299,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProfileListResponse"];
                 };
             };
             /** @description Internal error */
@@ -5332,17 +6322,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["CreateProfileRequest"];
             };
         };
         responses: {
             /** @description Profile created */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProfileSchema"];
+                    "application/json": components["schemas"]["ProfileSummary"];
                 };
             };
             /** @description Invalid profile request */
@@ -5377,7 +6367,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["UpdateProfileRequest"];
             };
         };
         responses: {
@@ -5387,7 +6377,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProfileSchema"];
+                    "application/json": components["schemas"]["ProfileSummary"];
                 };
             };
             /** @description Invalid profile update */
@@ -5428,7 +6418,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["DeleteProfileResponse"];
                 };
             };
             /** @description Invalid profile delete request */
@@ -5460,7 +6450,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PushSubscriptionSchema"];
+                "application/json": components["schemas"]["PushSubscription"];
             };
         };
         responses: {
@@ -5491,7 +6481,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PushSubscriptionSchema"];
+                "application/json": components["schemas"]["PushSubscription"];
             };
         };
         responses: {
@@ -5528,7 +6518,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["VapidKeyResponse"];
                 };
             };
         };
@@ -5792,6 +6782,10 @@ export interface operations {
                 page?: number;
                 /** @description Items per page (max 200) */
                 page_size?: number;
+                /** @description Cursor for runtime session pagination */
+                cursor?: string;
+                /** @description Items per page in cursor mode (default 50, max 200) */
+                limit?: number;
             };
             header?: never;
             path?: never;
@@ -5799,12 +6793,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Paginated session list */
+            /** @description Runtime session list */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["SessionListResponse"];
+                };
             };
             /** @description Internal error */
             500: {
@@ -5833,7 +6829,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SessionBookmarksResponse"];
                 };
             };
             /** @description Session not found */
@@ -5859,7 +6855,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["CreateBookmarkRequest"];
             };
         };
         responses: {
@@ -5868,7 +6864,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["CreateBookmarkResponse"];
+                };
             };
             /** @description Session not found */
             404: {
@@ -5900,7 +6898,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["DeleteBookmarkResponse"];
+                };
             };
             /** @description Bookmark not found */
             404: {
@@ -5925,16 +6925,18 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["BranchRequest"];
             };
         };
         responses: {
             /** @description Session branched */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["BranchSessionResponse"];
+                };
             };
             /** @description Session not found */
             404: {
@@ -5949,7 +6951,12 @@ export interface operations {
     };
     get_session_events: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Pagination offset */
+                offset?: number;
+                /** @description Maximum number of events to return */
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description Runtime session ID */
@@ -5965,7 +6972,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SessionEventsResponse"];
                 };
             };
             /** @description Session not found */
@@ -6330,7 +7337,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["CrdtStateResponse"];
                 };
             };
             /** @description Internal error */
@@ -6353,7 +7360,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["StudioRunRequest"];
             };
         };
         responses: {
@@ -6363,7 +7370,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["StudioRunResponse"];
                 };
             };
             /** @description Invalid prompt request */
@@ -6642,11 +7649,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["TraceResponse"];
                 };
             };
-            /** @description Trace data not found */
-            404: {
+            /** @description Internal error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6787,7 +7794,12 @@ export interface operations {
     };
     list_workflows: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page number (1-based) */
+                page?: number;
+                /** @description Items per page (max 200) */
+                page_size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6800,7 +7812,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["WorkflowListResponse"];
                 };
             };
             /** @description Internal error */
@@ -6823,7 +7835,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["CreateWorkflowRequest"];
             };
         };
         responses: {
@@ -6832,7 +7844,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WorkflowCreateResponse"];
+                };
             };
             /** @description Invalid workflow */
             400: {
@@ -6863,7 +7877,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkflowSchema"];
+                    "application/json": components["schemas"]["WorkflowResponse"];
                 };
             };
             /** @description Workflow not found */
@@ -6889,7 +7903,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["UpdateWorkflowRequest"];
             };
         };
         responses: {
@@ -6898,7 +7912,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["WorkflowUpdateResponse"];
+                };
             };
             /** @description Workflow not found */
             404: {
@@ -6923,7 +7939,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": unknown;
+                "application/json": components["schemas"]["ExecuteWorkflowRequest"];
             };
         };
         responses: {
@@ -6965,7 +7981,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["WorkflowExecutionListResponse"];
                 };
             };
             /** @description Workflow not found */

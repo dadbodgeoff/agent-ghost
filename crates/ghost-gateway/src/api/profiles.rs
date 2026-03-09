@@ -10,6 +10,7 @@ use axum::response::Response;
 use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -27,7 +28,7 @@ const ASSIGN_PROFILE_ROUTE_TEMPLATE: &str = "/api/agents/:id/profile";
 
 // ── Types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProfileSummary {
     pub name: String,
     pub description: String,
@@ -36,7 +37,7 @@ pub struct ProfileSummary {
     pub thresholds: [f64; 4],
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct CreateProfileRequest {
     pub name: String,
     pub description: Option<String>,
@@ -44,27 +45,32 @@ pub struct CreateProfileRequest {
     pub thresholds: [f64; 4],
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct UpdateProfileRequest {
     pub weights: Option<[f64; 8]>,
     pub thresholds: Option<[f64; 4]>,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ProfileListResponse {
     pub profiles: Vec<ProfileSummary>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct AssignProfileRequest {
     pub profile_name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AssignProfileResponse {
     pub agent_id: String,
     pub profile_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DeleteProfileResponse {
+    pub deleted: String,
 }
 
 fn profile_actor(claims: Option<&Claims>) -> &str {
@@ -402,7 +408,13 @@ pub async fn delete_profile(
                 return Err(ApiError::not_found(format!("Profile '{name}' not found")));
             }
 
-            Ok((StatusCode::OK, serde_json::json!({ "deleted": name })))
+            Ok((
+                StatusCode::OK,
+                serde_json::to_value(DeleteProfileResponse {
+                    deleted: name.clone(),
+                })
+                .unwrap_or(serde_json::Value::Null),
+            ))
         },
     ) {
         Ok(outcome) => {
@@ -611,9 +623,12 @@ mod tests {
             Some(Extension(crate::api::auth::Claims {
                 sub: "operator-1".to_string(),
                 role: "admin".to_string(),
+                capabilities: Vec::new(),
+                authz_v: None,
                 exp: u64::MAX,
                 iat: 0,
                 jti: "jti-1".to_string(),
+                iss: None,
             })),
             Extension(crate::api::operation_context::OperationContext {
                 request_id: "req-1".to_string(),

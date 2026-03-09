@@ -1,53 +1,17 @@
 import type { GhostRequestFn } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface TrustNode {
-  id: string;
-  name: string;
-  activity: number;
-  convergence_level: number;
-}
-
-export interface TrustEdge {
-  source: string;
-  target: string;
-  trust_score: number;
-}
-
-export interface TrustGraphResult {
-  nodes: TrustNode[];
-  edges: TrustEdge[];
-}
-
-export interface ConsensusRound {
-  proposal_id: string;
-  status: string;
-  approvals: number;
-  rejections: number;
-  threshold: number;
-}
-
-export interface ConsensusResult {
-  rounds: ConsensusRound[];
-}
-
-export interface Delegation {
-  delegator_id: string;
-  delegate_id: string;
-  scope: string;
-  state: string;
-  created_at: string;
-}
-
-export interface SybilMetrics {
-  total_delegations: number;
-  max_chain_depth: number;
-  unique_delegators: number;
-}
-
-export interface DelegationsResult {
-  delegations: Delegation[];
-  sybil_metrics: SybilMetrics;
-}
+export type TrustNode = components['schemas']['TrustNode'];
+export type TrustEdge = components['schemas']['TrustEdge'];
+export type TrustGraphResult =
+  operations['get_mesh_trust_graph']['responses'][200]['content']['application/json'];
+export type ConsensusRound = components['schemas']['ConsensusRound'];
+export type ConsensusResult =
+  operations['get_mesh_consensus']['responses'][200]['content']['application/json'];
+export type Delegation = components['schemas']['Delegation'];
+export type SybilMetrics = components['schemas']['SybilMetrics'];
+export type DelegationsResult =
+  operations['list_mesh_delegations']['responses'][200]['content']['application/json'];
 
 export class MeshAPI {
   constructor(private request: GhostRequestFn) {}

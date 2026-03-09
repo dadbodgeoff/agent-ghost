@@ -36,6 +36,12 @@ impl EnvVarGuard {
         std::env::set_var(key, value);
         Self { key, previous }
     }
+
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -148,6 +154,56 @@ async fn websocket_allows_legacy_auth_when_ticket_only_mode_is_disabled() {
     assert!(matches!(envelope.event, WsEvent::Ping));
 
     let _ = socket.close(None).await;
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn websocket_allows_ticket_auth_in_jwt_mode() {
+    let _guard = auth_env_guard();
+    let _clear_legacy = EnvVarGuard::unset("GHOST_TOKEN");
+    let _env = EnvVarGuard::set("GHOST_JWT_SECRET", "ws-jwt-secret");
+
+    let gateway = TestGateway::start().await;
+    let client = reqwest::Client::new();
+    let ws_url = format!("ws://127.0.0.1:{}/api/ws", gateway.port);
+
+    let login_response: serde_json::Value = client
+        .post(gateway.url("/api/auth/login"))
+        .json(&serde_json::json!({ "token": "ws-jwt-secret" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let access_token = login_response["access_token"]
+        .as_str()
+        .expect("login should issue an access token");
+
+    let ticket_response: serde_json::Value = client
+        .post(gateway.url("/api/ws/tickets"))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ticket = ticket_response["ticket"].as_str().unwrap();
+
+    let mut ticket_request = ws_url.into_client_request().unwrap();
+    ticket_request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("ghost-ticket.{ticket}").parse().unwrap(),
+    );
+    let (mut ticket_socket, _) = connect_async(ticket_request)
+        .await
+        .expect("JWT-backed ticket websocket connection should succeed");
+
+    let envelope = read_envelope(&mut ticket_socket).await;
+    assert!(matches!(envelope.event, WsEvent::Ping));
+
+    let _ = ticket_socket.close(None).await;
     gateway.stop().await;
 }
 

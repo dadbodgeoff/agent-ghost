@@ -507,4 +507,23 @@ mod tests {
             "verify should fail on missing channels index"
         );
     }
+
+    #[tokio::test]
+    async fn migrate_creates_a_missing_database_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("nested").join("migrate.db");
+        let config = crate::config::GhostConfig::test_config(39780, db_path.to_str().unwrap());
+
+        let backend = crate::cli::backend::CliBackend::open_direct_create_if_missing(&config)
+            .expect("backend should bootstrap a missing db path");
+        run_migrate(DbMigrateArgs {}, &backend)
+            .await
+            .expect("migrations should succeed on a fresh database");
+
+        assert!(db_path.exists(), "migrate should create the SQLite file");
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let version = current_version(&conn).unwrap();
+        assert_eq!(version, LATEST_VERSION);
+    }
 }

@@ -49,9 +49,12 @@ fn jwt_for_role(sub: &str, role: &str, secret: &str) -> String {
     let claims = ghost_gateway::api::auth::Claims {
         sub: sub.to_string(),
         role: role.to_string(),
+        capabilities: Vec::new(),
+        authz_v: None,
         exp: now + 3600,
         iat: now,
         jti: uuid::Uuid::now_v7().to_string(),
+        iss: None,
     };
     jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),
@@ -453,6 +456,219 @@ async fn create_backup_replays_after_restart_and_records_audit_provenance() {
 
     drop(db);
     restarted.stop().await;
+}
+
+#[tokio::test]
+async fn superadmin_can_create_backup_on_admin_routes() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("superadmin-backup.db");
+    let ghost_dir = tmp.path().join("ghost");
+    let backup_dir = tmp.path().join("backups");
+    std::fs::create_dir_all(ghost_dir.join("data")).unwrap();
+    std::fs::write(ghost_dir.join("data/memory.json"), "{\"ok\":true}").unwrap();
+
+    let _jwt_secret = EnvVarGuard::set("GHOST_JWT_SECRET", "superadmin-backup-secret");
+    let _ghost_dir = EnvVarGuard::set("GHOST_DIR", ghost_dir.to_str().unwrap());
+    let _backup_dir = EnvVarGuard::set("GHOST_BACKUP_DIR", backup_dir.to_str().unwrap());
+    let _passphrase = EnvVarGuard::set("GHOST_BACKUP_PASSPHRASE", "superadmin-passphrase");
+    let token = jwt_for_role("backup-root", "superadmin", "superadmin-backup-secret");
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    let response = gateway
+        .client
+        .post(format!("{}/api/admin/backup", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .header(
+            "x-ghost-operation-id",
+            "018f0f23-8c65-7abc-9def-9234567890ab",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = json_body(response).await;
+    let backup_id = body["backup_id"].as_str().unwrap();
+    assert!(backup_dir
+        .join(format!("ghost-backup-{backup_id}.ghost-backup"))
+        .exists());
+
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn create_backup_failure_cleans_up_temp_archive_and_allows_retry() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("backup-cleanup.db");
+    let ghost_dir = tmp.path().join("ghost");
+    let backup_dir = tmp.path().join("backups");
+    std::fs::create_dir_all(ghost_dir.join("data")).unwrap();
+    std::fs::write(ghost_dir.join("data/memory.json"), "{\"ok\":true}").unwrap();
+    std::fs::create_dir_all(&backup_dir).unwrap();
+
+    let _jwt_secret = EnvVarGuard::set("GHOST_JWT_SECRET", "backup-cleanup-secret");
+    let _ghost_dir = EnvVarGuard::set("GHOST_DIR", ghost_dir.to_str().unwrap());
+    let _backup_dir = EnvVarGuard::set("GHOST_BACKUP_DIR", backup_dir.to_str().unwrap());
+    let _passphrase = EnvVarGuard::set("GHOST_BACKUP_PASSPHRASE", "backup-cleanup-passphrase");
+    let token = jwt_for_role("backup-admin", "admin", "backup-cleanup-secret");
+
+    let operation_id = "018f0f23-8c65-7abc-9def-9734567890ab";
+    let output_path = backup_dir.join(format!("ghost-backup-{operation_id}.ghost-backup"));
+    let temp_path = backup_dir.join(format!(".ghost-backup-{operation_id}.tmp"));
+    std::fs::create_dir_all(&output_path).unwrap();
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    let failed = gateway
+        .client
+        .post(format!("{}/api/admin/backup", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", "backup-cleanup-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        !temp_path.exists(),
+        "staged temp archive must be cleaned up"
+    );
+    assert!(output_path.is_dir());
+
+    std::fs::remove_dir_all(&output_path).unwrap();
+
+    let retry = gateway
+        .client
+        .post(format!("{}/api/admin/backup", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-request-id", "backup-cleanup-retry")
+        .header("x-ghost-operation-id", operation_id)
+        .header("idempotency-key", "backup-cleanup-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), StatusCode::OK);
+    assert_eq!(
+        retry
+            .headers()
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    assert!(output_path.is_file());
+    assert!(!temp_path.exists());
+
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn superadmin_can_list_provider_keys() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("provider-keys-superadmin.db");
+    let _jwt_secret = EnvVarGuard::set("GHOST_JWT_SECRET", "provider-keys-superadmin-secret");
+    let token = jwt_for_role(
+        "provider-root",
+        "superadmin",
+        "provider-keys-superadmin-secret",
+    );
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    let response = gateway
+        .client
+        .get(format!("{}/api/admin/provider-keys", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = json_body(response).await;
+    assert!(body["providers"].is_array());
+
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn operator_can_read_safety_status_route() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("safety-status-operator.db");
+    let _jwt_secret = EnvVarGuard::set("GHOST_JWT_SECRET", "safety-status-operator-secret");
+    let token = jwt_for_role(
+        "safety-operator",
+        "operator",
+        "safety-status-operator-secret",
+    );
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    let response = gateway
+        .client
+        .get(format!("{}/api/safety/status", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = json_body(response).await;
+    assert!(body.get("per_agent").is_some());
+    assert!(body.get("platform_level").is_some());
+
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn viewer_cannot_read_safety_status_route() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("safety-status-viewer.db");
+    let _jwt_secret = EnvVarGuard::set("GHOST_JWT_SECRET", "safety-status-viewer-secret");
+    let token = jwt_for_role("safety-viewer", "viewer", "safety-status-viewer-secret");
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    let response = gateway
+        .client
+        .get(format!("{}/api/safety/status", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    gateway.stop().await;
+}
+
+#[tokio::test]
+async fn admin_cannot_verify_restore_on_superadmin_route() {
+    let _guard = hold_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("restore-admin-forbidden.db");
+    let source_dir = tmp.path().join("source");
+    let backup_path = tmp.path().join("forbidden.ghost-backup");
+    std::fs::create_dir_all(source_dir.join("data")).unwrap();
+    std::fs::write(source_dir.join("data/file.txt"), "forbidden").unwrap();
+
+    let _jwt_secret = EnvVarGuard::set("GHOST_JWT_SECRET", "restore-admin-secret");
+    let _passphrase = EnvVarGuard::set("GHOST_BACKUP_PASSPHRASE", "restore-admin-passphrase");
+    let token = jwt_for_role("restore-admin", "admin", "restore-admin-secret");
+    ghost_backup::BackupExporter::new(&source_dir)
+        .export(&backup_path, "restore-admin-passphrase")
+        .unwrap();
+
+    let gateway = PersistentGateway::start(&db_path).await;
+    let response = gateway
+        .client
+        .post(format!("{}/api/admin/restore", gateway.base_url))
+        .header("authorization", format!("Bearer {token}"))
+        .json(&serde_json::json!({ "backup_path": backup_path }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    gateway.stop().await;
 }
 
 #[tokio::test]

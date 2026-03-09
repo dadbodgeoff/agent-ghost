@@ -83,6 +83,168 @@ async fn session_lifecycle_create_and_list() {
     gw.stop().await;
 }
 
+#[tokio::test]
+async fn session_heartbeat_accepts_existing_studio_session_and_refreshes_liveness() {
+    let gw = common::TestGateway::start().await;
+
+    let resp = gw
+        .client
+        .post(gw.url("/api/studio/sessions"))
+        .json(&json!({
+            "title": "Heartbeat Session",
+            "model": "test-model",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "create session should succeed");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let session_id = body["id"].as_str().unwrap().to_string();
+
+    gw.app_state.client_heartbeats.insert(
+        session_id.clone(),
+        std::time::Instant::now() - std::time::Duration::from_secs(120),
+    );
+
+    let resp = gw
+        .client
+        .post(gw.url(&format!("/api/sessions/{session_id}/heartbeat")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    let refreshed_elapsed = gw
+        .app_state
+        .client_heartbeats
+        .get(&session_id)
+        .expect("heartbeat should be tracked")
+        .elapsed();
+    assert!(
+        refreshed_elapsed < std::time::Duration::from_secs(5),
+        "heartbeat should refresh stale liveness state"
+    );
+
+    gw.stop().await;
+}
+
+#[tokio::test]
+async fn session_heartbeat_accepts_existing_runtime_session() {
+    let gw = common::TestGateway::start().await;
+    let runtime_session_id = "runtime-session-heartbeat";
+
+    {
+        let db = gw.app_state.db.write().await;
+        cortex_storage::queries::itp_event_queries::insert_itp_event(
+            &db,
+            "event-heartbeat-1",
+            runtime_session_id,
+            "user_message",
+            Some("tester"),
+            "2026-03-08T12:00:00Z",
+            1,
+            None,
+            None,
+            "standard",
+            &[1; 32],
+            &[0; 32],
+        )
+        .unwrap();
+    }
+
+    let resp = gw
+        .client
+        .post(gw.url(&format!("/api/sessions/{runtime_session_id}/heartbeat")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert!(
+        gw.app_state
+            .client_heartbeats
+            .get(runtime_session_id)
+            .is_some(),
+        "runtime session heartbeat should be tracked"
+    );
+
+    gw.stop().await;
+}
+
+#[tokio::test]
+async fn session_heartbeat_rejects_unknown_session_id() {
+    let gw = common::TestGateway::start().await;
+    let session_id = "missing-session-heartbeat";
+
+    let resp = gw
+        .client
+        .post(gw.url(&format!("/api/sessions/{session_id}/heartbeat")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+    assert!(
+        gw.app_state.client_heartbeats.get(session_id).is_none(),
+        "unknown sessions must not seed heartbeat state"
+    );
+
+    gw.stop().await;
+}
+
+#[tokio::test]
+async fn session_heartbeat_rejects_deleted_studio_session() {
+    let gw = common::TestGateway::start().await;
+
+    let resp = gw
+        .client
+        .post(gw.url("/api/studio/sessions"))
+        .json(&json!({
+            "title": "Deleted Heartbeat Session",
+            "model": "test-model",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "create session should succeed");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let session_id = body["id"].as_str().unwrap().to_string();
+
+    let delete_resp = gw
+        .client
+        .delete(gw.url(&format!("/api/studio/sessions/{session_id}")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete_resp.status(), 200);
+
+    gw.app_state.client_heartbeats.insert(
+        session_id.clone(),
+        std::time::Instant::now() - std::time::Duration::from_secs(120),
+    );
+
+    let resp = gw
+        .client
+        .post(gw.url(&format!("/api/sessions/{session_id}/heartbeat")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let stale_elapsed = gw
+        .app_state
+        .client_heartbeats
+        .get(&session_id)
+        .expect("existing stale record should not be refreshed")
+        .elapsed();
+    assert!(
+        stale_elapsed >= std::time::Duration::from_secs(60),
+        "deleted session heartbeat must not refresh stale liveness state"
+    );
+
+    gw.stop().await;
+}
+
 // ── 2. Auth enforcement ──────────────────────────────────────────────
 
 #[tokio::test]

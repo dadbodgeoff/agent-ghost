@@ -17,6 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::api::authz::{AUTHZ_CLAIMS_VERSION_V1, INTERNAL_JWT_ISSUER};
+
 /// JWT claims extracted from a validated token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
@@ -24,12 +26,21 @@ pub struct Claims {
     pub sub: String,
     /// Role: "admin", "operator", "viewer".
     pub role: String,
+    /// Optional typed capabilities for authz v1 tokens.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Optional version marker for typed authz claims.
+    #[serde(default)]
+    pub authz_v: Option<u16>,
     /// Expiration (Unix timestamp).
     pub exp: u64,
     /// Issued at (Unix timestamp).
     pub iat: u64,
     /// JWT ID (for revocation).
     pub jti: String,
+    /// Optional issuer for typed authz claims.
+    #[serde(default)]
+    pub iss: Option<String>,
 }
 
 impl Claims {
@@ -38,9 +49,12 @@ impl Claims {
         Self {
             sub: "legacy-token-user".into(),
             role: "admin".into(),
+            capabilities: Vec::new(),
+            authz_v: None,
             exp: u64::MAX,
             iat: 0,
             jti: String::new(),
+            iss: None,
         }
     }
 
@@ -52,9 +66,12 @@ impl Claims {
         Self {
             sub: "anonymous".into(),
             role: "dev".into(),
+            capabilities: Vec::new(),
+            authz_v: None,
             exp: u64::MAX,
             iat: 0,
             jti: String::new(),
+            iss: None,
         }
     }
 }
@@ -280,17 +297,30 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
+fn cookie_security_attrs(secure: bool) -> &'static str {
+    if secure {
+        "; Secure"
+    } else {
+        ""
+    }
+}
+
 /// Build a `Set-Cookie` header value for the refresh token.
-fn build_refresh_cookie(token: &str, max_age_secs: u64) -> String {
+fn build_refresh_cookie(token: &str, max_age_secs: u64, secure: bool) -> String {
     format!(
-        "ghost_refresh={}; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age={}",
-        token, max_age_secs
+        "ghost_refresh={}; HttpOnly{}; SameSite=Strict; Path=/api/auth; Max-Age={}",
+        token,
+        cookie_security_attrs(secure),
+        max_age_secs
     )
 }
 
 /// Build a `Set-Cookie` header that clears the refresh cookie.
-fn build_clear_refresh_cookie() -> String {
-    "ghost_refresh=; HttpOnly; Secure; SameSite=Strict; Path=/api/auth; Max-Age=0".to_string()
+fn build_clear_refresh_cookie(secure: bool) -> String {
+    format!(
+        "ghost_refresh=; HttpOnly{}; SameSite=Strict; Path=/api/auth; Max-Age=0",
+        cookie_security_attrs(secure)
+    )
 }
 
 /// Extract refresh token from Cookie header.
@@ -312,7 +342,7 @@ fn extract_refresh_cookie(request: &Request<Body>) -> Option<String> {
 /// Reads `AuthConfig` and `RevocationSet` from Extensions (injected at startup).
 ///
 /// Skips auth for:
-/// - `GET /api/health` and `GET /api/ready` (health probes)
+/// - `GET /api/health`, `GET /api/ready`, and `GET /api/compatibility` (bootstrap probes)
 /// - `POST /api/auth/login` (login endpoint itself)
 /// - `POST /api/auth/refresh` (token refresh — uses cookie, not Bearer)
 /// - `GET /api/ws` (WebSocket has its own auth in the handler)
@@ -325,6 +355,7 @@ pub async fn auth_middleware(request: Request<Body>, next: Next) -> Response {
         path,
         "/api/health"
             | "/api/ready"
+            | "/api/compatibility"
             | "/api/auth/login"
             | "/api/auth/refresh"
             | "/api/auth/logout"
@@ -562,18 +593,24 @@ pub async fn login(
         let access_claims = Claims {
             sub: "admin".into(),
             role: "admin".into(),
+            capabilities: Vec::new(),
+            authz_v: Some(AUTHZ_CLAIMS_VERSION_V1),
             exp: now + ACCESS_TOKEN_TTL,
             iat: now,
             jti: uuid::Uuid::now_v7().to_string(),
+            iss: Some(INTERNAL_JWT_ISSUER.into()),
         };
 
         // Issue refresh token (7d).
         let refresh_claims = Claims {
             sub: "admin".into(),
             role: "admin".into(),
+            capabilities: Vec::new(),
+            authz_v: Some(AUTHZ_CLAIMS_VERSION_V1),
             exp: now + REFRESH_TOKEN_TTL,
             iat: now,
             jti: uuid::Uuid::now_v7().to_string(),
+            iss: Some(INTERNAL_JWT_ISSUER.into()),
         };
 
         let access_token = match encode_jwt(&access_claims, secret) {
@@ -606,6 +643,7 @@ pub async fn login(
         if let Ok(val) = axum::http::HeaderValue::from_str(&build_refresh_cookie(
             &refresh_token,
             REFRESH_TOKEN_TTL,
+            config.is_production,
         )) {
             response.headers_mut().insert("set-cookie", val);
         }
@@ -736,18 +774,27 @@ pub async fn refresh(
     let access_claims = Claims {
         sub: old_claims.sub.clone(),
         role: old_claims.role.clone(),
+        capabilities: old_claims.capabilities.clone(),
+        authz_v: old_claims.authz_v.or(Some(AUTHZ_CLAIMS_VERSION_V1)),
         exp: now + ACCESS_TOKEN_TTL,
         iat: now,
         jti: uuid::Uuid::now_v7().to_string(),
+        iss: old_claims
+            .iss
+            .clone()
+            .or_else(|| Some(INTERNAL_JWT_ISSUER.into())),
     };
 
     // Issue new refresh token (rotation).
     let refresh_claims = Claims {
         sub: old_claims.sub,
         role: old_claims.role,
+        capabilities: old_claims.capabilities,
+        authz_v: old_claims.authz_v.or(Some(AUTHZ_CLAIMS_VERSION_V1)),
         exp: now + REFRESH_TOKEN_TTL,
         iat: now,
         jti: uuid::Uuid::now_v7().to_string(),
+        iss: old_claims.iss.or_else(|| Some(INTERNAL_JWT_ISSUER.into())),
     };
 
     let access_token = match encode_jwt(&access_claims, secret) {
@@ -774,6 +821,7 @@ pub async fn refresh(
     if let Ok(val) = axum::http::HeaderValue::from_str(&build_refresh_cookie(
         &new_refresh_token,
         REFRESH_TOKEN_TTL,
+        config.is_production,
     )) {
         response.headers_mut().insert("set-cookie", val);
     }
@@ -847,7 +895,9 @@ pub async fn logout(
     )
         .into_response();
 
-    if let Ok(val) = axum::http::HeaderValue::from_str(&build_clear_refresh_cookie()) {
+    if let Ok(val) =
+        axum::http::HeaderValue::from_str(&build_clear_refresh_cookie(config.is_production))
+    {
         response.headers_mut().insert("set-cookie", val);
     }
 
@@ -906,13 +956,52 @@ mod tests {
             &Claims {
                 sub: sub.into(),
                 role: role.into(),
+                capabilities: Vec::new(),
+                authz_v: Some(AUTHZ_CLAIMS_VERSION_V1),
                 exp: now + 3600,
                 iat: now,
                 jti: jti.into(),
+                iss: Some(INTERNAL_JWT_ISSUER.into()),
             },
             secret,
         )
         .expect("jwt should encode")
+    }
+
+    fn legacy_jwt_for(secret: &str, sub: &str, role: &str, jti: &str) -> String {
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        encode_jwt(
+            &Claims {
+                sub: sub.into(),
+                role: role.into(),
+                capabilities: Vec::new(),
+                authz_v: None,
+                exp: now + 3600,
+                iat: now,
+                jti: jti.into(),
+                iss: None,
+            },
+            secret,
+        )
+        .expect("legacy jwt should encode")
+    }
+
+    #[test]
+    fn refresh_cookie_omits_secure_in_dev_mode() {
+        let cookie = build_refresh_cookie("refresh-token", 60, false);
+        assert!(!cookie.contains("Secure"));
+
+        let clear_cookie = build_clear_refresh_cookie(false);
+        assert!(!clear_cookie.contains("Secure"));
+    }
+
+    #[test]
+    fn refresh_cookie_sets_secure_in_production_mode() {
+        let cookie = build_refresh_cookie("refresh-token", 60, true);
+        assert!(cookie.contains("Secure"));
+
+        let clear_cookie = build_clear_refresh_cookie(true);
+        assert!(clear_cookie.contains("Secure"));
     }
 
     #[tokio::test]
@@ -928,6 +1017,115 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn compatibility_probe_is_public_when_auth_is_enabled() {
+        let auth_config = Arc::new(AuthConfig {
+            jwt_secret: Some("jwt-test-secret".into()),
+            legacy_token: None,
+            is_production: false,
+        });
+        let revocation_set = Arc::new(RevocationSet::new());
+
+        let response = Router::new()
+            .route("/api/compatibility", get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn(auth_middleware))
+            .layer(Extension(auth_config))
+            .layer(Extension(revocation_set))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/compatibility")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn login_issues_authz_v1_claims() {
+        let secret = "jwt-test-secret".to_string();
+        let auth_config = Arc::new(AuthConfig {
+            jwt_secret: Some(secret.clone()),
+            legacy_token: Some("credential".into()),
+            is_production: false,
+        });
+
+        let response = Router::new()
+            .route("/api/auth/login", post(login))
+            .layer(Extension(auth_config))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"token":"credential"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        let access_token = payload["access_token"].as_str().unwrap();
+        let claims = decode_jwt(access_token, &secret).expect("login jwt should decode");
+
+        assert_eq!(claims.authz_v, Some(AUTHZ_CLAIMS_VERSION_V1));
+        assert!(claims.capabilities.is_empty());
+        assert_eq!(claims.iss.as_deref(), Some(INTERNAL_JWT_ISSUER));
+    }
+
+    #[tokio::test]
+    async fn refresh_upgrades_legacy_role_only_jwt_to_authz_v1() {
+        let secret = "jwt-test-secret".to_string();
+        let auth_config = Arc::new(AuthConfig {
+            jwt_secret: Some(secret.clone()),
+            legacy_token: None,
+            is_production: false,
+        });
+        let revocation_set = Arc::new(RevocationSet::new());
+
+        let response = Router::new()
+            .route("/api/auth/refresh", post(refresh))
+            .layer(Extension(auth_config))
+            .layer(Extension(revocation_set))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/refresh")
+                    .header(
+                        "authorization",
+                        format!(
+                            "Bearer {}",
+                            legacy_jwt_for(&secret, "legacy-user", "operator", "legacy-jti")
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        let access_token = payload["access_token"].as_str().unwrap();
+        let claims = decode_jwt(access_token, &secret).expect("refreshed jwt should decode");
+
+        assert_eq!(claims.role, "operator");
+        assert_eq!(claims.authz_v, Some(AUTHZ_CLAIMS_VERSION_V1));
+        assert!(claims.capabilities.is_empty());
+        assert_eq!(claims.iss.as_deref(), Some(INTERNAL_JWT_ISSUER));
     }
 
     #[tokio::test]

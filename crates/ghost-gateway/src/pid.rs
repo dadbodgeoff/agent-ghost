@@ -54,6 +54,20 @@ pub fn read_pid_file() -> Option<PidInfo> {
     }
 }
 
+fn cleanup_pid_temp_path(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to clean up pid temp file"
+            );
+        }
+    }
+}
+
 /// Writes the PID file atomically (write to .tmp, then rename).
 /// WP4-E: Acquires an exclusive flock on the PID file to detect stale processes.
 pub fn write_pid_file(port: u16) -> std::io::Result<()> {
@@ -69,8 +83,15 @@ pub fn write_pid_file(port: u16) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(&info).map_err(std::io::Error::other)?;
 
     let tmp_path = path.with_extension("pid.tmp");
-    std::fs::write(&tmp_path, &json)?;
-    std::fs::rename(&tmp_path, &path)?;
+    let write_result = (|| -> std::io::Result<()> {
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        cleanup_pid_temp_path(&tmp_path);
+        return Err(error);
+    }
 
     // WP4-E: Acquire exclusive flock — held for process lifetime.
     // This allows other processes to detect stale PIDs via non-blocking flock.
@@ -227,4 +248,54 @@ pub async fn pre_launch_check(expected_port: u16) -> PreLaunchAction {
     remove_pid_file();
 
     PreLaunchAction::KilledUnresponsive { old_pid }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::{Mutex, OnceLock};
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(ref value) = self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn write_pid_file_cleans_up_temp_file_on_rename_failure() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _env = EnvVarGuard::set("GHOST_HOME", temp_dir.path().to_str().unwrap());
+
+        let pid_path = pid_file_path();
+        std::fs::create_dir_all(&pid_path).unwrap();
+
+        let error = write_pid_file(39780).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory);
+        assert!(!pid_path.with_extension("pid.tmp").exists());
+        assert!(pid_path.is_dir());
+    }
 }

@@ -108,6 +108,13 @@ Studio sessions are DB-backed and exposed through:
 - `POST /api/studio/sessions/:id/messages/stream`
 - `GET /api/studio/sessions/:id/stream/recover`
 
+Adjacent but separate Studio surface:
+
+- `POST /api/studio/run`
+  - prompt-playground route
+  - not part of the session-backed Studio turn pipeline
+  - does not own Studio session persistence, stream recovery, or websocket session state
+
 Live session behavior includes:
 
 - local active-session restore

@@ -517,6 +517,27 @@ mod storage_tests {
         }
     }
 
+    #[test]
+    fn failed_store_cleans_up_tmp_file() {
+        let (store, dir) = temp_store();
+        let ref_id = OAuthRefId::new();
+        let ts = sample_token_set(1);
+        let provider_dir = dir.path().join("google");
+        let target_path = provider_dir.join(format!("{}.age", ref_id.as_uuid()));
+        let temp_path = provider_dir.join(format!("{}.tmp", ref_id.as_uuid()));
+
+        std::fs::create_dir_all(&target_path).unwrap();
+
+        let error = store.store_token(&ref_id, "google", &ts).unwrap_err();
+
+        match error {
+            OAuthError::StorageError(message) => assert!(message.contains("rename:")),
+            other => panic!("expected storage error, got {other:?}"),
+        }
+        assert!(!temp_path.exists(), "temp file was not cleaned up");
+        assert!(target_path.is_dir(), "forced rename failure target changed");
+    }
+
     // ─── Spec: "Adversarial: Corrupted encrypted file → graceful error, not panic" ──
 
     #[test]

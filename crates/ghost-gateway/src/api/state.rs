@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -23,6 +24,28 @@ pub struct CrdtQueryParams {
     pub offset: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CrdtDelta {
+    pub event_id: i64,
+    pub memory_id: String,
+    pub event_type: String,
+    pub delta: String,
+    pub actor_id: String,
+    pub recorded_at: String,
+    pub event_hash: String,
+    pub previous_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CrdtStateResponse {
+    pub agent_id: String,
+    pub deltas: Vec<CrdtDelta>,
+    pub total: u32,
+    pub limit: u32,
+    pub offset: u32,
+    pub chain_valid: bool,
+}
+
 /// GET /api/state/crdt/:agent_id — reconstruct CRDT state from memory_events.
 ///
 /// Returns the delta log for the specified agent, along with chain
@@ -31,7 +54,7 @@ pub async fn get_crdt_state(
     State(state): State<Arc<AppState>>,
     Path(agent_id): Path<String>,
     Query(params): Query<CrdtQueryParams>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<CrdtStateResponse> {
     let limit = params.limit.unwrap_or(100).min(500);
     let offset = params.offset.unwrap_or(0);
 
@@ -104,39 +127,37 @@ pub async fn get_crdt_state(
     // Verify hash chain integrity on the fetched deltas.
     let chain_valid = verify_delta_chain(&deltas);
 
-    Ok(Json(serde_json::json!({
-        "agent_id": agent_id,
-        "deltas": deltas,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "chain_valid": chain_valid,
-    })))
+    Ok(Json(CrdtStateResponse {
+        agent_id,
+        deltas,
+        total,
+        limit,
+        offset,
+        chain_valid,
+    }))
 }
 
-fn map_delta_row(row: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
-    Ok(serde_json::json!({
-        "event_id": row.get::<_, i64>(0)?,
-        "memory_id": row.get::<_, String>(1)?,
-        "event_type": row.get::<_, String>(2)?,
-        "delta": row.get::<_, String>(3)?,
-        "actor_id": row.get::<_, String>(4)?,
-        "recorded_at": row.get::<_, String>(5)?,
-        "event_hash": row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-        "previous_hash": row.get::<_, Option<String>>(7)?.unwrap_or_default(),
-    }))
+fn map_delta_row(row: &rusqlite::Row) -> rusqlite::Result<CrdtDelta> {
+    Ok(CrdtDelta {
+        event_id: row.get::<_, i64>(0)?,
+        memory_id: row.get::<_, String>(1)?,
+        event_type: row.get::<_, String>(2)?,
+        delta: row.get::<_, String>(3)?,
+        actor_id: row.get::<_, String>(4)?,
+        recorded_at: row.get::<_, String>(5)?,
+        event_hash: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        previous_hash: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+    })
 }
 
 /// Verify that the event_hash/previous_hash chain is consistent.
 /// Returns true if all links are valid (or if there are 0-1 events).
-fn verify_delta_chain(deltas: &[serde_json::Value]) -> bool {
+fn verify_delta_chain(deltas: &[CrdtDelta]) -> bool {
     if deltas.len() <= 1 {
         return true;
     }
     for i in 1..deltas.len() {
-        let prev_hash = deltas[i - 1].get("event_hash").and_then(|v| v.as_str());
-        let curr_prev = deltas[i].get("previous_hash").and_then(|v| v.as_str());
-        if prev_hash != curr_prev {
+        if deltas[i - 1].event_hash != deltas[i].previous_hash {
             return false;
         }
     }

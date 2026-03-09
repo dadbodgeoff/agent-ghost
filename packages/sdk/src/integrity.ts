@@ -1,44 +1,34 @@
 import type { GhostRequestFn } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface IntegrityBreak {
-  session_id?: string;
-  memory_id?: string;
+export type IntegrityBreak = Omit<components['schemas']['IntegrityBreak'], 'event_id'> & {
   event_id: string | number;
-  position: number;
-  expected_prev: string;
-  actual_prev: string;
-}
-
-export interface ItpEventsIntegrity {
-  sessions_checked: number;
-  total_events: number;
-  verified_events: number;
-  is_valid: boolean;
+};
+export type ItpEventsIntegrity = Omit<components['schemas']['ItpEventsIntegrity'], 'breaks'> & {
   breaks: IntegrityBreak[];
-}
-
-export interface MemoryEventsIntegrity {
-  memory_chains_checked: number;
-  total_events: number;
-  verified_events: number;
-  is_valid: boolean;
+};
+export type MemoryEventsIntegrity = Omit<
+  components['schemas']['MemoryEventsIntegrity'],
+  'breaks'
+> & {
   breaks: IntegrityBreak[];
-}
-
-export interface IntegrityChains {
-  itp_events?: ItpEventsIntegrity;
-  memory_events?: MemoryEventsIntegrity;
-}
-
-export interface VerifyChainParams {
-  chain?: 'itp' | 'memory' | 'both';
-}
-
-export interface VerifyChainResult {
-  agent_id: string;
-  chain_type: string;
+};
+export type IntegrityChains = Omit<
+  components['schemas']['IntegrityChains'],
+  'itp_events' | 'memory_events'
+> & {
+  itp_events?: ItpEventsIntegrity | null;
+  memory_events?: MemoryEventsIntegrity | null;
+};
+export type VerifyChainParams = NonNullable<
+  operations['verify_integrity_chain']['parameters']['query']
+>;
+export type VerifyChainResult = Omit<
+  operations['verify_integrity_chain']['responses'][200]['content']['application/json'],
+  'chains'
+> & {
   chains: IntegrityChains;
-}
+};
 
 export class IntegrityAPI {
   constructor(private request: GhostRequestFn) {}

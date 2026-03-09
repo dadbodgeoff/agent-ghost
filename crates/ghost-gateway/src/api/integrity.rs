@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -21,6 +22,54 @@ pub struct IntegrityQueryParams {
     pub chain: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum IntegrityEventId {
+    Text(String),
+    Numeric(i64),
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IntegrityBreak {
+    pub session_id: Option<String>,
+    pub memory_id: Option<String>,
+    pub event_id: IntegrityEventId,
+    pub position: usize,
+    pub expected_prev: String,
+    pub actual_prev: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ItpEventsIntegrity {
+    pub sessions_checked: usize,
+    pub total_events: usize,
+    pub verified_events: usize,
+    pub is_valid: bool,
+    pub breaks: Vec<IntegrityBreak>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MemoryEventsIntegrity {
+    pub memory_chains_checked: usize,
+    pub total_events: usize,
+    pub verified_events: usize,
+    pub is_valid: bool,
+    pub breaks: Vec<IntegrityBreak>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IntegrityChains {
+    pub itp_events: Option<ItpEventsIntegrity>,
+    pub memory_events: Option<MemoryEventsIntegrity>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct VerifyChainResponse {
+    pub agent_id: String,
+    pub chain_type: String,
+    pub chains: IntegrityChains,
+}
+
 /// GET /api/integrity/chain/:agent_id — verify hash chain integrity.
 ///
 /// Walks the event_hash → previous_hash chain for the specified agent's
@@ -29,7 +78,7 @@ pub async fn verify_chain(
     State(state): State<Arc<AppState>>,
     Path(agent_id): Path<String>,
     Query(params): Query<IntegrityQueryParams>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<VerifyChainResponse> {
     let chain_type = params.chain.unwrap_or_else(|| "both".to_string());
 
     let db = state
@@ -37,32 +86,35 @@ pub async fn verify_chain(
         .read()
         .map_err(|e| ApiError::db_error("verify_chain", e))?;
 
-    let mut results = serde_json::Map::new();
+    let mut chains = IntegrityChains {
+        itp_events: None,
+        memory_events: None,
+    };
 
     // Verify ITP events chain.
     if chain_type == "itp" || chain_type == "both" {
         let itp_result = verify_itp_chain(&db, &agent_id)?;
-        results.insert("itp_events".to_string(), itp_result);
+        chains.itp_events = Some(itp_result);
     }
 
     // Verify memory events chain.
     if chain_type == "memory" || chain_type == "both" {
         let mem_result = verify_memory_chain(&db, &agent_id)?;
-        results.insert("memory_events".to_string(), mem_result);
+        chains.memory_events = Some(mem_result);
     }
 
-    Ok(Json(serde_json::json!({
-        "agent_id": agent_id,
-        "chain_type": chain_type,
-        "chains": results,
-    })))
+    Ok(Json(VerifyChainResponse {
+        agent_id,
+        chain_type,
+        chains,
+    }))
 }
 
 /// Verify hash chain for itp_events belonging to sessions where agent is a sender.
 fn verify_itp_chain(
     conn: &rusqlite::Connection,
     agent_id: &str,
-) -> Result<serde_json::Value, ApiError> {
+) -> Result<ItpEventsIntegrity, ApiError> {
     // Get all sessions where this agent participated.
     let mut session_stmt = conn
         .prepare(
@@ -118,31 +170,32 @@ fn verify_itp_chain(
             if prev_event_hash == curr_prev_hash {
                 verified_events += 1;
             } else {
-                breaks.push(serde_json::json!({
-                    "session_id": session_id,
-                    "event_id": event.0,
-                    "position": i,
-                    "expected_prev": prev_event_hash,
-                    "actual_prev": curr_prev_hash,
-                }));
+                breaks.push(IntegrityBreak {
+                    session_id: Some(session_id.clone()),
+                    memory_id: None,
+                    event_id: IntegrityEventId::Text(event.0.clone()),
+                    position: i,
+                    expected_prev: prev_event_hash.clone(),
+                    actual_prev: curr_prev_hash.clone(),
+                });
             }
         }
     }
 
-    Ok(serde_json::json!({
-        "sessions_checked": sessions.len(),
-        "total_events": total_events,
-        "verified_events": verified_events,
-        "is_valid": breaks.is_empty(),
-        "breaks": breaks,
-    }))
+    Ok(ItpEventsIntegrity {
+        sessions_checked: sessions.len(),
+        total_events,
+        verified_events,
+        is_valid: breaks.is_empty(),
+        breaks,
+    })
 }
 
 /// Verify hash chain for memory_events belonging to the specified agent.
 fn verify_memory_chain(
     conn: &rusqlite::Connection,
     agent_id: &str,
-) -> Result<serde_json::Value, ApiError> {
+) -> Result<MemoryEventsIntegrity, ApiError> {
     // Group by memory_id and verify each chain independently.
     let mut mem_stmt = conn
         .prepare("SELECT DISTINCT memory_id FROM memory_events WHERE actor_id = ?1")
@@ -193,22 +246,23 @@ fn verify_memory_chain(
             if prev_event_hash == curr_prev_hash {
                 verified_events += 1;
             } else {
-                breaks.push(serde_json::json!({
-                    "memory_id": memory_id,
-                    "event_id": event.0,
-                    "position": i,
-                    "expected_prev": prev_event_hash,
-                    "actual_prev": curr_prev_hash,
-                }));
+                breaks.push(IntegrityBreak {
+                    session_id: None,
+                    memory_id: Some(memory_id.clone()),
+                    event_id: IntegrityEventId::Numeric(event.0),
+                    position: i,
+                    expected_prev: prev_event_hash.clone(),
+                    actual_prev: curr_prev_hash.clone(),
+                });
             }
         }
     }
 
-    Ok(serde_json::json!({
-        "memory_chains_checked": memory_ids.len(),
-        "total_events": total_events,
-        "verified_events": verified_events,
-        "is_valid": breaks.is_empty(),
-        "breaks": breaks,
-    }))
+    Ok(MemoryEventsIntegrity {
+        memory_chains_checked: memory_ids.len(),
+        total_events,
+        verified_events,
+        is_valid: breaks.is_empty(),
+        breaks,
+    })
 }

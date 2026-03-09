@@ -45,6 +45,7 @@ use utoipa::OpenApi;
         branch_runtime_session,
         heartbeat_runtime_session,
         get_convergence_scores,
+        get_convergence_history,
         list_goals,
         get_goal,
         approve_goal,
@@ -179,16 +180,10 @@ use utoipa::OpenApi;
             AgentInfoSchema,
             CreateAgentRequestSchema,
             SessionResponseSchema,
-            ConvergenceScoreSchema,
-            SessionSchema,
-            SessionEventSchema,
-            SessionBookmarkSchema,
             AgentCostSchema,
             WorkflowSchema,
             WorkflowExecutionSchema,
             LiveExecutionSchema,
-            ChannelSchema,
-            ItpEventSchema,
             StudioSessionSchema,
             StudioMessageSchema,
             StudioSessionWithMessagesResponseSchema,
@@ -200,20 +195,165 @@ use utoipa::OpenApi;
             StudioMessageAcceptedResponseSchema,
             StudioRecoverStreamEventSchema,
             StudioRecoverStreamResponseSchema,
+            crate::api::admin::BackupListResponse,
+            crate::api::admin::BackupResponse,
+            crate::api::admin::ExportEntity,
+            crate::api::admin::ExportResponse,
+            crate::api::admin::RestoreRequest,
+            crate::api::admin::RestoreVerification,
+            crate::api::agent_chat::AgentChatAcceptedResponse,
+            crate::api::agent_chat::AgentChatRequest,
+            crate::api::agent_chat::AgentChatResponse,
+            crate::api::convergence::ConvergenceErrorResponse,
+            crate::api::convergence::ConvergenceHistoryEntryResponse,
+            crate::api::convergence::ConvergenceHistoryResponse,
+            crate::api::convergence::ConvergenceScoreResponse,
+            crate::api::convergence::ConvergenceScoresResponse,
+            crate::api::goals::GoalDecisionRequestBody,
+            crate::api::goals::GoalDecisionResponse,
+            crate::api::goals::GoalListResponse,
+            crate::api::goals::GoalProposalDetail,
+            crate::api::goals::GoalProposalSummary,
+            crate::api::goals::GoalProposalTransition,
+            crate::api::channels::ChannelListItem,
+            crate::api::channels::ChannelListResponse,
+            crate::api::channels::ChannelStatusResponse,
+            crate::api::channels::CreateChannelRequest,
+            crate::api::channels::CreateChannelResponse,
+            crate::api::channels::InjectMessageRequest,
+            crate::api::channels::InjectMessageResponse,
+            crate::api::integrity::IntegrityBreak,
+            crate::api::integrity::IntegrityChains,
+            crate::api::integrity::IntegrityEventId,
+            crate::api::integrity::ItpEventsIntegrity,
+            crate::api::integrity::MemoryEventsIntegrity,
+            crate::api::integrity::VerifyChainResponse,
+            crate::api::itp::ItpEvent,
+            crate::api::itp::ItpEventsResponse,
+            crate::api::memory::ArchiveMemoryRequest,
+            crate::api::memory::ArchivedMemoryEntry,
+            crate::api::memory::ArchivedMemoryListResponse,
+            crate::api::memory::ListMemoriesResponse,
+            crate::api::memory::MemoryArchiveStatusResponse,
+            crate::api::memory::MemoryEntry,
+            crate::api::memory::MemoryGraphEdge,
+            crate::api::memory::MemoryGraphNode,
+            crate::api::memory::MemoryGraphResponse,
+            crate::api::memory::MemorySearchFilters,
+            crate::api::memory::MemorySearchResultEntry,
+            crate::api::memory::SearchMemoriesResponse,
+            crate::api::mesh_viz::ConsensusResponse,
+            crate::api::mesh_viz::ConsensusRound,
+            crate::api::mesh_viz::Delegation,
+            crate::api::mesh_viz::DelegationsResponse,
+            crate::api::mesh_viz::SybilMetrics,
+            crate::api::mesh_viz::TrustEdge,
+            crate::api::mesh_viz::TrustGraphResponse,
+            crate::api::mesh_viz::TrustNode,
+            crate::api::marketplace::AgentDelistResponse,
+            crate::api::marketplace::AgentListingResponse,
+            crate::api::marketplace::AgentListResponse,
+            crate::api::marketplace::AgentStatusUpdateResponse,
+            crate::api::marketplace::CompleteContractRequest,
+            crate::api::marketplace::ContractAcceptedResponse,
+            crate::api::marketplace::ContractCanceledResponse,
+            crate::api::marketplace::ContractCompletedResponse,
+            crate::api::marketplace::ContractDisputedResponse,
+            crate::api::marketplace::ContractListResponse,
+            crate::api::marketplace::ContractRejectedResponse,
+            crate::api::marketplace::ContractResolvedResponse,
+            crate::api::marketplace::ContractResponse,
+            crate::api::marketplace::ContractStartedResponse,
+            crate::api::marketplace::DiscoverRequest,
+            crate::api::marketplace::DiscoverResponse,
+            crate::api::marketplace::ListAgentsQuery,
+            crate::api::marketplace::ListContractsQuery,
+            crate::api::marketplace::ListReviewsQuery,
+            crate::api::marketplace::ListSkillsQuery,
+            crate::api::marketplace::ListTransactionsQuery,
+            crate::api::marketplace::ProposeContractRequest,
+            crate::api::marketplace::PublishSkillRequest,
+            crate::api::marketplace::RegisterAgentRequest,
+            crate::api::marketplace::ReviewListResponse,
+            crate::api::marketplace::ReviewResponse,
+            crate::api::marketplace::ReviewSubmittedResponse,
+            crate::api::marketplace::SeedWalletRequest,
+            crate::api::marketplace::SkillListingResponse,
+            crate::api::marketplace::SkillListResponse,
+            crate::api::marketplace::SkillPublishResponse,
+            crate::api::marketplace::SubmitReviewRequest,
+            crate::api::marketplace::TransactionListResponse,
+            crate::api::marketplace::TransactionResponse,
+            crate::api::marketplace::UpdateAgentStatusRequest,
+            crate::api::marketplace::WalletQuery,
+            crate::api::marketplace::WalletResponse,
+            crate::api::oauth_routes::ApiCallRequest,
+            crate::api::oauth_routes::ConnectRequest,
+            crate::api::oauth_routes::OAuthApiRequestSchema,
+            crate::api::oauth_routes::OAuthConnectResponse,
+            crate::api::oauth_routes::OAuthConnectionStatusResponse,
+            crate::api::oauth_routes::OAuthExecuteAcceptedResponse,
+            crate::api::oauth_routes::OAuthExecuteResponse,
+            crate::api::pc_control::ActionBudget,
+            crate::api::pc_control::ActionLogEntry,
+            crate::api::pc_control::AllowedAppsRequest,
+            crate::api::pc_control::BlockedHotkeysRequest,
+            crate::api::pc_control::PcControlActionsResponse,
+            crate::api::pc_control::PcControlPersistedState,
+            crate::api::pc_control::PcControlRuntimeState,
+            crate::api::pc_control::PcControlStatus,
+            crate::api::pc_control::SafeZone,
+            crate::api::pc_control::SafeZonesRequest,
+            crate::api::pc_control::UpdatePcControlStatusRequest,
+            crate::api::profiles::AssignProfileRequest,
+            crate::api::profiles::AssignProfileResponse,
+            crate::api::profiles::CreateProfileRequest,
+            crate::api::profiles::DeleteProfileResponse,
+            crate::api::profiles::ProfileListResponse,
+            crate::api::profiles::ProfileSummary,
+            crate::api::profiles::UpdateProfileRequest,
+            crate::api::provider_keys::DeleteKeyResponse,
+            crate::api::provider_keys::ProviderKeyInfo,
+            crate::api::provider_keys::ProviderKeysResponse,
+            crate::api::provider_keys::SetKeyRequest,
+            crate::api::provider_keys::SetKeyResponse,
+            crate::api::push_routes::PushKeys,
+            crate::api::push_routes::PushSubscription,
+            crate::api::push_routes::VapidKeyResponse,
+            crate::api::sessions::BranchRequest,
+            crate::api::sessions::BranchSessionResponse,
+            crate::api::sessions::CreateBookmarkRequest,
+            crate::api::sessions::CreateBookmarkResponse,
+            crate::api::sessions::DeleteBookmarkResponse,
+            crate::api::sessions::RuntimeSessionSummary,
+            crate::api::sessions::RuntimeSessionsCursorResponse,
+            crate::api::sessions::RuntimeSessionsPageResponse,
+            crate::api::sessions::SessionBookmark,
+            crate::api::sessions::SessionBookmarksResponse,
+            crate::api::sessions::SessionEvent,
+            crate::api::sessions::SessionEventsResponse,
+            crate::api::sessions::SessionListResponse,
+            crate::api::state::CrdtDelta,
+            crate::api::state::CrdtStateResponse,
+            crate::api::studio::StudioMessage,
+            crate::api::studio::StudioRunRequest,
+            crate::api::studio::StudioRunResponse,
+            crate::api::traces::SpanRecord,
+            crate::api::traces::TraceGroup,
+            crate::api::traces::TraceResponse,
+            crate::api::workflows::CreateWorkflowRequest,
+            crate::api::workflows::ExecuteWorkflowRequest,
+            crate::api::workflows::UpdateWorkflowRequest,
+            crate::api::workflows::WorkflowCreateResponse,
+            crate::api::workflows::WorkflowExecutionListResponse,
+            crate::api::workflows::WorkflowExecutionSummary,
+            crate::api::workflows::WorkflowListResponse,
+            crate::api::workflows::WorkflowResponse,
+            crate::api::workflows::WorkflowUpdateResponse,
             OAuthProviderSchema,
             OAuthConnectionSchema,
-            ProfileSchema,
             SearchResultSchema,
             SearchResponseSchema,
-            ProviderKeyInfoSchema,
-            MemoryGraphNodeSchema,
-            MemoryGraphEdgeSchema,
-            MemoryGraphResponseSchema,
-            PcControlSafeZoneSchema,
-            PcControlActionBudgetSchema,
-            PcControlStatusSchema,
-            PcControlActionLogSchema,
-            PushSubscriptionSchema,
             WebhookSchema,
             crate::skill_catalog::SkillStateDto,
             crate::skill_catalog::SkillInstallStateDto,
@@ -299,17 +439,6 @@ pub struct CreateAgentRequestSchema {
     pub capabilities: Option<Vec<String>>,
     pub skills: Option<Vec<String>>,
     pub generate_keypair: Option<bool>,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct ConvergenceScoreSchema {
-    pub agent_id: String,
-    pub agent_name: String,
-    pub score: f64,
-    pub level: i32,
-    pub profile: String,
-    pub signal_scores: serde_json::Value,
-    pub computed_at: Option<String>,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -403,19 +532,6 @@ pub struct LiveExecutionSchema {
     pub recovery_required: bool,
     pub created_at: String,
     pub updated_at: String,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct ChannelSchema {
-    pub id: String,
-    pub channel_type: String,
-    pub status: String,
-    pub status_message: Option<String>,
-    pub agent_id: String,
-    pub agent_name: Option<String>,
-    pub config: serde_json::Value,
-    pub last_message_at: Option<String>,
-    pub message_count: i64,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -519,6 +635,8 @@ pub struct StudioRecoverStreamEventSchema {
     pub event_type: String,
     pub payload: serde_json::Value,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reconstructed: Option<bool>,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -541,15 +659,6 @@ pub struct OAuthConnectionSchema {
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct ProfileSchema {
-    pub name: String,
-    pub description: String,
-    pub is_preset: bool,
-    pub weights: Vec<f64>,
-    pub thresholds: Vec<f64>,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct SearchResultSchema {
     pub result_type: String,
     pub id: String,
@@ -563,15 +672,6 @@ pub struct SearchResponseSchema {
     pub query: String,
     pub results: Vec<SearchResultSchema>,
     pub total: i64,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct ProviderKeyInfoSchema {
-    pub provider_name: String,
-    pub model: String,
-    pub env_name: String,
-    pub is_set: bool,
-    pub preview: Option<String>,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -597,67 +697,6 @@ pub struct MemoryGraphEdgeSchema {
 pub struct MemoryGraphResponseSchema {
     pub nodes: Vec<MemoryGraphNodeSchema>,
     pub edges: Vec<MemoryGraphEdgeSchema>,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct PcControlSafeZoneSchema {
-    pub x: i64,
-    pub y: i64,
-    pub width: i64,
-    pub height: i64,
-    pub label: String,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct PcControlActionBudgetSchema {
-    pub max_per_minute: i64,
-    pub max_per_hour: i64,
-    pub used_this_minute: i64,
-    pub used_this_hour: i64,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct PcControlStatusSchema {
-    pub enabled: bool,
-    pub action_budget: PcControlActionBudgetSchema,
-    pub allowed_apps: Vec<String>,
-    pub safe_zone: Option<PcControlSafeZoneSchema>,
-    pub safe_zones: Vec<PcControlSafeZoneSchema>,
-    pub blocked_hotkeys: Vec<String>,
-    pub circuit_breaker_state: String,
-    pub persisted: PcControlPersistedStateSchema,
-    pub runtime: PcControlRuntimeStateSchema,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct PcControlPersistedStateSchema {
-    pub enabled: bool,
-    pub allowed_apps: Vec<String>,
-    pub safe_zone: Option<PcControlSafeZoneSchema>,
-    pub blocked_hotkeys: Vec<String>,
-    pub action_budget: PcControlActionBudgetSchema,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct PcControlRuntimeStateSchema {
-    pub circuit_breaker_state: String,
-}
-
-#[derive(utoipa::ToSchema, serde::Serialize)]
-pub struct PcControlActionLogSchema {
-    pub id: String,
-    pub action_type: String,
-    pub target: String,
-    pub timestamp: String,
-    pub result: String,
-    pub input_json: String,
-    pub result_json: String,
-    pub target_app: Option<String>,
-    pub coordinates: Option<String>,
-    pub blocked: bool,
-    pub block_reason: Option<String>,
-    pub agent_id: String,
-    pub session_id: String,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -740,9 +779,11 @@ async fn delete_agent() {}
     params(
         ("page" = Option<u32>, Query, description = "Page number (1-based)"),
         ("page_size" = Option<u32>, Query, description = "Items per page (max 200)"),
+        ("cursor" = Option<String>, Query, description = "Cursor for runtime session pagination"),
+        ("limit" = Option<u32>, Query, description = "Items per page in cursor mode (default 50, max 200)"),
     ),
     responses(
-        (status = 200, description = "Paginated session list"),
+        (status = 200, description = "Runtime session list", body = crate::api::sessions::SessionListResponse),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = []))
@@ -753,7 +794,7 @@ async fn list_sessions() {}
     get, path = "/api/convergence/scores",
     tag = "convergence",
     responses(
-        (status = 200, description = "Convergence scores per agent", body = inline(serde_json::Value)),
+        (status = 200, description = "Convergence scores per agent", body = crate::api::convergence::ConvergenceScoresResponse),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = []))
@@ -761,10 +802,32 @@ async fn list_sessions() {}
 async fn get_convergence_scores() {}
 
 #[utoipa::path(
+    get, path = "/api/convergence/history/{agent_id}",
+    tag = "convergence",
+    params(
+        ("agent_id" = String, Path, description = "Agent UUID"),
+        ("since" = Option<String>, Query, description = "Only include rows at or after this ISO 8601 timestamp"),
+        ("limit" = Option<u32>, Query, description = "Maximum rows to return (default 100, max 500)"),
+    ),
+    responses(
+        (status = 200, description = "Persisted convergence history for a single agent", body = crate::api::convergence::ConvergenceHistoryResponse),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_convergence_history() {}
+
+#[utoipa::path(
     get, path = "/api/goals",
     tag = "goals",
+    params(
+        ("status" = Option<String>, Query, description = "Goal status filter: pending, approved, or rejected"),
+        ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
+        ("page" = Option<u32>, Query, description = "Page number (1-based)"),
+        ("page_size" = Option<u32>, Query, description = "Items per page (max 200)"),
+    ),
     responses(
-        (status = 200, description = "List of proposals/goals"),
+        (status = 200, description = "List of proposals/goals", body = crate::api::goals::GoalListResponse),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = []))
@@ -775,10 +838,11 @@ async fn list_goals() {}
     post, path = "/api/goals/{id}/approve",
     tag = "goals",
     params(("id" = String, Path, description = "Goal/proposal ID")),
+    request_body = crate::api::goals::GoalDecisionRequestBody,
     responses(
-        (status = 200, description = "Goal approved"),
-        (status = 404, description = "Goal not found"),
-        (status = 409, description = "Already resolved"),
+        (status = 200, description = "Goal approved", body = crate::api::goals::GoalDecisionResponse),
+        (status = 404, description = "Goal not found", body = ErrorResponseSchema),
+        (status = 409, description = "Already resolved", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -788,10 +852,11 @@ async fn approve_goal() {}
     post, path = "/api/goals/{id}/reject",
     tag = "goals",
     params(("id" = String, Path, description = "Goal/proposal ID")),
+    request_body = crate::api::goals::GoalDecisionRequestBody,
     responses(
-        (status = 200, description = "Goal rejected"),
-        (status = 404, description = "Goal not found"),
-        (status = 409, description = "Already resolved"),
+        (status = 200, description = "Goal rejected", body = crate::api::goals::GoalDecisionResponse),
+        (status = 404, description = "Goal not found", body = ErrorResponseSchema),
+        (status = 409, description = "Already resolved", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -800,9 +865,15 @@ async fn reject_goal() {}
 #[utoipa::path(
     get, path = "/api/memory",
     tag = "memory",
+    params(
+        ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
+        ("page" = Option<u32>, Query, description = "Page number (1-based)"),
+        ("page_size" = Option<u32>, Query, description = "Items per page (max 200)"),
+        ("include_archived" = Option<bool>, Query, description = "Include archived memories in results"),
+    ),
     responses(
-        (status = 200, description = "List of memories"),
-        (status = 500, description = "Internal error"),
+        (status = 200, description = "List of memories", body = crate::api::memory::ListMemoriesResponse),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -813,7 +884,7 @@ async fn list_memories() {}
     tag = "memory",
     params(("id" = String, Path, description = "Memory ID")),
     responses(
-        (status = 200, description = "Memory detail"),
+        (status = 200, description = "Memory detail", body = crate::api::memory::MemoryEntry),
         (status = 404, description = "Memory not found"),
     ),
     security(("bearer_auth" = []))
@@ -823,8 +894,13 @@ async fn get_memory() {}
 #[utoipa::path(
     get, path = "/api/memory/graph",
     tag = "memory",
+    params(
+        ("agent_id" = Option<String>, Query, description = "Filter the graph to a specific agent"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of memories to include"),
+        ("include_archived" = Option<bool>, Query, description = "Include archived memories in the graph"),
+    ),
     responses(
-        (status = 200, description = "Derived memory graph", body = MemoryGraphResponseSchema),
+        (status = 200, description = "Derived memory graph", body = crate::api::memory::MemoryGraphResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -957,7 +1033,7 @@ async fn audit_export() {}
     post, path = "/api/admin/backup",
     tag = "admin",
     responses(
-        (status = 200, description = "Backup created", body = inline(serde_json::Value)),
+        (status = 200, description = "Backup created", body = crate::api::admin::BackupResponse),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -968,7 +1044,7 @@ async fn create_backup() {}
     get, path = "/api/admin/backups",
     tag = "admin",
     responses(
-        (status = 200, description = "Available backups", body = inline(serde_json::Value)),
+        (status = 200, description = "Available backups", body = crate::api::admin::BackupListResponse),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -980,7 +1056,14 @@ async fn list_backups() {}
     tag = "admin",
     params(("format" = Option<String>, Query, description = "Export format: json or jsonl")),
     responses(
-        (status = 200, description = "Administrative export payload"),
+        (
+            status = 200,
+            description = "Administrative export payload",
+            content(
+                (crate::api::admin::ExportResponse = "application/json"),
+                (String = "application/x-ndjson")
+            )
+        ),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -990,10 +1073,10 @@ async fn export_backup_data() {}
 #[utoipa::path(
     post, path = "/api/admin/restore",
     tag = "admin",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::admin::RestoreRequest,
     responses(
-        (status = 200, description = "Backup verified for restore", body = inline(serde_json::Value)),
-        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+        (status = 200, description = "Backup verified for restore", body = crate::api::admin::RestoreVerification),
+        (status = 403, description = "Superadmin role required", body = ErrorResponseSchema),
         (status = 404, description = "Backup file not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1046,7 +1129,7 @@ async fn get_auth_session() {}
     tag = "goals",
     params(("id" = String, Path, description = "Goal/proposal ID")),
     responses(
-        (status = 200, description = "Goal detail", body = inline(serde_json::Value)),
+        (status = 200, description = "Goal detail", body = crate::api::goals::GoalProposalDetail),
         (status = 404, description = "Goal not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1056,8 +1139,18 @@ async fn get_goal() {}
 #[utoipa::path(
     get, path = "/api/memory/search",
     tag = "memory",
+    params(
+        ("q" = Option<String>, Query, description = "Search query"),
+        ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
+        ("memory_type" = Option<String>, Query, description = "Filter by memory type"),
+        ("importance" = Option<String>, Query, description = "Filter by memory importance"),
+        ("confidence_min" = Option<f64>, Query, description = "Minimum confidence"),
+        ("confidence_max" = Option<f64>, Query, description = "Maximum confidence"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of results"),
+        ("include_archived" = Option<bool>, Query, description = "Include archived memories"),
+    ),
     responses(
-        (status = 200, description = "Memory search results", body = inline(serde_json::Value)),
+        (status = 200, description = "Memory search results", body = crate::api::memory::SearchMemoriesResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1068,7 +1161,7 @@ async fn search_memories() {}
     get, path = "/api/memory/archived",
     tag = "memory",
     responses(
-        (status = 200, description = "Archived memory entries", body = inline(serde_json::Value)),
+        (status = 200, description = "Archived memory entries", body = crate::api::memory::ArchivedMemoryListResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1078,9 +1171,13 @@ async fn list_archived_memories() {}
 #[utoipa::path(
     get, path = "/api/sessions/{id}/events",
     tag = "sessions",
-    params(("id" = String, Path, description = "Runtime session ID")),
+    params(
+        ("id" = String, Path, description = "Runtime session ID"),
+        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of events to return"),
+    ),
     responses(
-        (status = 200, description = "Runtime session events", body = inline(serde_json::Value)),
+        (status = 200, description = "Runtime session events", body = crate::api::sessions::SessionEventsResponse),
         (status = 404, description = "Session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1092,7 +1189,7 @@ async fn get_session_events() {}
     tag = "sessions",
     params(("id" = String, Path, description = "Runtime session ID")),
     responses(
-        (status = 200, description = "Session bookmarks", body = inline(serde_json::Value)),
+        (status = 200, description = "Session bookmarks", body = crate::api::sessions::SessionBookmarksResponse),
         (status = 404, description = "Session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1103,9 +1200,9 @@ async fn list_session_bookmarks() {}
     post, path = "/api/sessions/{id}/bookmarks",
     tag = "sessions",
     params(("id" = String, Path, description = "Runtime session ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::sessions::CreateBookmarkRequest,
     responses(
-        (status = 201, description = "Bookmark created"),
+        (status = 201, description = "Bookmark created", body = crate::api::sessions::CreateBookmarkResponse),
         (status = 404, description = "Session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1120,7 +1217,7 @@ async fn create_session_bookmark() {}
         ("bookmark_id" = String, Path, description = "Bookmark ID"),
     ),
     responses(
-        (status = 200, description = "Bookmark deleted"),
+        (status = 200, description = "Bookmark deleted", body = crate::api::sessions::DeleteBookmarkResponse),
         (status = 404, description = "Bookmark not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1131,9 +1228,9 @@ async fn delete_session_bookmark() {}
     post, path = "/api/sessions/{id}/branch",
     tag = "sessions",
     params(("id" = String, Path, description = "Runtime session ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::sessions::BranchRequest,
     responses(
-        (status = 200, description = "Session branched"),
+        (status = 201, description = "Session branched", body = crate::api::sessions::BranchSessionResponse),
         (status = 404, description = "Session not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1167,8 +1264,12 @@ async fn get_live_execution() {}
 #[utoipa::path(
     get, path = "/api/workflows",
     tag = "workflows",
+    params(
+        ("page" = Option<u32>, Query, description = "Page number (1-based)"),
+        ("page_size" = Option<u32>, Query, description = "Items per page (max 200)"),
+    ),
     responses(
-        (status = 200, description = "Workflow list", body = inline(serde_json::Value)),
+        (status = 200, description = "Workflow list", body = crate::api::workflows::WorkflowListResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1180,7 +1281,7 @@ async fn list_workflows() {}
     tag = "workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
-        (status = 200, description = "Workflow detail", body = WorkflowSchema),
+        (status = 200, description = "Workflow detail", body = crate::api::workflows::WorkflowResponse),
         (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1192,7 +1293,7 @@ async fn get_workflow() {}
     tag = "workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
-        (status = 200, description = "Workflow execution history", body = inline(serde_json::Value)),
+        (status = 200, description = "Workflow execution history", body = crate::api::workflows::WorkflowExecutionListResponse),
         (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1202,9 +1303,9 @@ async fn list_workflow_executions() {}
 #[utoipa::path(
     post, path = "/api/workflows",
     tag = "workflows",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::workflows::CreateWorkflowRequest,
     responses(
-        (status = 201, description = "Workflow created"),
+        (status = 201, description = "Workflow created", body = crate::api::workflows::WorkflowCreateResponse),
         (status = 400, description = "Invalid workflow", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1215,9 +1316,9 @@ async fn create_workflow() {}
     put, path = "/api/workflows/{id}",
     tag = "workflows",
     params(("id" = String, Path, description = "Workflow ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::workflows::UpdateWorkflowRequest,
     responses(
-        (status = 200, description = "Workflow updated"),
+        (status = 200, description = "Workflow updated", body = crate::api::workflows::WorkflowUpdateResponse),
         (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1228,7 +1329,7 @@ async fn update_workflow() {}
     post, path = "/api/workflows/{id}/execute",
     tag = "workflows",
     params(("id" = String, Path, description = "Workflow ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::workflows::ExecuteWorkflowRequest,
     responses(
         (status = 200, description = "Workflow execution started", body = WorkflowExecutionSchema),
         (status = 404, description = "Workflow not found", body = ErrorResponseSchema),
@@ -1256,9 +1357,9 @@ async fn resume_workflow_execution() {}
     post, path = "/api/memory/{id}/archive",
     tag = "memory",
     params(("id" = String, Path, description = "Memory ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::memory::ArchiveMemoryRequest,
     responses(
-        (status = 200, description = "Memory archived", body = inline(serde_json::Value)),
+        (status = 200, description = "Memory archived", body = crate::api::memory::MemoryArchiveStatusResponse),
         (status = 400, description = "Invalid archive request", body = ErrorResponseSchema),
         (status = 404, description = "Memory not found", body = ErrorResponseSchema),
     ),
@@ -1271,7 +1372,7 @@ async fn archive_memory() {}
     tag = "memory",
     params(("id" = String, Path, description = "Memory ID")),
     responses(
-        (status = 200, description = "Memory restored from archive", body = inline(serde_json::Value)),
+        (status = 200, description = "Memory restored from archive", body = crate::api::memory::MemoryArchiveStatusResponse),
         (status = 400, description = "Invalid unarchive request", body = ErrorResponseSchema),
         (status = 404, description = "Memory not found", body = ErrorResponseSchema),
     ),
@@ -1376,9 +1477,9 @@ async fn recover_studio_stream() {}
 #[utoipa::path(
     post, path = "/api/studio/run",
     tag = "studio",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::studio::StudioRunRequest,
     responses(
-        (status = 200, description = "Studio run result", body = inline(serde_json::Value)),
+        (status = 200, description = "Studio run result", body = crate::api::studio::StudioRunResponse),
         (status = 400, description = "Invalid prompt request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1390,8 +1491,8 @@ async fn studio_run() {}
     tag = "traces",
     params(("session_id" = String, Path, description = "Runtime session ID")),
     responses(
-        (status = 200, description = "Session traces", body = inline(serde_json::Value)),
-        (status = 404, description = "Trace data not found", body = ErrorResponseSchema),
+        (status = 200, description = "Session traces", body = crate::api::traces::TraceResponse),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1407,7 +1508,7 @@ async fn get_traces() {}
         ("offset" = Option<u32>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "CRDT delta log snapshot", body = inline(serde_json::Value)),
+        (status = 200, description = "CRDT delta log snapshot", body = crate::api::state::CrdtStateResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1422,7 +1523,7 @@ async fn get_crdt_state() {}
         ("chain" = Option<String>, Query, description = "Chain selector: itp, memory, or both"),
     ),
     responses(
-        (status = 200, description = "Hash-chain verification report", body = inline(serde_json::Value)),
+        (status = 200, description = "Hash-chain verification report", body = crate::api::integrity::VerifyChainResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1432,10 +1533,10 @@ async fn verify_integrity_chain() {}
 #[utoipa::path(
     post, path = "/api/agent/chat",
     tag = "chat",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::agent_chat::AgentChatRequest,
     responses(
-        (status = 200, description = "Single-turn agent chat result", body = inline(serde_json::Value)),
-        (status = 202, description = "Agent chat accepted and requires recovery polling", body = inline(serde_json::Value)),
+        (status = 200, description = "Single-turn agent chat result", body = crate::api::agent_chat::AgentChatResponse),
+        (status = 202, description = "Agent chat accepted and requires recovery polling", body = crate::api::agent_chat::AgentChatAcceptedResponse),
         (status = 400, description = "Invalid chat request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1445,7 +1546,7 @@ async fn agent_chat() {}
 #[utoipa::path(
     post, path = "/api/agent/chat/stream",
     tag = "chat",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::agent_chat::AgentChatRequest,
     responses(
         (status = 200, description = "Streaming agent chat response"),
         (status = 400, description = "Invalid chat request", body = ErrorResponseSchema),
@@ -1458,7 +1559,7 @@ async fn agent_chat_stream() {}
     get, path = "/api/admin/provider-keys",
     tag = "provider-keys",
     responses(
-        (status = 200, description = "Configured provider key status", body = inline(serde_json::Value)),
+        (status = 200, description = "Configured provider key status", body = crate::api::provider_keys::ProviderKeysResponse),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1468,9 +1569,9 @@ async fn list_provider_keys() {}
 #[utoipa::path(
     put, path = "/api/admin/provider-keys",
     tag = "provider-keys",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::provider_keys::SetKeyRequest,
     responses(
-        (status = 200, description = "Provider key saved", body = inline(serde_json::Value)),
+        (status = 200, description = "Provider key saved", body = crate::api::provider_keys::SetKeyResponse),
         (status = 400, description = "Invalid provider key request", body = ErrorResponseSchema),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
@@ -1483,7 +1584,7 @@ async fn set_provider_key() {}
     tag = "provider-keys",
     params(("env_name" = String, Path, description = "Provider key environment variable name")),
     responses(
-        (status = 200, description = "Provider key removed", body = inline(serde_json::Value)),
+        (status = 200, description = "Provider key removed", body = crate::api::provider_keys::DeleteKeyResponse),
         (status = 400, description = "Invalid provider key name", body = ErrorResponseSchema),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
@@ -1495,7 +1596,7 @@ async fn delete_provider_key() {}
     get, path = "/api/channels",
     tag = "channels",
     responses(
-        (status = 200, description = "Configured channels and status", body = inline(serde_json::Value)),
+        (status = 200, description = "Configured channels and status", body = crate::api::channels::ChannelListResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1505,9 +1606,9 @@ async fn list_channels() {}
 #[utoipa::path(
     post, path = "/api/channels",
     tag = "channels",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::channels::CreateChannelRequest,
     responses(
-        (status = 200, description = "Channel created", body = inline(serde_json::Value)),
+        (status = 201, description = "Channel created", body = crate::api::channels::CreateChannelResponse),
         (status = 400, description = "Invalid channel request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1519,7 +1620,7 @@ async fn create_channel() {}
     tag = "channels",
     params(("id" = String, Path, description = "Channel ID")),
     responses(
-        (status = 200, description = "Channel reconnected", body = inline(serde_json::Value)),
+        (status = 200, description = "Channel reconnected", body = crate::api::channels::ChannelStatusResponse),
         (status = 404, description = "Channel not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1531,7 +1632,7 @@ async fn reconnect_channel() {}
     tag = "channels",
     params(("id" = String, Path, description = "Channel ID")),
     responses(
-        (status = 200, description = "Channel removed", body = inline(serde_json::Value)),
+        (status = 200, description = "Channel removed", body = crate::api::channels::ChannelStatusResponse),
         (status = 404, description = "Channel not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1542,9 +1643,9 @@ async fn delete_channel() {}
     post, path = "/api/channels/{type}/inject",
     tag = "channels",
     params(("type" = String, Path, description = "Channel type to inject into")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::channels::InjectMessageRequest,
     responses(
-        (status = 202, description = "Synthetic message accepted", body = inline(serde_json::Value)),
+        (status = 202, description = "Synthetic message accepted", body = crate::api::channels::InjectMessageResponse),
         (status = 404, description = "Target channel or agent not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1556,7 +1657,7 @@ async fn inject_channel_message() {}
     tag = "itp",
     params(("limit" = Option<u32>, Query, description = "Maximum number of recent events to return (default 200, max 500)")),
     responses(
-        (status = 200, description = "Recent ITP event snapshot", body = inline(serde_json::Value)),
+        (status = 200, description = "Recent ITP event snapshot", body = crate::api::itp::ItpEventsResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1587,9 +1688,9 @@ async fn list_oauth_connections() {}
 #[utoipa::path(
     post, path = "/api/oauth/connect",
     tag = "oauth",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::oauth_routes::ConnectRequest,
     responses(
-        (status = 200, description = "OAuth flow started", body = inline(serde_json::Value)),
+        (status = 200, description = "OAuth flow started", body = crate::api::oauth_routes::OAuthConnectResponse),
         (status = 400, description = "Invalid OAuth connect request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1601,7 +1702,7 @@ async fn connect_oauth_provider() {}
     tag = "oauth",
     params(("ref_id" = String, Path, description = "OAuth connection reference ID")),
     responses(
-        (status = 200, description = "OAuth connection removed", body = inline(serde_json::Value)),
+        (status = 200, description = "OAuth connection removed", body = crate::api::oauth_routes::OAuthConnectionStatusResponse),
         (status = 400, description = "Invalid OAuth reference", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1616,7 +1717,7 @@ async fn disconnect_oauth_connection() {}
         ("state" = String, Query, description = "OAuth anti-CSRF state token"),
     ),
     responses(
-        (status = 200, description = "OAuth connection completed", body = inline(serde_json::Value)),
+        (status = 200, description = "OAuth connection completed", body = crate::api::oauth_routes::OAuthConnectionStatusResponse),
         (status = 400, description = "Invalid callback parameters", body = ErrorResponseSchema),
     )
 )]
@@ -1625,10 +1726,10 @@ async fn oauth_callback() {}
 #[utoipa::path(
     post, path = "/api/oauth/execute",
     tag = "oauth",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::oauth_routes::ApiCallRequest,
     responses(
-        (status = 200, description = "OAuth-backed API call result", body = inline(serde_json::Value)),
-        (status = 202, description = "OAuth-backed API call accepted but recovery is required", body = inline(serde_json::Value)),
+        (status = 200, description = "OAuth-backed API call result", body = crate::api::oauth_routes::OAuthExecuteResponse),
+        (status = 202, description = "OAuth-backed API call accepted but recovery is required", body = crate::api::oauth_routes::OAuthExecuteAcceptedResponse),
         (status = 400, description = "Invalid OAuth execute request", body = ErrorResponseSchema),
         (status = 401, description = "Connection token expired or revoked", body = ErrorResponseSchema),
         (status = 404, description = "OAuth connection not found", body = ErrorResponseSchema),
@@ -1644,7 +1745,7 @@ async fn execute_oauth_api_call() {}
     get, path = "/api/mesh/trust-graph",
     tag = "mesh",
     responses(
-        (status = 200, description = "Current multi-agent trust graph", body = inline(serde_json::Value)),
+        (status = 200, description = "Current multi-agent trust graph", body = crate::api::mesh_viz::TrustGraphResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1655,7 +1756,7 @@ async fn get_mesh_trust_graph() {}
     get, path = "/api/mesh/consensus",
     tag = "mesh",
     responses(
-        (status = 200, description = "Consensus rounds and vote counts", body = inline(serde_json::Value)),
+        (status = 200, description = "Consensus rounds and vote counts", body = crate::api::mesh_viz::ConsensusResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1666,7 +1767,7 @@ async fn get_mesh_consensus() {}
     get, path = "/api/mesh/delegations",
     tag = "mesh",
     responses(
-        (status = 200, description = "Delegation chains and sybil metrics", body = inline(serde_json::Value)),
+        (status = 200, description = "Delegation chains and sybil metrics", body = crate::api::mesh_viz::DelegationsResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1677,7 +1778,7 @@ async fn list_mesh_delegations() {}
     get, path = "/api/profiles",
     tag = "profiles",
     responses(
-        (status = 200, description = "Preset and custom convergence profiles", body = inline(serde_json::Value)),
+        (status = 200, description = "Preset and custom convergence profiles", body = crate::api::profiles::ProfileListResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1687,9 +1788,9 @@ async fn list_profiles() {}
 #[utoipa::path(
     post, path = "/api/profiles",
     tag = "profiles",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::profiles::CreateProfileRequest,
     responses(
-        (status = 200, description = "Profile created", body = ProfileSchema),
+        (status = 201, description = "Profile created", body = crate::api::profiles::ProfileSummary),
         (status = 400, description = "Invalid profile request", body = ErrorResponseSchema),
         (status = 409, description = "Profile name conflict", body = ErrorResponseSchema),
     ),
@@ -1701,9 +1802,9 @@ async fn create_profile() {}
     put, path = "/api/profiles/{name}",
     tag = "profiles",
     params(("name" = String, Path, description = "Profile name")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::profiles::UpdateProfileRequest,
     responses(
-        (status = 200, description = "Profile updated", body = ProfileSchema),
+        (status = 200, description = "Profile updated", body = crate::api::profiles::ProfileSummary),
         (status = 400, description = "Invalid profile update", body = ErrorResponseSchema),
         (status = 404, description = "Profile not found", body = ErrorResponseSchema),
     ),
@@ -1716,7 +1817,7 @@ async fn update_profile() {}
     tag = "profiles",
     params(("name" = String, Path, description = "Profile name")),
     responses(
-        (status = 200, description = "Profile deleted", body = inline(serde_json::Value)),
+        (status = 200, description = "Profile deleted", body = crate::api::profiles::DeleteProfileResponse),
         (status = 400, description = "Invalid profile delete request", body = ErrorResponseSchema),
         (status = 404, description = "Profile not found", body = ErrorResponseSchema),
     ),
@@ -1728,11 +1829,11 @@ async fn delete_profile() {}
     post, path = "/api/agents/{id}/profile",
     tag = "profiles",
     params(("id" = String, Path, description = "Agent ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::profiles::AssignProfileRequest,
     responses(
-        (status = 200, description = "Profile assigned to agent", body = inline(serde_json::Value)),
+        (status = 200, description = "Profile assigned to agent", body = crate::api::profiles::AssignProfileResponse),
         (status = 400, description = "Invalid assign-profile request", body = ErrorResponseSchema),
-        (status = 404, description = "Agent or profile not found", body = ErrorResponseSchema),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1758,7 +1859,7 @@ async fn search() {}
     get, path = "/api/pc-control/status",
     tag = "pc-control",
     responses(
-        (status = 200, description = "Current PC control safety status", body = PcControlStatusSchema),
+        (status = 200, description = "Current PC control safety status", body = crate::api::pc_control::PcControlStatus),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1768,9 +1869,9 @@ async fn get_pc_control_status() {}
 #[utoipa::path(
     put, path = "/api/pc-control/status",
     tag = "pc-control",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::pc_control::UpdatePcControlStatusRequest,
     responses(
-        (status = 200, description = "PC control status updated", body = PcControlStatusSchema),
+        (status = 200, description = "PC control status updated", body = crate::api::pc_control::PcControlStatus),
         (status = 400, description = "Invalid PC control update", body = ErrorResponseSchema),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
@@ -1783,7 +1884,7 @@ async fn update_pc_control_status() {}
     tag = "pc-control",
     params(("limit" = Option<u32>, Query, description = "Maximum number of action log entries")),
     responses(
-        (status = 200, description = "Recent PC control actions", body = inline(serde_json::Value)),
+        (status = 200, description = "Recent PC control actions", body = crate::api::pc_control::PcControlActionsResponse),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -1793,9 +1894,9 @@ async fn list_pc_control_actions() {}
 #[utoipa::path(
     put, path = "/api/pc-control/allowed-apps",
     tag = "pc-control",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::pc_control::AllowedAppsRequest,
     responses(
-        (status = 200, description = "Allowed apps updated", body = PcControlStatusSchema),
+        (status = 200, description = "Allowed apps updated", body = crate::api::pc_control::PcControlStatus),
         (status = 400, description = "Invalid allowed-app update", body = ErrorResponseSchema),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
@@ -1806,9 +1907,9 @@ async fn update_pc_control_allowed_apps() {}
 #[utoipa::path(
     put, path = "/api/pc-control/blocked-hotkeys",
     tag = "pc-control",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::pc_control::BlockedHotkeysRequest,
     responses(
-        (status = 200, description = "Blocked hotkeys updated", body = PcControlStatusSchema),
+        (status = 200, description = "Blocked hotkeys updated", body = crate::api::pc_control::PcControlStatus),
         (status = 400, description = "Invalid blocked-hotkey update", body = ErrorResponseSchema),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
@@ -1819,9 +1920,9 @@ async fn update_pc_control_blocked_hotkeys() {}
 #[utoipa::path(
     put, path = "/api/pc-control/safe-zones",
     tag = "pc-control",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::pc_control::SafeZonesRequest,
     responses(
-        (status = 200, description = "Safe zones updated", body = PcControlStatusSchema),
+        (status = 200, description = "Safe zones updated", body = crate::api::pc_control::PcControlStatus),
         (status = 400, description = "Invalid safe-zone update", body = ErrorResponseSchema),
         (status = 403, description = "Admin role required", body = ErrorResponseSchema),
     ),
@@ -1844,7 +1945,7 @@ async fn issue_ws_ticket() {}
     get, path = "/api/push/vapid-key",
     tag = "push",
     responses(
-        (status = 200, description = "Web Push VAPID public key", body = inline(serde_json::Value)),
+        (status = 200, description = "Web Push VAPID public key", body = crate::api::push_routes::VapidKeyResponse),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1853,7 +1954,7 @@ async fn get_push_vapid_key() {}
 #[utoipa::path(
     post, path = "/api/push/subscribe",
     tag = "push",
-    request_body = PushSubscriptionSchema,
+    request_body = crate::api::push_routes::PushSubscription,
     responses(
         (status = 204, description = "Push subscription registered"),
         (status = 500, description = "Push subscription store failure", body = ErrorResponseSchema),
@@ -1865,7 +1966,7 @@ async fn subscribe_push() {}
 #[utoipa::path(
     post, path = "/api/push/unsubscribe",
     tag = "push",
-    request_body = PushSubscriptionSchema,
+    request_body = crate::api::push_routes::PushSubscription,
     responses(
         (status = 204, description = "Push subscription removed"),
         (status = 500, description = "Push subscription store failure", body = ErrorResponseSchema),
@@ -2059,7 +2160,7 @@ async fn execute_skill_by_name() {}
         ("offset" = Option<u32>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "Marketplace agent listings", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace agent listings", body = crate::api::marketplace::AgentListResponse),
     ),
     security(("bearer_auth" = []))
 )]
@@ -2068,9 +2169,9 @@ async fn list_marketplace_agents() {}
 #[utoipa::path(
     post, path = "/api/marketplace/agents",
     tag = "marketplace",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::RegisterAgentRequest,
     responses(
-        (status = 200, description = "Marketplace agent registered", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace agent registered", body = crate::api::marketplace::AgentListingResponse),
         (status = 400, description = "Invalid listing request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2082,7 +2183,7 @@ async fn register_marketplace_agent() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Agent listing ID")),
     responses(
-        (status = 200, description = "Marketplace agent detail", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace agent detail", body = crate::api::marketplace::AgentListingResponse),
         (status = 404, description = "Agent listing not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2093,9 +2194,9 @@ async fn get_marketplace_agent() {}
     put, path = "/api/marketplace/agents/{id}/status",
     tag = "marketplace",
     params(("id" = String, Path, description = "Agent listing ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::UpdateAgentStatusRequest,
     responses(
-        (status = 200, description = "Marketplace agent status updated", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace agent status updated", body = crate::api::marketplace::AgentStatusUpdateResponse),
         (status = 400, description = "Invalid status update", body = ErrorResponseSchema),
         (status = 404, description = "Agent listing not found", body = ErrorResponseSchema),
     ),
@@ -2108,7 +2209,7 @@ async fn update_marketplace_agent_status() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Agent listing ID")),
     responses(
-        (status = 200, description = "Marketplace agent delisted", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace agent delisted", body = crate::api::marketplace::AgentDelistResponse),
         (status = 404, description = "Agent listing not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2123,7 +2224,7 @@ async fn delist_marketplace_agent() {}
         ("offset" = Option<u32>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "Marketplace skill listings", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace skill listings", body = crate::api::marketplace::SkillListResponse),
     ),
     security(("bearer_auth" = []))
 )]
@@ -2132,9 +2233,9 @@ async fn list_marketplace_skills() {}
 #[utoipa::path(
     post, path = "/api/marketplace/skills",
     tag = "marketplace",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::PublishSkillRequest,
     responses(
-        (status = 200, description = "Marketplace skill published", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace skill published", body = crate::api::marketplace::SkillPublishResponse),
         (status = 400, description = "Invalid skill publish request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2146,7 +2247,7 @@ async fn publish_marketplace_skill() {}
     tag = "marketplace",
     params(("name" = String, Path, description = "Marketplace skill name")),
     responses(
-        (status = 200, description = "Marketplace skill detail", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace skill detail", body = crate::api::marketplace::SkillListingResponse),
         (status = 404, description = "Marketplace skill not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2163,7 +2264,7 @@ async fn get_marketplace_skill() {}
         ("offset" = Option<u32>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "Marketplace contract list", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract list", body = crate::api::marketplace::ContractListResponse),
     ),
     security(("bearer_auth" = []))
 )]
@@ -2172,9 +2273,9 @@ async fn list_marketplace_contracts() {}
 #[utoipa::path(
     post, path = "/api/marketplace/contracts",
     tag = "marketplace",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::ProposeContractRequest,
     responses(
-        (status = 200, description = "Marketplace contract proposed", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract proposed", body = crate::api::marketplace::ContractResponse),
         (status = 400, description = "Invalid contract request", body = ErrorResponseSchema),
         (status = 404, description = "Marketplace entity not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract conflict", body = ErrorResponseSchema),
@@ -2188,7 +2289,7 @@ async fn propose_marketplace_contract() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
     responses(
-        (status = 200, description = "Marketplace contract detail", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract detail", body = crate::api::marketplace::ContractResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2200,7 +2301,7 @@ async fn get_marketplace_contract() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
     responses(
-        (status = 200, description = "Marketplace contract accepted", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract accepted", body = crate::api::marketplace::ContractAcceptedResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
     ),
@@ -2213,7 +2314,7 @@ async fn accept_marketplace_contract() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
     responses(
-        (status = 200, description = "Marketplace contract rejected", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract rejected", body = crate::api::marketplace::ContractRejectedResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
     ),
@@ -2226,7 +2327,7 @@ async fn reject_marketplace_contract() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
     responses(
-        (status = 200, description = "Marketplace contract started", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract started", body = crate::api::marketplace::ContractStartedResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
     ),
@@ -2238,9 +2339,9 @@ async fn start_marketplace_contract() {}
     post, path = "/api/marketplace/contracts/{id}/complete",
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::CompleteContractRequest,
     responses(
-        (status = 200, description = "Marketplace contract completed", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract completed", body = crate::api::marketplace::ContractCompletedResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
     ),
@@ -2253,7 +2354,7 @@ async fn complete_marketplace_contract() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
     responses(
-        (status = 200, description = "Marketplace contract disputed", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract disputed", body = crate::api::marketplace::ContractDisputedResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
     ),
@@ -2266,7 +2367,7 @@ async fn dispute_marketplace_contract() {}
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
     responses(
-        (status = 200, description = "Marketplace contract canceled", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract canceled", body = crate::api::marketplace::ContractCanceledResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
     ),
@@ -2278,9 +2379,9 @@ async fn cancel_marketplace_contract() {}
     post, path = "/api/marketplace/contracts/{id}/resolve",
     tag = "marketplace",
     params(("id" = String, Path, description = "Marketplace contract ID")),
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::CompleteContractRequest,
     responses(
-        (status = 200, description = "Marketplace contract resolved", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace contract resolved", body = crate::api::marketplace::ContractResolvedResponse),
         (status = 404, description = "Marketplace contract not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace contract state conflict", body = ErrorResponseSchema),
     ),
@@ -2293,7 +2394,7 @@ async fn resolve_marketplace_contract() {}
     tag = "marketplace",
     params(("agent_id" = String, Query, description = "Agent ID whose wallet to inspect")),
     responses(
-        (status = 200, description = "Marketplace wallet balance", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace wallet balance", body = crate::api::marketplace::WalletResponse),
         (status = 404, description = "Marketplace wallet not found", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2303,9 +2404,9 @@ async fn get_marketplace_wallet() {}
 #[utoipa::path(
     post, path = "/api/marketplace/wallet/seed",
     tag = "marketplace",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::SeedWalletRequest,
     responses(
-        (status = 200, description = "Marketplace wallet funded", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace wallet funded", body = crate::api::marketplace::WalletResponse),
         (status = 400, description = "Invalid wallet seed request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -2321,7 +2422,7 @@ async fn seed_marketplace_wallet() {}
         ("offset" = Option<u32>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "Marketplace transaction history", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace transaction history", body = crate::api::marketplace::TransactionListResponse),
     ),
     security(("bearer_auth" = []))
 )]
@@ -2330,9 +2431,9 @@ async fn list_marketplace_transactions() {}
 #[utoipa::path(
     post, path = "/api/marketplace/reviews",
     tag = "marketplace",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::SubmitReviewRequest,
     responses(
-        (status = 200, description = "Marketplace review submitted", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace review submitted", body = crate::api::marketplace::ReviewSubmittedResponse),
         (status = 400, description = "Invalid review request", body = ErrorResponseSchema),
         (status = 404, description = "Marketplace entity not found", body = ErrorResponseSchema),
         (status = 409, description = "Marketplace review conflict", body = ErrorResponseSchema),
@@ -2350,7 +2451,7 @@ async fn submit_marketplace_review() {}
         ("offset" = Option<u32>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "Marketplace reviews for agent", body = inline(serde_json::Value)),
+        (status = 200, description = "Marketplace reviews for agent", body = crate::api::marketplace::ReviewListResponse),
     ),
     security(("bearer_auth" = []))
 )]
@@ -2359,9 +2460,9 @@ async fn list_marketplace_reviews() {}
 #[utoipa::path(
     post, path = "/api/marketplace/discover",
     tag = "marketplace",
-    request_body = inline(serde_json::Value),
+    request_body = crate::api::marketplace::DiscoverRequest,
     responses(
-        (status = 200, description = "Capability-based marketplace matches", body = inline(serde_json::Value)),
+        (status = 200, description = "Capability-based marketplace matches", body = crate::api::marketplace::DiscoverResponse),
         (status = 400, description = "Invalid discovery request", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))

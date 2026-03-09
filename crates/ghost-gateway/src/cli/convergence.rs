@@ -96,6 +96,7 @@ pub struct ConvergenceHistoryArgs {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct HistoryEntry {
+    #[serde(alias = "computed_at")]
     timestamp: String,
     score: f64,
     level: i32,
@@ -142,32 +143,18 @@ pub async fn run_history(
     args: ConvergenceHistoryArgs,
     backend: &CliBackend,
 ) -> Result<(), CliError> {
-    // History endpoint not yet defined in Phase 1 API; fall back to a query
-    // against the convergence_scores table via HTTP or direct DB.
     let entries: Vec<HistoryEntry> = match backend {
         CliBackend::Http { client } => {
-            let mut path = format!("/api/convergence/scores?agent_id={}", args.agent_id);
+            let mut path = format!("/api/convergence/history/{}", args.agent_id);
             if let Some(ref since) = args.since {
-                path.push_str(&format!("&since={since}"));
+                path.push_str(&format!("?since={since}"));
             }
             let resp = client.get(&path).await?;
             let body: serde_json::Value = resp
                 .json()
                 .await
                 .map_err(|e| CliError::Internal(format!("parse history: {e}")))?;
-            // The scores endpoint returns current state; history not yet available via HTTP.
-            // Return what we have as a single-entry "history".
-            let scores: Vec<ConvergenceScoreEntry> =
-                serde_json::from_value(body["scores"].clone()).unwrap_or_default();
-            scores
-                .into_iter()
-                .filter(|s| s.agent_id == args.agent_id)
-                .map(|s| HistoryEntry {
-                    timestamp: s.computed_at.unwrap_or_else(|| "-".into()),
-                    score: s.score,
-                    level: s.level,
-                })
-                .collect()
+            serde_json::from_value(body["entries"].clone()).unwrap_or_default()
         }
         CliBackend::Direct { db, .. } => {
             let db = db.read().map_err(|e| CliError::Database(e.to_string()))?;
@@ -226,38 +213,17 @@ fn query_history_direct(
     agent_id: &str,
     since: Option<&str>,
 ) -> Result<Vec<HistoryEntry>, CliError> {
-    let mut sql =
-        "SELECT computed_at, score, level FROM convergence_scores WHERE agent_id = ?1".to_string();
-    if since.is_some() {
-        sql.push_str(" AND computed_at >= ?2");
-    }
-    sql.push_str(" ORDER BY computed_at ASC");
+    let rows = cortex_storage::queries::convergence_score_queries::query_history(
+        conn, agent_id, since, None,
+    )
+    .map_err(|e| CliError::Database(e.to_string()))?;
 
-    let mut stmt = conn
-        .prepare(&sql)
-        .map_err(|e| CliError::Database(e.to_string()))?;
-
-    let rows: Result<Vec<HistoryEntry>, _> = if let Some(since_val) = since {
-        stmt.query_map(rusqlite::params![agent_id, since_val], |row| {
-            Ok(HistoryEntry {
-                timestamp: row.get(0)?,
-                score: row.get(1)?,
-                level: row.get(2)?,
-            })
+    Ok(rows
+        .into_iter()
+        .map(|row| HistoryEntry {
+            timestamp: row.computed_at,
+            score: row.composite_score,
+            level: row.level,
         })
-        .map_err(|e| CliError::Database(e.to_string()))?
-        .collect()
-    } else {
-        stmt.query_map(rusqlite::params![agent_id], |row| {
-            Ok(HistoryEntry {
-                timestamp: row.get(0)?,
-                score: row.get(1)?,
-                level: row.get(2)?,
-            })
-        })
-        .map_err(|e| CliError::Database(e.to_string()))?
-        .collect()
-    };
-
-    rows.map_err(|e| CliError::Database(e.to_string()))
+        .collect())
 }

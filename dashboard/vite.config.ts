@@ -1,8 +1,17 @@
+import { readFileSync } from 'node:fs';
+
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
+const packageJson = JSON.parse(
+	readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { version: string };
+
 export default defineConfig({
 	plugins: [sveltekit()],
+	define: {
+		__APP_VERSION__: JSON.stringify(packageJson.version),
+	},
 	build: {
 		chunkSizeWarningLimit: 700,
 		rollupOptions: {

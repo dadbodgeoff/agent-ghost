@@ -58,6 +58,7 @@ type SafetyStatus = StudioMessage['safety_status'];
 
 interface RecoverTextChunkPayload {
   content: string;
+  reconstructed?: boolean;
 }
 
 interface RecoverToolUsePayload {
@@ -73,7 +74,25 @@ interface RecoverToolResultPayload extends RecoverToolUsePayload {
 interface RecoverTurnCompletePayload {
   token_count?: number;
   safety_status?: SafetyStatus;
+  reconstructed?: boolean;
 }
+
+function upsertToolCall(
+  calls: ToolCallEntry[] | undefined,
+  nextCall: ToolCallEntry,
+): ToolCallEntry[] {
+  const existing = [...(calls ?? [])];
+  const index = existing.findIndex((call) => call.toolId === nextCall.toolId);
+  if (index >= 0) {
+    existing[index] = { ...existing[index], ...nextCall };
+    return existing;
+  }
+  existing.push(nextCall);
+  return existing;
+}
+
+const RECONSTRUCTED_REPLAY_WARNING =
+  'Recovered final output from the stored assistant message; exact stream replay was unavailable.';
 
 function toStudioSession(session: ApiStudioSession, messages: StudioMessage[] = []): StudioSession {
   return { ...session, messages };
@@ -102,12 +121,19 @@ function parseStreamStartEvent(data: Record<string, unknown>): StreamStartEvent 
     type: 'stream_start',
     message_id,
     session_id: readString(data.session_id) ?? undefined,
+    reconstructed: readBoolean(data.reconstructed) ?? undefined,
   };
 }
 
 function parseTextDeltaEvent(data: Record<string, unknown>): TextDeltaEvent | null {
   const content = readString(data.content);
-  return content !== null ? { type: 'text_delta', content } : null;
+  return content !== null
+    ? {
+        type: 'text_delta',
+        content,
+        reconstructed: readBoolean(data.reconstructed) ?? undefined,
+      }
+    : null;
 }
 
 function parseToolUseEvent(data: Record<string, unknown>): ToolUseEvent | null {
@@ -132,7 +158,13 @@ function parseStreamEndEvent(data: Record<string, unknown>): StreamEndEvent | nu
   const token_count = readNumber(data.token_count);
   const safety_status = readSafetyStatus(data.safety_status);
   if (!message_id || token_count === null || !safety_status) return null;
-  return { type: 'stream_end', message_id, token_count, safety_status };
+  return {
+    type: 'stream_end',
+    message_id,
+    token_count,
+    safety_status,
+    reconstructed: readBoolean(data.reconstructed) ?? undefined,
+  };
 }
 
 function parseErrorEvent(data: Record<string, unknown>): ErrorEvent | null {
@@ -169,7 +201,9 @@ function parseWarningEvent(data: Record<string, unknown>): WarningEvent | null {
 
 function parseRecoverTextChunkPayload(payload: Record<string, unknown>): RecoverTextChunkPayload | null {
   const content = readString(payload.content);
-  return content !== null ? { content } : null;
+  return content !== null
+    ? { content, reconstructed: readBoolean(payload.reconstructed) ?? undefined }
+    : null;
 }
 
 function parseRecoverToolUsePayload(payload: Record<string, unknown>): RecoverToolUsePayload | null {
@@ -190,6 +224,7 @@ function parseRecoverTurnCompletePayload(payload: Record<string, unknown>): Reco
   return {
     token_count: readNumber(payload.token_count) ?? undefined,
     safety_status: readSafetyStatus(payload.safety_status) ?? undefined,
+    reconstructed: readBoolean(payload.reconstructed) ?? undefined,
   };
 }
 
@@ -290,14 +325,26 @@ class StudioChatStore {
 
       // Handle ChatMessage events — invalidate cached messages for
       // non-active sessions so next switchSession() triggers a reload.
+      // If the active session completes elsewhere (for example after a page
+      // reload interrupted SSE), refresh it immediately when we're not
+      // already streaming locally.
       this.unsubs.push(
         wsStore.on('ChatMessage', (msg) => {
           const sessionId = msg.session_id as string;
-          if (sessionId && sessionId !== this.activeSessionId) {
+          if (!sessionId) {
+            return;
+          }
+
+          if (sessionId !== this.activeSessionId) {
             const session = this.sessions.find((s) => s.id === sessionId);
             if (session) {
               session.messages = [];
             }
+            return;
+          }
+
+          if (!this.streaming) {
+            void this.loadSession(sessionId);
           }
         }),
       );
@@ -525,6 +572,9 @@ class StudioChatStore {
               const event = parseTextDeltaEvent(data);
               if (!event) break;
               this.providerError = '';
+              if (event.reconstructed) {
+                this.persistenceWarning = RECONSTRUCTED_REPLAY_WARNING;
+              }
               this.streamingContent += event.content;
               session.messages[assistantMsgIndex] = {
                 ...session.messages[assistantMsgIndex],
@@ -539,9 +589,14 @@ class StudioChatStore {
               this.providerError = '';
               this.activeToolCall = { tool: event.tool, toolId: event.tool_id };
               const msg = session.messages[assistantMsgIndex];
-              const calls = msg.toolCalls ?? [];
-              calls.push({ tool: event.tool, toolId: event.tool_id, status: 'running' });
-              session.messages[assistantMsgIndex] = { ...msg, toolCalls: [...calls] };
+              session.messages[assistantMsgIndex] = {
+                ...msg,
+                toolCalls: upsertToolCall(msg.toolCalls, {
+                  tool: event.tool,
+                  toolId: event.tool_id,
+                  status: 'running',
+                }),
+              };
 
               // WP5-C: 5-minute tool call timeout.
               if (this.toolTimeoutId) clearTimeout(this.toolTimeoutId);
@@ -567,16 +622,15 @@ class StudioChatStore {
               this.activeToolCall = null;
               if (this.toolTimeoutId) { clearTimeout(this.toolTimeoutId); this.toolTimeoutId = null; }
               const msg2 = session.messages[assistantMsgIndex];
-              const calls2 = (msg2.toolCalls ?? []).map((tc) =>
-                tc.toolId === event.tool_id
-                  ? {
-                      ...tc,
-                      status: event.status === 'error' ? 'error' as const : 'done' as const,
-                      preview: event.preview,
-                    }
-                  : tc,
-              );
-              session.messages[assistantMsgIndex] = { ...msg2, toolCalls: calls2 };
+              session.messages[assistantMsgIndex] = {
+                ...msg2,
+                toolCalls: upsertToolCall(msg2.toolCalls, {
+                  tool: event.tool,
+                  toolId: event.tool_id,
+                  status: event.status === 'error' ? 'error' : 'done',
+                  preview: event.preview,
+                }),
+              };
               // Force reactivity flush after tool completion.
               session.messages = [...session.messages];
               break;
@@ -587,6 +641,9 @@ class StudioChatStore {
               if (!event) break;
               receivedStreamEnd = true;
               this.providerError = '';
+              if (event.reconstructed) {
+                this.persistenceWarning = RECONSTRUCTED_REPLAY_WARNING;
+              }
               session.messages[assistantMsgIndex] = {
                 ...session.messages[assistantMsgIndex],
                 content: this.streamingContent,
@@ -786,11 +843,17 @@ class StudioChatStore {
       // Replay recovered events in order.
       for (const event of data.events) {
         const payload = event.payload;
+        if (event.reconstructed === true) {
+          this.persistenceWarning = RECONSTRUCTED_REPLAY_WARNING;
+        }
 
         switch (event.event_type) {
           case 'text_delta': {
             const parsed = parseRecoverTextChunkPayload(payload);
             if (parsed) {
+              if (parsed.reconstructed) {
+                this.persistenceWarning = RECONSTRUCTED_REPLAY_WARNING;
+              }
               this.streamingContent += parsed.content;
             }
             break;
@@ -800,13 +863,14 @@ class StudioChatStore {
             const parsed = parseRecoverToolUsePayload(payload);
             if (!parsed) break;
             const msg = session.messages[assistantMsgIndex];
-            const calls = msg.toolCalls ?? [];
-            calls.push({
-              tool: parsed.tool,
-              toolId: parsed.tool_id,
-              status: 'running',
-            });
-            session.messages[assistantMsgIndex] = { ...msg, toolCalls: [...calls] };
+            session.messages[assistantMsgIndex] = {
+              ...msg,
+              toolCalls: upsertToolCall(msg.toolCalls, {
+                tool: parsed.tool,
+                toolId: parsed.tool_id,
+                status: 'running',
+              }),
+            };
             break;
           }
 
@@ -814,21 +878,23 @@ class StudioChatStore {
             const parsed = parseRecoverToolResultPayload(payload);
             if (!parsed) break;
             const msg2 = session.messages[assistantMsgIndex];
-            const calls2 = (msg2.toolCalls ?? []).map((tc: ToolCallEntry) =>
-              tc.toolId === parsed.tool_id
-                ? {
-                    ...tc,
-                    status: parsed.status === 'error' ? 'error' as const : 'done' as const,
-                    preview: parsed.preview,
-                  }
-                : tc,
-            );
-            session.messages[assistantMsgIndex] = { ...msg2, toolCalls: calls2 };
+            session.messages[assistantMsgIndex] = {
+              ...msg2,
+              toolCalls: upsertToolCall(msg2.toolCalls, {
+                tool: parsed.tool,
+                toolId: parsed.tool_id,
+                status: parsed.status === 'error' ? 'error' : 'done',
+                preview: parsed.preview,
+              }),
+            };
             break;
           }
 
           case 'stream_end': {
             const parsed = parseRecoverTurnCompletePayload(payload);
+            if (parsed.reconstructed) {
+              this.persistenceWarning = RECONSTRUCTED_REPLAY_WARNING;
+            }
             session.messages[assistantMsgIndex] = {
               ...session.messages[assistantMsgIndex],
               content: this.streamingContent,

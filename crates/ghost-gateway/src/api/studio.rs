@@ -8,12 +8,13 @@ use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use utoipa::ToSchema;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 /// Request body for studio prompt run.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct StudioRunRequest {
     pub system_prompt: Option<String>,
     pub messages: Vec<StudioMessage>,
@@ -23,14 +24,14 @@ pub struct StudioRunRequest {
 }
 
 /// A single message in the conversation.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct StudioMessage {
     pub role: String,
     pub content: String,
 }
 
 /// Response from studio run.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct StudioRunResponse {
     pub content: String,
     pub model: String,

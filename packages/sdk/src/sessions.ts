@@ -1,60 +1,48 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components, operations } from './generated-types.js';
 
 // ── Types ──
 
-export interface StudioSession {
-  id: string;
-  title: string;
-  model: string;
-  system_prompt: string;
-  temperature: number;
-  max_tokens: number;
-  created_at: string;
-  updated_at: string;
-}
+export type StudioSafetyStatus = 'clean' | 'warning' | 'blocked';
+export type StudioMessageRole = 'user' | 'assistant' | 'system';
 
-export interface StudioMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  token_count: number;
-  safety_status: 'clean' | 'warning' | 'blocked';
-  created_at: string;
-}
-
-export interface StudioSessionWithMessages extends StudioSession {
+export type StudioSession = components['schemas']['StudioSessionSchema'];
+export type StudioMessage = Omit<
+  components['schemas']['StudioMessageSchema'],
+  'role' | 'safety_status'
+> & {
+  role: StudioMessageRole;
+  safety_status: StudioSafetyStatus;
+};
+export type StudioSessionWithMessages = Omit<
+  components['schemas']['StudioSessionWithMessagesResponseSchema'],
+  'messages'
+> & {
   messages: StudioMessage[];
-}
-
-export interface CreateSessionParams {
-  title?: string;
-  model?: string;
-  system_prompt?: string;
-  temperature?: number;
-  max_tokens?: number;
-}
-
-export interface ListSessionsParams {
-  limit?: number;
-  cursor?: string;
-}
-
-export interface RecoverStreamEvent {
-  seq: number;
-  event_type: string;
+};
+export type CreateSessionParams =
+  operations['create_studio_session']['requestBody']['content']['application/json'];
+export type ListSessionsParams = NonNullable<
+  operations['list_studio_sessions']['parameters']['query']
+>;
+export type RecoverStreamEvent = Omit<
+  components['schemas']['StudioRecoverStreamEventSchema'],
+  'payload'
+> & {
   payload: Record<string, unknown>;
-  created_at: string;
-}
-
-export interface RecoverStreamResult {
+};
+export type RecoverStreamResult = Omit<
+  components['schemas']['StudioRecoverStreamResponseSchema'],
+  'events'
+> & {
   events: RecoverStreamEvent[];
-}
-
-export interface ListSessionsResult {
+};
+export type ListSessionsResult = Omit<
+  components['schemas']['StudioSessionListResponseSchema'],
+  'sessions'
+> & {
   sessions: StudioSession[];
-  next_cursor: string | null;
-  has_more: boolean;
-}
+};
 
 // ── API ──
 

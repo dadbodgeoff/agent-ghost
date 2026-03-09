@@ -1,5 +1,6 @@
 //! CLI backend abstraction — HTTP vs direct DB (Task 6.6 — §3.2, F.12).
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::bootstrap::shellexpand_tilde;
@@ -59,14 +60,34 @@ impl CliBackend {
 
     /// Open a direct DB backend without trying HTTP first.
     pub fn open_direct(config: &GhostConfig) -> Result<Self, CliError> {
-        let db_path = shellexpand_tilde(&config.gateway.db_path);
-        let path = std::path::Path::new(&db_path);
-        if !path.exists() {
+        Self::open_direct_with_mode(config, false)
+    }
+
+    /// Open a direct DB backend, creating the database file if it does not exist.
+    ///
+    /// Used by `ghost db migrate` so a clean install can bootstrap the schema
+    /// without requiring a pre-existing SQLite file.
+    pub fn open_direct_create_if_missing(config: &GhostConfig) -> Result<Self, CliError> {
+        Self::open_direct_with_mode(config, true)
+    }
+
+    fn open_direct_with_mode(
+        config: &GhostConfig,
+        create_if_missing: bool,
+    ) -> Result<Self, CliError> {
+        let db_path = PathBuf::from(shellexpand_tilde(&config.gateway.db_path));
+        if create_if_missing {
+            ensure_parent_dir(&db_path)?;
+        } else if !db_path.exists() {
             return Err(CliError::NoBackend);
         }
 
-        let pool = crate::db_pool::create_existing_pool(std::path::PathBuf::from(&db_path))
-            .map_err(|e| CliError::Database(format!("open db pool: {e}")))?;
+        let pool = if create_if_missing {
+            crate::db_pool::create_pool(db_path.clone())
+        } else {
+            crate::db_pool::create_existing_pool(db_path.clone())
+        }
+        .map_err(|e| CliError::Database(format!("open db pool: {e}")))?;
 
         Ok(Self::Direct {
             config: Box::new(config.clone()),
@@ -106,4 +127,21 @@ impl CliBackend {
             Self::Http { .. } => panic!("expected Direct backend"),
         }
     }
+}
+
+fn ensure_parent_dir(db_path: &Path) -> Result<(), CliError> {
+    if db_path == Path::new(":memory:") {
+        return Ok(());
+    }
+
+    if let Some(parent) = db_path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            CliError::Internal(format!(
+                "failed to create db directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    Ok(())
 }

@@ -29,3 +29,14 @@ packages/sdk/dist/
 # SvelteKit
 .svelte-kit/
 build/
+
+# Live audit artifacts
+/artifacts/live-audits/
+/artifacts/live-poc-suites/
+/artifacts/live-infra-audits/
+/artifacts/live-runtime-audits/
+/artifacts/live-knowledge-audits/
+/artifacts/live-io-audits/
+/artifacts/live-convergence-audits/
+/artifacts/live-database-audits/
+/artifacts/live-critical-suites/

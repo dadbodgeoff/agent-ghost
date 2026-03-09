@@ -13,6 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Shared state for push notification management.
 #[derive(Clone)]
@@ -24,7 +25,7 @@ pub struct PushState {
 }
 
 /// A Web Push subscription from a client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PushSubscription {
     pub endpoint: String,
     #[serde(default)]
@@ -32,12 +33,17 @@ pub struct PushSubscription {
 }
 
 /// Encryption keys for a push subscription.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct PushKeys {
     #[serde(default)]
     pub p256dh: String,
     #[serde(default)]
     pub auth: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct VapidKeyResponse {
+    pub key: String,
 }
 
 /// Build the push notification router.
@@ -51,7 +57,9 @@ pub fn push_router(state: PushState) -> axum::Router {
 
 /// GET /api/push/vapid-key — return the VAPID public key for client subscription.
 async fn handle_vapid_key(State(state): State<PushState>) -> impl IntoResponse {
-    Json(serde_json::json!({ "key": state.vapid_public_key }))
+    Json(VapidKeyResponse {
+        key: state.vapid_public_key,
+    })
 }
 
 /// POST /api/push/subscribe — register a push subscription.

@@ -23,6 +23,7 @@
   let showArtifacts = $state(false);
   let chatAreaHeight = $state(0);
   let studioInputRef = $state<StudioInput | null>(null);
+  let creatingSession = $state(false);
 
   // WP9-G: Auth expiry detection.
   let authExpiryWarning = $state(false);
@@ -92,17 +93,24 @@
   }
 
   async function newChat() {
-    if (selectedTemplate) {
-      await studioChatStore.createSession({
-        title: selectedTemplate.name,
-        system_prompt: selectedTemplate.systemPrompt,
-        model: selectedTemplate.model,
-        temperature: selectedTemplate.temperature,
-        max_tokens: selectedTemplate.maxTokens,
-      });
-      selectedTemplate = null;
-    } else {
-      await studioChatStore.createSession();
+    if (creatingSession || studioChatStore.sending || studioChatStore.streaming) return;
+
+    creatingSession = true;
+    try {
+      if (selectedTemplate) {
+        await studioChatStore.createSession({
+          title: selectedTemplate.name,
+          system_prompt: selectedTemplate.systemPrompt,
+          model: selectedTemplate.model,
+          temperature: selectedTemplate.temperature,
+          max_tokens: selectedTemplate.maxTokens,
+        });
+        selectedTemplate = null;
+      } else {
+        await studioChatStore.createSession();
+      }
+    } finally {
+      creatingSession = false;
     }
   }
 
@@ -132,8 +140,17 @@
   <aside class="session-sidebar">
     <div class="sidebar-header">
       <h2>Sessions</h2>
-      <button class="btn-new" class:has-template={!!selectedTemplate} onclick={newChat}>
-        {selectedTemplate ? `+ ${selectedTemplate.name}` : '+ New'}
+      <button
+        class="btn-new"
+        class:has-template={!!selectedTemplate}
+        onclick={newChat}
+        disabled={creatingSession || studioChatStore.sending || studioChatStore.streaming}
+      >
+        {#if creatingSession}
+          Creating...
+        {:else}
+          {selectedTemplate ? `+ ${selectedTemplate.name}` : '+ New'}
+        {/if}
       </button>
     </div>
 
@@ -209,8 +226,12 @@
           <p>Select a session or create a new one to start chatting.</p>
           <p class="no-session-hint">GHOST Agent with full skill access, safety pipeline, and tool execution.</p>
         {/if}
-        <button class="btn-primary" onclick={newChat}>
-          {selectedTemplate ? `Start ${selectedTemplate.name}` : 'New Chat'}
+        <button class="btn-primary" onclick={newChat} disabled={creatingSession}>
+          {#if creatingSession}
+            Creating...
+          {:else}
+            {selectedTemplate ? `Start ${selectedTemplate.name}` : 'New Chat'}
+          {/if}
         </button>
       </div>
     {:else}
@@ -302,7 +323,7 @@
         <StudioInput
           bind:this={studioInputRef}
           onSend={handleSend}
-          disabled={studioChatStore.sending}
+          disabled={studioChatStore.sending || creatingSession}
         />
         {#if studioChatStore.streaming}
           <button class="btn-stop" onclick={() => studioChatStore.cancelStreaming()}>
@@ -312,14 +333,14 @@
         {:else}
             <button
               class="btn-primary"
-              disabled={studioChatStore.sending}
+              disabled={studioChatStore.sending || creatingSession}
               onclick={() => {
               const input = studioInputRef;
               const val = input?.getValue()?.trim();
               if (input && val) { input.clear(); handleSend(val); }
             }}
           >
-            {studioChatStore.sending ? 'Sending...' : 'Send'}
+            {creatingSession ? 'Creating...' : studioChatStore.sending ? 'Sending...' : 'Send'}
           </button>
         {/if}
       </div>

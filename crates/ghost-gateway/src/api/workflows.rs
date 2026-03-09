@@ -13,6 +13,7 @@ use axum::response::Response;
 use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -36,14 +37,14 @@ const RESUME_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows/:id/resume/:executi
 const WORKFLOW_EXECUTION_STATE_VERSION: u32 = 2;
 
 /// Query parameters for workflow listing.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct WorkflowListParams {
     pub page: Option<u32>,
     pub page_size: Option<u32>,
 }
 
 /// Request body for creating a workflow.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CreateWorkflowRequest {
     pub name: String,
     pub description: Option<String>,
@@ -52,7 +53,7 @@ pub struct CreateWorkflowRequest {
 }
 
 /// Request body for updating a workflow.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct UpdateWorkflowRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -61,14 +62,14 @@ pub struct UpdateWorkflowRequest {
 }
 
 /// Request body for executing a workflow.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
 pub struct ExecuteWorkflowRequest {
     /// Input payload for the first node.
     pub input: Option<serde_json::Value>,
 }
 
 /// Workflow response shape.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct WorkflowResponse {
     pub id: String,
     pub name: String,
@@ -78,6 +79,48 @@ pub struct WorkflowResponse {
     pub created_by: Option<String>,
     pub updated_at: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WorkflowListResponse {
+    pub workflows: Vec<WorkflowResponse>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WorkflowCreateResponse {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WorkflowUpdateResponse {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WorkflowExecutionSummary {
+    pub execution_id: String,
+    pub status: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub updated_at: String,
+    pub state_version: i64,
+    pub current_step_index: Option<i64>,
+    pub current_node_id: Option<String>,
+    pub recovery_action: Option<String>,
+    pub recovery_required: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WorkflowExecutionListResponse {
+    pub workflow_id: String,
+    pub executions: Vec<WorkflowExecutionSummary>,
 }
 
 #[derive(Debug)]
@@ -248,21 +291,21 @@ fn validate_workflow_graph(
     Ok(())
 }
 
-fn stored_workflow_to_json(row: StoredWorkflowRow) -> Result<serde_json::Value, ApiError> {
+fn stored_workflow_to_response(row: StoredWorkflowRow) -> Result<WorkflowResponse, ApiError> {
     let nodes = parse_workflow_graph_array(&row.nodes_json, "nodes")?;
     let edges = parse_workflow_graph_array(&row.edges_json, "edges")?;
     validate_workflow_graph(&nodes, &edges)?;
 
-    Ok(serde_json::json!({
-        "id": row.id,
-        "name": row.name,
-        "description": row.description,
-        "nodes": nodes,
-        "edges": edges,
-        "created_by": row.created_by,
-        "updated_at": row.updated_at,
-        "created_at": row.created_at,
-    }))
+    Ok(WorkflowResponse {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        nodes: serde_json::Value::Array(nodes),
+        edges: serde_json::Value::Array(edges),
+        created_by: row.created_by,
+        updated_at: row.updated_at,
+        created_at: row.created_at,
+    })
 }
 
 fn workflow_step_retry_safe(node_type: &str) -> bool {
@@ -472,7 +515,7 @@ fn workflow_recovery_body(
 pub async fn list_workflows(
     State(state): State<Arc<AppState>>,
     Query(params): Query<WorkflowListParams>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<WorkflowListResponse> {
     let page = params.page.unwrap_or(1);
     let page_size = params.page_size.unwrap_or(50).min(200);
     let offset = (page.saturating_sub(1)) * page_size;
@@ -511,17 +554,17 @@ pub async fn list_workflows(
         .map_err(|e| ApiError::db_error("workflow_list_query", e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ApiError::db_error("workflow_list_row", e))?;
-    let workflows: Vec<serde_json::Value> = raw_workflows
+    let workflows: Vec<WorkflowResponse> = raw_workflows
         .into_iter()
-        .map(stored_workflow_to_json)
+        .map(stored_workflow_to_response)
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Json(serde_json::json!({
-        "workflows": workflows,
-        "page": page,
-        "page_size": page_size,
-        "total": total,
-    })))
+    Ok(Json(WorkflowListResponse {
+        workflows,
+        page,
+        page_size,
+        total,
+    }))
 }
 
 /// POST /api/workflows — create a new workflow.
@@ -573,13 +616,24 @@ pub async fn create_workflow(
             )
             .map_err(|e| ApiError::db_error("workflow_create", e))?;
 
+            let response_id = id.clone();
+            let response_name = body.name.clone();
+            let response_description = description.clone();
             Ok((
                 StatusCode::CREATED,
-                serde_json::json!({
-                    "id": id,
-                    "name": body.name,
-                    "description": description,
-                    "status": "created",
+                serde_json::to_value(WorkflowCreateResponse {
+                    id: response_id.clone(),
+                    name: response_name.clone(),
+                    description: response_description.clone(),
+                    status: "created".to_string(),
+                })
+                .unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "id": response_id,
+                        "name": response_name,
+                        "description": response_description,
+                        "status": "created",
+                    })
                 }),
             ))
         },
@@ -609,7 +663,7 @@ pub async fn create_workflow(
 pub async fn get_workflow(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<WorkflowResponse> {
     let db = state
         .db
         .read()
@@ -640,7 +694,7 @@ pub async fn get_workflow(
             _ => ApiError::db_error("workflow_get", e),
         })?;
 
-    Ok(Json(stored_workflow_to_json(workflow)?))
+    Ok(Json(stored_workflow_to_response(workflow)?))
 }
 
 /// PUT /api/workflows/:id — update a workflow.
@@ -780,9 +834,15 @@ pub async fn update_workflow(
 
             Ok((
                 StatusCode::OK,
-                serde_json::json!({
-                    "id": id,
-                    "status": "updated",
+                serde_json::to_value(WorkflowUpdateResponse {
+                    id: id.clone(),
+                    status: "updated".to_string(),
+                })
+                .unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "id": id,
+                        "status": "updated",
+                    })
                 }),
             ))
         },
@@ -1876,7 +1936,7 @@ pub async fn execute_workflow(
 pub async fn list_executions(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<WorkflowExecutionListResponse> {
     let db = state
         .db
         .read()
@@ -1884,28 +1944,26 @@ pub async fn list_executions(
     let rows =
         cortex_storage::queries::workflow_execution_queries::list_by_workflow_id(&db, &id, 50)
             .map_err(|error| ApiError::db_error("list_executions_query", error))?;
-    let executions: Vec<serde_json::Value> = rows
+    let executions: Vec<WorkflowExecutionSummary> = rows
         .into_iter()
-        .map(|row| {
-            serde_json::json!({
-                "execution_id": row.id,
-                "status": row.status,
-                "started_at": row.started_at,
-                "completed_at": row.completed_at,
-                "updated_at": row.updated_at,
-                "state_version": row.state_version,
-                "current_step_index": row.current_step_index,
-                "current_node_id": row.current_node_id,
-                "recovery_action": row.recovery_action,
-                "recovery_required": row.status == "recovery_required",
-            })
+        .map(|row| WorkflowExecutionSummary {
+            execution_id: row.id,
+            status: row.status.clone(),
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            updated_at: row.updated_at,
+            state_version: row.state_version,
+            current_step_index: row.current_step_index,
+            current_node_id: row.current_node_id,
+            recovery_action: row.recovery_action,
+            recovery_required: row.status == "recovery_required",
         })
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "workflow_id": id,
-        "executions": executions,
-    })))
+    Ok(Json(WorkflowExecutionListResponse {
+        workflow_id: id,
+        executions,
+    }))
 }
 
 /// POST /api/workflows/:id/resume/:execution_id — resume a failed execution.

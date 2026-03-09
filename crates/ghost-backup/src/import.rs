@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::fs;
 #[cfg(test)]
 use std::io::Cursor;
+use std::io::ErrorKind;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -80,19 +81,46 @@ impl BackupImporter {
         });
 
         match restore_result {
-            Ok(manifest) => {
-                fs::rename(&stage_root, &self.ghost_dir)?;
-                tracing::info!(
-                    entries = manifest.entries.len(),
-                    target = %self.ghost_dir.display(),
-                    "Backup imported and restored into fresh target"
-                );
-                Ok(manifest)
-            }
+            Ok(manifest) => finalize_restore_stage(&stage_root, &self.ghost_dir, manifest),
             Err(error) => {
-                let _ = fs::remove_dir_all(&stage_root);
+                cleanup_restore_stage(&stage_root);
                 Err(error)
             }
+        }
+    }
+}
+
+fn finalize_restore_stage(
+    stage_root: &Path,
+    restore_target: &Path,
+    manifest: BackupManifest,
+) -> BackupResult<BackupManifest> {
+    match fs::rename(stage_root, restore_target) {
+        Ok(()) => {
+            tracing::info!(
+                entries = manifest.entries.len(),
+                target = %restore_target.display(),
+                "Backup imported and restored into fresh target"
+            );
+            Ok(manifest)
+        }
+        Err(error) => {
+            cleanup_restore_stage(stage_root);
+            Err(BackupError::Io(error))
+        }
+    }
+}
+
+fn cleanup_restore_stage(stage_root: &Path) {
+    match fs::remove_dir_all(stage_root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %stage_root.display(),
+                error = %error,
+                "failed to clean up restore staging directory"
+            );
         }
     }
 }
@@ -479,5 +507,23 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, BackupError::IntegrityError(_)));
         assert!(!restore_target.exists());
+    }
+
+    #[test]
+    fn finalize_restore_stage_cleans_up_staging_on_rename_failure() {
+        let tmp = TempDir::new().unwrap();
+        let stage_root = tmp.path().join(".ghost-restore-stage");
+        let restore_target = tmp.path().join("restore-target");
+        fs::create_dir_all(stage_root.join("data")).unwrap();
+        fs::write(stage_root.join("data/file.txt"), b"ok").unwrap();
+        fs::create_dir_all(restore_target.join("occupied")).unwrap();
+        fs::write(restore_target.join("occupied/existing.txt"), b"busy").unwrap();
+
+        let manifest = manifest_for("data/file.txt", b"ok");
+        let error = finalize_restore_stage(&stage_root, &restore_target, manifest).unwrap_err();
+
+        assert!(matches!(error, BackupError::Io(_)));
+        assert!(!stage_root.exists());
+        assert!(restore_target.exists());
     }
 }

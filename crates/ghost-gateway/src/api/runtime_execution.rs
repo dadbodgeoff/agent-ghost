@@ -1,4 +1,5 @@
 use ghost_agent_loop::context::run_context::RunContext;
+use ghost_agent_loop::output_inspector::{InspectionResult, OutputInspector};
 use ghost_agent_loop::runner::{AgentRunner, RunError, RunResult};
 use uuid::Uuid;
 
@@ -96,6 +97,18 @@ pub async fn execute_blocking_turn(
         .await
 }
 
+pub fn inspect_text_safety(text: &str, agent_id: Uuid) -> InspectionResult {
+    OutputInspector::new().scan(text, agent_id)
+}
+
+pub fn inspection_safety_status(inspection: &InspectionResult) -> &'static str {
+    match inspection {
+        InspectionResult::Clean => "clean",
+        InspectionResult::Warning { .. } => "warning",
+        InspectionResult::KillAll { .. } => "blocked",
+    }
+}
+
 pub fn map_runtime_safety_error(error: RuntimeSafetyError) -> ApiError {
     match error {
         RuntimeSafetyError::AgentNotFound(message) => ApiError::bad_request(message),
@@ -127,5 +140,26 @@ pub fn map_runner_error(error: RunError) -> ApiError {
             format!("Convergence protection is {status}"),
         ),
         other => ApiError::internal(format!("agent run failed: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inspect_text_safety_marks_credential_patterns_as_warning() {
+        let inspection = inspect_text_safety(
+            "credential sk-proj-1234567890abcdefghijklmn exposed",
+            Uuid::nil(),
+        );
+
+        assert!(matches!(inspection, InspectionResult::Warning { .. }));
+        assert_eq!(inspection_safety_status(&inspection), "warning");
+    }
+
+    #[test]
+    fn inspection_safety_status_maps_clean_to_clean() {
+        assert_eq!(inspection_safety_status(&InspectionResult::Clean), "clean");
     }
 }

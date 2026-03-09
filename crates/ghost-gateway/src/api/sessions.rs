@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -49,6 +50,98 @@ pub struct SessionQueryParams {
 pub struct SessionEventParams {
     pub offset: Option<u32>,
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RuntimeSessionSummary {
+    pub session_id: String,
+    pub started_at: String,
+    pub last_event_at: String,
+    pub event_count: i64,
+    pub agents: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RuntimeSessionsPageResponse {
+    pub sessions: Vec<RuntimeSessionSummary>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RuntimeSessionsCursorResponse {
+    pub data: Vec<RuntimeSessionSummary>,
+    pub next_cursor: Option<String>,
+    pub has_more: bool,
+    pub total_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum SessionListResponse {
+    Page(RuntimeSessionsPageResponse),
+    Cursor(RuntimeSessionsCursorResponse),
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SessionEvent {
+    pub id: String,
+    pub event_type: String,
+    pub sender: Option<String>,
+    pub timestamp: String,
+    pub sequence_number: i64,
+    pub content_hash: Option<String>,
+    pub content_length: Option<i64>,
+    pub privacy_level: String,
+    pub latency_ms: Option<i64>,
+    pub token_count: Option<i64>,
+    pub event_hash: String,
+    pub previous_hash: String,
+    pub attributes: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SessionEventsResponse {
+    pub session_id: String,
+    pub events: Vec<SessionEvent>,
+    pub total: u32,
+    pub offset: u32,
+    pub limit: u32,
+    pub chain_valid: bool,
+    pub cumulative_cost: f64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBookmark {
+    pub id: String,
+    pub event_index: u32,
+    pub label: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SessionBookmarksResponse {
+    pub bookmarks: Vec<SessionBookmark>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct CreateBookmarkResponse {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct DeleteBookmarkResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BranchSessionResponse {
+    pub session_id: String,
+    pub branched_from: String,
+    pub events_copied: usize,
 }
 
 /// GET /api/sessions — list sessions derived from itp_events.
@@ -145,13 +238,13 @@ pub async fn list_sessions(
 
         let mut sessions = Vec::new();
         match stmt.query_map(param_refs.as_slice(), |row| {
-            Ok(serde_json::json!({
-                "session_id": row.get::<_, String>(0)?,
-                "started_at": row.get::<_, String>(1)?,
-                "last_event_at": row.get::<_, String>(2)?,
-                "event_count": row.get::<_, i64>(3)?,
-                "agents": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            }))
+            Ok(RuntimeSessionSummary {
+                session_id: row.get::<_, String>(0)?,
+                started_at: row.get::<_, String>(1)?,
+                last_event_at: row.get::<_, String>(2)?,
+                event_count: row.get::<_, i64>(3)?,
+                agents: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            })
         }) {
             Ok(rows) => {
                 for row in rows {
@@ -171,23 +264,20 @@ pub async fn list_sessions(
         }
 
         let has_more = sessions.len() > limit as usize;
-        let data: Vec<serde_json::Value> = sessions.into_iter().take(limit as usize).collect();
+        let data: Vec<RuntimeSessionSummary> = sessions.into_iter().take(limit as usize).collect();
         let next_cursor = if has_more {
-            data.last()
-                .and_then(|s| s.get("last_event_at"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
+            data.last().map(|session| session.last_event_at.clone())
         } else {
             None
         };
 
         return (
             StatusCode::OK,
-            Json(serde_json::json!({
-                "data": data,
-                "next_cursor": next_cursor,
-                "has_more": has_more,
-                "total_count": total,
+            Json(SessionListResponse::Cursor(RuntimeSessionsCursorResponse {
+                data,
+                next_cursor,
+                has_more,
+                total_count: total,
             })),
         )
             .into_response();
@@ -221,13 +311,13 @@ pub async fn list_sessions(
 
     let mut sessions = Vec::new();
     match stmt.query_map(rusqlite::params![page_size, offset], |row| {
-        Ok(serde_json::json!({
-            "session_id": row.get::<_, String>(0)?,
-            "started_at": row.get::<_, String>(1)?,
-            "last_event_at": row.get::<_, String>(2)?,
-            "event_count": row.get::<_, i64>(3)?,
-            "agents": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-        }))
+        Ok(RuntimeSessionSummary {
+            session_id: row.get::<_, String>(0)?,
+            started_at: row.get::<_, String>(1)?,
+            last_event_at: row.get::<_, String>(2)?,
+            event_count: row.get::<_, i64>(3)?,
+            agents: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        })
     }) {
         Ok(rows) => {
             for row in rows {
@@ -248,11 +338,11 @@ pub async fn list_sessions(
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "sessions": sessions,
-            "page": page,
-            "page_size": page_size,
-            "total": total,
+        Json(SessionListResponse::Page(RuntimeSessionsPageResponse {
+            sessions,
+            page,
+            page_size,
+            total,
         })),
     )
         .into_response()
@@ -294,7 +384,7 @@ pub async fn session_events(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Query(params): Query<SessionEventParams>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<SessionEventsResponse> {
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(100).min(500);
 
@@ -347,23 +437,24 @@ pub async fn session_events(
             let attributes: Option<String> = row.get(12)?;
 
             Ok((
-                serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "event_type": row.get::<_, String>(1)?,
-                    "sender": row.get::<_, Option<String>>(2)?,
-                    "timestamp": row.get::<_, String>(3)?,
-                    "sequence_number": row.get::<_, i64>(4)?,
-                    "content_hash": row.get::<_, Option<String>>(5)?,
-                    "content_length": row.get::<_, Option<i64>>(6)?,
-                    "privacy_level": row.get::<_, String>(7)?,
-                    "latency_ms": row.get::<_, Option<i64>>(8)?,
-                    "token_count": token_count,
-                    "event_hash": &event_hash_hex,
-                    "previous_hash": &prev_hash_hex,
-                    "attributes": attributes.as_deref()
+                SessionEvent {
+                    id: row.get::<_, String>(0)?,
+                    event_type: row.get::<_, String>(1)?,
+                    sender: row.get::<_, Option<String>>(2)?,
+                    timestamp: row.get::<_, String>(3)?,
+                    sequence_number: row.get::<_, i64>(4)?,
+                    content_hash: row.get::<_, Option<String>>(5)?,
+                    content_length: row.get::<_, Option<i64>>(6)?,
+                    privacy_level: row.get::<_, String>(7)?,
+                    latency_ms: row.get::<_, Option<i64>>(8)?,
+                    token_count,
+                    event_hash: event_hash_hex.clone(),
+                    previous_hash: prev_hash_hex.clone(),
+                    attributes: attributes
+                        .as_deref()
                         .and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok())
                         .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-                }),
+                },
                 event_hash_hex,
                 prev_hash_hex,
                 token_count.unwrap_or(0) as f64,
@@ -386,12 +477,12 @@ pub async fn session_events(
                 cumulative_cost += tokens * 0.000003;
 
                 // T-5.6.6: PII redaction on attributes — never return unredacted data.
-                if let Some(attrs) = event.get("attributes") {
-                    let raw = attrs.to_string();
+                let raw = event.attributes.to_string();
+                if !raw.is_empty() {
                     let redacted = redact_pii(&raw);
                     match serde_json::from_str::<serde_json::Value>(&redacted) {
                         Ok(parsed) => {
-                            event["attributes"] = parsed;
+                            event.attributes = parsed;
                         }
                         Err(e) => {
                             // PII redaction produced invalid JSON — replace entirely
@@ -400,7 +491,7 @@ pub async fn session_events(
                                 error = %e,
                                 "PII redaction produced invalid JSON — replacing with placeholder"
                             );
-                            event["attributes"] = serde_json::json!({
+                            event.attributes = serde_json::json!({
                                 "_redaction_error": "[PII_REDACTION_FAILED]"
                             });
                         }
@@ -413,20 +504,20 @@ pub async fn session_events(
         }
     }
 
-    Ok(Json(serde_json::json!({
-        "session_id": session_id,
-        "events": events,
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "chain_valid": chain_valid,
-        "cumulative_cost": cumulative_cost,
-    })))
+    Ok(Json(SessionEventsResponse {
+        session_id,
+        events,
+        total,
+        offset,
+        limit,
+        chain_valid,
+        cumulative_cost,
+    }))
 }
 
 // ── Session Bookmarks (Phase 3, Task 3.9) ──────────────────────────────
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct CreateBookmarkRequest {
     pub id: Option<String>,
     #[serde(rename = "eventIndex")]
@@ -438,24 +529,24 @@ pub struct CreateBookmarkRequest {
 pub async fn list_bookmarks(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<SessionBookmarksResponse> {
     let db = state
         .db
         .read()
         .map_err(|e| ApiError::db_error("list_bookmarks", e))?;
 
-    let bookmarks: Vec<serde_json::Value> = match db.prepare(
+    let bookmarks: Vec<SessionBookmark> = match db.prepare(
         "SELECT id, event_index, label, created_at FROM session_bookmarks \
          WHERE session_id = ?1 ORDER BY event_index ASC",
     ) {
         Ok(mut stmt) => stmt
             .query_map([&session_id], |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "eventIndex": row.get::<_, u32>(1)?,
-                    "label": row.get::<_, String>(2)?,
-                    "createdAt": row.get::<_, String>(3)?,
-                }))
+                Ok(SessionBookmark {
+                    id: row.get::<_, String>(0)?,
+                    event_index: row.get::<_, u32>(1)?,
+                    label: row.get::<_, String>(2)?,
+                    created_at: row.get::<_, String>(3)?,
+                })
             })
             .map_err(|e| ApiError::db_error("list_bookmarks_query", e))?
             .filter_map(|r| r.ok())
@@ -463,7 +554,7 @@ pub async fn list_bookmarks(
         Err(_) => vec![],
     };
 
-    Ok(Json(serde_json::json!({ "bookmarks": bookmarks })))
+    Ok(Json(SessionBookmarksResponse { bookmarks }))
 }
 
 /// POST /api/sessions/:id/bookmarks — create a bookmark.
@@ -501,7 +592,11 @@ pub async fn create_bookmark(
 
             Ok((
                 StatusCode::CREATED,
-                serde_json::json!({ "id": bookmark_id, "status": "created" }),
+                serde_json::to_value(CreateBookmarkResponse {
+                    id: bookmark_id.clone(),
+                    status: "created".to_string(),
+                })
+                .unwrap_or_else(|_| serde_json::json!({ "id": bookmark_id, "status": "created" })),
             ))
         },
     ) {
@@ -559,7 +654,13 @@ pub async fn delete_bookmark(
                 )));
             }
 
-            Ok((StatusCode::OK, serde_json::json!({ "status": "deleted" })))
+            Ok((
+                StatusCode::OK,
+                serde_json::to_value(DeleteBookmarkResponse {
+                    status: "deleted".to_string(),
+                })
+                .unwrap_or_else(|_| serde_json::json!({ "status": "deleted" })),
+            ))
         },
     ) {
         Ok(outcome) => {
@@ -581,7 +682,7 @@ pub async fn delete_bookmark(
 }
 
 /// POST /api/sessions/:id/branch — branch a new session from a checkpoint.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct BranchRequest {
     pub from_event_index: u32,
 }
@@ -624,10 +725,17 @@ pub async fn branch_session(
 
             Ok((
                 StatusCode::CREATED,
-                serde_json::json!({
-                    "session_id": new_session_id,
-                    "branched_from": session_id,
-                    "events_copied": copied,
+                serde_json::to_value(BranchSessionResponse {
+                    session_id: new_session_id.clone(),
+                    branched_from: session_id.clone(),
+                    events_copied: copied,
+                })
+                .unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "session_id": new_session_id,
+                        "branched_from": session_id,
+                        "events_copied": copied,
+                    })
                 }),
             ))
         },
@@ -657,12 +765,45 @@ pub async fn branch_session(
 /// WP9-L: Client heartbeat endpoint.
 /// Frontend POSTs every 30s to indicate it's still consuming the SSE stream.
 /// Backend tracks the timestamp; the SSE producer pauses when stale >90s.
+/// Only existing Studio sessions or runtime sessions are allowed to refresh
+/// liveness state.
 pub async fn session_heartbeat(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
+    match session_exists_for_heartbeat(&state, &session_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return ApiError::not_found(format!("session {session_id} not found")).into_response();
+        }
+        Err(error) => return error.into_response(),
+    }
+
     state
         .client_heartbeats
         .insert(session_id.clone(), std::time::Instant::now());
-    (StatusCode::NO_CONTENT, "")
+    (StatusCode::NO_CONTENT, "").into_response()
+}
+
+async fn session_exists_for_heartbeat(
+    state: &AppState,
+    session_id: &str,
+) -> Result<bool, ApiError> {
+    let db = state.db.read()?;
+
+    let studio_session = cortex_storage::queries::studio_chat_queries::get_session(&db, session_id)
+        .map_err(|error| ApiError::db_error("heartbeat_studio_session_lookup", error))?;
+    if studio_session.is_some() {
+        return Ok(true);
+    }
+
+    let runtime_session_exists: i64 = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM itp_events WHERE session_id = ?1 LIMIT 1)",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| ApiError::db_error("heartbeat_runtime_session_lookup", error))?;
+
+    Ok(runtime_session_exists != 0)
 }

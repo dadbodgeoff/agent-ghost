@@ -776,7 +776,7 @@ impl GatewayBootstrap {
         mesh_router: Option<axum::Router>,
     ) -> axum::Router {
         let public_routes = crate::route_sets::public_routes();
-        let read_routes = crate::route_sets::read_routes();
+        let read_routes = crate::route_sets::read_routes(Arc::clone(&app_state));
         let operator_routes = crate::route_sets::operator_routes();
         let admin_routes = crate::route_sets::admin_routes();
         let superadmin_routes = crate::route_sets::superadmin_routes();
@@ -808,11 +808,7 @@ impl GatewayBootstrap {
         }
 
         // Mount push notification routes.
-        let push_state = crate::api::push_routes::PushState {
-            vapid_public_key: String::new(), // Populated from secrets in production
-            subscriptions: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
-        };
-        app = app.merge(crate::api::push_routes::push_router(push_state));
+        app = app.merge(crate::api::push_routes::push_router(build_push_state()));
 
         // WP6-A: Build CORS layer — config first, then env var, then dev defaults.
         let cors = Self::build_cors_layer(config);
@@ -1213,6 +1209,13 @@ impl GatewayBootstrap {
     }
 }
 
+fn build_push_state() -> crate::api::push_routes::PushState {
+    crate::api::push_routes::PushState {
+        vapid_public_key: crate::api::push_routes::generate_vapid_public_key(),
+        subscriptions: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
+    }
+}
+
 /// Resolve the GHOST home directory.
 ///
 /// Precedence: `GHOST_HOME` env var → `~/.ghost/`.
@@ -1297,5 +1300,11 @@ mod tests {
             Ok(_) => panic!("expected maintenance lock failure"),
             Err(err) => assert!(err.to_string().contains("maintenance lock"), "{err}"),
         }
+    }
+
+    #[test]
+    fn push_state_uses_non_empty_vapid_key() {
+        let push_state = build_push_state();
+        assert!(!push_state.vapid_public_key.is_empty());
     }
 }

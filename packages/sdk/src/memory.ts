@@ -1,78 +1,27 @@
 import type { GhostRequestFn } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface MemoryEntry {
-  id?: number;
-  memory_id: string;
-  snapshot: string;
-  created_at: string;
-}
-
-export interface ListMemoriesParams {
-  agent_id?: string;
-  page?: number;
-  page_size?: number;
-  include_archived?: boolean;
-}
-
-export interface ListMemoriesResult {
-  memories: MemoryEntry[];
-  page: number;
-  page_size: number;
-  total: number;
-}
-
-export interface SearchMemoriesParams {
-  q?: string;
-  agent_id?: string;
-  memory_type?: string;
-  importance?: string;
-  confidence_min?: number;
-  confidence_max?: number;
-  limit?: number;
-  include_archived?: boolean;
-}
-
-export interface MemorySearchResultEntry {
-  id: number;
-  memory_id: string;
-  snapshot: unknown;
-  created_at: string;
-  score: number;
-}
-
-export interface SearchMemoriesResult {
-  results: MemorySearchResultEntry[];
-  count: number;
-  query?: string;
-  search_mode: 'fts5' | 'like';
-  filters: {
-    agent_id?: string;
-    memory_type?: string;
-    importance?: string;
-    confidence_min?: number;
-    confidence_max?: number;
-  };
-}
-
-export interface MemoryGraphNode {
-  id: string;
-  label: string;
-  type: 'entity' | 'event' | 'concept';
-  importance: number;
-  decayFactor: number;
-}
-
-export interface MemoryGraphEdge {
+export type MemoryEntry = components['schemas']['MemoryEntry'];
+export type ListMemoriesParams = NonNullable<operations['list_memories']['parameters']['query']>;
+export type ListMemoriesResult =
+  operations['list_memories']['responses'][200]['content']['application/json'];
+export type SearchMemoriesParams = NonNullable<
+  operations['search_memories']['parameters']['query']
+>;
+export type MemorySearchResultEntry = components['schemas']['MemorySearchResultEntry'];
+export type SearchMemoriesResult =
+  operations['search_memories']['responses'][200]['content']['application/json'];
+export type MemoryGraphNode = components['schemas']['MemoryGraphNode'];
+export type MemoryGraphEdge = Omit<components['schemas']['MemoryGraphEdge'], 'source' | 'target'> & {
   source: string | MemoryGraphNode;
   target: string | MemoryGraphNode;
-  relationship: string;
-  strength: number;
-}
-
-export interface MemoryGraphResult {
-  nodes: MemoryGraphNode[];
+};
+export type MemoryGraphResult = Omit<
+  operations['get_memory_graph']['responses'][200]['content']['application/json'],
+  'edges'
+> & {
   edges: MemoryGraphEdge[];
-}
+};
 
 export class MemoryAPI {
   constructor(private request: GhostRequestFn) {}

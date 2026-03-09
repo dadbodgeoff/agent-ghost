@@ -1,59 +1,11 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components } from './generated-types.js';
 
-export interface SafeZone {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  label: string;
-}
-
-export interface ActionBudget {
-  max_per_minute: number;
-  max_per_hour: number;
-  used_this_minute: number;
-  used_this_hour: number;
-}
-
-export interface PcControlStatus {
-  enabled: boolean;
-  action_budget: ActionBudget;
-  allowed_apps: string[];
-  safe_zone?: SafeZone | null;
-  safe_zones: SafeZone[];
-  blocked_hotkeys: string[];
-  circuit_breaker_state: string;
-  persisted?: {
-    enabled: boolean;
-    allowed_apps: string[];
-    safe_zone?: SafeZone | null;
-    blocked_hotkeys: string[];
-    action_budget: ActionBudget;
-  };
-  runtime?: {
-    circuit_breaker_state: string;
-  };
-}
-
-export interface PcControlActionLogEntry {
-  id: string;
-  action_type: string;
-  target: string;
-  timestamp: string;
-  result: string;
-  input_json: string;
-  result_json: string;
-  target_app?: string | null;
-  coordinates?: string | null;
-  blocked: boolean;
-  block_reason?: string | null;
-  agent_id: string;
-  session_id: string;
-}
-
-export interface PcControlActionLogResult {
-  actions: PcControlActionLogEntry[];
-}
+export type SafeZone = components['schemas']['SafeZone'];
+export type ActionBudget = components['schemas']['ActionBudget'];
+export type PcControlStatus = components['schemas']['PcControlStatus'];
+export type PcControlActionLogEntry = components['schemas']['ActionLogEntry'];
+export type PcControlActionLogResult = components['schemas']['PcControlActionsResponse'];
 
 export class PcControlAPI {
   constructor(private request: GhostRequestFn) {}

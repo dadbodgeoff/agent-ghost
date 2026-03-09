@@ -86,7 +86,11 @@ impl EventReplayBuffer {
             return None;
         }
         let first_available = buf.front().map(|e| e.seq).unwrap_or(0);
-        if last_seq < first_available {
+        let last_available = buf.back().map(|e| e.seq).unwrap_or(0);
+        if last_seq < first_available || last_seq > last_available {
+            // `last_seq > last_available` means the client observed a newer
+            // sequence from a different gateway process/epoch, so continuity
+            // cannot be proven and the client must resync.
             return None; // Gap too large — events were evicted
         }
         Some(buf.iter().filter(|e| e.seq > last_seq).cloned().collect())
@@ -773,6 +777,30 @@ mod tests {
         assert!(
             replayed.windows(2).all(|pair| pair[0] < pair[1]),
             "replay buffer sequences must be strictly increasing: {replayed:?}"
+        );
+    }
+
+    #[test]
+    fn replay_after_returns_none_when_client_seq_exceeds_buffer_tail() {
+        let replay_buffer = EventReplayBuffer::new(8);
+        let (event_tx, _event_rx) = broadcast::channel(8);
+
+        replay_buffer.push_and_broadcast(
+            WsEvent::SystemWarning {
+                message: "boot-1".to_string(),
+            },
+            &event_tx,
+        );
+        replay_buffer.push_and_broadcast(
+            WsEvent::SystemWarning {
+                message: "boot-2".to_string(),
+            },
+            &event_tx,
+        );
+
+        assert!(
+            replay_buffer.replay_after(999).is_none(),
+            "future client sequence should force resync instead of replaying an empty set",
         );
     }
 }

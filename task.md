@@ -1,12 +1,14 @@
 # Studio Pipeline Alignment Task
 
-Status: March 8, 2026
+Status: Closed on March 9, 2026
 
 Objective: bring the live Studio pipeline up to a strict production-grade bar with no contract drift, no duplicate execution semantics, no misleading safety state, no silent fallback behavior, and no UI/runtime disagreement about what the system is doing.
 
 This task plan is based on the live code paths, not on the older architecture docs.
 
 Authoritative spec: `STUDIO_MASTER_REMEDIATION_SPEC.md`
+
+Closeout report: `STUDIO_REMEDIATION_CLOSEOUT.md`
 
 This file is the execution tracker for that spec. If this file conflicts with the master spec on contract ownership, semantics, or exit criteria, the master spec wins.
 

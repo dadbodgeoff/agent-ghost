@@ -8,6 +8,7 @@
     notifyAuthBoundary,
     rotateAuthBoundarySession,
   } from '$lib/auth-boundary';
+  import { wsStore } from '$lib/stores/websocket.svelte';
 
   type ThemeChoice = 'dark' | 'light' | 'system';
 
@@ -61,6 +62,7 @@
     await runtime.clearToken();
     invalidateAuthClientState();
     await notifyAuthBoundary('ghost-auth-cleared');
+    wsStore.disconnect();
 
     const result = { remoteSucceeded, reason };
     if (!result.remoteSucceeded && result.reason) {

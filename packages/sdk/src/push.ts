@@ -1,18 +1,9 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components } from './generated-types.js';
 
-export interface PushSubscriptionKeys {
-  p256dh?: string;
-  auth?: string;
-}
-
-export interface PushSubscriptionPayload {
-  endpoint: string;
-  keys?: PushSubscriptionKeys;
-}
-
-export interface VapidKeyResult {
-  key?: string;
-}
+export type PushSubscriptionKeys = components['schemas']['PushKeys'];
+export type PushSubscriptionPayload = components['schemas']['PushSubscription'];
+export type VapidKeyResult = components['schemas']['VapidKeyResponse'];
 
 export class PushAPI {
   constructor(private request: GhostRequestFn) {}

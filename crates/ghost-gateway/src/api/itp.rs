@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use axum::extract::{Query, State};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -13,10 +14,27 @@ pub struct ItpEventsQueryParams {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ItpEvent {
+    pub id: String,
+    pub event_type: String,
+    pub platform: String,
+    pub session_id: String,
+    pub timestamp: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ItpEventsResponse {
+    pub events: Vec<ItpEvent>,
+    pub buffer_count: u64,
+    pub extension_connected: bool,
+}
+
 pub async fn list_events(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ItpEventsQueryParams>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<ItpEventsResponse> {
     let limit = params.limit.unwrap_or(200).min(500);
     let db = state
         .db
@@ -38,14 +56,16 @@ pub async fn list_events(
 
     let rows = stmt
         .query_map(rusqlite::params![limit], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, String>(0)?,
-                "event_type": row.get::<_, String>(1)?,
-                "platform": "gateway",
-                "session_id": row.get::<_, String>(3)?,
-                "timestamp": row.get::<_, String>(4)?,
-                "source": row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "gateway".to_string()),
-            }))
+            Ok(ItpEvent {
+                id: row.get::<_, String>(0)?,
+                event_type: row.get::<_, String>(1)?,
+                platform: "gateway".to_string(),
+                session_id: row.get::<_, String>(3)?,
+                timestamp: row.get::<_, String>(4)?,
+                source: row
+                    .get::<_, Option<String>>(2)?
+                    .unwrap_or_else(|| "gateway".to_string()),
+            })
         })
         .map_err(|e| ApiError::db_error("itp_events_query", e))?;
 
@@ -57,9 +77,9 @@ pub async fn list_events(
         }
     }
 
-    Ok(Json(serde_json::json!({
-        "events": events,
-        "buffer_count": total,
-        "extension_connected": state.monitor_healthy.load(Ordering::Relaxed),
-    })))
+    Ok(Json(ItpEventsResponse {
+        events,
+        buffer_count: total,
+        extension_connected: state.monitor_healthy.load(Ordering::Relaxed),
+    }))
 }

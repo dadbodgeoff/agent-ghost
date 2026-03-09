@@ -1,178 +1,222 @@
-//! Role-based access control middleware (Task 1.12).
-//!
-//! Roles form a hierarchy: Viewer < Operator < Admin < SuperAdmin.
-//! The special "dev" role (assigned in no-auth mode) maps to Operator
-//! for backward compatibility — it can read and write, but cannot
-//! access safety or admin endpoints.
-//!
-//! Each route group requires a minimum role level. The RBAC middleware
-//! reads the role from JWT `Claims` stored in request extensions by the
-//! auth middleware.
-//!
-//! Usage in router construction:
-//! ```ignore
-//! let admin_routes = Router::new()
-//!     .route("/api/admin/backup", post(admin::create_backup))
-//!     .route_layer(axum::middleware::from_fn(rbac::admin));
-//! ```
+//! Route authorization middleware backed by the typed authz policy registry.
 
-use std::str::FromStr;
+use std::sync::Arc;
 
-use axum::{extract::Request, middleware::Next, response::Response};
+use axum::{
+    extract::{Path, Request, State},
+    middleware::Next,
+    response::Response,
+};
 
+use crate::api::auth::Claims;
+use crate::api::authz::{Action, AuthorizationContext, ResourceContext, RouteId};
+use crate::api::authz_policy::{authorize_claims, RouteAuthorizationKind, RouteAuthorizationSpec};
 use crate::api::error::ApiError;
+use crate::state::AppState;
 
-/// Role hierarchy -- higher ordinal = more privilege.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Role {
-    Viewer = 0,
-    Operator = 1,
-    Admin = 2,
-    SuperAdmin = 3,
-}
+pub async fn require_route(
+    spec: RouteAuthorizationSpec,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let claims = req.extensions().get::<Claims>();
+    let context = AuthorizationContext::new(spec.action, spec.route_id);
 
-impl FromStr for Role {
-    type Err = ();
-
-    /// Parse a role string (as stored in JWT claims) into a `Role`.
-    ///
-    /// Recognized values: `"viewer"`, `"operator"`, `"admin"`, `"superadmin"`.
-    /// The special `"dev"` role (used in no-auth dev mode) maps to `Operator`
-    /// so that unauthenticated local development can still create agents and
-    /// run sessions, but cannot access safety or admin endpoints.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "viewer" => Ok(Role::Viewer),
-            "operator" => Ok(Role::Operator),
-            "dev" => Ok(Role::Operator),
-            "admin" => Ok(Role::Admin),
-            "superadmin" => Ok(Role::SuperAdmin),
-            _ => Err(()),
+    match spec.authorization_kind {
+        RouteAuthorizationKind::MinimumRole(_) | RouteAuthorizationKind::SafetyReview => {
+            authorize_claims(claims, &context)?;
         }
-    }
-}
-
-/// Core RBAC enforcement. Reads the `Claims` from request extensions
-/// (set by the auth middleware) and checks that the user's role meets
-/// or exceeds the required minimum.
-async fn require_role(minimum: Role, req: Request, next: Next) -> Result<Response, ApiError> {
-    // Get claims from request extensions (set by auth middleware).
-    let claims = req.extensions().get::<crate::api::auth::Claims>();
-
-    let user_role = match claims {
-        Some(c) => match c.role.parse::<Role>() {
-            Ok(role) => role,
-            Err(()) => {
-                tracing::warn!(
-                    role = %c.role,
-                    "Unrecognized role in JWT claims — defaulting to Viewer"
-                );
-                Role::Viewer
-            }
-        },
-        None => {
-            // No claims means the auth middleware didn't inject them.
-            // This should only happen if auth is completely disabled AND
-            // the request somehow bypassed the auth middleware. Treat as
-            // unauthorized in all cases.
-            return Err(ApiError::Unauthorized(
-                "No authentication credentials provided".into(),
+        RouteAuthorizationKind::OwnerOrAdmin => {
+            return Err(ApiError::internal(
+                "owner-aware routes must use dedicated authz middleware",
             ));
         }
-    };
-
-    if user_role < minimum {
-        tracing::debug!(
-            required = ?minimum,
-            actual = ?user_role,
-            "RBAC check failed"
-        );
-        return Err(ApiError::Forbidden(
-            "Insufficient permissions for this operation".into(),
-        ));
     }
 
     Ok(next.run(req).await)
 }
 
-// ---- Convenience middleware functions for use with `from_fn` ----
-//
-// Usage: `.route_layer(axum::middleware::from_fn(rbac::operator))`
+pub async fn require_live_execution_read_route(
+    State(state): State<Arc<AppState>>,
+    Path(execution_id): Path<String>,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let claims = req.extensions().get::<Claims>();
+    let db = state
+        .db
+        .read()
+        .map_err(|error| ApiError::db_error("require_live_execution_read_route", error))?;
+    let Some(record) =
+        cortex_storage::queries::live_execution_queries::get_by_id(&db, &execution_id)
+            .map_err(|error| ApiError::db_error("require_live_execution_read_route", error))?
+    else {
+        return Err(ApiError::not_found(format!(
+            "live execution {execution_id} not found"
+        )));
+    };
 
-/// Middleware that requires at least `Viewer` role.
-/// Effectively just checks that the user is authenticated.
-pub async fn viewer(req: Request, next: Next) -> Result<Response, ApiError> {
-    require_role(Role::Viewer, req, next).await
-}
+    let context = AuthorizationContext::new(Action::LiveExecutionRead, RouteId::LiveExecutionById)
+        .with_resource(ResourceContext::LiveExecution {
+            execution_id: &execution_id,
+            owner_subject: Some(record.actor_key.as_str()),
+        });
+    authorize_claims(claims, &context)
+        .map_err(|_| ApiError::not_found(format!("live execution {execution_id} not found")))?;
 
-/// Middleware that requires at least `Operator` role.
-/// Use for write operations: creating agents, running sessions, etc.
-pub async fn operator(req: Request, next: Next) -> Result<Response, ApiError> {
-    require_role(Role::Operator, req, next).await
-}
-
-/// Middleware that requires at least `Admin` role.
-/// Use for safety endpoints, provider key management, admin operations.
-pub async fn admin(req: Request, next: Next) -> Result<Response, ApiError> {
-    require_role(Role::Admin, req, next).await
-}
-
-/// Middleware that requires `SuperAdmin` role.
-/// Use for the most destructive operations (kill-all, data restore).
-pub async fn superadmin(req: Request, next: Next) -> Result<Response, ApiError> {
-    require_role(Role::SuperAdmin, req, next).await
+    req.extensions_mut()
+        .insert(crate::api::live_executions::AuthorizedLiveExecutionRecord(
+            record,
+        ));
+    Ok(next.run(req).await)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::require_route;
 
-    #[test]
-    fn role_ordering() {
-        assert!(Role::Viewer < Role::Operator);
-        assert!(Role::Operator < Role::Admin);
-        assert!(Role::Admin < Role::SuperAdmin);
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::middleware::from_fn;
+    use axum::routing::post;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use crate::api::auth::Claims;
+    use crate::api::authz::{RouteId, AUTHZ_CLAIMS_VERSION_V1, INTERNAL_JWT_ISSUER};
+    use crate::api::authz_policy::route_spec_for;
+
+    fn typed_claims(role: &str, capabilities: &[&str]) -> Claims {
+        Claims {
+            sub: format!("{role}-subject"),
+            role: role.into(),
+            capabilities: capabilities
+                .iter()
+                .map(|capability| (*capability).into())
+                .collect(),
+            authz_v: Some(AUTHZ_CLAIMS_VERSION_V1),
+            exp: 42,
+            iat: 21,
+            jti: format!("{role}-jwt"),
+            iss: Some(INTERNAL_JWT_ISSUER.into()),
+        }
     }
 
-    #[test]
-    fn role_from_str_known() {
-        assert_eq!("viewer".parse::<Role>(), Ok(Role::Viewer));
-        assert_eq!("operator".parse::<Role>(), Ok(Role::Operator));
-        assert_eq!("admin".parse::<Role>(), Ok(Role::Admin));
-        assert_eq!("superadmin".parse::<Role>(), Ok(Role::SuperAdmin));
+    fn legacy_claims(role: &str) -> Claims {
+        Claims {
+            sub: format!("{role}-subject"),
+            role: role.into(),
+            capabilities: Vec::new(),
+            authz_v: None,
+            exp: 42,
+            iat: 21,
+            jti: format!("{role}-legacy"),
+            iss: None,
+        }
     }
 
-    #[test]
-    fn role_from_str_dev_maps_to_operator() {
-        assert_eq!("dev".parse::<Role>(), Ok(Role::Operator));
+    #[tokio::test]
+    async fn route_bound_admin_backup_allows_admin_claims() {
+        let spec = route_spec_for(RouteId::AdminBackupCreate, &Method::POST).expect("route spec");
+        let router = Router::new()
+            .route("/api/admin/backup", post(|| async { StatusCode::OK }))
+            .route_layer(from_fn(move |req, next| require_route(spec, req, next)));
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/admin/backup")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(typed_claims("admin", &[]));
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[test]
-    fn role_from_str_unknown() {
-        assert_eq!("unknown".parse::<Role>(), Err(()));
-        assert_eq!("".parse::<Role>(), Err(()));
+    #[tokio::test]
+    async fn route_bound_admin_backup_denies_operator_claims() {
+        let spec = route_spec_for(RouteId::AdminBackupCreate, &Method::POST).expect("route spec");
+        let router = Router::new()
+            .route("/api/admin/backup", post(|| async { StatusCode::OK }))
+            .route_layer(from_fn(move |req, next| require_route(spec, req, next)));
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/admin/backup")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(legacy_claims("operator"));
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    #[test]
-    fn admin_passes_admin_check() {
-        let admin = Role::Admin;
-        let required = Role::Admin;
-        assert!(admin >= required);
+    #[tokio::test]
+    async fn route_bound_safety_resume_allows_operator_with_capability() {
+        let spec = route_spec_for(RouteId::SafetyResumeAgent, &Method::POST).expect("route spec");
+        let router = Router::new()
+            .route(
+                "/api/safety/resume/agent-1",
+                post(|| async { StatusCode::OK }),
+            )
+            .route_layer(from_fn(move |req, next| require_route(spec, req, next)));
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/safety/resume/agent-1")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(typed_claims("operator", &["safety_review"]));
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
-    #[test]
-    fn operator_fails_admin_check() {
-        let op = Role::Operator;
-        let required = Role::Admin;
-        assert!(op < required);
+    #[tokio::test]
+    async fn route_bound_safety_resume_denies_plain_operator() {
+        let spec = route_spec_for(RouteId::SafetyResumeAgent, &Method::POST).expect("route spec");
+        let router = Router::new()
+            .route(
+                "/api/safety/resume/agent-1",
+                post(|| async { StatusCode::OK }),
+            )
+            .route_layer(from_fn(move |req, next| require_route(spec, req, next)));
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/safety/resume/agent-1")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(typed_claims("operator", &[]));
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    #[test]
-    fn superadmin_passes_all() {
-        let sa = Role::SuperAdmin;
-        assert!(sa >= Role::Viewer);
-        assert!(sa >= Role::Operator);
-        assert!(sa >= Role::Admin);
-        assert!(sa >= Role::SuperAdmin);
+    #[tokio::test]
+    async fn route_bound_safety_resume_allows_legacy_security_reviewer() {
+        let spec = route_spec_for(RouteId::SafetyResumeAgent, &Method::POST).expect("route spec");
+        let router = Router::new()
+            .route(
+                "/api/safety/resume/agent-1",
+                post(|| async { StatusCode::OK }),
+            )
+            .route_layer(from_fn(move |req, next| require_route(spec, req, next)));
+
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/safety/resume/agent-1")
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(legacy_claims("security_reviewer"));
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

@@ -13,6 +13,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::ApiError;
@@ -135,11 +137,13 @@ fn validate_execute_request(req: &ApiCallRequest) -> Result<(), ApiError> {
 }
 
 fn oauth_execute_accepted_body(ref_id: &str, execution_id: &str) -> serde_json::Value {
-    serde_json::json!({
-        "status": "accepted",
-        "ref_id": ref_id,
-        "execution_id": execution_id,
+    serde_json::to_value(OAuthExecuteAcceptedResponse {
+        status: "accepted".to_string(),
+        ref_id: ref_id.to_string(),
+        execution_id: execution_id.to_string(),
+        recovery_required: None,
     })
+    .unwrap_or(serde_json::Value::Null)
 }
 
 fn oauth_execute_recovery_body(state: &OAuthExecuteExecutionState) -> serde_json::Value {
@@ -368,12 +372,24 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
 }
 
 /// Request body for POST /api/oauth/connect.
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ConnectRequest {
     pub provider: String,
     pub scopes: Vec<String>,
     #[serde(default = "default_redirect_uri")]
     pub redirect_uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OAuthConnectResponse {
+    pub authorization_url: String,
+    pub ref_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OAuthConnectionStatusResponse {
+    pub status: String,
+    pub ref_id: String,
 }
 
 fn default_redirect_uri() -> String {
@@ -422,10 +438,11 @@ pub async fn connect(
                 .map_err(oauth_connect_error)?;
             Ok((
                 StatusCode::OK,
-                serde_json::json!({
-                    "authorization_url": auth_url,
-                    "ref_id": ref_id.to_string(),
-                }),
+                serde_json::to_value(OAuthConnectResponse {
+                    authorization_url: auth_url,
+                    ref_id: ref_id.to_string(),
+                })
+                .unwrap_or(serde_json::Value::Null),
             ))
         },
     ) {
@@ -468,32 +485,36 @@ pub struct CallbackQuery {
 pub async fn callback(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CallbackQuery>,
-) -> impl IntoResponse {
+) -> Response {
     if params.state.is_empty() {
-        return (
+        return ApiError::custom(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "invalid state"})),
-        );
+            "OAUTH_INVALID_STATE",
+            "invalid state",
+        )
+        .into_response();
     }
     if params.code.is_empty() {
-        return (
+        return ApiError::custom(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "missing code"})),
-        );
+            "OAUTH_CODE_REQUIRED",
+            "missing code",
+        )
+        .into_response();
     }
 
     match state.oauth_broker.callback(&params.state, &params.code) {
-        Ok(ref_id) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "connected",
-                "ref_id": ref_id.to_string(),
-            })),
-        ),
-        Err(e) => (
+        Ok(ref_id) => Json(OAuthConnectionStatusResponse {
+            status: "connected".to_string(),
+            ref_id: ref_id.to_string(),
+        })
+        .into_response(),
+        Err(e) => ApiError::custom(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ),
+            "OAUTH_CALLBACK_FAILED",
+            e.to_string(),
+        )
+        .into_response(),
     }
 }
 
@@ -523,11 +544,36 @@ pub async fn list_connections(State(state): State<Arc<AppState>>) -> impl IntoRe
 }
 
 /// Request body for POST /api/oauth/execute.
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OAuthApiRequestSchema {
+    pub method: String,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OAuthExecuteResponse {
+    pub status: u16,
+    pub headers: BTreeMap<String, String>,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OAuthExecuteAcceptedResponse {
+    pub status: String,
+    pub ref_id: String,
+    pub execution_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_required: Option<bool>,
+}
+
+#[derive(Deserialize, Serialize, ToSchema)]
 pub struct ApiCallRequest {
     /// OAuth connection reference (UUID string from a prior `/connect` flow).
     pub ref_id: String,
     /// The upstream API request to execute through this OAuth connection.
+    #[schema(value_type = OAuthApiRequestSchema)]
     pub api_request: ghost_oauth::ApiRequest,
 }
 
@@ -762,11 +808,12 @@ pub async fn execute_api_call(
                         &execution_record.id,
                         execution_state,
                         StatusCode::OK,
-                        serde_json::json!({
-                            "status": response.status,
-                            "headers": response.headers,
-                            "body": response.body,
-                        }),
+                        serde_json::to_value(OAuthExecuteResponse {
+                            status: response.status,
+                            headers: response.headers,
+                            body: response.body,
+                        })
+                        .unwrap_or(serde_json::Value::Null),
                         &req,
                     )
                     .await
@@ -852,10 +899,11 @@ pub async fn disconnect(
             tracing::info!(ref_id = %ref_id_str, "OAuth connection disconnected");
             Ok((
                 StatusCode::OK,
-                serde_json::json!({
-                    "status": "disconnected",
-                    "ref_id": ref_id_str,
-                }),
+                serde_json::to_value(OAuthConnectionStatusResponse {
+                    status: "disconnected".to_string(),
+                    ref_id: ref_id_str.clone(),
+                })
+                .unwrap_or(serde_json::Value::Null),
             ))
         },
     ) {

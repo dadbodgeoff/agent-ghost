@@ -1,33 +1,15 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface Profile {
-  name: string;
-  description: string;
-  is_preset: boolean;
-  weights: number[];
-  thresholds: number[];
-}
-
-export interface ListProfilesResult {
-  profiles: Profile[];
-}
-
-export interface CreateProfileParams {
-  name: string;
-  description?: string;
-  weights: number[];
-  thresholds: number[];
-}
-
-export interface UpdateProfileParams {
-  description?: string;
-  weights?: number[];
-  thresholds?: number[];
-}
-
-export interface DeleteProfileResult {
-  deleted: string;
-}
+export type Profile = components['schemas']['ProfileSummary'];
+export type ListProfilesResult = components['schemas']['ProfileListResponse'];
+export type CreateProfileParams =
+  operations['create_profile']['requestBody']['content']['application/json'];
+export type CreateProfileResult =
+  operations['create_profile']['responses'][201]['content']['application/json'];
+export type UpdateProfileParams =
+  operations['update_profile']['requestBody']['content']['application/json'];
+export type DeleteProfileResult = components['schemas']['DeleteProfileResponse'];
 
 export class ProfilesAPI {
   constructor(private request: GhostRequestFn) {}
@@ -36,8 +18,11 @@ export class ProfilesAPI {
     return this.request<ListProfilesResult>('GET', '/api/profiles');
   }
 
-  async create(params: CreateProfileParams, options?: GhostRequestOptions): Promise<Profile> {
-    return this.request<Profile>('POST', '/api/profiles', params, options);
+  async create(
+    params: CreateProfileParams,
+    options?: GhostRequestOptions,
+  ): Promise<CreateProfileResult> {
+    return this.request<CreateProfileResult>('POST', '/api/profiles', params, options);
   }
 
   async update(

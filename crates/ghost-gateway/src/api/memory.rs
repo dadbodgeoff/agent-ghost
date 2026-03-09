@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use cortex_core::memory::types::MemoryType;
 use cortex_core::memory::{BaseMemory, Importance};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -28,6 +29,12 @@ use crate::state::AppState;
 const WRITE_MEMORY_ROUTE_TEMPLATE: &str = "/api/memory";
 const ARCHIVE_MEMORY_ROUTE_TEMPLATE: &str = "/api/memory/:id/archive";
 const UNARCHIVE_MEMORY_ROUTE_TEMPLATE: &str = "/api/memory/:id/unarchive";
+const LATEST_MEMORY_SNAPSHOTS_JOIN: &str = "
+ JOIN (
+     SELECT memory_id, MAX(id) AS max_id
+     FROM memory_snapshots
+     GROUP BY memory_id
+ ) latest ON latest.max_id = ms.id";
 
 fn memory_actor(claims: Option<&Claims>, fallback: Option<&str>) -> String {
     claims
@@ -77,7 +84,7 @@ pub struct MemoryGraphParams {
     pub include_archived: Option<bool>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, ToSchema)]
 pub struct MemoryGraphNode {
     pub id: String,
     pub label: String,
@@ -88,7 +95,7 @@ pub struct MemoryGraphNode {
     pub decay_factor: f64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, ToSchema)]
 pub struct MemoryGraphEdge {
     pub source: String,
     pub target: String,
@@ -96,10 +103,74 @@ pub struct MemoryGraphEdge {
     pub strength: f64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq, ToSchema)]
 pub struct MemoryGraphResponse {
     pub nodes: Vec<MemoryGraphNode>,
     pub edges: Vec<MemoryGraphEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MemoryEntry {
+    pub id: i64,
+    pub memory_id: String,
+    pub snapshot: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ListMemoriesResponse {
+    pub memories: Vec<MemoryEntry>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MemorySearchResultEntry {
+    pub id: i64,
+    pub memory_id: String,
+    pub snapshot: serde_json::Value,
+    pub created_at: String,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MemorySearchFilters {
+    pub agent_id: Option<String>,
+    pub memory_type: Option<String>,
+    pub importance: Option<String>,
+    pub confidence_min: Option<f64>,
+    pub confidence_max: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SearchMemoriesResponse {
+    pub results: Vec<MemorySearchResultEntry>,
+    pub count: usize,
+    pub query: Option<String>,
+    pub search_mode: String,
+    pub filters: MemorySearchFilters,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ArchivedMemoryEntry {
+    pub memory_id: String,
+    pub archived_at: String,
+    pub reason: String,
+    pub decayed_confidence: f64,
+    pub original_confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ArchivedMemoryListResponse {
+    pub archived: Vec<ArchivedMemoryEntry>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MemoryArchiveStatusResponse {
+    pub status: String,
+    pub memory_id: String,
 }
 
 /// GET /api/memory — list memory snapshots with optional agent_id filter.
@@ -118,7 +189,8 @@ pub async fn list_memories(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "database connection error"})),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -134,9 +206,12 @@ pub async fn list_memories(
     let total: u32 = match &params.agent_id {
         Some(agent_id) => {
             let sql = format!(
-                "SELECT COUNT(DISTINCT ms.id) FROM memory_snapshots ms \
-                 JOIN memory_events me ON ms.memory_id = me.memory_id \
-                 WHERE me.actor_id = ?1{archival_filter}"
+                "SELECT COUNT(*) FROM memory_snapshots ms \
+                 {LATEST_MEMORY_SNAPSHOTS_JOIN} \
+                 WHERE EXISTS (\
+                     SELECT 1 FROM memory_events me \
+                     WHERE me.memory_id = ms.memory_id AND me.actor_id = ?1\
+                 ){archival_filter}"
             );
             match db.query_row(&sql, [agent_id], |row| row.get(0)) {
                 Ok(count) => count,
@@ -144,25 +219,25 @@ pub async fn list_memories(
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": format!("count query failed: {e}")})),
-                    );
+                    )
+                        .into_response();
                 }
             }
         }
         None => {
-            let sql = if include_archived {
-                "SELECT COUNT(*) FROM memory_snapshots".to_string()
-            } else {
+            let sql = format!(
                 "SELECT COUNT(*) FROM memory_snapshots ms \
-                 WHERE ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log)"
-                    .to_string()
-            };
+                 {LATEST_MEMORY_SNAPSHOTS_JOIN} \
+                 WHERE 1 = 1{archival_filter}"
+            );
             match db.query_row(&sql, [], |row| row.get(0)) {
                 Ok(count) => count,
                 Err(e) => {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": format!("count query failed: {e}")})),
-                    );
+                    )
+                        .into_response();
                 }
             }
         }
@@ -174,10 +249,12 @@ pub async fn list_memories(
         let sql = format!(
             "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
              FROM memory_snapshots ms \
-             JOIN memory_events me ON ms.memory_id = me.memory_id \
-             WHERE me.actor_id = ?1{archival_filter} \
-             GROUP BY ms.id \
-             ORDER BY ms.created_at DESC LIMIT ?2 OFFSET ?3"
+             {LATEST_MEMORY_SNAPSHOTS_JOIN} \
+             WHERE EXISTS (\
+                 SELECT 1 FROM memory_events me \
+                 WHERE me.memory_id = ms.memory_id AND me.actor_id = ?1\
+             ){archival_filter} \
+             ORDER BY ms.id DESC LIMIT ?2 OFFSET ?3"
         );
         let mut stmt = match db.prepare(&sql) {
             Ok(stmt) => stmt,
@@ -185,16 +262,17 @@ pub async fn list_memories(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": format!("query prepare failed: {e}")})),
-                );
+                )
+                    .into_response();
             }
         };
         let rows = stmt.query_map(rusqlite::params![agent_id, page_size, offset], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "memory_id": row.get::<_, String>(1)?,
-                "snapshot": row.get::<_, String>(2)?,
-                "created_at": row.get::<_, String>(3)?,
-            }))
+            Ok(MemoryEntry {
+                id: row.get::<_, i64>(0)?,
+                memory_id: row.get::<_, String>(1)?,
+                snapshot: row.get::<_, String>(2)?,
+                created_at: row.get::<_, String>(3)?,
+            })
         });
         match rows {
             Ok(rows) => {
@@ -209,38 +287,35 @@ pub async fn list_memories(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": format!("query failed: {e}")})),
-                );
+                )
+                    .into_response();
             }
         };
     } else {
-        let sql = if include_archived {
-            "SELECT id, memory_id, snapshot, created_at \
-             FROM memory_snapshots \
-             ORDER BY created_at DESC LIMIT ?1 OFFSET ?2"
-                .to_string()
-        } else {
+        let sql = format!(
             "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
              FROM memory_snapshots ms \
-             WHERE ms.memory_id NOT IN (SELECT memory_id FROM memory_archival_log) \
-             ORDER BY ms.created_at DESC LIMIT ?1 OFFSET ?2"
-                .to_string()
-        };
+             {LATEST_MEMORY_SNAPSHOTS_JOIN} \
+             WHERE 1 = 1{archival_filter} \
+             ORDER BY ms.id DESC LIMIT ?1 OFFSET ?2"
+        );
         let mut stmt = match db.prepare(&sql) {
             Ok(stmt) => stmt,
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": format!("query prepare failed: {e}")})),
-                );
+                )
+                    .into_response();
             }
         };
         let rows = stmt.query_map(rusqlite::params![page_size, offset], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "memory_id": row.get::<_, String>(1)?,
-                "snapshot": row.get::<_, String>(2)?,
-                "created_at": row.get::<_, String>(3)?,
-            }))
+            Ok(MemoryEntry {
+                id: row.get::<_, i64>(0)?,
+                memory_id: row.get::<_, String>(1)?,
+                snapshot: row.get::<_, String>(2)?,
+                created_at: row.get::<_, String>(3)?,
+            })
         });
         match rows {
             Ok(rows) => {
@@ -255,20 +330,22 @@ pub async fn list_memories(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": format!("query failed: {e}")})),
-                );
+                )
+                    .into_response();
             }
         };
     }
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "memories": memories,
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-        })),
+        Json(ListMemoriesResponse {
+            memories,
+            page,
+            page_size,
+            total,
+        }),
     )
+        .into_response()
 }
 
 /// GET /api/memory/:id — get a specific memory snapshot by ID.
@@ -283,22 +360,24 @@ pub async fn get_memory(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "database connection error"})),
-            );
+            )
+                .into_response();
         }
     };
 
     // Try by memory_id first (TEXT), then by numeric id only if parseable (F1 fix).
     let row = db
         .query_row(
-            "SELECT id, memory_id, snapshot, created_at FROM memory_snapshots WHERE memory_id = ?1",
+            "SELECT id, memory_id, snapshot, created_at FROM memory_snapshots \
+             WHERE memory_id = ?1 ORDER BY id DESC LIMIT 1",
             [&id],
             |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "memory_id": row.get::<_, String>(1)?,
-                    "snapshot": row.get::<_, String>(2)?,
-                    "created_at": row.get::<_, String>(3)?,
-                }))
+                Ok(MemoryEntry {
+                    id: row.get::<_, i64>(0)?,
+                    memory_id: row.get::<_, String>(1)?,
+                    snapshot: row.get::<_, String>(2)?,
+                    created_at: row.get::<_, String>(3)?,
+                })
             },
         )
         .or_else(|first_err| {
@@ -317,26 +396,28 @@ pub async fn get_memory(
                 "SELECT id, memory_id, snapshot, created_at FROM memory_snapshots WHERE id = ?1",
                 [numeric_id],
                 |row| {
-                    Ok(serde_json::json!({
-                        "id": row.get::<_, i64>(0)?,
-                        "memory_id": row.get::<_, String>(1)?,
-                        "snapshot": row.get::<_, String>(2)?,
-                        "created_at": row.get::<_, String>(3)?,
-                    }))
+                    Ok(MemoryEntry {
+                        id: row.get::<_, i64>(0)?,
+                        memory_id: row.get::<_, String>(1)?,
+                        snapshot: row.get::<_, String>(2)?,
+                        created_at: row.get::<_, String>(3)?,
+                    })
                 },
             )
         });
 
     match row {
-        Ok(memory) => (StatusCode::OK, Json(memory)),
+        Ok(memory) => (StatusCode::OK, Json(memory)).into_response(),
         Err(rusqlite::Error::QueryReturnedNoRows) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "memory not found", "id": id})),
-        ),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("database error: {e}"), "id": id})),
-        ),
+        )
+            .into_response(),
     }
 }
 
@@ -365,7 +446,7 @@ pub async fn get_memory_graph(
 pub async fn search_memories(
     State(state): State<Arc<AppState>>,
     Query(params): Query<MemorySearchParams>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<SearchMemoriesResponse> {
     let limit = params.limit.unwrap_or(50).min(200);
     let include_archived = params.include_archived.unwrap_or(false);
 
@@ -396,7 +477,10 @@ pub async fn search_memories(
             limit * 3, // Over-fetch for re-ranking
             include_archived,
         )
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+        .map_err(|e| {
+            tracing::error!(error = %e, query = %q, "memory fts search failed");
+            ApiError::internal(e.to_string())
+        })?;
 
         fts_results
             .into_iter()
@@ -409,7 +493,10 @@ pub async fn search_memories(
             .collect::<Vec<_>>()
     } else {
         // Fallback: LIKE-based search (pre-v031 or no query text).
-        search_like_fallback(&db, &params, include_archived, limit)?
+        search_like_fallback(&db, &params, include_archived, limit).map_err(|error| {
+            tracing::error!(error = %error, query = ?params.q, "memory like search failed");
+            error
+        })?
     };
 
     // Apply post-retrieval filters (memory_type, importance, confidence range).
@@ -462,34 +549,34 @@ pub async fn search_memories(
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit as usize);
 
-    let results: Vec<serde_json::Value> = scored
+    let results: Vec<MemorySearchResultEntry> = scored
         .iter()
         .map(|(c, score)| {
             let snapshot_parsed = serde_json::from_str::<serde_json::Value>(&c.snapshot)
                 .unwrap_or(serde_json::Value::String(c.snapshot.clone()));
-            serde_json::json!({
-                "id": c.id,
-                "memory_id": c.memory_id,
-                "snapshot": snapshot_parsed,
-                "created_at": c.created_at,
-                "score": score,
-            })
+            MemorySearchResultEntry {
+                id: c.id,
+                memory_id: c.memory_id.clone(),
+                snapshot: snapshot_parsed,
+                created_at: c.created_at.clone(),
+                score: *score,
+            }
         })
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "results": results,
-        "count": results.len(),
-        "query": params.q,
-        "search_mode": if use_fts { "fts5" } else { "like" },
-        "filters": {
-            "agent_id": params.agent_id,
-            "memory_type": params.memory_type,
-            "importance": params.importance,
-            "confidence_min": params.confidence_min,
-            "confidence_max": params.confidence_max,
+    Ok(Json(SearchMemoriesResponse {
+        count: results.len(),
+        results,
+        query: params.q,
+        search_mode: if use_fts { "fts5" } else { "like" }.to_string(),
+        filters: MemorySearchFilters {
+            agent_id: params.agent_id,
+            memory_type: params.memory_type,
+            importance: params.importance,
+            confidence_min: params.confidence_min,
+            confidence_max: params.confidence_max,
         },
-    })))
+    }))
 }
 
 struct SearchCandidate {
@@ -530,17 +617,12 @@ fn query_graph_rows(
         let sql = format!(
             "SELECT ms.memory_id, ms.snapshot, ms.created_at \
              FROM memory_snapshots ms \
-             JOIN (
-                 SELECT memory_id, MAX(created_at) AS max_created_at
-                 FROM memory_snapshots
-                 GROUP BY memory_id
-             ) latest
-               ON latest.memory_id = ms.memory_id
-              AND latest.max_created_at = ms.created_at \
-             JOIN memory_events me ON me.memory_id = ms.memory_id \
-             WHERE me.actor_id = ?1{archival_filter} \
-             GROUP BY ms.memory_id \
-             ORDER BY ms.created_at DESC \
+             {LATEST_MEMORY_SNAPSHOTS_JOIN} \
+             WHERE EXISTS (\
+                 SELECT 1 FROM memory_events me \
+                 WHERE me.memory_id = ms.memory_id AND me.actor_id = ?1\
+             ){archival_filter} \
+             ORDER BY ms.id DESC \
              LIMIT ?2"
         );
         let mut stmt = db
@@ -563,16 +645,9 @@ fn query_graph_rows(
         let sql = format!(
             "SELECT ms.memory_id, ms.snapshot, ms.created_at \
              FROM memory_snapshots ms \
-             JOIN (
-                 SELECT memory_id, MAX(created_at) AS max_created_at
-                 FROM memory_snapshots
-                 GROUP BY memory_id
-             ) latest
-               ON latest.memory_id = ms.memory_id
-              AND latest.max_created_at = ms.created_at \
+             {LATEST_MEMORY_SNAPSHOTS_JOIN} \
              WHERE 1 = 1{archival_filter} \
-             GROUP BY ms.memory_id \
-             ORDER BY ms.created_at DESC \
+             ORDER BY ms.id DESC \
              LIMIT ?1"
         );
         let mut stmt = db
@@ -961,9 +1036,10 @@ fn search_like_fallback(
         }
     }
 
-    let need_join = params.agent_id.is_some();
     if let Some(ref agent_id) = params.agent_id {
-        conditions.push(format!("me.actor_id = ?{idx}"));
+        conditions.push(format!(
+            "EXISTS (SELECT 1 FROM memory_events me WHERE me.memory_id = ms.memory_id AND me.actor_id = ?{idx})"
+        ));
         bind_params.push(Box::new(agent_id.clone()));
         idx += 1;
     }
@@ -974,18 +1050,12 @@ fn search_like_fallback(
         format!("WHERE {}", conditions.join(" AND "))
     };
 
-    let join_clause = if need_join {
-        "JOIN memory_events me ON ms.memory_id = me.memory_id"
-    } else {
-        ""
-    };
-
     let query = format!(
-        "SELECT DISTINCT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
+        "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at \
          FROM memory_snapshots ms \
-         {join_clause} \
+         {LATEST_MEMORY_SNAPSHOTS_JOIN} \
          {where_clause} \
-         ORDER BY ms.created_at DESC \
+         ORDER BY ms.id DESC \
          LIMIT ?{idx}"
     );
     bind_params.push(Box::new(limit));
@@ -1108,7 +1178,7 @@ fn get_convergence_score(db: &rusqlite::Connection) -> f64 {
 }
 
 /// Request body for creating/updating a memory.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct WriteMemoryRequest {
     pub memory_id: String,
     pub event_type: String,
@@ -1240,7 +1310,7 @@ pub async fn write_memory(
 // ─── Archival endpoints ──────────────────────────────────────────────────
 
 /// Request body for archiving a memory.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct ArchiveMemoryRequest {
     pub reason: String,
     #[serde(default)]
@@ -1329,9 +1399,15 @@ pub async fn archive_memory(
 
             Ok((
                 StatusCode::OK,
-                serde_json::json!({
-                    "status": "archived",
-                    "memory_id": memory_id,
+                serde_json::to_value(MemoryArchiveStatusResponse {
+                    status: "archived".to_string(),
+                    memory_id: memory_id.clone(),
+                })
+                .unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "status": "archived",
+                        "memory_id": memory_id,
+                    })
                 }),
             ))
         },
@@ -1410,9 +1486,15 @@ pub async fn unarchive_memory(
 
             Ok((
                 StatusCode::OK,
-                serde_json::json!({
-                    "status": "unarchived",
-                    "memory_id": memory_id,
+                serde_json::to_value(MemoryArchiveStatusResponse {
+                    status: "unarchived".to_string(),
+                    memory_id: memory_id.clone(),
+                })
+                .unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "status": "unarchived",
+                        "memory_id": memory_id,
+                    })
                 }),
             ))
         },
@@ -1436,7 +1518,9 @@ pub async fn unarchive_memory(
 }
 
 /// GET /api/memory/archived — list archived memories.
-pub async fn list_archived(State(state): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+pub async fn list_archived(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<ArchivedMemoryListResponse> {
     let db = state
         .db
         .read()
@@ -1445,23 +1529,21 @@ pub async fn list_archived(State(state): State<Arc<AppState>>) -> ApiResult<serd
     let rows = cortex_storage::queries::archival_queries::query_archived(&db, 200)
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    let results: Vec<serde_json::Value> = rows
+    let results: Vec<ArchivedMemoryEntry> = rows
         .iter()
-        .map(|r| {
-            serde_json::json!({
-                "memory_id": r.memory_id,
-                "archived_at": r.archived_at,
-                "reason": r.reason,
-                "decayed_confidence": r.decayed_confidence,
-                "original_confidence": r.original_confidence,
-            })
+        .map(|r| ArchivedMemoryEntry {
+            memory_id: r.memory_id.clone(),
+            archived_at: r.archived_at.clone(),
+            reason: r.reason.clone(),
+            decayed_confidence: r.decayed_confidence.unwrap_or(0.0),
+            original_confidence: r.original_confidence.unwrap_or(0.0),
         })
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "archived": results,
-        "count": results.len(),
-    })))
+    Ok(Json(ArchivedMemoryListResponse {
+        count: results.len(),
+        archived: results,
+    }))
 }
 
 #[cfg(test)]

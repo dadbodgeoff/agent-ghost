@@ -4,6 +4,7 @@
 //! wired to cortex_storage::queries::goal_proposal_queries for
 //! resolve_proposal (AC10 safe) and query_pending.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::rejection::JsonRejection;
@@ -12,6 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -26,13 +28,77 @@ use crate::state::AppState;
 const APPROVE_ROUTE_TEMPLATE: &str = "/api/goals/:id/approve";
 const REJECT_ROUTE_TEMPLATE: &str = "/api/goals/:id/reject";
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct GoalDecisionRequestBody {
     pub expected_state: String,
     pub expected_lineage_id: String,
     pub expected_subject_key: String,
     pub expected_reviewed_revision: String,
     pub rationale: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GoalDecisionResponse {
+    pub status: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GoalProposalSummary {
+    pub id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub proposer_type: String,
+    pub operation: String,
+    pub target_type: String,
+    pub decision: Option<String>,
+    #[schema(value_type = std::collections::BTreeMap<String, f64>)]
+    pub dimension_scores: BTreeMap<String, f64>,
+    pub flags: Vec<String>,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub current_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GoalProposalTransition {
+    pub from_state: Option<String>,
+    pub to_state: String,
+    pub actor_type: String,
+    pub actor_id: Option<String>,
+    pub reason_code: Option<String>,
+    pub rationale: Option<String>,
+    pub expected_state: Option<String>,
+    pub expected_revision: Option<String>,
+    pub operation_id: Option<String>,
+    pub request_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GoalProposalDetail {
+    #[serde(flatten)]
+    pub proposal: GoalProposalSummary,
+    pub content: serde_json::Value,
+    pub cited_memory_ids: Vec<String>,
+    pub resolver: Option<String>,
+    pub denial_reason: Option<String>,
+    pub lineage_id: Option<String>,
+    pub subject_type: Option<String>,
+    pub subject_key: Option<String>,
+    pub reviewed_revision: Option<String>,
+    pub validation_disposition: Option<String>,
+    pub supersedes_proposal_id: Option<String>,
+    pub transition_history: Vec<GoalProposalTransition>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct GoalListResponse {
+    pub proposals: Vec<GoalProposalSummary>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u32,
 }
 
 fn parse_decision_request(
@@ -72,10 +138,20 @@ fn stale_decision_response(
     )
 }
 
+fn parse_string_vec(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default()
+}
+
+fn parse_score_map(raw: Option<&str>) -> BTreeMap<String, f64> {
+    raw.and_then(|value| serde_json::from_str::<BTreeMap<String, f64>>(value).ok())
+        .unwrap_or_default()
+}
+
 fn fetch_transition_history(
     conn: &rusqlite::Connection,
     goal_id: &str,
-) -> Result<Vec<serde_json::Value>, ApiError> {
+) -> Result<Vec<GoalProposalTransition>, ApiError> {
     let mut stmt = conn
         .prepare(
             "SELECT from_state, to_state, actor_type, actor_id, reason_code,
@@ -89,20 +165,20 @@ fn fetch_transition_history(
 
     let rows = stmt
         .query_map([goal_id], |row| {
-            Ok(serde_json::json!({
-                "from_state": row.get::<_, Option<String>>(0)?,
-                "to_state": row.get::<_, String>(1)?,
-                "actor_type": row.get::<_, String>(2)?,
-                "actor_id": row.get::<_, Option<String>>(3)?,
-                "reason_code": row.get::<_, Option<String>>(4)?,
-                "rationale": row.get::<_, Option<String>>(5)?,
-                "expected_state": row.get::<_, Option<String>>(6)?,
-                "expected_revision": row.get::<_, Option<String>>(7)?,
-                "operation_id": row.get::<_, Option<String>>(8)?,
-                "request_id": row.get::<_, Option<String>>(9)?,
-                "idempotency_key": row.get::<_, Option<String>>(10)?,
-                "created_at": row.get::<_, String>(11)?,
-            }))
+            Ok(GoalProposalTransition {
+                from_state: row.get::<_, Option<String>>(0)?,
+                to_state: row.get::<_, String>(1)?,
+                actor_type: row.get::<_, String>(2)?,
+                actor_id: row.get::<_, Option<String>>(3)?,
+                reason_code: row.get::<_, Option<String>>(4)?,
+                rationale: row.get::<_, Option<String>>(5)?,
+                expected_state: row.get::<_, Option<String>>(6)?,
+                expected_revision: row.get::<_, Option<String>>(7)?,
+                operation_id: row.get::<_, Option<String>>(8)?,
+                request_id: row.get::<_, Option<String>>(9)?,
+                idempotency_key: row.get::<_, Option<String>>(10)?,
+                created_at: row.get::<_, String>(11)?,
+            })
         })
         .map_err(|e| ApiError::db_error("goal_transition_history_query", e))?
         .collect::<Result<Vec<_>, _>>()
@@ -203,7 +279,11 @@ async fn resolve_goal_decision(
             ) {
                 Ok(()) => Ok((
                     StatusCode::OK,
-                    serde_json::json!({"status": decision, "id": goal_id}),
+                    serde_json::to_value(GoalDecisionResponse {
+                        status: decision.to_string(),
+                        id: goal_id.clone(),
+                    })
+                    .unwrap_or_else(|_| serde_json::json!({"status": decision, "id": goal_id})),
                 )),
                 Err(cortex_storage::queries::goal_proposal_queries::HumanDecisionError::NotFound) => {
                     Ok((
@@ -360,7 +440,8 @@ pub async fn list_goals(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "database connection error"})),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -408,7 +489,8 @@ pub async fn list_goals(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": format!("count query failed: {e}")})),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -434,7 +516,8 @@ pub async fn list_goals(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": format!("query prepare failed: {e}")})),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -442,24 +525,20 @@ pub async fn list_goals(
     match stmt.query_map(all_refs.as_slice(), |row| {
         let dim_scores_str: Option<String> = row.get(7)?;
         let flags_str: Option<String> = row.get(8)?;
-        Ok(serde_json::json!({
-            "id": row.get::<_, String>(0)?,
-            "agent_id": row.get::<_, String>(1)?,
-            "session_id": row.get::<_, String>(2)?,
-            "proposer_type": row.get::<_, String>(3)?,
-            "operation": row.get::<_, String>(4)?,
-            "target_type": row.get::<_, String>(5)?,
-            "decision": row.get::<_, Option<String>>(6)?,
-            "dimension_scores": dim_scores_str.as_deref()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-            "flags": flags_str.as_deref()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                .unwrap_or(serde_json::Value::Array(vec![])),
-            "created_at": row.get::<_, String>(9)?,
-            "resolved_at": row.get::<_, Option<String>>(10)?,
-            "current_state": row.get::<_, Option<String>>(11)?,
-        }))
+        Ok(GoalProposalSummary {
+            id: row.get::<_, String>(0)?,
+            agent_id: row.get::<_, String>(1)?,
+            session_id: row.get::<_, String>(2)?,
+            proposer_type: row.get::<_, String>(3)?,
+            operation: row.get::<_, String>(4)?,
+            target_type: row.get::<_, String>(5)?,
+            decision: row.get::<_, Option<String>>(6)?,
+            dimension_scores: parse_score_map(dim_scores_str.as_deref()),
+            flags: parse_string_vec(flags_str.as_deref()),
+            created_at: row.get::<_, String>(9)?,
+            resolved_at: row.get::<_, Option<String>>(10)?,
+            current_state: row.get::<_, Option<String>>(11)?,
+        })
     }) {
         Ok(rows) => {
             for row in rows {
@@ -473,19 +552,21 @@ pub async fn list_goals(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": format!("query failed: {e}")})),
-            );
+            )
+                .into_response();
         }
     }
 
     (
         StatusCode::OK,
-        Json(serde_json::json!({
-            "proposals": proposals,
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-        })),
+        Json(GoalListResponse {
+            proposals,
+            page,
+            page_size,
+            total,
+        }),
     )
+        .into_response()
 }
 
 /// POST /api/goals/{id}/approve
@@ -547,7 +628,7 @@ pub async fn reject_goal(
 pub async fn get_goal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> ApiResult<serde_json::Value> {
+) -> ApiResult<GoalProposalDetail> {
     let db = state
         .db
         .read()
@@ -572,37 +653,34 @@ pub async fn get_goal(
                 let flags_str: Option<String> = row.get(11)?;
                 let dim_str: Option<String> = row.get(12)?;
 
-                Ok(serde_json::json!({
-                    "id": row.get::<_, String>(0)?,
-                    "agent_id": row.get::<_, String>(1)?,
-                    "session_id": row.get::<_, String>(2)?,
-                    "proposer_type": row.get::<_, String>(3)?,
-                    "operation": row.get::<_, String>(4)?,
-                    "target_type": row.get::<_, String>(5)?,
-                    "content": serde_json::from_str::<serde_json::Value>(&content_str)
+                Ok(GoalProposalDetail {
+                    proposal: GoalProposalSummary {
+                        id: row.get::<_, String>(0)?,
+                        agent_id: row.get::<_, String>(1)?,
+                        session_id: row.get::<_, String>(2)?,
+                        proposer_type: row.get::<_, String>(3)?,
+                        operation: row.get::<_, String>(4)?,
+                        target_type: row.get::<_, String>(5)?,
+                        decision: row.get::<_, Option<String>>(8)?,
+                        dimension_scores: parse_score_map(dim_str.as_deref()),
+                        flags: parse_string_vec(flags_str.as_deref()),
+                        created_at: row.get::<_, String>(14)?,
+                        resolved_at: row.get::<_, Option<String>>(9)?,
+                        current_state: row.get::<_, Option<String>>(21)?,
+                    },
+                    content: serde_json::from_str::<serde_json::Value>(&content_str)
                         .unwrap_or(serde_json::Value::String(content_str)),
-                    "cited_memory_ids": serde_json::from_str::<serde_json::Value>(&cited_str)
-                        .unwrap_or(serde_json::Value::Array(vec![])),
-                    "decision": row.get::<_, Option<String>>(8)?,
-                    "resolved_at": row.get::<_, Option<String>>(9)?,
-                    "resolver": row.get::<_, Option<String>>(10)?,
-                    "flags": flags_str.as_deref()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                        .unwrap_or(serde_json::Value::Array(vec![])),
-                    "dimension_scores": dim_str.as_deref()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
-                    "denial_reason": row.get::<_, Option<String>>(13)?,
-                    "created_at": row.get::<_, String>(14)?,
-                    "lineage_id": row.get::<_, Option<String>>(15)?,
-                    "subject_type": row.get::<_, Option<String>>(16)?,
-                    "subject_key": row.get::<_, Option<String>>(17)?,
-                    "reviewed_revision": row.get::<_, Option<String>>(18)?,
-                    "validation_disposition": row.get::<_, Option<String>>(19)?,
-                    "supersedes_proposal_id": row.get::<_, Option<String>>(20)?,
-                    "current_state": row.get::<_, Option<String>>(21)?,
-                    "transition_history": transition_history,
-                }))
+                    cited_memory_ids: parse_string_vec(Some(&cited_str)),
+                    resolver: row.get::<_, Option<String>>(10)?,
+                    denial_reason: row.get::<_, Option<String>>(13)?,
+                    lineage_id: row.get::<_, Option<String>>(15)?,
+                    subject_type: row.get::<_, Option<String>>(16)?,
+                    subject_key: row.get::<_, Option<String>>(17)?,
+                    reviewed_revision: row.get::<_, Option<String>>(18)?,
+                    validation_disposition: row.get::<_, Option<String>>(19)?,
+                    supersedes_proposal_id: row.get::<_, Option<String>>(20)?,
+                    transition_history: transition_history.clone(),
+                })
             },
         )
         .map_err(|e| match e {

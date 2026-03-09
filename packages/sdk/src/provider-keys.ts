@@ -1,32 +1,12 @@
 import type { GhostRequestFn, GhostRequestOptions } from './client.js';
+import type { components, operations } from './generated-types.js';
 
-export interface ProviderKeyInfo {
-  provider_name: string;
-  model: string;
-  env_name: string;
-  is_set: boolean;
-  preview: string | null;
-}
-
-export interface ListProviderKeysResult {
-  providers: ProviderKeyInfo[];
-}
-
-export interface SetProviderKeyParams {
-  env_name: string;
-  value: string;
-}
-
-export interface SetProviderKeyResult {
-  env_name: string;
-  preview: string;
-  message: string;
-}
-
-export interface DeleteProviderKeyResult {
-  env_name: string;
-  message: string;
-}
+export type ProviderKeyInfo = components['schemas']['ProviderKeyInfo'];
+export type ListProviderKeysResult = components['schemas']['ProviderKeysResponse'];
+export type SetProviderKeyParams =
+  operations['set_provider_key']['requestBody']['content']['application/json'];
+export type SetProviderKeyResult = components['schemas']['SetKeyResponse'];
+export type DeleteProviderKeyResult = components['schemas']['DeleteKeyResponse'];
 
 export class ProviderKeysAPI {
   constructor(private request: GhostRequestFn) {}

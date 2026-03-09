@@ -7,6 +7,7 @@ use axum::response::Response;
 use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::auth::Claims;
 use crate::api::error::{ApiError, ApiResult};
@@ -24,7 +25,7 @@ const UPDATE_PC_CONTROL_ALLOWED_APPS_ROUTE_TEMPLATE: &str = "/api/pc-control/all
 const UPDATE_PC_CONTROL_BLOCKED_HOTKEYS_ROUTE_TEMPLATE: &str = "/api/pc-control/blocked-hotkeys";
 const UPDATE_PC_CONTROL_SAFE_ZONES_ROUTE_TEMPLATE: &str = "/api/pc-control/safe-zones";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct SafeZone {
     pub x: i32,
     pub y: i32,
@@ -33,7 +34,7 @@ pub struct SafeZone {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ActionBudget {
     pub max_per_minute: u32,
     pub max_per_hour: u32,
@@ -41,7 +42,7 @@ pub struct ActionBudget {
     pub used_this_hour: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PcControlStatus {
     pub enabled: bool,
     pub action_budget: ActionBudget,
@@ -54,7 +55,7 @@ pub struct PcControlStatus {
     pub runtime: PcControlRuntimeState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PcControlPersistedState {
     pub enabled: bool,
     pub allowed_apps: Vec<String>,
@@ -63,12 +64,12 @@ pub struct PcControlPersistedState {
     pub action_budget: ActionBudget,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PcControlRuntimeState {
     pub circuit_breaker_state: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ActionLogEntry {
     pub id: String,
     pub action_type: String,
@@ -85,7 +86,7 @@ pub struct ActionLogEntry {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PcControlActionsResponse {
     pub actions: Vec<ActionLogEntry>,
 }
@@ -95,26 +96,27 @@ pub struct ActionLogQuery {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct UpdatePcControlStatusRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct AllowedAppsRequest {
     pub apps: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct BlockedHotkeysRequest {
     pub hotkeys: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct SafeZonesRequest {
     #[serde(default)]
     pub zones: Option<Vec<SafeZone>>,
     #[serde(default)]
+    #[schema(value_type = Option<SafeZone>)]
     pub safe_zone: Option<Option<SafeZone>>,
 }
 
@@ -266,6 +268,20 @@ fn read_pc_control_config() -> Result<ghost_pc_control::safety::PcControlConfig,
         .pc_control)
 }
 
+fn cleanup_pc_control_temp_path(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to clean up pc-control config temp file"
+            );
+        }
+    }
+}
+
 fn write_pc_control_config(
     path: &Path,
     config: &ghost_pc_control::safety::PcControlConfig,
@@ -297,15 +313,23 @@ fn write_pc_control_config(
             .map_err(|e| ApiError::internal(format!("create config dir: {e}")))?;
     }
     let tmp_path = path.with_extension("yml.tmp");
-    let mut file = std::fs::File::create(&tmp_path)
-        .map_err(|e| ApiError::internal(format!("create config temp file: {e}")))?;
-    use std::io::Write;
-    file.write_all(yaml.as_bytes())
-        .map_err(|e| ApiError::internal(format!("write config temp file: {e}")))?;
-    file.sync_all()
-        .map_err(|e| ApiError::internal(format!("fsync config temp file: {e}")))?;
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| ApiError::internal(format!("rename config temp file: {e}")))?;
+    let write_result = (|| -> Result<(), ApiError> {
+        let mut file = std::fs::File::create(&tmp_path)
+            .map_err(|e| ApiError::internal(format!("create config temp file: {e}")))?;
+        use std::io::Write;
+        file.write_all(yaml.as_bytes())
+            .map_err(|e| ApiError::internal(format!("write config temp file: {e}")))?;
+        file.sync_all()
+            .map_err(|e| ApiError::internal(format!("fsync config temp file: {e}")))?;
+        std::fs::rename(&tmp_path, path)
+            .map_err(|e| ApiError::internal(format!("rename config temp file: {e}")))?;
+        Ok(())
+    })();
+
+    if let Err(error) = write_result {
+        cleanup_pc_control_temp_path(&tmp_path);
+        return Err(error);
+    }
 
     Ok(())
 }
@@ -736,6 +760,22 @@ mod tests {
         assert_eq!(status.runtime.circuit_breaker_state, "open");
         assert_eq!(status.circuit_breaker_state, "open");
         assert_eq!(status.persisted.safe_zone, None);
+    }
+
+    #[test]
+    fn write_pc_control_config_cleans_up_temp_file_on_rename_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("ghost.yml");
+        std::fs::create_dir_all(&config_path).unwrap();
+
+        let error = write_pc_control_config(
+            &config_path,
+            &ghost_pc_control::safety::PcControlConfig::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, ApiError::Internal(_)));
+        assert!(!config_path.with_extension("yml.tmp").exists());
+        assert!(config_path.is_dir());
     }
 
     #[tokio::test]

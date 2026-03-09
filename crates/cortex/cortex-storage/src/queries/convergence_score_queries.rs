@@ -50,21 +50,55 @@ pub fn query_by_agent(conn: &Connection, agent_id: &str) -> CortexResult<Vec<Sco
         .map_err(|e| to_storage_err(e.to_string()))?;
 
     let rows = stmt
-        .query_map(params![agent_id], |row| {
-            Ok(ScoreRow {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                session_id: row.get(2)?,
-                composite_score: row.get(3)?,
-                signal_scores: row.get(4)?,
-                level: row.get(5)?,
-                profile: row.get(6)?,
-                computed_at: row.get(7)?,
-            })
-        })
+        .query_map(params![agent_id], score_row_from_row)
         .map_err(|e| to_storage_err(e.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| to_storage_err(e.to_string()))?;
+
+    Ok(rows)
+}
+
+pub fn query_history(
+    conn: &Connection,
+    agent_id: &str,
+    since: Option<&str>,
+    limit: Option<usize>,
+) -> CortexResult<Vec<ScoreRow>> {
+    let limit = limit.unwrap_or(100).min(1000) as i64;
+    let sql = if since.is_some() {
+        "SELECT id, agent_id, session_id, composite_score, signal_scores, level, profile, computed_at
+         FROM (
+            SELECT id, agent_id, session_id, composite_score, signal_scores, level, profile, computed_at
+            FROM convergence_scores
+            WHERE agent_id = ?1 AND computed_at >= ?2
+            ORDER BY computed_at DESC
+            LIMIT ?3
+         )
+         ORDER BY computed_at ASC"
+    } else {
+        "SELECT id, agent_id, session_id, composite_score, signal_scores, level, profile, computed_at
+         FROM (
+            SELECT id, agent_id, session_id, composite_score, signal_scores, level, profile, computed_at
+            FROM convergence_scores
+            WHERE agent_id = ?1
+            ORDER BY computed_at DESC
+            LIMIT ?2
+         )
+         ORDER BY computed_at ASC"
+    };
+
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let rows = if let Some(since) = since {
+        stmt.query_map(params![agent_id, since, limit], score_row_from_row)
+    } else {
+        stmt.query_map(params![agent_id, limit], score_row_from_row)
+    }
+    .map_err(|e| to_storage_err(e.to_string()))?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| to_storage_err(e.to_string()))?;
 
     Ok(rows)
 }
@@ -84,4 +118,17 @@ pub struct ScoreRow {
     pub level: i32,
     pub profile: String,
     pub computed_at: String,
+}
+
+fn score_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScoreRow> {
+    Ok(ScoreRow {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        session_id: row.get(2)?,
+        composite_score: row.get(3)?,
+        signal_scores: row.get(4)?,
+        level: row.get(5)?,
+        profile: row.get(6)?,
+        computed_at: row.get(7)?,
+    })
 }

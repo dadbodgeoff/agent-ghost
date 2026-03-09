@@ -9,19 +9,20 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::Json;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 // ── Trust Graph (T-3.2.1) ──────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TrustGraphResponse {
     pub nodes: Vec<TrustNode>,
     pub edges: Vec<TrustEdge>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TrustNode {
     pub id: String,
     pub name: String,
@@ -29,7 +30,7 @@ pub struct TrustNode {
     pub convergence_level: u8,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct TrustEdge {
     pub source: String,
     pub target: String,
@@ -101,12 +102,12 @@ pub async fn trust_graph(State(state): State<Arc<AppState>>) -> ApiResult<TrustG
 
 // ── Consensus State (T-3.2.2) ──────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ConsensusResponse {
     pub rounds: Vec<ConsensusRound>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ConsensusRound {
     pub proposal_id: String,
     pub status: String,
@@ -164,13 +165,13 @@ pub async fn consensus_state(State(state): State<Arc<AppState>>) -> ApiResult<Co
 
 // ── Delegations (T-3.2.3) ──────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DelegationsResponse {
     pub delegations: Vec<Delegation>,
     pub sybil_metrics: SybilMetrics,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Delegation {
     pub delegator_id: String,
     pub delegate_id: String,
@@ -179,7 +180,7 @@ pub struct Delegation {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SybilMetrics {
     pub total_delegations: usize,
     pub max_chain_depth: u32,

@@ -14,6 +14,9 @@ use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::api::auth::Claims;
+use crate::api::authz::{Action, AuthorizationContext, Principal, RouteId};
+use crate::api::authz_policy::authorize_claims;
 use crate::api::error::ApiError;
 use crate::api::idempotency::execute_idempotent_json_mutation;
 use crate::api::mutation::{
@@ -97,6 +100,20 @@ fn restore_kill_gate_state(
     }
 }
 
+fn cleanup_persisted_safety_temp_path(path: &FsPath) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to clean up persisted safety temp file"
+            );
+        }
+    }
+}
+
 fn persist_runtime_safety_state_to_path(
     path: &FsPath,
     state: &crate::safety::kill_switch::KillSwitchState,
@@ -130,18 +147,27 @@ fn persist_runtime_safety_state_to_path(
     })?;
 
     let tmp_path = path.with_extension("json.tmp");
-    let mut file = std::fs::File::create(&tmp_path).map_err(|error| {
-        ApiError::internal(format!("create persisted safety temp file: {error}"))
-    })?;
-    file.write_all(&json_bytes).map_err(|error| {
-        ApiError::internal(format!("write persisted safety temp file: {error}"))
-    })?;
-    file.sync_all().map_err(|error| {
-        ApiError::internal(format!("fsync persisted safety temp file: {error}"))
-    })?;
-    std::fs::rename(&tmp_path, path).map_err(|error| {
-        ApiError::internal(format!("rename persisted safety temp file: {error}"))
-    })?;
+    let persist_result = (|| -> Result<(), ApiError> {
+        let mut file = std::fs::File::create(&tmp_path).map_err(|error| {
+            ApiError::internal(format!("create persisted safety temp file: {error}"))
+        })?;
+        file.write_all(&json_bytes).map_err(|error| {
+            ApiError::internal(format!("write persisted safety temp file: {error}"))
+        })?;
+        file.sync_all().map_err(|error| {
+            ApiError::internal(format!("fsync persisted safety temp file: {error}"))
+        })?;
+        std::fs::rename(&tmp_path, path).map_err(|error| {
+            ApiError::internal(format!("rename persisted safety temp file: {error}"))
+        })?;
+        Ok(())
+    })();
+
+    if let Err(error) = persist_result {
+        cleanup_persisted_safety_temp_path(&tmp_path);
+        return Err(error);
+    }
+
     Ok(())
 }
 
@@ -355,6 +381,25 @@ async fn write_audit_entry(
 
 fn safety_actor<'a>(claims: Option<&'a crate::api::auth::Claims>, fallback: &'a str) -> &'a str {
     claims.map(|claims| claims.sub.as_str()).unwrap_or(fallback)
+}
+
+fn principal_summary_value(principal: Option<&Principal>) -> serde_json::Value {
+    principal.map_or_else(
+        || serde_json::json!({"role": "unknown", "capabilities": [], "authz_version": null}),
+        |principal| {
+            serde_json::json!({
+                "role": principal.base_role.as_str(),
+                "capabilities": principal.canonical_capability_names(),
+                "authz_version": principal.authz_version,
+            })
+        },
+    )
+}
+
+fn authorize_quarantine_resume_principal(claims: Option<&Claims>) -> Result<Principal, ApiError> {
+    let context = AuthorizationContext::new(Action::SafetyResumeAgent, RouteId::SafetyResumeAgent);
+    let (principal, _) = authorize_claims(claims, &context)?;
+    Ok(principal)
 }
 
 /// T-5.11.2: Check safety cooldown for the given actor, returning 429 if in cooldown.
@@ -636,7 +681,8 @@ pub async fn pause_agent(
 
 /// POST /api/safety/resume/{agent_id} — resume a paused/quarantined agent (Req 14b AC3-4).
 ///
-/// T-5.1.2: Quarantine resume requires `admin` or `security_reviewer` role.
+/// T-5.1.2: Quarantine resume requires `admin` or `operator + safety_review`.
+/// Legacy `security_reviewer` claims remain accepted during compatibility mode.
 /// Forensic review is persisted as an audit entry with reviewer identity
 /// BEFORE the resume is allowed.
 pub async fn resume_agent(
@@ -646,14 +692,10 @@ pub async fn resume_agent(
     Path(agent_id_str): Path<String>,
     Json(body): Json<ResumeRequest>,
 ) -> Response {
+    let claims = claims.as_ref().map(|claims| &claims.0);
     let actor_id = claims
-        .as_ref()
         .map(|claims| claims.sub.clone())
         .unwrap_or_else(|| "unknown".into());
-    let actor_role = claims
-        .as_ref()
-        .map(|claims| claims.role.clone())
-        .unwrap_or_default();
     let request_body = serde_json::json!({
         "agent_id": agent_id_str.clone(),
         "level": body.level,
@@ -676,13 +718,8 @@ pub async fn resume_agent(
 
             match agent_state.map(|s| s.level) {
                 Some(KillLevel::Quarantine) => {
-                    if actor_role != "admin" && actor_role != "security_reviewer" {
-                        return Err(ApiError::custom(
-                            StatusCode::FORBIDDEN,
-                            "FORBIDDEN",
-                            "Quarantine resume requires 'admin' or 'security_reviewer' role",
-                        ));
-                    }
+                    let quarantine_resume_principal =
+                        authorize_quarantine_resume_principal(claims)?;
 
                     if !body.forensic_reviewed.unwrap_or(false) {
                         return Err(ApiError::bad_request(
@@ -698,7 +735,9 @@ pub async fn resume_agent(
                         &actor_id,
                         "reviewed",
                         serde_json::json!({
-                            "role": actor_role,
+                            "principal": principal_summary_value(
+                                Some(&quarantine_resume_principal)
+                            ),
                             "forensic_reviewed": true,
                         }),
                         &operation_context,
@@ -896,29 +935,13 @@ pub async fn quarantine_agent(
 
 /// GET /api/safety/status — get current kill switch state.
 ///
-/// T-5.1.4: `viewer` role sees only `{platform_killed, state}`.
-/// `operator`+ sees the full breakdown including per-agent details and gate topology.
+/// Route middleware restricts this endpoint to `operator` and higher.
 pub async fn safety_status(
     State(state): State<Arc<AppState>>,
-    claims: Option<axum::Extension<crate::api::auth::Claims>>,
+    _claims: Option<axum::Extension<crate::api::auth::Claims>>,
 ) -> impl IntoResponse {
     let ks_state = state.kill_switch.current_state();
     let platform_killed = PLATFORM_KILLED.load(std::sync::atomic::Ordering::SeqCst);
-
-    // T-5.1.4: Determine if caller has elevated access.
-    let role = claims.as_ref().map(|c| c.role.as_str()).unwrap_or("viewer");
-    let is_elevated = matches!(role, "admin" | "operator" | "security_reviewer");
-
-    // T-5.1.4: Viewer only sees minimal state.
-    if !is_elevated {
-        return (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "platform_killed": platform_killed,
-                "state": format!("{:?}", ks_state.platform_level),
-            })),
-        );
-    }
 
     let per_agent: serde_json::Map<String, serde_json::Value> = ks_state
         .per_agent
@@ -1255,6 +1278,206 @@ mod tests {
         assert_eq!(audit_rows, 2);
     }
 
+    #[tokio::test]
+    async fn superadmin_can_resume_quarantined_agent() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("gateway.db");
+        let agent_id = uuid::Uuid::now_v7();
+        let now = chrono::Utc::now().timestamp() as u64;
+        let claims = Claims {
+            sub: "root".into(),
+            role: "superadmin".into(),
+            capabilities: Vec::new(),
+            authz_v: None,
+            exp: now + 3600,
+            iat: now,
+            jti: "resume-superadmin".into(),
+            iss: None,
+        };
+
+        let state = test_state_with_db_path(&db_path).await;
+        state.kill_switch.activate_agent(
+            agent_id,
+            KillLevel::Quarantine,
+            &TriggerEvent::ManualQuarantine {
+                agent_id,
+                reason: "manual review".into(),
+                initiated_by: "tester".into(),
+            },
+        );
+
+        let response = resume_agent(
+            State(Arc::clone(&state)),
+            Some(Extension(claims)),
+            Extension(operation_context(
+                "req-superadmin-resume",
+                "op-superadmin-resume",
+                "idem-superadmin-resume",
+            )),
+            Path(agent_id.to_string()),
+            Json(ResumeRequest {
+                level: Some("Quarantine".into()),
+                forensic_reviewed: Some(true),
+                second_confirmation: Some(true),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state.kill_switch.check(agent_id),
+            crate::safety::kill_switch::KillCheckResult::Ok
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_with_safety_review_can_resume_quarantined_agent() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("gateway.db");
+        let agent_id = uuid::Uuid::now_v7();
+        let now = chrono::Utc::now().timestamp() as u64;
+        let claims = Claims {
+            sub: "reviewer".into(),
+            role: "operator".into(),
+            capabilities: vec!["safety_review".into()],
+            authz_v: Some(crate::api::authz::AUTHZ_CLAIMS_VERSION_V1),
+            exp: now + 3600,
+            iat: now,
+            jti: "resume-reviewer".into(),
+            iss: Some(crate::api::authz::INTERNAL_JWT_ISSUER.into()),
+        };
+
+        let state = test_state_with_db_path(&db_path).await;
+        state.kill_switch.activate_agent(
+            agent_id,
+            KillLevel::Quarantine,
+            &TriggerEvent::ManualQuarantine {
+                agent_id,
+                reason: "manual review".into(),
+                initiated_by: "tester".into(),
+            },
+        );
+
+        let response = resume_agent(
+            State(Arc::clone(&state)),
+            Some(Extension(claims)),
+            Extension(operation_context(
+                "req-reviewer-resume",
+                "op-reviewer-resume",
+                "idem-reviewer-resume",
+            )),
+            Path(agent_id.to_string()),
+            Json(ResumeRequest {
+                level: Some("Quarantine".into()),
+                forensic_reviewed: Some(true),
+                second_confirmation: Some(true),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            state.kill_switch.check(agent_id),
+            crate::safety::kill_switch::KillCheckResult::Ok
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_operator_cannot_resume_quarantined_agent() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("gateway.db");
+        let agent_id = uuid::Uuid::now_v7();
+        let now = chrono::Utc::now().timestamp() as u64;
+        let claims = Claims {
+            sub: "operator".into(),
+            role: "operator".into(),
+            capabilities: Vec::new(),
+            authz_v: Some(crate::api::authz::AUTHZ_CLAIMS_VERSION_V1),
+            exp: now + 3600,
+            iat: now,
+            jti: "resume-plain-operator".into(),
+            iss: Some(crate::api::authz::INTERNAL_JWT_ISSUER.into()),
+        };
+
+        let state = test_state_with_db_path(&db_path).await;
+        state.kill_switch.activate_agent(
+            agent_id,
+            KillLevel::Quarantine,
+            &TriggerEvent::ManualQuarantine {
+                agent_id,
+                reason: "manual review".into(),
+                initiated_by: "tester".into(),
+            },
+        );
+
+        let response = resume_agent(
+            State(Arc::clone(&state)),
+            Some(Extension(claims)),
+            Extension(operation_context(
+                "req-plain-operator-resume",
+                "op-plain-operator-resume",
+                "idem-plain-operator-resume",
+            )),
+            Path(agent_id.to_string()),
+            Json(ResumeRequest {
+                level: Some("Quarantine".into()),
+                forensic_reviewed: Some(true),
+                second_confirmation: Some(true),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            state.kill_switch.check(agent_id),
+            crate::safety::kill_switch::KillCheckResult::AgentQuarantined(agent_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn safety_status_returns_full_breakdown_for_superadmin() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("gateway.db");
+        let agent_id = uuid::Uuid::now_v7();
+        let now = chrono::Utc::now().timestamp() as u64;
+        let claims = Claims {
+            sub: "root".into(),
+            role: "superadmin".into(),
+            capabilities: Vec::new(),
+            authz_v: None,
+            exp: now + 3600,
+            iat: now,
+            jti: "status-superadmin".into(),
+            iss: None,
+        };
+
+        let state = test_state_with_db_path(&db_path).await;
+        state.kill_switch.activate_agent(
+            agent_id,
+            KillLevel::Pause,
+            &TriggerEvent::ManualPause {
+                agent_id,
+                reason: "operator intervention".into(),
+                initiated_by: "tester".into(),
+            },
+        );
+
+        let response = safety_status(State(Arc::clone(&state)), Some(Extension(claims)))
+            .await
+            .into_response();
+        let body = response_json(response).await;
+
+        assert!(
+            body.get("per_agent").is_some(),
+            "missing full safety breakdown"
+        );
+        assert!(body["per_agent"].get(agent_id.to_string()).is_some());
+    }
+
     #[test]
     fn legacy_kill_all_state_still_restores() {
         let temp_dir = TempDir::new().unwrap();
@@ -1272,5 +1495,22 @@ mod tests {
 
         let restored = load_persisted_safety_state(&state_path).unwrap().unwrap();
         assert_eq!(restored.platform_level, KillLevel::KillAll);
+    }
+
+    #[test]
+    fn persist_safety_state_snapshot_cleans_up_temp_file_on_rename_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_path = temp_dir.path().join("kill_state.json");
+        std::fs::create_dir_all(&state_path).unwrap();
+
+        let state = crate::safety::kill_switch::KillSwitchState {
+            platform_level: KillLevel::Pause,
+            ..Default::default()
+        };
+
+        let error = persist_safety_state_snapshot_to_path(&state_path, &state).unwrap_err();
+        assert!(matches!(error, ApiError::Internal(_)));
+        assert!(!state_path.with_extension("json.tmp").exists());
+        assert!(state_path.is_dir());
     }
 }

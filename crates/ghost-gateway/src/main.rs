@@ -81,8 +81,17 @@ enum Commands {
     /// Create an encrypted backup of platform state.
     Backup {
         /// Output path for the backup archive.
-        #[arg(long, short)]
-        output: Option<String>,
+        #[arg(long = "output-path", short = 'o')]
+        archive_path: Option<String>,
+    },
+    /// Restore an encrypted backup into a fresh target directory.
+    Restore {
+        /// Path to the backup archive.
+        #[arg(long, short = 'i')]
+        input: String,
+        /// Fresh target directory for the restored data.
+        #[arg(long, short = 't')]
+        target: Option<String>,
     },
     /// Analyze a data export from an external AI platform.
     Export {
@@ -286,8 +295,8 @@ enum AuditCommands {
         #[arg(long, default_value = "json")]
         format: String,
         /// Output file path (default: stdout).
-        #[arg(long, short)]
-        output: Option<String>,
+        #[arg(long = "output-path", short = 'o')]
+        output_path: Option<String>,
     },
     /// Tail audit log (live stream).
     Tail,
@@ -583,7 +592,10 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             .await
         }
 
-        Commands::Backup { output } => cli::commands::run_backup(output.as_deref()),
+        Commands::Backup { archive_path } => cli::commands::run_backup(archive_path.as_deref()),
+        Commands::Restore { input, target } => {
+            cli::commands::run_restore(&input, target.as_deref())
+        }
         Commands::Export { path } => cli::commands::run_export(&path),
         Commands::Migrate { source } => cli::commands::run_migrate(&source),
 
@@ -724,7 +736,7 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             let gateway_url = resolve_gateway_url(cli_args.global.gateway_url.as_deref(), &config);
             match sub {
                 DbCommands::Migrate => {
-                    let backend = CliBackend::open_direct(&config)?;
+                    let backend = CliBackend::open_direct_create_if_missing(&config)?;
                     cli::db::run_migrate(DbMigrateArgs {}, &backend).await
                 }
                 DbCommands::Status => {
@@ -795,11 +807,21 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
                     )
                     .await
                 }
-                AuditCommands::Export { format, output } => {
+                AuditCommands::Export {
+                    format,
+                    output_path,
+                } => {
                     let backend =
                         CliBackend::detect(&config, cli_args.global.gateway_url.as_deref(), token)
                             .await?;
-                    cli::audit_cmd::run_export(AuditExportArgs { format, output }, &backend).await
+                    cli::audit_cmd::run_export(
+                        AuditExportArgs {
+                            format,
+                            output: output_path,
+                        },
+                        &backend,
+                    )
+                    .await
                 }
                 AuditCommands::Tail => {
                     cli::audit_cmd::run_tail(AuditTailArgs { gateway_url, token }).await

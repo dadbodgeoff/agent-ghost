@@ -48,6 +48,9 @@ export { ConvergenceAPI } from './convergence.js';
 export type {
   ConvergenceScore,
   ConvergenceError,
+  ConvergenceHistoryEntry,
+  ConvergenceHistoryParams,
+  ConvergenceHistoryResult,
   ConvergenceScoresResult,
 } from './convergence.js';
 
@@ -165,6 +168,7 @@ export type {
   Profile,
   ListProfilesResult,
   CreateProfileParams,
+  CreateProfileResult,
   UpdateProfileParams,
   DeleteProfileResult,
 } from './profiles.js';
@@ -183,7 +187,13 @@ export type {
 
 // ── Backups ──
 export { BackupsAPI } from './backups.js';
-export type { Backup, ListBackupsResult } from './backups.js';
+export type {
+  Backup,
+  CreateBackupResult,
+  ListBackupsResult,
+  VerifyRestoreParams,
+  VerifyRestoreResult,
+} from './backups.js';
 
 // ── Provider Keys ──
 export { ProviderKeysAPI } from './provider-keys.js';

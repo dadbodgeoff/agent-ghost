@@ -7,24 +7,25 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TraceResponse {
     pub session_id: String,
     pub traces: Vec<TraceGroup>,
     pub total_spans: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct TraceGroup {
     pub trace_id: String,
     pub spans: Vec<SpanRecord>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SpanRecord {
     pub span_id: String,
     pub trace_id: String,
@@ -32,6 +33,7 @@ pub struct SpanRecord {
     pub operation_name: String,
     pub start_time: String,
     pub end_time: Option<String>,
+    #[schema(value_type = std::collections::BTreeMap<String, serde_json::Value>)]
     pub attributes: serde_json::Value,
     pub status: String,
 }

@@ -148,8 +148,9 @@ fn search_sessions(
     results: &mut Vec<SearchResult>,
 ) {
     let Ok(mut stmt) = db.prepare(
-        "SELECT session_id, agent_id FROM itp_events \
-         WHERE session_id LIKE ?1 ESCAPE '\\' OR agent_id LIKE ?1 ESCAPE '\\' \
+        "SELECT session_id, GROUP_CONCAT(DISTINCT COALESCE(sender, 'unknown')) AS agents \
+         FROM itp_events \
+         WHERE session_id LIKE ?1 ESCAPE '\\' OR COALESCE(sender, '') LIKE ?1 ESCAPE '\\' \
          GROUP BY session_id \
          LIMIT ?2",
     ) else {
@@ -178,8 +179,18 @@ fn search_memories(
     results: &mut Vec<SearchResult>,
 ) {
     let Ok(mut stmt) = db.prepare(
-        "SELECT ms.id, ms.memory_type, ms.summary FROM memory_snapshots ms \
-         WHERE ms.summary LIKE ?1 ESCAPE '\\' OR ms.snapshot LIKE ?1 ESCAPE '\\' \
+        "SELECT ms.memory_id, \
+                COALESCE(json_extract(ms.snapshot, '$.memory_type'), 'memory'), \
+                COALESCE(json_extract(ms.snapshot, '$.summary'), '') \
+         FROM memory_snapshots ms \
+         JOIN (
+             SELECT memory_id, MAX(id) AS max_id
+             FROM memory_snapshots
+             GROUP BY memory_id
+         ) latest ON latest.max_id = ms.id \
+         WHERE COALESCE(json_extract(ms.snapshot, '$.summary'), '') LIKE ?1 ESCAPE '\\' \
+            OR ms.snapshot LIKE ?1 ESCAPE '\\' \
+            OR ms.memory_id LIKE ?1 ESCAPE '\\' \
          LIMIT ?2",
     ) else {
         return;
@@ -203,6 +214,81 @@ fn search_memories(
         return;
     };
     results.extend(rows.filter_map(|r| r.ok()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+
+    fn setup_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        cortex_storage::run_all_migrations(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn search_sessions_matches_sender_column() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO itp_events (
+                id, session_id, event_type, sender, timestamp, sequence_number,
+                content_hash, content_length, privacy_level, latency_ms, token_count,
+                event_hash, previous_hash, attributes
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                "evt-1",
+                "session-knowledge",
+                "InteractionMessage",
+                "agent-search",
+                "2026-03-09T00:00:00Z",
+                1i64,
+                "hash-1",
+                8i64,
+                "internal",
+                1i64,
+                2i64,
+                vec![1u8; 32],
+                vec![0u8; 32],
+                "{}",
+            ],
+        )
+        .unwrap();
+
+        let mut results = Vec::new();
+        search_sessions(&conn, "%agent-search%", 10, &mut results);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "session-knowledge");
+        assert!(results[0].snippet.contains("agent-search"));
+    }
+
+    #[test]
+    fn search_memories_uses_latest_snapshot_fields() {
+        let conn = setup_db();
+        cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+            &conn,
+            "memory-alpha",
+            r#"{"memory_type":"Semantic","summary":"stale summary","content":"old"}"#,
+            None,
+        )
+        .unwrap();
+        cortex_storage::queries::memory_snapshot_queries::insert_snapshot(
+            &conn,
+            "memory-alpha",
+            r#"{"memory_type":"Semantic","summary":"fresh summary marker","content":"new"}"#,
+            None,
+        )
+        .unwrap();
+
+        let mut results = Vec::new();
+        search_memories(&conn, "%fresh summary marker%", 10, &mut results);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "memory-alpha");
+        assert_eq!(results[0].title, "Semantic");
+        assert_eq!(results[0].snippet, "fresh summary marker");
+    }
 }
 
 fn search_proposals(

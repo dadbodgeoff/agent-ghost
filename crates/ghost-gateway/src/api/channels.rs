@@ -14,6 +14,7 @@ use axum::response::Response;
 use axum::Extension;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::auth::Claims;
@@ -30,7 +31,46 @@ const RECONNECT_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:id/reconnect";
 const DELETE_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:id";
 const INJECT_CHANNEL_ROUTE_TEMPLATE: &str = "/api/channels/:type/inject";
 
-fn load_channels(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>, ApiError> {
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChannelListItem {
+    pub id: String,
+    pub channel_type: String,
+    pub status: String,
+    pub status_message: Option<String>,
+    pub agent_id: String,
+    pub config: serde_json::Value,
+    pub last_message_at: Option<String>,
+    pub message_count: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChannelListResponse {
+    pub channels: Vec<ChannelListItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct CreateChannelRequest {
+    pub channel_type: String,
+    pub agent_id: String,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CreateChannelResponse {
+    pub id: String,
+    pub status: String,
+    pub channel_type: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChannelStatusResponse {
+    pub id: String,
+    pub status: String,
+}
+
+fn load_channels(conn: &rusqlite::Connection) -> Result<Vec<ChannelListItem>, ApiError> {
     let mut stmt = conn
         .prepare(
             "SELECT id, channel_type, status, status_message, agent_id, config, last_message_at, message_count \
@@ -40,18 +80,17 @@ fn load_channels(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>, 
 
     let rows = stmt
         .query_map([], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, String>(0)?,
-                "channel_type": row.get::<_, String>(1)?,
-                "status": row.get::<_, String>(2)?,
-                "status_message": row.get::<_, Option<String>>(3)?,
-                "agent_id": row.get::<_, String>(4)?,
-                "config": serde_json::from_str::<serde_json::Value>(
-                    &row.get::<_, String>(5)?
-                ).unwrap_or(serde_json::json!({})),
-                "last_message_at": row.get::<_, Option<String>>(6)?,
-                "message_count": row.get::<_, u64>(7)?,
-            }))
+            Ok(ChannelListItem {
+                id: row.get::<_, String>(0)?,
+                channel_type: row.get::<_, String>(1)?,
+                status: row.get::<_, String>(2)?,
+                status_message: row.get::<_, Option<String>>(3)?,
+                agent_id: row.get::<_, String>(4)?,
+                config: serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(5)?)
+                    .unwrap_or(serde_json::json!({})),
+                last_message_at: row.get::<_, Option<String>>(6)?,
+                message_count: row.get::<_, i64>(7)?,
+            })
         })
         .map_err(|e| ApiError::db_error("list_channels_query", e))?;
     rows.collect::<Result<Vec<_>, _>>()
@@ -59,25 +98,17 @@ fn load_channels(conn: &rusqlite::Connection) -> Result<Vec<serde_json::Value>, 
 }
 
 /// GET /api/channels — list all configured channels with status.
-pub async fn list_channels(State(state): State<Arc<AppState>>) -> ApiResult<serde_json::Value> {
+pub async fn list_channels(State(state): State<Arc<AppState>>) -> ApiResult<ChannelListResponse> {
     let db = state
         .db
         .read()
         .map_err(|e| ApiError::db_error("list_channels", e))?;
     let channels = load_channels(&db)?;
 
-    Ok(Json(serde_json::json!({ "channels": channels })))
+    Ok(Json(ChannelListResponse { channels }))
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CreateChannelRequest {
-    pub channel_type: String,
-    pub agent_id: String,
-    #[serde(default)]
-    pub config: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct InjectMessageRequest {
     pub content: String,
     #[serde(default = "default_sender")]
@@ -89,7 +120,7 @@ fn default_sender() -> String {
     "ghost-operator".to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct InjectMessageResponse {
     pub message_id: String,
     pub agent_id: String,
@@ -233,12 +264,13 @@ pub async fn create_channel(
 
             Ok((
                 StatusCode::CREATED,
-                serde_json::json!({
-                    "id": channel_id,
-                    "status": "created",
-                    "channel_type": body.channel_type,
-                    "agent_id": resolved_agent_id.to_string(),
-                }),
+                serde_json::to_value(CreateChannelResponse {
+                    id: channel_id,
+                    status: "created".to_string(),
+                    channel_type: body.channel_type.clone(),
+                    agent_id: resolved_agent_id.to_string(),
+                })
+                .unwrap_or(serde_json::Value::Null),
             ))
         },
     ) {
@@ -295,7 +327,11 @@ pub async fn reconnect_channel(
             }
             Ok((
                 StatusCode::OK,
-                serde_json::json!({ "id": channel_id, "status": "reconnected" }),
+                serde_json::to_value(ChannelStatusResponse {
+                    id: channel_id.clone(),
+                    status: "reconnected".to_string(),
+                })
+                .unwrap_or(serde_json::Value::Null),
             ))
         },
     ) {
@@ -346,7 +382,11 @@ pub async fn delete_channel(
             }
             Ok((
                 StatusCode::OK,
-                serde_json::json!({ "id": channel_id, "status": "deleted" }),
+                serde_json::to_value(ChannelStatusResponse {
+                    id: channel_id.clone(),
+                    status: "deleted".to_string(),
+                })
+                .unwrap_or(serde_json::Value::Null),
             ))
         },
     ) {

@@ -4,23 +4,25 @@ import type {
   GhostRequestOptions,
 } from './client.js';
 import { resolveGhostOperationEnvelope } from './client.js';
-import type { StudioMessage } from './sessions.js';
+import type { components, operations } from './generated-types.js';
+import type { StudioMessage, StudioSafetyStatus } from './sessions.js';
 import { GhostAPIError, GhostNetworkError } from './errors.js';
 
 // ── Types ──
 
-export interface SendMessageParams {
-  content: string;
-  model?: string;
-  temperature?: number;
-  max_tokens?: number;
-}
+export type SendMessageParams =
+  operations['send_studio_message']['requestBody']['content']['application/json'];
 
-export interface SendMessageResult {
+type SendMessageCompletedResult = Omit<
+  components['schemas']['StudioSendMessageResponseSchema'],
+  'assistant_message' | 'safety_status' | 'user_message'
+> & {
   user_message: StudioMessage;
   assistant_message: StudioMessage;
-  safety_status: 'clean' | 'warning' | 'blocked';
-}
+  safety_status: StudioSafetyStatus;
+};
+type SendMessageAcceptedResult = components['schemas']['StudioMessageAcceptedResponseSchema'];
+export type SendMessageResult = SendMessageCompletedResult | SendMessageAcceptedResult;
 
 export type StreamErrorType =
   | 'provider_unavailable'
@@ -29,10 +31,13 @@ export type StreamErrorType =
 
 export type StreamWarningType = 'persistence_degraded';
 
-/** SSE event types emitted during streaming. */
+/**
+ * Explicit exception record: Studio SSE payloads are not generated from OpenAPI today,
+ * so the live stream contract remains hand-maintained here.
+ */
 export type StreamEvent =
-  | { type: 'stream_start'; message_id: string; session_id?: string }
-  | { type: 'text_delta'; content: string }
+  | { type: 'stream_start'; message_id: string; session_id?: string; reconstructed?: boolean }
+  | { type: 'text_delta'; content: string; reconstructed?: boolean }
   | { type: 'tool_use'; tool: string; tool_id: string; status: string }
   | { type: 'tool_result'; tool: string; tool_id: string; status: string; preview?: string }
   | { type: 'heartbeat'; phase: string }
@@ -41,6 +46,7 @@ export type StreamEvent =
       message_id: string;
       token_count: number;
       safety_status: 'clean' | 'warning' | 'blocked';
+      reconstructed?: boolean;
     }
   | {
       type: 'error';
@@ -49,6 +55,7 @@ export type StreamEvent =
       provider?: string;
       fallback?: boolean;
       terminal?: boolean;
+      reconstructed?: boolean;
     }
   | {
       type: 'warning';
@@ -71,7 +78,33 @@ export class ChatAPI {
     private options: GhostClientOptions,
   ) {}
 
-  /** Send a message and wait for the complete response (blocking). */
+  private buildStreamHeaders(
+    envelope: ReturnType<typeof resolveGhostOperationEnvelope>,
+  ): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      'X-Ghost-Client-Name': this.options.clientName ?? 'sdk',
+      'X-Ghost-Client-Version': this.options.clientVersion ?? '0.1.0',
+    };
+
+    if (this.options.token) {
+      headers['Authorization'] = `Bearer ${this.options.token}`;
+    }
+    if (envelope.requestId) {
+      headers['X-Request-ID'] = envelope.requestId;
+    }
+    if (envelope.operationId) {
+      headers['X-Ghost-Operation-ID'] = envelope.operationId;
+    }
+    if (envelope.idempotencyKey) {
+      headers['Idempotency-Key'] = envelope.idempotencyKey;
+    }
+
+    return headers;
+  }
+
+  /** Send a message over the blocking Studio path. Returns either completion or recovery metadata. */
   async send(
     sessionId: string,
     params: SendMessageParams,
@@ -94,23 +127,7 @@ export class ChatAPI {
     const baseUrl = this.options.baseUrl ?? 'http://127.0.0.1:39780';
     const url = `${baseUrl}/api/studio/sessions/${encodeURIComponent(sessionId)}/messages/stream`;
     const envelope = resolveGhostOperationEnvelope('POST', options);
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    };
-    if (this.options.token) {
-      headers['Authorization'] = `Bearer ${this.options.token}`;
-    }
-    if (envelope.requestId) {
-      headers['X-Request-ID'] = envelope.requestId;
-    }
-    if (envelope.operationId) {
-      headers['X-Ghost-Operation-ID'] = envelope.operationId;
-    }
-    if (envelope.idempotencyKey) {
-      headers['Idempotency-Key'] = envelope.idempotencyKey;
-    }
+    const headers = this.buildStreamHeaders(envelope);
 
     const fetchFn = this.options.fetch ?? globalThis.fetch;
 
@@ -200,23 +217,7 @@ export class ChatAPI {
     const baseUrl = this.options.baseUrl ?? 'http://127.0.0.1:39780';
     const url = `${baseUrl}/api/studio/sessions/${encodeURIComponent(sessionId)}/messages/stream`;
     const envelope = resolveGhostOperationEnvelope('POST', options);
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    };
-    if (this.options.token) {
-      headers['Authorization'] = `Bearer ${this.options.token}`;
-    }
-    if (envelope.requestId) {
-      headers['X-Request-ID'] = envelope.requestId;
-    }
-    if (envelope.operationId) {
-      headers['X-Ghost-Operation-ID'] = envelope.operationId;
-    }
-    if (envelope.idempotencyKey) {
-      headers['Idempotency-Key'] = envelope.idempotencyKey;
-    }
+    const headers = this.buildStreamHeaders(envelope);
 
     const fetchFn = this.options.fetch ?? globalThis.fetch;
 

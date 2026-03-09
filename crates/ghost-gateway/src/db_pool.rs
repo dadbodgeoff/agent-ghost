@@ -139,10 +139,7 @@ impl DbPool {
     /// Logs checkpoint results including busy/log/checkpointed page counts.
     pub async fn checkpoint(&self) -> Result<(), DbPoolError> {
         let w = self.writer.lock().await;
-        let result: (i32, i32, i32) =
-            w.pragma_query_value(None, "wal_checkpoint(TRUNCATE)", |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
+        let result = run_checkpoint_query(&w, CheckpointMode::Truncate)?;
         let (busy, log_pages, checkpointed) = result;
         if busy != 0 {
             tracing::warn!(
@@ -220,14 +217,7 @@ impl DbPool {
         mode: CheckpointMode,
     ) -> Result<(i32, i32, i32), DbPoolError> {
         let w = self.writer.lock().await;
-        let pragma = match mode {
-            CheckpointMode::Passive => "wal_checkpoint(PASSIVE)",
-            CheckpointMode::Truncate => "wal_checkpoint(TRUNCATE)",
-        };
-        let result: (i32, i32, i32) = w.pragma_query_value(None, pragma, |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-        Ok(result)
+        run_checkpoint_query(&w, mode)
     }
 
     /// Get the DB file path (for WAL size checks).
@@ -286,6 +276,35 @@ pub fn create_pool(db_path: PathBuf) -> Result<Arc<DbPool>, DbPoolError> {
 
 pub fn create_existing_pool(db_path: PathBuf) -> Result<Arc<DbPool>, DbPoolError> {
     create_pool_internal(db_path, false)
+}
+
+fn run_checkpoint_query(
+    conn: &Connection,
+    mode: CheckpointMode,
+) -> Result<(i32, i32, i32), DbPoolError> {
+    let sql = match mode {
+        CheckpointMode::Passive => "PRAGMA wal_checkpoint(PASSIVE)",
+        CheckpointMode::Truncate => "PRAGMA wal_checkpoint(TRUNCATE)",
+    };
+    Ok(conn.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wal_checkpoint_queries_succeed_on_a_fresh_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("checkpoint.db");
+        let pool = create_pool(db_path).unwrap();
+
+        let passive = pool.checkpoint_with_mode(CheckpointMode::Passive).await;
+        let truncate = pool.checkpoint().await;
+
+        assert!(passive.is_ok(), "passive checkpoint should succeed");
+        assert!(truncate.is_ok(), "truncate checkpoint should succeed");
+    }
 }
 
 fn create_pool_internal(

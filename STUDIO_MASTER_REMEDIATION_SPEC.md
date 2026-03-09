@@ -31,6 +31,8 @@ This spec covers:
 - the shared live-turn runtime path used by Studio and `agent_chat`
 - the contract-generation and parity gates that must prevent recurrence
 
+This spec treats `POST /api/studio/run` as a Studio-adjacent public contract, but not as part of the session-backed Studio execution pipeline. It still must remain typed and gated because it shares the Studio namespace and SDK surface.
+
 Primary sources:
 
 - `crates/ghost-gateway/src/api/studio_sessions.rs`
@@ -243,6 +245,7 @@ Rules:
 
 - live SSE and replay/recovery must share the same semantic event vocabulary
 - durable storage event names may remain internal, but the public recovery API must map them back into canonical public event names
+- explicit exception record: `packages/sdk/src/chat.ts` may keep a hand-maintained `StreamEvent` union until the SSE contract is generated from an authoritative source; this exception does not permit manual forks for blocking Studio request or response bodies
 
 ### D3. Public WebSocket authority
 
