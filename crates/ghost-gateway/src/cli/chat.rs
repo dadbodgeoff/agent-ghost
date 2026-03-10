@@ -12,6 +12,7 @@ use ghost_llm::provider::{
 };
 use uuid::Uuid;
 
+use crate::codex::CodexProvider;
 use crate::runtime_safety::{
     build_live_runner_with_dependencies, RunnerBuildOptions, RuntimeRunnerDependencies,
     RuntimeSafetyContext, CLI_SYNTHETIC_AGENT_NAME,
@@ -148,6 +149,15 @@ fn build_fallback_chain() -> ghost_agent_loop::runner::LLMFallbackChain {
                         }
                     }
                 }
+                "codex" => {
+                    let provider = CodexProvider {
+                        model: p.model.clone(),
+                        api_key_env: p.api_key_env.clone(),
+                    };
+                    chain.add_provider(Arc::new(provider), vec![]);
+                    tracing::info!(provider = "codex", model = ?p.model, "LLM provider added (config)");
+                    count += 1;
+                }
                 other => {
                     tracing::warn!(provider = other, "Unknown provider in ghost.yml — skipped");
                 }
@@ -236,7 +246,7 @@ fn build_fallback_chain() -> ghost_agent_loop::runner::LLMFallbackChain {
 
     if count == 0 {
         tracing::warn!(
-            "No LLM providers configured. Add providers to ghost.yml or set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL"
+            "No LLM providers configured. Add providers to ghost.yml or set one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, OLLAMA_BASE_URL, or configure a codex provider and run `ghost codex login`"
         );
     }
 
@@ -326,6 +336,10 @@ async fn run_interactive_chat_inner() {
                 .as_ref()
                 .map(|agent| agent.name.clone())
                 .unwrap_or_else(|| CLI_SYNTHETIC_AGENT_NAME.to_string()),
+            full_access: cli_agent
+                .as_ref()
+                .map(|agent| agent.full_access)
+                .unwrap_or(false),
             capabilities: cli_agent
                 .as_ref()
                 .map(|agent| agent.capabilities.clone())
@@ -380,6 +394,7 @@ async fn run_interactive_chat_inner() {
                 .as_ref()
                 .map(|cfg| cfg.tools.clone())
                 .unwrap_or_default(),
+            trigger_sender: None,
             convergence_profile: runtime_ctx.convergence_profile.clone(),
             monitor_enabled: ghost_config
                 .as_ref()

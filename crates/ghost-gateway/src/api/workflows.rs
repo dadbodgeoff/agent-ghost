@@ -1750,7 +1750,7 @@ async fn drive_workflow_execution(
     Ok((StatusCode::OK, body))
 }
 
-async fn execute_workflow_inner(
+pub(crate) async fn execute_workflow_inner(
     state: Arc<AppState>,
     workflow_id: String,
     body: ExecuteWorkflowRequest,

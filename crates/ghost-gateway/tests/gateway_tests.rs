@@ -204,8 +204,12 @@ mod agent_registry {
             name: name.into(),
             state: AgentLifecycleState::Starting,
             channel_bindings: vec![format!("cli:{name}")],
+            full_access: false,
             capabilities: vec!["memory_read".into()],
             skills: None,
+            baseline_capabilities: vec!["memory_read".into()],
+            baseline_skills: None,
+            access_pullback_active: false,
             spending_cap: 5.0,
             template: None,
         }

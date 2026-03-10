@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GHOST Convergence Monitor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px;
+      min-height: 400px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e4e4e7;
+      padding: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #27272a;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fafafa;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .status-dot.connected { background: #22c55e; }
+    .status-dot.disconnected { background: #ef4444; }
+
+    .score-gauge {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .score-value {
+      font-size: 48px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .score-label {
+      font-size: 12px;
+      color: #a1a1aa;
+      margin-top: 4px;
+    }
+    .level-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-top: 8px;
+    }
+    .level-0 { background: #166534; color: #bbf7d0; }
+    .level-1 { background: #854d0e; color: #fef08a; }
+    .level-2 { background: #9a3412; color: #fed7aa; }
+    .level-3 { background: #991b1b; color: #fecaca; }
+    .level-4 { background: #7f1d1d; color: #fca5a5; }
+
+    .signals {
+      margin: 16px 0;
+    }
+    .signal-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      font-size: 12px;
+      border-bottom: 1px solid #1e1e24;
+    }
+    .signal-name { color: #a1a1aa; }
+    .signal-value { font-variant-numeric: tabular-nums; font-weight: 500; }
+    .signal-bar {
+      width: 60px;
+      height: 4px;
+      background: #27272a;
+      border-radius: 2px;
+      overflow: hidden;
+      margin-left: 8px;
+    }
+    .signal-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
+
+    .session-info {
+      margin-top: 16px;
+      padding: 12px;
+      background: #18181b;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+    .session-info dt { color: #71717a; }
+    .session-info dd { color: #e4e4e7; margin-bottom: 8px; }
+
+    .alert-banner {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: none;
+    }
+    .alert-banner.active { display: block; }
+    .alert-warning { background: #422006; color: #fbbf24; border: 1px solid #854d0e; }
+    .alert-danger { background: #450a0a; color: #f87171; border: 1px solid #991b1b; }
+
+    .status-label {
+      font-size: 12px;
+      margin-left: 6px;
+      color: #a1a1aa;
+    }
+    .status-label.connected { color: #22c55e; }
+    .status-label.disconnected { color: #ef4444; }
+
+    .agent-section {
+      margin-top: 16px;
+    }
+    .agent-section h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fafafa;
+      margin-bottom: 8px;
+    }
+    .agent-list-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      background: #18181b;
+      border-radius: 6px;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .agent-list-item .agent-name { color: #e4e4e7; }
+    .agent-list-item .agent-state {
+      font-size: 11px;
+      color: #71717a;
+      text-transform: capitalize;
+    }
+    .agent-list-empty {
+      font-size: 12px;
+      color: #52525b;
+      padding: 8px 0;
+    }
+
+    .sync-status {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #71717a;
+      text-align: center;
+    }
+
+    .footer {
+      margin-top: 16px;
+      text-align: center;
+      font-size: 10px;
+      color: #52525b;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>GHOST Monitor</h1>
+    <span style="display:flex;align-items:center;">
+      <span class="status-dot disconnected" id="statusDot" role="status" aria-label="Connection status"></span>
+      <span class="status-label disconnected" id="statusLabel">Disconnected</span>
+    </span>
+  </div>
+
+  <div class="score-gauge">
+    <div class="score-value" id="scoreValue">—</div>
+    <div class="score-label">Convergence Score</div>
+    <div class="level-badge level-0" id="levelBadge">Level 0</div>
+  </div>
+
+  <div class="alert-banner" id="alertBanner" role="alert"></div>
+
+  <div class="signals" id="signalList" aria-label="Signal values"></div>
+
+  <div class="session-info">
+    <dl>
+      <dt>Session Duration</dt>
+      <dd id="sessionDuration">—</dd>
+      <dt>Platform</dt>
+      <dd id="platform">—</dd>
+    </dl>
+  </div>
+
+  <div class="agent-section">
+    <h2>Agents</h2>
+    <div id="agentList"><span class="agent-list-empty">Loading agents...</span></div>
+  </div>
+
+  <div class="sync-status">Last sync: <span id="syncStatus">never</span></div>
+
+  <div class="footer">GHOST Convergence Monitor v0.1.0</div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

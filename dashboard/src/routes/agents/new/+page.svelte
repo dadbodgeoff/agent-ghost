@@ -68,6 +68,7 @@
     { value: 'anthropic', label: 'Anthropic' },
     { value: 'openai', label: 'OpenAI' },
     { value: 'google', label: 'Google' },
+    { value: 'codex', label: 'Codex (ChatGPT)' },
     { value: 'ollama', label: 'Ollama (Local)' },
   ];
 
@@ -75,6 +76,7 @@
     anthropic: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
     openai: ['gpt-4o', 'gpt-4o-mini', 'o1', 'o3-mini'],
     google: ['gemini-2.0-flash', 'gemini-2.0-pro'],
+    codex: ['default'],
     ollama: ['llama3.2', 'mistral', 'codellama'],
   };
 

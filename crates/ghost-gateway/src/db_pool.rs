@@ -289,6 +289,22 @@ fn run_checkpoint_query(
     Ok(conn.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
 }
 
+fn create_pool_internal(
+    db_path: PathBuf,
+    create_if_missing: bool,
+) -> Result<Arc<DbPool>, DbPoolError> {
+    let num_cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let pool_size = num_cpus.clamp(2, 8);
+    let pool = if create_if_missing {
+        DbPool::open(db_path, pool_size)?
+    } else {
+        DbPool::open_existing(db_path, pool_size)?
+    };
+    Ok(Arc::new(pool))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,20 +321,4 @@ mod tests {
         assert!(passive.is_ok(), "passive checkpoint should succeed");
         assert!(truncate.is_ok(), "truncate checkpoint should succeed");
     }
-}
-
-fn create_pool_internal(
-    db_path: PathBuf,
-    create_if_missing: bool,
-) -> Result<Arc<DbPool>, DbPoolError> {
-    let num_cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    let pool_size = num_cpus.clamp(2, 8);
-    let pool = if create_if_missing {
-        DbPool::open(db_path, pool_size)?
-    } else {
-        DbPool::open_existing(db_path, pool_size)?
-    };
-    Ok(Arc::new(pool))
 }

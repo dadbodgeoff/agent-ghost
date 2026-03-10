@@ -63,7 +63,9 @@ pub async fn execute_shell(
 
     // Execute with timeout
     let result = tokio::time::timeout(config.timeout, async {
-        tokio::process::Command::new("sh")
+        let mut process = tokio::process::Command::new("sh");
+        process.kill_on_drop(true);
+        process
             .arg("-c")
             .arg(command)
             .current_dir(&config.working_dir)

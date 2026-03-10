@@ -556,6 +556,8 @@ mod tests {
             )),
             db: Arc::clone(&db),
             event_tx,
+            trigger_sender:
+                tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
             replay_buffer: Arc::new(crate::api::websocket::EventReplayBuffer::new(16)),
             cost_tracker: Arc::new(crate::cost::tracker::CostTracker::new()),
             kill_gate: None,
@@ -574,6 +576,7 @@ mod tests {
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            live_execution_controls: Arc::new(dashmap::DashMap::new()),
             safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
             monitor_address: "127.0.0.1:18790".to_string(),
             monitor_enabled: false,
@@ -587,6 +590,7 @@ mod tests {
             )),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            autonomy: Arc::new(crate::autonomy::AutonomyService::default()),
         })
     }
 

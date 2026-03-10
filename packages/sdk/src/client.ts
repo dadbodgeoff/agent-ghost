@@ -19,6 +19,7 @@ import { ProfilesAPI } from './profiles.js';
 import { WebhooksAPI } from './webhooks.js';
 import { BackupsAPI } from './backups.js';
 import { ProviderKeysAPI } from './provider-keys.js';
+import { CodexAPI } from './codex.js';
 import { PushAPI } from './push.js';
 import { ChannelsAPI } from './channels.js';
 import { StateAPI } from './state.js';
@@ -30,6 +31,8 @@ import { StudioAPI } from './studio.js';
 import { PcControlAPI } from './pc-control.js';
 import { OAuthAPI } from './oauth.js';
 import { ItpAPI } from './itp.js';
+import { AutonomyAPI } from './autonomy.js';
+import { LiveExecutionsAPI } from './live-executions.js';
 import { GhostWebSocket, type GhostWebSocketOptions } from './websocket.js';
 
 // ── Types ──
@@ -271,6 +274,7 @@ export class GhostClient {
   readonly webhooks: WebhooksAPI;
   readonly backups: BackupsAPI;
   readonly providerKeys: ProviderKeysAPI;
+  readonly codex: CodexAPI;
   readonly push: PushAPI;
   readonly channels: ChannelsAPI;
   readonly state: StateAPI;
@@ -282,6 +286,8 @@ export class GhostClient {
   readonly pcControl: PcControlAPI;
   readonly oauth: OAuthAPI;
   readonly itp: ItpAPI;
+  readonly autonomy: AutonomyAPI;
+  readonly liveExecutions: LiveExecutionsAPI;
 
   private readonly options: GhostClientOptions;
 
@@ -315,6 +321,7 @@ export class GhostClient {
     this.webhooks = new WebhooksAPI(request);
     this.backups = new BackupsAPI(request);
     this.providerKeys = new ProviderKeysAPI(request);
+    this.codex = new CodexAPI(request);
     this.push = new PushAPI(request);
     this.channels = new ChannelsAPI(request);
     this.state = new StateAPI(request);
@@ -326,6 +333,8 @@ export class GhostClient {
     this.pcControl = new PcControlAPI(request);
     this.oauth = new OAuthAPI(request);
     this.itp = new ItpAPI(request);
+    this.autonomy = new AutonomyAPI(request);
+    this.liveExecutions = new LiveExecutionsAPI(request);
   }
 
   /** Create a WebSocket connection for real-time events. */

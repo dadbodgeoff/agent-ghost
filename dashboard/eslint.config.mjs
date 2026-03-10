@@ -18,7 +18,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   ...svelte.configs['flat/base'],
   {
-    files: ['**/*.{js,ts,svelte}'],
+    files: ['**/*.{js,cjs,mjs,ts,svelte}'],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -32,6 +32,7 @@ export default tseslint.config(
     rules: {
       'no-console': 'off',
       'no-undef': 'off',
+      'no-fallthrough': 'off',
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-expressions': 'off',
       '@typescript-eslint/no-unused-vars': 'off',

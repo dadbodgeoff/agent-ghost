@@ -1305,8 +1305,8 @@ fn sanitize_time_with_seconds() {
 fn sanitize_date_only_unchanged() {
     use ghost_agent_loop::context::prompt_compiler::sanitize_environment_timestamps;
     assert_eq!(
-        sanitize_environment_timestamps("Date: 2026-02-28"),
-        "Date: 2026-02-28"
+        sanitize_environment_timestamps("Runtime Date (authoritative): 2026-02-28"),
+        "Runtime Date (authoritative): 2026-02-28"
     );
 }
 

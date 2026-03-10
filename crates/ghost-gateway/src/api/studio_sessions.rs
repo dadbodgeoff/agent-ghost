@@ -57,7 +57,9 @@ const DELETE_SESSION_ROUTE_TEMPLATE: &str = "/api/studio/sessions/:id";
 const SEND_MESSAGE_ROUTE_TEMPLATE: &str = "/api/studio/sessions/:id/messages";
 const SEND_MESSAGE_STREAM_ROUTE_TEMPLATE: &str = "/api/studio/sessions/:id/messages/stream";
 const STUDIO_MESSAGE_ROUTE_KIND: &str = "studio_send_message";
+const STUDIO_MESSAGE_STREAM_ROUTE_KIND: &str = "studio_send_message_stream";
 const STUDIO_MESSAGE_EXECUTION_STATE_VERSION: u32 = 1;
+const STUDIO_STREAM_EXECUTION_STATE_VERSION: u32 = 1;
 
 // ── Request / Response types ───────────────────────────────────────
 
@@ -827,6 +829,20 @@ pub async fn send_message(
                     )
                     .await;
                 }
+                "cancelled" => {
+                    let cancelled_body = studio_message_cancelled_body(&execution_state);
+                    return finalize_studio_message_cancelled_response(
+                        &state,
+                        &lease,
+                        &operation_context,
+                        &session_id,
+                        actor,
+                        &execution_record.id,
+                        execution_state,
+                        cancelled_body,
+                    )
+                    .await;
+                }
                 "running" => {
                     if let Some((status, body)) =
                         stored_studio_message_terminal_response(&state.db, &execution_state)
@@ -959,6 +975,10 @@ pub async fn send_message(
                 ..
             } = prepared_runtime;
 
+            let (cancel_token, _execution_control_guard) =
+                state.acquire_live_execution_control(execution_record.id.clone());
+            runner.set_cancel_token(Arc::clone(&cancel_token));
+
             if providers.is_empty() {
                 let response_body = validation_error_body(
                     "No model providers configured. Add provider config to ghost.yml.",
@@ -992,6 +1012,25 @@ pub async fn send_message(
                     }
                 };
 
+            if cancel_token.is_cancelled() {
+                let heartbeat_result = heartbeat.stop().await;
+                if let Err(error) = heartbeat_result {
+                    return error_response_with_idempotency(error);
+                }
+                let cancelled_body = studio_message_cancelled_body(&execution_state);
+                return finalize_studio_message_cancelled_response(
+                    &state,
+                    &lease,
+                    &operation_context,
+                    &session_id,
+                    actor,
+                    &execution_record.id,
+                    execution_state,
+                    cancelled_body,
+                )
+                .await;
+            }
+
             {
                 let db = state.db.write().await;
                 if let Err(error) = update_live_execution_state(
@@ -1017,6 +1056,24 @@ pub async fn send_message(
                         return error_response_with_idempotency(error);
                     }
                     result
+                }
+                Err(ghost_agent_loop::runner::RunError::Cancelled) => {
+                    let heartbeat_result = heartbeat.stop().await;
+                    if let Err(error) = heartbeat_result {
+                        return error_response_with_idempotency(error);
+                    }
+                    let cancelled_body = studio_message_cancelled_body(&execution_state);
+                    return finalize_studio_message_cancelled_response(
+                        &state,
+                        &lease,
+                        &operation_context,
+                        &session_id,
+                        actor,
+                        &execution_record.id,
+                        execution_state,
+                        cancelled_body,
+                    )
+                    .await;
                 }
                 Err(error) => {
                     let heartbeat_result = heartbeat.stop().await;
@@ -1099,6 +1156,26 @@ pub async fn send_message(
                         &title,
                     );
                 }
+            }
+            if let Err(error) = crate::speculative_context::record_completed_turn(
+                &state,
+                crate::speculative_context::CompletedTurnInput {
+                    agent_id: runtime_ctx.agent.id,
+                    session_id: runtime_ctx.session_id,
+                    turn_id: execution_state.assistant_message_id.clone(),
+                    route_kind: "studio",
+                    user_message: req.content.clone(),
+                    assistant_message: response_content.clone(),
+                },
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    session_id = %execution_state.session_id,
+                    assistant_message_id = %execution_state.assistant_message_id,
+                    "failed to record speculative context for studio turn"
+                );
             }
 
             let final_body =
@@ -1184,6 +1261,16 @@ fn studio_message_recovery_body(state: &StudioMessageExecutionState) -> serde_js
         object.insert("recovery_required".into(), serde_json::Value::Bool(true));
     }
     body
+}
+
+fn studio_message_cancelled_body(state: &StudioMessageExecutionState) -> serde_json::Value {
+    state.final_response.clone().unwrap_or_else(|| {
+        serde_json::to_value(ErrorResponse::new(
+            "EXECUTION_CANCELLED",
+            "Execution cancelled by user",
+        ))
+        .unwrap_or(serde_json::Value::Null)
+    })
 }
 
 fn persist_live_execution_record(
@@ -1369,6 +1456,52 @@ async fn finalize_studio_message_terminal_response(
     }
 }
 
+async fn finalize_studio_message_cancelled_response(
+    state: &Arc<AppState>,
+    lease: &crate::api::idempotency::PreparedOperationLease,
+    operation_context: &OperationContext,
+    session_id: &str,
+    actor: &str,
+    execution_id: &str,
+    mut execution_state: StudioMessageExecutionState,
+    body: serde_json::Value,
+) -> Response {
+    execution_state.final_status_code = Some(StatusCode::CONFLICT.as_u16());
+    execution_state.final_response = Some(body.clone());
+
+    let db = state.db.write().await;
+    if let Err(error) =
+        update_live_execution_state(&db, execution_id, "cancelled", &execution_state)
+    {
+        return error_response_with_idempotency(error);
+    }
+
+    match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::CONFLICT, &body)
+    {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                session_id,
+                "send_studio_message",
+                "medium",
+                actor,
+                "cancelled",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "user_message_id": outcome.body.get("user_message").and_then(|value| value.get("id")).cloned().unwrap_or(serde_json::Value::Null),
+                    "assistant_message_id": outcome.body.get("assistant_message").and_then(|value| value.get("id")).cloned().unwrap_or(serde_json::Value::Null),
+                    "status": outcome.body.get("status").cloned().unwrap_or(serde_json::Value::Null),
+                    "error": outcome.body.get("error").cloned().unwrap_or(serde_json::Value::Null),
+                }),
+                operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
+}
+
 async fn finalize_studio_message_recovery_response(
     state: &Arc<AppState>,
     lease: &crate::api::idempotency::PreparedOperationLease,
@@ -1511,7 +1644,9 @@ pub async fn send_message_stream(
                 }
 
                 let assistant_msg_id = Uuid::now_v7().to_string();
+                let execution_id = Uuid::now_v7().to_string();
                 let start_payload = serde_json::json!({
+                    "execution_id": execution_id,
                     "session_id": session_id,
                     "message_id": assistant_msg_id,
                 });
@@ -1527,6 +1662,7 @@ pub async fn send_message_stream(
                 Ok((
                     StatusCode::OK,
                     studio_stream_accepted_body(
+                        &execution_id,
                         &session_id,
                         &user_msg_id,
                         &assistant_msg_id,
@@ -1583,11 +1719,41 @@ pub async fn send_message_stream(
             return response_with_idempotency(error.into_response(), idempotency_status);
         }
     };
+    let operation_id = operation_context
+        .operation_id
+        .clone()
+        .unwrap_or_else(|| acceptance.execution_id.clone());
 
     match idempotency_status {
         IdempotencyStatus::Executed => {
+            let execution_record = match ensure_studio_stream_execution_record(
+                &state,
+                &operation_id,
+                actor,
+                &acceptance,
+            )
+            .await
+            {
+                Ok(record) => record,
+                Err(error) => {
+                    return response_with_idempotency(
+                        error.into_response(),
+                        IdempotencyStatus::Executed,
+                    );
+                }
+            };
+            let execution_state = match parse_studio_stream_execution_state(&execution_record) {
+                Ok(state) => state,
+                Err(error) => {
+                    return response_with_idempotency(
+                        error.into_response(),
+                        IdempotencyStatus::Executed,
+                    );
+                }
+            };
             let (stream_rx, task_handle) = spawn_studio_stream_execution(
                 Arc::clone(&state),
+                execution_record.id.clone(),
                 acceptance.session_id.clone(),
                 acceptance.user_message_id.clone(),
                 acceptance.assistant_message_id.clone(),
@@ -1597,11 +1763,33 @@ pub async fn send_message_stream(
             studio_live_stream_response(
                 Arc::clone(&state),
                 acceptance,
+                execution_record.id,
+                execution_state,
                 stream_rx,
                 IdempotencyStatus::Executed,
             )
         }
         IdempotencyStatus::Replayed => {
+            let execution_state =
+                match find_studio_stream_execution_record(&state, &operation_id, &acceptance).await
+                {
+                    Ok(Some(record)) => match parse_studio_stream_execution_state(&record) {
+                        Ok(state) => Some(state),
+                        Err(error) => {
+                            return response_with_idempotency(
+                                error.into_response(),
+                                IdempotencyStatus::Replayed,
+                            );
+                        }
+                    },
+                    Ok(None) => None,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            error.into_response(),
+                            IdempotencyStatus::Replayed,
+                        );
+                    }
+                };
             let (persisted_events, assistant_message) = {
                 let db = match state.db.read() {
                     Ok(db) => db,
@@ -1647,6 +1835,7 @@ pub async fn send_message_stream(
                 acceptance,
                 persisted_events,
                 assistant_message,
+                execution_state,
                 IdempotencyStatus::Replayed,
             )
         }
@@ -1656,10 +1845,34 @@ pub async fn send_message_stream(
 
 #[derive(Debug, Clone)]
 struct StudioStreamAcceptance {
+    execution_id: String,
     session_id: String,
     user_message_id: String,
     assistant_message_id: String,
     stream_start_seq: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StudioStreamExecutionState {
+    #[serde(default = "studio_stream_execution_state_version")]
+    version: u32,
+    session_id: String,
+    user_message_id: String,
+    assistant_message_id: String,
+    stream_start_seq: i64,
+    #[serde(default = "default_accepted_response")]
+    accepted_response: serde_json::Value,
+    recovery_required: bool,
+    terminal_event_type: Option<String>,
+    terminal_payload: Option<serde_json::Value>,
+}
+
+fn studio_stream_execution_state_version() -> u32 {
+    STUDIO_STREAM_EXECUTION_STATE_VERSION
+}
+
+fn default_accepted_response() -> serde_json::Value {
+    serde_json::Value::Null
 }
 
 fn validation_error_body(message: &str) -> serde_json::Value {
@@ -1679,6 +1892,7 @@ fn studio_stream_request_body(session_id: &str, req: &SendMessageRequest) -> ser
 }
 
 fn studio_stream_accepted_body(
+    execution_id: &str,
     session_id: &str,
     user_message_id: &str,
     assistant_message_id: &str,
@@ -1686,6 +1900,7 @@ fn studio_stream_accepted_body(
 ) -> serde_json::Value {
     serde_json::json!({
         "status": "accepted",
+        "execution_id": execution_id,
         "session_id": session_id,
         "user_message_id": user_message_id,
         "assistant_message_id": assistant_message_id,
@@ -1696,7 +1911,18 @@ fn studio_stream_accepted_body(
 fn parse_studio_stream_acceptance(
     body: &serde_json::Value,
 ) -> Result<StudioStreamAcceptance, ApiError> {
+    let assistant_message_id = body
+        .get("assistant_message_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| ApiError::internal("missing accepted assistant_message_id"))?
+        .to_string();
+
     Ok(StudioStreamAcceptance {
+        execution_id: body
+            .get("execution_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(assistant_message_id.as_str())
+            .to_string(),
         session_id: body
             .get("session_id")
             .and_then(|value| value.as_str())
@@ -1707,16 +1933,105 @@ fn parse_studio_stream_acceptance(
             .and_then(|value| value.as_str())
             .ok_or_else(|| ApiError::internal("missing accepted user_message_id"))?
             .to_string(),
-        assistant_message_id: body
-            .get("assistant_message_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ApiError::internal("missing accepted assistant_message_id"))?
-            .to_string(),
+        assistant_message_id,
         stream_start_seq: body
             .get("stream_start_seq")
             .and_then(|value| value.as_i64())
             .ok_or_else(|| ApiError::internal("missing accepted stream_start_seq"))?,
     })
+}
+
+fn studio_stream_execution_state(
+    acceptance: &StudioStreamAcceptance,
+) -> StudioStreamExecutionState {
+    StudioStreamExecutionState {
+        version: STUDIO_STREAM_EXECUTION_STATE_VERSION,
+        session_id: acceptance.session_id.clone(),
+        user_message_id: acceptance.user_message_id.clone(),
+        assistant_message_id: acceptance.assistant_message_id.clone(),
+        stream_start_seq: acceptance.stream_start_seq,
+        accepted_response: studio_stream_accepted_body(
+            &acceptance.execution_id,
+            &acceptance.session_id,
+            &acceptance.user_message_id,
+            &acceptance.assistant_message_id,
+            acceptance.stream_start_seq,
+        ),
+        recovery_required: false,
+        terminal_event_type: None,
+        terminal_payload: None,
+    }
+}
+
+fn parse_studio_stream_execution_state(
+    record: &cortex_storage::queries::live_execution_queries::LiveExecutionRecord,
+) -> Result<StudioStreamExecutionState, ApiError> {
+    if record.state_version != STUDIO_STREAM_EXECUTION_STATE_VERSION as i64 {
+        return Err(ApiError::internal(format!(
+            "unsupported studio stream execution state version: {}",
+            record.state_version
+        )));
+    }
+
+    let state = serde_json::from_str::<StudioStreamExecutionState>(&record.state_json).map_err(
+        |error| {
+            ApiError::internal(format!(
+                "failed to parse studio stream execution state: {error}"
+            ))
+        },
+    )?;
+    if state.version != STUDIO_STREAM_EXECUTION_STATE_VERSION {
+        return Err(ApiError::internal(format!(
+            "unsupported studio stream execution state version: {}",
+            state.version
+        )));
+    }
+
+    Ok(state)
+}
+
+fn persist_studio_stream_execution_record(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    journal_id: &str,
+    operation_id: &str,
+    actor: &str,
+    state: &StudioStreamExecutionState,
+) -> Result<(), ApiError> {
+    let state_json =
+        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
+    cortex_storage::queries::live_execution_queries::insert(
+        conn,
+        &cortex_storage::queries::live_execution_queries::NewLiveExecutionRecord {
+            id: execution_id,
+            journal_id,
+            operation_id,
+            route_kind: STUDIO_MESSAGE_STREAM_ROUTE_KIND,
+            actor_key: actor,
+            state_version: STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+            status: "accepted",
+            state_json: &state_json,
+        },
+    )
+    .map_err(|error| ApiError::db_error("insert_studio_stream_execution_record", error))
+}
+
+fn update_studio_stream_execution_state(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    status: &str,
+    state: &StudioStreamExecutionState,
+) -> Result<(), ApiError> {
+    let state_json =
+        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
+    cortex_storage::queries::live_execution_queries::update_status_and_state(
+        conn,
+        execution_id,
+        STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+        status,
+        &state_json,
+    )
+    .map_err(|error| ApiError::db_error("update_studio_stream_execution_record", error))
 }
 
 fn studio_stream_keep_alive() -> axum::response::sse::KeepAlive {
@@ -1731,6 +2046,7 @@ fn studio_stream_start_event(acceptance: &StudioStreamAcceptance) -> Event {
         .id(acceptance.stream_start_seq.to_string())
         .data(
             serde_json::json!({
+                "execution_id": acceptance.execution_id.clone(),
                 "session_id": acceptance.session_id.clone(),
                 "message_id": acceptance.assistant_message_id.clone(),
             })
@@ -1813,6 +2129,7 @@ fn studio_replay_stream_response(
     acceptance: StudioStreamAcceptance,
     persisted_events: Vec<cortex_storage::queries::stream_event_queries::StreamEventRow>,
     assistant_message: Option<cortex_storage::queries::studio_chat_queries::StudioMessageRow>,
+    execution_state: Option<StudioStreamExecutionState>,
     idempotency_status: IdempotencyStatus,
 ) -> Response {
     let replay_missing_start = persisted_events
@@ -1839,6 +2156,17 @@ fn studio_replay_stream_response(
             if replay_missing_terminal {
                 yield Ok(replay_fallback_stream_end_event(&assistant_message));
             }
+        } else if replay_missing_terminal {
+            if let Some(execution_state) = execution_state {
+                if let (Some(event_type), Some(payload)) = (
+                    execution_state.terminal_event_type.as_deref(),
+                    execution_state.terminal_payload,
+                ) {
+                    yield Ok(Event::default()
+                        .event(event_type)
+                        .data(mark_reconstructed_payload(payload).to_string()));
+                }
+            }
         }
     };
 
@@ -1850,9 +2178,110 @@ fn studio_replay_stream_response(
     )
 }
 
+fn studio_stream_recovery_payload(message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({
+        "message": message.into(),
+        "recovery_required": true,
+    })
+}
+
+async fn ensure_studio_stream_execution_record(
+    state: &Arc<AppState>,
+    operation_id: &str,
+    actor: &str,
+    acceptance: &StudioStreamAcceptance,
+) -> Result<cortex_storage::queries::live_execution_queries::LiveExecutionRecord, ApiError> {
+    let db = state.db.write().await;
+
+    if let Some(record) =
+        cortex_storage::queries::live_execution_queries::get_by_id(&db, &acceptance.execution_id)
+            .map_err(|error| ApiError::db_error("get_studio_stream_execution_by_id", error))?
+    {
+        return Ok(record);
+    }
+
+    if let Some(record) =
+        cortex_storage::queries::live_execution_queries::get_by_operation_id(&db, operation_id)
+            .map_err(|error| {
+                ApiError::db_error("get_studio_stream_execution_by_operation_id", error)
+            })?
+    {
+        return Ok(record);
+    }
+
+    let journal =
+        cortex_storage::queries::operation_journal_queries::get_by_operation_id(&db, operation_id)
+            .map_err(|error| ApiError::db_error("get_operation_journal", error))?
+            .ok_or_else(|| {
+                ApiError::internal(format!(
+                    "missing operation journal for studio stream execution {operation_id}"
+                ))
+            })?;
+
+    let execution_state = studio_stream_execution_state(acceptance);
+    persist_studio_stream_execution_record(
+        &db,
+        &acceptance.execution_id,
+        &journal.id,
+        operation_id,
+        actor,
+        &execution_state,
+    )?;
+
+    Ok(
+        cortex_storage::queries::live_execution_queries::LiveExecutionRecord {
+            id: acceptance.execution_id.clone(),
+            journal_id: journal.id,
+            operation_id: operation_id.to_string(),
+            route_kind: STUDIO_MESSAGE_STREAM_ROUTE_KIND.to_string(),
+            actor_key: actor.to_string(),
+            state_version: STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+            status: "accepted".to_string(),
+            state_json: serde_json::to_string(&execution_state)
+                .unwrap_or_else(|_| "{}".to_string()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+}
+
+async fn find_studio_stream_execution_record(
+    state: &Arc<AppState>,
+    operation_id: &str,
+    acceptance: &StudioStreamAcceptance,
+) -> Result<Option<cortex_storage::queries::live_execution_queries::LiveExecutionRecord>, ApiError>
+{
+    let db = state
+        .db
+        .read()
+        .map_err(|error| ApiError::db_error("get_studio_stream_execution", error))?;
+
+    if let Some(record) =
+        cortex_storage::queries::live_execution_queries::get_by_id(&db, &acceptance.execution_id)
+            .map_err(|error| ApiError::db_error("get_studio_stream_execution_by_id", error))?
+    {
+        return Ok(Some(record));
+    }
+
+    cortex_storage::queries::live_execution_queries::get_by_operation_id(&db, operation_id)
+        .map_err(|error| ApiError::db_error("get_studio_stream_execution_by_operation_id", error))
+}
+
+async fn persist_studio_stream_terminal_state(
+    db: &Arc<crate::db_pool::DbPool>,
+    execution_id: &str,
+    status: &str,
+    execution_state: &StudioStreamExecutionState,
+) {
+    let conn = db.write().await;
+    let _ = update_studio_stream_execution_state(&conn, execution_id, status, execution_state);
+}
+
 fn studio_live_stream_response(
     state: Arc<AppState>,
     acceptance: StudioStreamAcceptance,
+    execution_id: String,
+    mut execution_state: StudioStreamExecutionState,
     mut rx: tokio::sync::mpsc::Receiver<AgentStreamEvent>,
     idempotency_status: IdempotencyStatus,
 ) -> Response {
@@ -1863,6 +2292,35 @@ fn studio_live_stream_response(
     let start_event = studio_stream_start_event(&acceptance);
 
     let sse_stream = async_stream::stream! {
+        {
+            let conn = db_for_stream.write().await;
+            if let Err(error) = update_studio_stream_execution_state(
+                &conn,
+                &execution_id,
+                "running",
+                &execution_state,
+            ) {
+                let payload = studio_stream_recovery_payload(format!(
+                    "Failed to mark stream execution as running: {error}"
+                ));
+                execution_state.recovery_required = true;
+                execution_state.terminal_event_type = Some("error".to_string());
+                execution_state.terminal_payload = Some(payload.clone());
+                drop(conn);
+                persist_studio_stream_terminal_state(
+                    &db_for_stream,
+                    &execution_id,
+                    "recovery_required",
+                    &execution_state,
+                )
+                .await;
+                yield Ok::<Event, std::convert::Infallible>(
+                    Event::default().event("error").data(payload.to_string())
+                );
+                return;
+            }
+        }
+
         let mut text_buffer = String::new();
         const TEXT_FLUSH_THRESHOLD: usize = 2048;
         let mut consecutive_persist_failures: u32 = 0;
@@ -1888,7 +2346,11 @@ fn studio_live_stream_response(
                 AgentStreamEvent::StreamStart { message_id } => {
                     yield Ok(Event::default()
                         .event("stream_start")
-                        .data(serde_json::json!({ "message_id": message_id }).to_string()));
+                        .data(serde_json::json!({
+                            "execution_id": execution_id.clone(),
+                            "session_id": session_id_sse.clone(),
+                            "message_id": message_id,
+                        }).to_string()));
                 }
                 AgentStreamEvent::TextDelta { content } => {
                     text_buffer.push_str(&content);
@@ -2123,6 +2585,16 @@ fn studio_live_stream_response(
                     if let Some(s) = seq {
                         ev = ev.id(s.to_string());
                     }
+                    execution_state.recovery_required = false;
+                    execution_state.terminal_event_type = Some("stream_end".to_string());
+                    execution_state.terminal_payload = Some(payload.clone());
+                    persist_studio_stream_terminal_state(
+                        &db_for_stream,
+                        &execution_id,
+                        "completed",
+                        &execution_state,
+                    )
+                    .await;
                     yield Ok(ev);
                     stream_ended = true;
                     break;
@@ -2133,6 +2605,7 @@ fn studio_live_stream_response(
                     provider,
                     fallback,
                     terminal,
+                    cancelled,
                 } => {
                     let payload = studio_stream_error_payload(
                         &message,
@@ -2140,6 +2613,7 @@ fn studio_live_stream_response(
                         provider.as_deref(),
                         fallback,
                         terminal,
+                        cancelled,
                     );
 
                     if !terminal {
@@ -2200,6 +2674,16 @@ fn studio_live_stream_response(
                     if let Some(s) = seq {
                         ev = ev.id(s.to_string());
                     }
+                    execution_state.recovery_required = !cancelled;
+                    execution_state.terminal_event_type = Some("error".to_string());
+                    execution_state.terminal_payload = Some(payload.clone());
+                    persist_studio_stream_terminal_state(
+                        &db_for_stream,
+                        &execution_id,
+                        if cancelled { "cancelled" } else { "recovery_required" },
+                        &execution_state,
+                    )
+                    .await;
                     yield Ok(ev);
                     stream_ended = true;
                     break;
@@ -2287,6 +2771,7 @@ async fn flush_studio_stream_text_durable(
 
 fn spawn_studio_stream_execution(
     state: Arc<AppState>,
+    execution_id: String,
     session_id: String,
     user_msg_id: String,
     assistant_msg_id: String,
@@ -2394,6 +2879,54 @@ fn spawn_studio_stream_execution(
             providers: all_providers,
             ..
         } = prepared_runtime;
+        let cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
+        runner.set_cancel_token(Arc::clone(&cancel_token));
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(256);
+        let tx_forward = tx.clone();
+        let state_for_forward = Arc::clone(&state_for_task);
+        let execution_id_for_forward = execution_id.clone();
+        let cancel_token_for_forward = Arc::clone(&cancel_token);
+        let forward_handle = tokio::spawn(async move {
+            let mut control_registered = false;
+
+            while let Some(event) = event_rx.recv().await {
+                let substantive_event = matches!(
+                    event,
+                    AgentStreamEvent::TextDelta { .. }
+                        | AgentStreamEvent::ToolUse { .. }
+                        | AgentStreamEvent::ToolResult { .. }
+                        | AgentStreamEvent::TurnComplete { .. }
+                        | AgentStreamEvent::Error { .. }
+                );
+                if substantive_event && !control_registered {
+                    state_for_forward.live_execution_controls.insert(
+                        execution_id_for_forward.clone(),
+                        Arc::clone(&cancel_token_for_forward),
+                    );
+                    control_registered = true;
+                }
+
+                if tx_forward.send(event).await.is_err() {
+                    break;
+                }
+            }
+
+            if control_registered {
+                if let Some(entry) = state_for_forward
+                    .live_execution_controls
+                    .get(&execution_id_for_forward)
+                {
+                    let should_remove = Arc::ptr_eq(entry.value(), &cancel_token_for_forward);
+                    drop(entry);
+                    if should_remove {
+                        state_for_forward
+                            .live_execution_controls
+                            .remove(&execution_id_for_forward);
+                    }
+                }
+            }
+        });
 
         let session_id_clone = session_id.clone();
         let assistant_msg_id_clone = assistant_msg_id.clone();
@@ -2402,7 +2935,7 @@ fn spawn_studio_stream_execution(
         let state_clone = Arc::clone(&state_for_task);
         let user_content_for_title = user_content.clone();
         if let Some(run_result) = execute_streaming_turn(
-            &tx,
+            &event_tx,
             &mut runner,
             &runtime_ctx,
             "studio",
@@ -2467,13 +3000,37 @@ fn spawn_studio_stream_execution(
                 },
             );
 
-            let _ = tx
+            if let Err(error) = crate::speculative_context::record_completed_turn(
+                &state_clone,
+                crate::speculative_context::CompletedTurnInput {
+                    agent_id: runtime_ctx.agent.id,
+                    session_id: runtime_ctx.session_id,
+                    turn_id: assistant_msg_id_clone.clone(),
+                    route_kind: "studio_stream",
+                    user_message: user_content.clone(),
+                    assistant_message: response_content.clone(),
+                },
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    session_id = %session_id_clone,
+                    assistant_message_id = %assistant_msg_id_clone,
+                    "failed to record speculative context for studio stream"
+                );
+            }
+
+            let _ = event_tx
                 .send(AgentStreamEvent::TurnComplete {
                     token_count: run_result.total_tokens,
                     safety_status: output_safety_status.to_string(),
                 })
                 .await;
         }
+
+        drop(event_tx);
+        let _ = forward_handle.await;
     });
 
     (rx, handle)
@@ -2650,6 +3207,7 @@ fn studio_stream_error_payload(
     provider: Option<&str>,
     fallback: bool,
     terminal: bool,
+    cancelled: bool,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({ "message": message });
     if let Some(error_type) = error_type {
@@ -2663,6 +3221,9 @@ fn studio_stream_error_payload(
     }
     if !terminal {
         payload["terminal"] = serde_json::json!(false);
+    }
+    if cancelled {
+        payload["cancelled"] = serde_json::json!(true);
     }
     payload
 }

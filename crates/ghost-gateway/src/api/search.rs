@@ -216,6 +216,70 @@ fn search_memories(
     results.extend(rows.filter_map(|r| r.ok()));
 }
 
+fn search_proposals(
+    db: &rusqlite::Connection,
+    pattern: &str,
+    limit: usize,
+    results: &mut Vec<SearchResult>,
+) {
+    let Ok(mut stmt) = db.prepare(
+        "SELECT id, operation, decision FROM goal_proposals \
+         WHERE operation LIKE ?1 ESCAPE '\\' OR id LIKE ?1 ESCAPE '\\' \
+         LIMIT ?2",
+    ) else {
+        return;
+    };
+    let Ok(rows) = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+        let id: String = row.get(0)?;
+        let op: String = row.get::<_, String>(1).unwrap_or_default();
+        let status: String = row.get::<_, String>(2).unwrap_or_default();
+        Ok(SearchResult {
+            result_type: "proposal".into(),
+            id,
+            title: op,
+            snippet: format!("Status: {status}"),
+            score: 0.7,
+        })
+    }) else {
+        return;
+    };
+    results.extend(rows.filter_map(|r| r.ok()));
+}
+
+fn search_audit(
+    db: &rusqlite::Connection,
+    pattern: &str,
+    limit: usize,
+    results: &mut Vec<SearchResult>,
+) {
+    let Ok(mut stmt) = db.prepare(
+        "SELECT id, event_type, details FROM audit_log \
+         WHERE event_type LIKE ?1 ESCAPE '\\' OR details LIKE ?1 ESCAPE '\\' \
+         LIMIT ?2",
+    ) else {
+        return;
+    };
+    let Ok(rows) = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+        let id: String = row.get(0)?;
+        let etype: String = row.get::<_, String>(1).unwrap_or_default();
+        let details: String = row.get::<_, String>(2).unwrap_or_default();
+        Ok(SearchResult {
+            result_type: "audit".into(),
+            id,
+            title: etype,
+            snippet: if details.chars().count() > 100 {
+                format!("{}…", truncate_chars(&details, 100))
+            } else {
+                details
+            },
+            score: 0.6,
+        })
+    }) else {
+        return;
+    };
+    results.extend(rows.filter_map(|r| r.ok()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,68 +353,4 @@ mod tests {
         assert_eq!(results[0].title, "Semantic");
         assert_eq!(results[0].snippet, "fresh summary marker");
     }
-}
-
-fn search_proposals(
-    db: &rusqlite::Connection,
-    pattern: &str,
-    limit: usize,
-    results: &mut Vec<SearchResult>,
-) {
-    let Ok(mut stmt) = db.prepare(
-        "SELECT id, operation, decision FROM goal_proposals \
-         WHERE operation LIKE ?1 ESCAPE '\\' OR id LIKE ?1 ESCAPE '\\' \
-         LIMIT ?2",
-    ) else {
-        return;
-    };
-    let Ok(rows) = stmt.query_map(rusqlite::params![pattern, limit], |row| {
-        let id: String = row.get(0)?;
-        let op: String = row.get::<_, String>(1).unwrap_or_default();
-        let status: String = row.get::<_, String>(2).unwrap_or_default();
-        Ok(SearchResult {
-            result_type: "proposal".into(),
-            id,
-            title: op,
-            snippet: format!("Status: {status}"),
-            score: 0.7,
-        })
-    }) else {
-        return;
-    };
-    results.extend(rows.filter_map(|r| r.ok()));
-}
-
-fn search_audit(
-    db: &rusqlite::Connection,
-    pattern: &str,
-    limit: usize,
-    results: &mut Vec<SearchResult>,
-) {
-    let Ok(mut stmt) = db.prepare(
-        "SELECT id, event_type, details FROM audit_log \
-         WHERE event_type LIKE ?1 ESCAPE '\\' OR details LIKE ?1 ESCAPE '\\' \
-         LIMIT ?2",
-    ) else {
-        return;
-    };
-    let Ok(rows) = stmt.query_map(rusqlite::params![pattern, limit], |row| {
-        let id: String = row.get(0)?;
-        let etype: String = row.get::<_, String>(1).unwrap_or_default();
-        let details: String = row.get::<_, String>(2).unwrap_or_default();
-        Ok(SearchResult {
-            result_type: "audit".into(),
-            id,
-            title: etype,
-            snippet: if details.chars().count() > 100 {
-                format!("{}…", truncate_chars(&details, 100))
-            } else {
-                details
-            },
-            score: 0.6,
-        })
-    }) else {
-        return;
-    };
-    results.extend(rows.filter_map(|r| r.ok()));
 }

@@ -30,7 +30,7 @@ use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::state::AppState;
 use axum::extract::State;
 use std::sync::Arc;
-use tokio::task::block_in_place;
+use tokio::task::spawn_blocking;
 
 const CONNECT_ROUTE_TEMPLATE: &str = "/api/oauth/connect";
 const EXECUTE_ROUTE_TEMPLATE: &str = "/api/oauth/execute";
@@ -504,18 +504,31 @@ pub async fn callback(
         .into_response();
     }
 
-    match block_in_place(|| state.oauth_broker.callback(&params.state, &params.code)) {
-        Ok(ref_id) => Json(OAuthConnectionStatusResponse {
+    let callback_state = Arc::clone(&state);
+    let oauth_state = params.state.clone();
+    let oauth_code = params.code.clone();
+
+    match spawn_blocking(move || {
+        callback_state
+            .oauth_broker
+            .callback(&oauth_state, &oauth_code)
+    })
+    .await
+    {
+        Ok(Ok(ref_id)) => Json(OAuthConnectionStatusResponse {
             status: "connected".to_string(),
             ref_id: ref_id.to_string(),
         })
         .into_response(),
-        Err(e) => ApiError::custom(
+        Ok(Err(error)) => ApiError::custom(
             StatusCode::BAD_REQUEST,
             "OAUTH_CALLBACK_FAILED",
-            e.to_string(),
+            error.to_string(),
         )
         .into_response(),
+        Err(error) => {
+            ApiError::internal(format!("oauth callback task failed: {error}")).into_response()
+        }
     }
 }
 
@@ -789,8 +802,17 @@ pub async fn execute_api_call(
             }
 
             let heartbeat = start_operation_lease_heartbeat(Arc::clone(&state.db), lease.clone());
-            match block_in_place(|| state.oauth_broker.execute(&ref_id, &req.api_request)) {
-                Ok(response) => {
+            let execute_state = Arc::clone(&state);
+            let execute_ref_id = ref_id.clone();
+            let api_request = req.api_request.clone();
+            match spawn_blocking(move || {
+                execute_state
+                    .oauth_broker
+                    .execute(&execute_ref_id, &api_request)
+            })
+            .await
+            {
+                Ok(Ok(response)) => {
                     if let Err(error) = heartbeat.stop().await {
                         return error_response_with_idempotency(error);
                     }
@@ -819,7 +841,7 @@ pub async fn execute_api_call(
                     )
                     .await
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     if let Err(heartbeat_error) = heartbeat.stop().await {
                         return error_response_with_idempotency(heartbeat_error);
                     }
@@ -857,6 +879,14 @@ pub async fn execute_api_call(
                     )
                     .await
                 }
+                Err(error) => {
+                    if let Err(heartbeat_error) = heartbeat.stop().await {
+                        return error_response_with_idempotency(heartbeat_error);
+                    }
+                    error_response_with_idempotency(ApiError::internal(format!(
+                        "oauth execute task failed: {error}"
+                    )))
+                }
             }
         }
         Err(error) => error_response_with_idempotency(error),
@@ -893,7 +923,9 @@ pub async fn disconnect(
         DISCONNECT_ROUTE_TEMPLATE,
         &request_body,
         |_| {
-            block_in_place(|| state.oauth_broker.disconnect(&ref_id))
+            state
+                .oauth_broker
+                .disconnect(&ref_id)
                 .map_err(oauth_disconnect_error)?;
             tracing::info!(ref_id = %ref_id_str, "OAuth connection disconnected");
             Ok((

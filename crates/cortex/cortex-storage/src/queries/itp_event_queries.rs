@@ -108,6 +108,42 @@ pub fn query_by_time_range(
     Ok(rows)
 }
 
+pub fn query_recent_hydration_events(
+    conn: &Connection,
+    session_id: &str,
+    limit: u32,
+) -> CortexResult<Vec<ITPHydrationEventRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT event_type, timestamp, sequence_number, attributes
+             FROM (
+                 SELECT event_type, timestamp, sequence_number, attributes
+                 FROM itp_events
+                 WHERE session_id = ?1
+                   AND event_type IN ('turn_complete', 'stream_start', 'text_chunk')
+                 ORDER BY sequence_number DESC
+                 LIMIT ?2
+             )
+             ORDER BY sequence_number ASC",
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let rows = stmt
+        .query_map(params![session_id, limit], |row| {
+            Ok(ITPHydrationEventRow {
+                event_type: row.get(0)?,
+                timestamp: row.get(1)?,
+                sequence_number: row.get(2)?,
+                attributes: row.get(3)?,
+            })
+        })
+        .map_err(|e| to_storage_err(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    Ok(rows)
+}
+
 #[derive(Debug, Clone)]
 pub struct ITPEventRow {
     pub id: String,
@@ -119,4 +155,12 @@ pub struct ITPEventRow {
     pub content_hash: Option<String>,
     pub event_hash: Vec<u8>,
     pub previous_hash: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ITPHydrationEventRow {
+    pub event_type: String,
+    pub timestamp: String,
+    pub sequence_number: i64,
+    pub attributes: String,
 }

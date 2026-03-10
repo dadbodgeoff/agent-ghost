@@ -44,6 +44,10 @@ pub mod v055_external_skill_pipeline;
 pub mod v056_workflow_execution_contract;
 pub mod v057_live_execution_contract;
 pub mod v058_rate_limit_buckets;
+pub mod v059_autonomy_control_plane;
+pub mod v060_speculative_context_phase1;
+pub mod v061_speculative_context_phase3;
+pub mod v062_live_execution_cancelled_status;
 
 use std::path::{Path, PathBuf};
 
@@ -53,14 +57,14 @@ use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
 use rusqlite::{Connection, DatabaseName};
 
-pub const LATEST_VERSION: u32 = 58;
+pub const LATEST_VERSION: u32 = 62;
 
 /// Maximum number of migration backup files to retain.
 const MAX_MIGRATION_BACKUPS: usize = 3;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 43] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 47] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -152,6 +156,26 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 43] = [
         v057_live_execution_contract::migrate,
     ),
     (58, "rate_limit_buckets", v058_rate_limit_buckets::migrate),
+    (
+        59,
+        "autonomy_control_plane",
+        v059_autonomy_control_plane::migrate,
+    ),
+    (
+        60,
+        "speculative_context_phase1",
+        v060_speculative_context_phase1::migrate,
+    ),
+    (
+        61,
+        "speculative_context_phase3",
+        v061_speculative_context_phase3::migrate,
+    ),
+    (
+        62,
+        "live_execution_cancelled_status",
+        v062_live_execution_cancelled_status::migrate,
+    ),
 ];
 
 /// Query the current schema version from the database.

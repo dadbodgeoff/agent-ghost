@@ -100,6 +100,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/codex/login/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["start_codex_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/codex/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logout_codex"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/codex/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_codex_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/export": {
         parameters: {
             query?: never;
@@ -350,6 +398,118 @@ export interface paths {
         get: operations["get_auth_session"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["autonomy_jobs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/policies/agents/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["autonomy_agent_policy_get"];
+        put: operations["autonomy_agent_policy_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/policies/global": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["autonomy_global_policy_get"];
+        put: operations["autonomy_global_policy_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["autonomy_runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/runs/{run_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["autonomy_run_approve"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["autonomy_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/autonomy/suppressions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["autonomy_suppressions_create"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2079,6 +2239,15 @@ export interface components {
             /** @description OAuth connection reference (UUID string from a prior `/connect` flow). */
             ref_id: string;
         };
+        ApproveRunRequest: {
+            /** Format: int64 */
+            ttl_seconds?: number | null;
+        };
+        ApproveRunResponse: {
+            approval_expires_at: string;
+            approval_state: string;
+            run_id: string;
+        };
         /** @description Request body for archiving a memory. */
         ArchiveMemoryRequest: {
             /** Format: double */
@@ -2106,6 +2275,111 @@ export interface components {
         AssignProfileResponse: {
             agent_id: string;
             profile_name: string;
+        };
+        AutonomyJobListResponse: {
+            jobs: components["schemas"]["AutonomyJobSummary"][];
+        };
+        AutonomyJobSummary: {
+            agent_id: string;
+            approval_policy: string;
+            current_run_id?: string | null;
+            id: string;
+            initiative_mode: string;
+            job_type: string;
+            last_failure_at?: string | null;
+            last_heartbeat_at?: string | null;
+            last_success_at?: string | null;
+            manual_review_required: boolean;
+            missed_run_policy: string;
+            next_run_at: string;
+            overlap_policy: string;
+            policy_scope: string;
+            retry_after?: string | null;
+            /** Format: int64 */
+            retry_count: number;
+            schedule_json: string;
+            state: string;
+            terminal_reason?: string | null;
+            workflow_id?: string | null;
+        };
+        AutonomyListParams: {
+            /** Format: int32 */
+            limit?: number | null;
+        };
+        AutonomyPolicyDocument: {
+            approval_required: boolean;
+            draft_only: boolean;
+            initiative_budget: components["schemas"]["InitiativeBudgetPolicy"];
+            pause: boolean;
+            quiet_hours?: null | components["schemas"]["QuietHoursPolicy"];
+            /** Format: int32 */
+            retention_days: number;
+            /** Format: int32 */
+            version: number;
+        };
+        AutonomyPolicyResponse: {
+            policy: components["schemas"]["AutonomyPolicyDocument"];
+            scope_key: string;
+            scope_kind: string;
+        };
+        AutonomyRunListResponse: {
+            runs: components["schemas"]["AutonomyRunSummary"][];
+        };
+        AutonomyRunSummary: {
+            approval_state: string;
+            /** Format: int64 */
+            attempt: number;
+            completed_at?: string | null;
+            due_at: string;
+            id: string;
+            job_id: string;
+            manual_review_required: boolean;
+            side_effect_status: string;
+            started_at?: string | null;
+            state: string;
+            terminal_reason?: string | null;
+            trigger_source: string;
+            why_now_json: unknown;
+        };
+        AutonomySaturationStatus: {
+            blocked_due_jobs: number;
+            global_concurrency: number;
+            per_agent_concurrency: number;
+            reason?: string | null;
+            reserved_slots: number;
+            saturated: boolean;
+        };
+        AutonomyStatusResponse: {
+            deployment_mode: string;
+            due_jobs: number;
+            last_successful_dispatch_at?: string | null;
+            leased_jobs: number;
+            manual_review_jobs: number;
+            oldest_overdue_at?: string | null;
+            owner_identity: string;
+            paused_jobs: number;
+            quarantined_jobs: number;
+            running_jobs: number;
+            runtime_state: string;
+            saturation: components["schemas"]["AutonomySaturationStatus"];
+            scheduler_running: boolean;
+            waiting_jobs: number;
+            worker_count: number;
+        };
+        AutonomySuppressionSummary: {
+            active: boolean;
+            created_at: string;
+            created_by: string;
+            expires_at?: string | null;
+            fingerprint: string;
+            id: string;
+            metadata_json: unknown;
+            reason: string;
+            scope_key: string;
+            scope_kind: string;
+        };
+        AutonomySuppressionsResponse: {
+            suppressions: components["schemas"]["AutonomySuppressionSummary"][];
         };
         BackupListResponse: {
             backups: components["schemas"]["BackupResponse"][];
@@ -2149,6 +2423,27 @@ export interface components {
         ChannelStatusResponse: {
             id: string;
             status: string;
+        };
+        CodexAccountView: {
+            /** @enum {string} */
+            type: "api_key";
+        } | {
+            email: string;
+            plan_type: string;
+            /** @enum {string} */
+            type: "chatgpt";
+        };
+        CodexLoginStartResponse: {
+            auth_type: string;
+            auth_url?: string | null;
+            login_id?: string | null;
+        };
+        CodexLogoutResponse: {
+            message: string;
+        };
+        CodexStatusResponse: {
+            account?: null | components["schemas"]["CodexAccountView"];
+            requires_openai_auth: boolean;
         };
         CompleteContractRequest: {
             result?: string | null;
@@ -2306,6 +2601,14 @@ export interface components {
             thresholds: number[];
             weights: number[];
         };
+        CreateSuppressionRequest: {
+            expires_at?: string | null;
+            fingerprint: string;
+            metadata?: unknown;
+            reason: string;
+            scope_key: string;
+            scope_kind: string;
+        };
         /** @description Request body for creating a workflow. */
         CreateWorkflowRequest: {
             description?: string | null;
@@ -2444,6 +2747,18 @@ export interface components {
             reason_code?: string | null;
             request_id?: string | null;
             to_state: string;
+        };
+        InitiativeBudgetPolicy: {
+            /** Format: double */
+            max_daily_cost: number;
+            /** Format: int32 */
+            max_interruptions_per_day: number;
+            /** Format: double */
+            max_novelty_score: number;
+            /** Format: double */
+            max_risk_score: number;
+            /** Format: double */
+            min_trust_score: number;
         };
         InjectMessageRequest: {
             agent_id?: string | null;
@@ -2722,6 +3037,16 @@ export interface components {
         PushSubscription: {
             endpoint: string;
             keys?: components["schemas"]["PushKeys"];
+        };
+        PutAutonomyPolicyRequest: {
+            policy: components["schemas"]["AutonomyPolicyDocument"];
+        };
+        QuietHoursPolicy: {
+            /** Format: int32 */
+            end_hour: number;
+            /** Format: int32 */
+            start_hour: number;
+            timezone: string;
         };
         RegisterAgentRequest: {
             agent_id: string;
@@ -3453,6 +3778,102 @@ export interface operations {
             };
         };
     };
+    start_codex_login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Started Codex ChatGPT login flow */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexLoginStartResponse"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+            /** @description Codex authentication conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    logout_codex: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged out Codex account */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexLogoutResponse"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    get_codex_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current Codex login status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexStatusResponse"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
     export_backup_data: {
         parameters: {
             query?: {
@@ -4032,6 +4453,217 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    autonomy_jobs: {
+        parameters: {
+            query?: {
+                /** @description Maximum jobs to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Autonomy ledger jobs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyJobListResponse"];
+                };
+            };
+        };
+    };
+    autonomy_agent_policy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent UUID */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent autonomy policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyPolicyResponse"];
+                };
+            };
+        };
+    };
+    autonomy_agent_policy_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent UUID */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutAutonomyPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated agent autonomy policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyPolicyResponse"];
+                };
+            };
+        };
+    };
+    autonomy_global_policy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Global autonomy policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyPolicyResponse"];
+                };
+            };
+        };
+    };
+    autonomy_global_policy_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutAutonomyPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated global autonomy policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyPolicyResponse"];
+                };
+            };
+        };
+    };
+    autonomy_runs: {
+        parameters: {
+            query?: {
+                /** @description Maximum runs to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Autonomy ledger runs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyRunListResponse"];
+                };
+            };
+        };
+    };
+    autonomy_run_approve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Autonomy run id */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Run approved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApproveRunResponse"];
+                };
+            };
+        };
+    };
+    autonomy_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Autonomy control-plane status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyStatusResponse"];
+                };
+            };
+        };
+    };
+    autonomy_suppressions_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSuppressionRequest"];
+            };
+        };
+        responses: {
+            /** @description Active suppressions for the scope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomySuppressionsResponse"];
                 };
             };
         };

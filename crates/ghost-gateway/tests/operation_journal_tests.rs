@@ -178,16 +178,13 @@ impl CaptureServer {
                     let requests = Arc::clone(&app_requests);
                     async move {
                         hits.fetch_add(1, Ordering::SeqCst);
-                        requests
-                            .lock()
-                            .unwrap()
-                            .push(CapturedA2ARequest {
-                                path: uri.path().to_string(),
-                                signature: headers
-                                    .get("X-Ghost-Signature")
-                                    .and_then(|value| value.to_str().ok())
-                                    .map(ToString::to_string),
-                            });
+                        requests.lock().unwrap().push(CapturedA2ARequest {
+                            path: uri.path().to_string(),
+                            signature: headers
+                                .get("X-Ghost-Signature")
+                                .and_then(|value| value.to_str().ok())
+                                .map(ToString::to_string),
+                        });
                         (
                             StatusCode::OK,
                             Json(serde_json::json!({
@@ -296,6 +293,147 @@ impl MockOpenAICompatServer {
                         )
                             .into_response()
                     }
+                }
+            }),
+        );
+
+        let bind_addr = format!("127.0.0.1:{port}");
+        let handle = tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    shutdown_token.cancelled().await;
+                })
+                .await
+                .unwrap();
+        });
+
+        Self {
+            base_url: format!("http://127.0.0.1:{port}"),
+            hits,
+            shutdown,
+            handle,
+        }
+    }
+
+    async fn stop(self) {
+        self.shutdown.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.handle).await;
+    }
+}
+
+struct MockOpenAICompatToolCallServer {
+    base_url: String,
+    hits: Arc<AtomicUsize>,
+    shutdown: CancellationToken,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl MockOpenAICompatToolCallServer {
+    async fn start_shell_then_text(command: &str, final_text: &str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let app_hits = Arc::clone(&hits);
+        let shutdown = CancellationToken::new();
+        let shutdown_token = shutdown.clone();
+
+        let tool_arguments = serde_json::json!({ "command": command }).to_string();
+        let first_stream = Arc::new(format!(
+            "data: {}\n\n\
+             data: {}\n\n\
+             data: {}\n\n\
+             data: [DONE]\n\n",
+            serde_json::json!({
+                "id": "chatcmpl-tool-call",
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_shell_1",
+                            "function": {
+                                "name": "shell",
+                                "arguments": ""
+                            }
+                        }]
+                    }
+                }]
+            }),
+            serde_json::json!({
+                "id": "chatcmpl-tool-call",
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "function": {
+                                "arguments": tool_arguments
+                            }
+                        }]
+                    }
+                }]
+            }),
+            serde_json::json!({
+                "id": "chatcmpl-tool-call",
+                "choices": [{
+                    "delta": {}
+                }],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 5
+                }
+            })
+        ));
+        let second_stream = Arc::new(format!(
+            "data: {}\n\n\
+             data: {}\n\n\
+             data: [DONE]\n\n",
+            serde_json::json!({
+                "id": "chatcmpl-tool-result",
+                "choices": [{
+                    "delta": {
+                        "content": final_text
+                    }
+                }]
+            }),
+            serde_json::json!({
+                "id": "chatcmpl-tool-result",
+                "choices": [{
+                    "delta": {}
+                }],
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3
+                }
+            })
+        ));
+
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(payload): Json<serde_json::Value>| {
+                let hits = Arc::clone(&app_hits);
+                let first_stream = Arc::clone(&first_stream);
+                let second_stream = Arc::clone(&second_stream);
+                async move {
+                    let request_index = hits.fetch_add(1, Ordering::SeqCst);
+                    let streaming = payload
+                        .get("stream")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false);
+                    assert!(streaming, "tool-call mock expects a streaming request");
+
+                    let body = if request_index == 0 {
+                        (*first_stream).clone()
+                    } else {
+                        (*second_stream).clone()
+                    };
+                    let mut response = (axum::http::StatusCode::OK, body).into_response();
+                    response.headers_mut().insert(
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("text/event-stream"),
+                    );
+                    response
                 }
             }),
         );
@@ -550,6 +688,14 @@ fn seed_registered_agent(
     app_state: &Arc<ghost_gateway::state::AppState>,
     name: &str,
 ) -> uuid::Uuid {
+    seed_registered_agent_with_capabilities(app_state, name, &[])
+}
+
+fn seed_registered_agent_with_capabilities(
+    app_state: &Arc<ghost_gateway::state::AppState>,
+    name: &str,
+    capabilities: &[&str],
+) -> uuid::Uuid {
     let agent_id = ghost_gateway::agents::registry::durable_agent_id(name);
     app_state
         .agents
@@ -560,9 +706,13 @@ fn seed_registered_agent(
             name: name.to_string(),
             state: ghost_gateway::agents::registry::AgentLifecycleState::Ready,
             channel_bindings: vec!["slack".into()],
-            capabilities: Vec::new(),
+            full_access: false,
+            capabilities: capabilities.iter().map(|cap| (*cap).to_string()).collect(),
             skills: None,
-            spending_cap: 0.0,
+            baseline_capabilities: capabilities.iter().map(|cap| (*cap).to_string()).collect(),
+            baseline_skills: None,
+            access_pullback_active: false,
+            spending_cap: 10.0,
             template: None,
         });
     agent_id
@@ -815,14 +965,28 @@ impl PersistentGateway {
         db_path: &Path,
         model_providers: Vec<ghost_gateway::config::ProviderConfig>,
     ) -> Self {
+        Self::start_with_model_providers_and_tools(
+            db_path,
+            model_providers,
+            ghost_gateway::config::ToolsConfig::default(),
+        )
+        .await
+    }
+
+    async fn start_with_model_providers_and_tools(
+        db_path: &Path,
+        model_providers: Vec<ghost_gateway::config::ProviderConfig>,
+        tools_config: ghost_gateway::config::ToolsConfig,
+    ) -> Self {
         let default_model_provider = model_providers
             .first()
             .map(|provider| provider.name.clone());
-        Self::start_with_runtime_config(
+        Self::start_with_runtime_config_and_tools(
             db_path,
             std::collections::BTreeMap::new(),
             model_providers,
             default_model_provider,
+            tools_config,
         )
         .await
     }
@@ -832,6 +996,23 @@ impl PersistentGateway {
         oauth_providers: std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>>,
         model_providers: Vec<ghost_gateway::config::ProviderConfig>,
         default_model_provider: Option<String>,
+    ) -> Self {
+        Self::start_with_runtime_config_and_tools(
+            db_path,
+            oauth_providers,
+            model_providers,
+            default_model_provider,
+            ghost_gateway::config::ToolsConfig::default(),
+        )
+        .await
+    }
+
+    async fn start_with_runtime_config_and_tools(
+        db_path: &Path,
+        oauth_providers: std::collections::BTreeMap<String, Box<dyn ghost_oauth::OAuthProvider>>,
+        model_providers: Vec<ghost_gateway::config::ProviderConfig>,
+        default_model_provider: Option<String>,
+        tools_config: ghost_gateway::config::ToolsConfig,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -875,6 +1056,8 @@ impl PersistentGateway {
             )),
             db: Arc::clone(&db),
             event_tx,
+            trigger_sender:
+                tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
             replay_buffer,
             cost_tracker,
             kill_gate: None,
@@ -889,10 +1072,11 @@ impl PersistentGateway {
                 .circuit_breaker(),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
             ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
-            tools_config: ghost_gateway::config::ToolsConfig::default(),
+            tools_config,
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
             background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            live_execution_controls: Arc::new(dashmap::DashMap::new()),
             safety_cooldown: Arc::new(ghost_gateway::api::rate_limit::SafetyCooldown::new()),
             monitor_address: "127.0.0.1:0".to_string(),
             monitor_enabled: false,
@@ -906,6 +1090,7 @@ impl PersistentGateway {
             ),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            autonomy: Arc::new(ghost_gateway::autonomy::AutonomyService::default()),
         });
 
         shared_state
@@ -4278,6 +4463,192 @@ async fn studio_message_stream_replays_after_restart_without_refiring_provider()
 }
 
 #[tokio::test]
+async fn studio_message_stream_cancel_marks_execution_cancelled_and_stops_shell_tool() {
+    let _guard = hold_env_lock();
+    let _api_key = EnvVarGuard::set("OPENAI_API_KEY", "test-openai-key");
+    let tmp = tempfile::tempdir().unwrap();
+    let marker_path = tmp.path().join("studio-stream-cancel-marker.txt");
+    let command = format!(
+        "sleep 5; printf cancelled-test > \"{}\"",
+        marker_path.display()
+    );
+    let provider =
+        MockOpenAICompatToolCallServer::start_shell_then_text(&command, "should not complete")
+            .await;
+    let db_path = tmp.path().join("studio-stream-cancel.db");
+    let session_id = "studio-stream-cancel-session";
+    let operation_id = "018f0f23-8c65-7abc-9def-1e34567890ba";
+    let idempotency_key = "studio-stream-cancel-key";
+    let request_body = studio_message_request_body("Run the long shell command", session_id);
+
+    let mut tools_config = ghost_gateway::config::ToolsConfig::default();
+    tools_config.shell.allowed_prefixes = vec![String::new()];
+    tools_config.shell.timeout_secs = 10;
+
+    let gateway = PersistentGateway::start_with_model_providers_and_tools(
+        &db_path,
+        openai_compat_provider_configs(&provider.base_url),
+        tools_config,
+    )
+    .await;
+    let agent_id = seed_registered_agent_with_capabilities(
+        &gateway.app_state,
+        "studio-shell-agent",
+        &["shell_execute"],
+    );
+    seed_studio_session(&gateway.app_state, session_id, &agent_id.to_string()).await;
+
+    let stream_client = gateway.client.clone();
+    let stream_url = format!(
+        "{}/api/studio/sessions/{session_id}/messages/stream",
+        gateway.base_url
+    );
+    let mut stream_task = tokio::spawn(async move {
+        let response = stream_client
+            .post(stream_url)
+            .json(&request_body)
+            .header("x-request-id", "studio-stream-cancel-request")
+            .header("x-ghost-operation-id", operation_id)
+            .header("idempotency-key", idempotency_key)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response.text().await.unwrap();
+        (status, headers, body)
+    });
+
+    let execution_record = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            {
+                let db = gateway.app_state.db.read().unwrap();
+                if let Some(record) =
+                    cortex_storage::queries::live_execution_queries::get_by_operation_id(
+                        &db,
+                        operation_id,
+                    )
+                    .unwrap()
+                {
+                    break record;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let execution_id = execution_record.id.clone();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if gateway
+                .app_state
+                .live_execution_controls
+                .contains_key(&execution_id)
+            {
+                break;
+            }
+            if let Ok(Ok((status, _headers, body))) =
+                tokio::time::timeout(std::time::Duration::from_millis(10), &mut stream_task).await
+            {
+                panic!(
+                    "studio stream finished before control registration: status={status}, body={body}"
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let cancel = gateway
+        .client
+        .post(format!(
+            "{}/api/live-executions/{execution_id}/cancel",
+            gateway.base_url
+        ))
+        .send()
+        .await
+        .unwrap();
+    let cancel_status = cancel.status();
+    let cancel_text = cancel.text().await.unwrap();
+    assert_eq!(cancel_status, StatusCode::OK, "cancel body: {cancel_text}");
+    let cancel_body: serde_json::Value = serde_json::from_str(&cancel_text).unwrap();
+    assert_eq!(cancel_body["execution_id"], execution_id);
+    assert_eq!(cancel_body["status"], "cancelled");
+    assert_eq!(cancel_body["cancel_signal_sent"], true);
+
+    let (stream_status, stream_headers, stream_text) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), stream_task)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(stream_status, StatusCode::OK);
+    assert_eq!(
+        stream_headers
+            .get("x-ghost-idempotency-status")
+            .and_then(|value| value.to_str().ok()),
+        Some("executed")
+    );
+    assert!(
+        stream_text.contains("event: stream_start"),
+        "stream output: {stream_text}"
+    );
+    assert!(
+        stream_text.contains("event: tool_use"),
+        "stream output: {stream_text}"
+    );
+    assert!(
+        stream_text.contains("\"status\":\"running\""),
+        "stream output: {stream_text}"
+    );
+    assert!(
+        stream_text.contains("event: error"),
+        "stream output: {stream_text}"
+    );
+    assert!(
+        stream_text.contains("\"cancelled\":true"),
+        "stream output: {stream_text}"
+    );
+    assert!(
+        stream_text.contains("Execution cancelled by user"),
+        "stream output: {stream_text}"
+    );
+
+    let execution = fetch_live_execution(&gateway.client, &gateway.base_url, &execution_id).await;
+    assert_eq!(execution.status(), StatusCode::OK);
+    let execution_body = json_body(execution).await;
+    assert_eq!(execution_body["route_kind"], "studio_send_message_stream");
+    assert_eq!(execution_body["status"], "cancelled");
+    assert_eq!(execution_body["recovery_required"], false);
+    assert_eq!(
+        execution_body["accepted_response"]["execution_id"],
+        execution_id
+    );
+
+    {
+        let db = gateway.app_state.db.read().unwrap();
+        let record = cortex_storage::queries::live_execution_queries::get_by_id(&db, &execution_id)
+            .unwrap()
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_str(&record.state_json).unwrap();
+        assert_eq!(state["terminal_event_type"], "error");
+        assert_eq!(state["terminal_payload"]["cancelled"], true);
+        assert_eq!(state["recovery_required"], false);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(5500)).await;
+    assert!(
+        !marker_path.exists(),
+        "cancelled shell command still wrote marker"
+    );
+    assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
+
+    gateway.stop().await;
+    provider.stop().await;
+}
+
+#[tokio::test]
 async fn studio_stream_recover_marks_reconstructed_suffix_and_terminal() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("studio-stream-recover-reconstructed.db");
@@ -5419,7 +5790,7 @@ async fn agent_chat_materializes_runtime_session_for_sessions_api() {
     assert_eq!(events_body["session_id"], session_id);
     assert_eq!(events_body["chain_valid"], true);
     assert!(
-        events_body["events"].as_array().unwrap().len() >= 1,
+        !events_body["events"].as_array().unwrap().is_empty(),
         "runtime session should expose at least one persisted event"
     );
 

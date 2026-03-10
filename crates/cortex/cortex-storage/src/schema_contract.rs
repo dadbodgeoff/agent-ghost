@@ -651,6 +651,135 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
             "updated_by",
         ],
     },
+    TableRequirement {
+        name: "autonomy_jobs",
+        required_columns: &[
+            "id",
+            "job_type",
+            "agent_id",
+            "tenant_key",
+            "workflow_id",
+            "policy_scope",
+            "payload_version",
+            "payload_json",
+            "schedule_version",
+            "schedule_json",
+            "overlap_policy",
+            "missed_run_policy",
+            "retry_policy_json",
+            "initiative_mode",
+            "approval_policy",
+            "state",
+            "current_run_id",
+            "next_run_at",
+            "last_due_at",
+            "last_enqueued_at",
+            "last_started_at",
+            "last_finished_at",
+            "last_success_at",
+            "last_failure_at",
+            "last_heartbeat_at",
+            "pause_reason",
+            "quarantine_reason",
+            "terminal_reason",
+            "manual_review_required",
+            "retry_count",
+            "retry_after",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableRequirement {
+        name: "autonomy_runs",
+        required_columns: &[
+            "id",
+            "job_id",
+            "attempt",
+            "trigger_source",
+            "triggered_at",
+            "due_at",
+            "started_at",
+            "completed_at",
+            "state",
+            "why_now_json",
+            "payload_version",
+            "payload_json",
+            "initiative_mode",
+            "approval_state",
+            "approval_proposal_id",
+            "approval_expires_at",
+            "owner_identity",
+            "owner_token",
+            "lease_epoch",
+            "side_effect_correlation_key",
+            "side_effect_status",
+            "result_json",
+            "error_class",
+            "error_message",
+            "waiting_until",
+            "terminal_reason",
+            "manual_review_required",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableRequirement {
+        name: "autonomy_leases",
+        required_columns: &[
+            "job_id",
+            "run_id",
+            "owner_identity",
+            "owner_token",
+            "lease_epoch",
+            "leased_at",
+            "last_seen_at",
+            "lease_expires_at",
+        ],
+    },
+    TableRequirement {
+        name: "autonomy_suppressions",
+        required_columns: &[
+            "id",
+            "scope_kind",
+            "scope_key",
+            "fingerprint",
+            "reason",
+            "created_by",
+            "created_at",
+            "expires_at",
+            "active",
+            "policy_version",
+            "metadata_json",
+        ],
+    },
+    TableRequirement {
+        name: "autonomy_policies",
+        required_columns: &[
+            "id",
+            "scope_kind",
+            "scope_key",
+            "policy_version",
+            "policy_json",
+            "created_at",
+            "updated_at",
+        ],
+    },
+    TableRequirement {
+        name: "autonomy_notifications",
+        required_columns: &[
+            "id",
+            "run_id",
+            "job_id",
+            "delivery_state",
+            "channel",
+            "correlation_key",
+            "payload_json",
+            "approval_proposal_id",
+            "last_error",
+            "created_at",
+            "updated_at",
+        ],
+    },
 ];
 
 fn expected_schema() -> Result<&'static DerivedSchema, SchemaContractError> {
@@ -828,6 +957,16 @@ const REQUIRED_INDEXES: &[&str] = &[
     "idx_goal_proposal_single_terminal",
     "idx_monitor_threshold_history_key_changed_at",
     "idx_agent_profile_assignments_profile",
+    "idx_autonomy_jobs_due_state",
+    "idx_autonomy_jobs_agent_state",
+    "idx_autonomy_jobs_manual_review",
+    "idx_autonomy_runs_job_created",
+    "idx_autonomy_runs_side_effect",
+    "idx_autonomy_runs_state_waiting",
+    "idx_autonomy_leases_run_id",
+    "idx_autonomy_leases_expiry",
+    "idx_autonomy_suppressions_scope_active",
+    "idx_autonomy_notifications_run_state",
 ];
 
 const REQUIRED_TRIGGERS: &[&str] = &[
@@ -893,7 +1032,7 @@ const REQUIRED_TABLE_SQL_PATTERNS: &[TableSqlRequirement] = &[
     TableSqlRequirement {
         table: "live_execution_records",
         description: "recovery-required execution status",
-        pattern: "CHECK(status IN ('accepted', 'running', 'completed', 'recovery_required'))",
+        pattern: "CHECK(status IN ('accepted', 'running', 'completed', 'recovery_required', 'cancelled'))",
     },
     TableSqlRequirement {
         table: "live_execution_records",
@@ -916,6 +1055,43 @@ const REQUIRED_TABLE_SQL_PATTERNS: &[TableSqlRequirement] = &[
         pattern:
             "status TEXT NOT NULL DEFAULT 'recovery_required' CHECK(status IN ('running', 'completed', 'failed', 'recovery_required'))",
     },
+    TableSqlRequirement {
+        table: "autonomy_jobs",
+        description: "autonomy job payload version contract",
+        pattern: "payload_version        INTEGER NOT NULL CHECK(payload_version > 0)",
+    },
+    TableSqlRequirement {
+        table: "autonomy_jobs",
+        description: "autonomy job schedule version contract",
+        pattern: "schedule_version       INTEGER NOT NULL CHECK(schedule_version > 0)",
+    },
+    TableSqlRequirement {
+        table: "autonomy_jobs",
+        description: "autonomy job state contract",
+        pattern:
+            "state                  TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued', 'leased', 'running', 'waiting', 'succeeded', 'failed', 'paused', 'quarantined', 'aborted'))",
+    },
+    TableSqlRequirement {
+        table: "autonomy_runs",
+        description: "autonomy run payload version contract",
+        pattern: "payload_version           INTEGER NOT NULL CHECK(payload_version > 0)",
+    },
+    TableSqlRequirement {
+        table: "autonomy_runs",
+        description: "autonomy run state contract",
+        pattern:
+            "state                     TEXT NOT NULL CHECK(state IN ('queued', 'leased', 'running', 'waiting', 'succeeded', 'failed', 'paused', 'quarantined', 'aborted'))",
+    },
+    TableSqlRequirement {
+        table: "autonomy_leases",
+        description: "autonomy lease owner token contract",
+        pattern: "owner_token      TEXT NOT NULL DEFAULT '' CHECK(length(owner_token) > 0)",
+    },
+    TableSqlRequirement {
+        table: "autonomy_leases",
+        description: "autonomy lease epoch contract",
+        pattern: "lease_epoch      INTEGER NOT NULL DEFAULT 0 CHECK(lease_epoch >= 0)",
+    },
 ];
 
 const REQUIRED_INDEX_SQL_PATTERNS: &[IndexSqlRequirement] = &[
@@ -930,6 +1106,12 @@ const REQUIRED_INDEX_SQL_PATTERNS: &[IndexSqlRequirement] = &[
         description: "workflow execution operation uniqueness",
         pattern:
             "CREATE UNIQUE INDEX idx_workflow_executions_operation_id ON workflow_executions(operation_id) WHERE operation_id IS NOT NULL",
+    },
+    IndexSqlRequirement {
+        index: "idx_autonomy_runs_side_effect",
+        description: "autonomy side effect correlation uniqueness",
+        pattern:
+            "CREATE UNIQUE INDEX idx_autonomy_runs_side_effect ON autonomy_runs(side_effect_correlation_key) WHERE side_effect_correlation_key IS NOT NULL",
     },
 ];
 

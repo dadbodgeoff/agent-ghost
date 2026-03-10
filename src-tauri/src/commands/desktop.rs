@@ -157,6 +157,10 @@ fn load_desktop_state() -> Result<DesktopRuntimeStateFile, String> {
     Ok(state)
 }
 
+pub fn load_auth_token() -> Result<Option<String>, String> {
+    Ok(load_desktop_state()?.token)
+}
+
 fn save_desktop_state(
     mutate: impl FnOnce(&mut DesktopRuntimeStateFile),
 ) -> Result<DesktopRuntimeStateFile, String> {
@@ -164,6 +168,17 @@ fn save_desktop_state(
     mutate(&mut state);
     write_desktop_state_file(&state)?;
     Ok(state)
+}
+
+pub fn sync_auth_token(token: &str) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Err("auth token must not be empty".to_string());
+    }
+
+    save_desktop_state(|state| {
+        state.token = Some(token.to_string());
+    })?;
+    Ok(())
 }
 
 fn session_for(
@@ -207,18 +222,12 @@ pub async fn read_keybindings() -> Result<Vec<ShortcutBinding>, String> {
 
 #[tauri::command]
 pub async fn get_auth_token() -> Result<Option<String>, String> {
-    Ok(load_desktop_state()?.token)
+    load_auth_token()
 }
 
 #[tauri::command]
 pub async fn set_auth_token(token: String) -> Result<(), String> {
-    if token.trim().is_empty() {
-        return Err("auth token must not be empty".to_string());
-    }
-    save_desktop_state(|state| {
-        state.token = Some(token);
-    })?;
-    Ok(())
+    sync_auth_token(&token)
 }
 
 #[tauri::command]

@@ -119,6 +119,7 @@ function parseStreamStartEvent(data: Record<string, unknown>): StreamStartEvent 
   if (!message_id) return null;
   return {
     type: 'stream_start',
+    execution_id: readString(data.execution_id) ?? undefined,
     message_id,
     session_id: readString(data.session_id) ?? undefined,
     reconstructed: readBoolean(data.reconstructed) ?? undefined,
@@ -250,6 +251,7 @@ class StudioChatStore {
   streaming = $state(false);
   streamingContent = $state('');
   streamingMessageId = $state<string | null>(null);
+  activeExecutionId = $state<string | null>(null);
   activeToolCall = $state<{ tool: string; toolId: string } | null>(null);
   abortController: AbortController | null = null;
   private cancelledByUser = false;
@@ -257,6 +259,8 @@ class StudioChatStore {
   private toolTimeoutId: ReturnType<typeof setTimeout> | null = null;
   /** WP9-M: Dedup guard — prevents duplicate events during stream/recovery race. */
   private processedEventIds = new Set<string>();
+  private initialized = false;
+  private sessionLoadPromises = new Map<string, Promise<void>>();
 
   get activeSession(): StudioSession | undefined {
     return this.sessions.find((s) => s.id === this.activeSessionId);
@@ -264,6 +268,12 @@ class StudioChatStore {
 
   /** Load session list from API. */
   async init() {
+    if (this.loading) return;
+    if (this.initialized && this.sessions.length > 0) {
+      this.error = '';
+      return;
+    }
+
     this.loading = true;
     this.error = '';
     try {
@@ -284,6 +294,7 @@ class StudioChatStore {
       } else if (this.sessions.length > 0) {
         await this.loadSession(this.sessions[0].id);
       }
+      this.initialized = true;
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load sessions';
     }
@@ -339,6 +350,7 @@ class StudioChatStore {
             const session = this.sessions.find((s) => s.id === sessionId);
             if (session) {
               session.messages = [];
+              this.sessions = [...this.sessions];
             }
             return;
           }
@@ -388,31 +400,48 @@ class StudioChatStore {
 
   /** Load a session with its full message history. */
   async loadSession(id: string) {
-    this.error = '';
-    try {
-      const client = await getGhostClient();
-      const data: StudioSessionWithMessages = await client.sessions.get(id);
-      const loaded: StudioSession = {
-        id: data.id,
-        title: data.title,
-        model: data.model,
-        system_prompt: data.system_prompt,
-        temperature: data.temperature,
-        max_tokens: data.max_tokens,
-        created_at: data.created_at,
-        updated_at: data.updated_at,
-        messages: data.messages ?? [],
-      };
+    const inFlight = this.sessionLoadPromises.get(id);
+    if (inFlight) {
+      return inFlight;
+    }
 
-      const idx = this.sessions.findIndex((s) => s.id === id);
-      if (idx >= 0) {
-        this.sessions[idx] = loaded;
-      } else {
-        this.sessions = [loaded, ...this.sessions];
+    const loadPromise = (async () => {
+      this.error = '';
+      try {
+        const client = await getGhostClient();
+        const data: StudioSessionWithMessages = await client.sessions.get(id);
+        const loaded: StudioSession = {
+          id: data.id,
+          title: data.title,
+          model: data.model,
+          system_prompt: data.system_prompt,
+          temperature: data.temperature,
+          max_tokens: data.max_tokens,
+          created_at: data.created_at,
+          updated_at: data.updated_at,
+          messages: data.messages ?? [],
+        };
+
+        const idx = this.sessions.findIndex((s) => s.id === id);
+        if (idx >= 0) {
+          this.sessions[idx] = loaded;
+          this.sessions = [...this.sessions];
+        } else {
+          this.sessions = [loaded, ...this.sessions];
+        }
+        this.setActiveSession(id);
+      } catch (e: unknown) {
+        this.error = e instanceof Error ? e.message : 'Failed to load session';
       }
-      this.setActiveSession(id);
-    } catch (e: unknown) {
-      this.error = e instanceof Error ? e.message : 'Failed to load session';
+    })();
+
+    this.sessionLoadPromises.set(id, loadPromise);
+    try {
+      await loadPromise;
+    } finally {
+      if (this.sessionLoadPromises.get(id) === loadPromise) {
+        this.sessionLoadPromises.delete(id);
+      }
     }
   }
 
@@ -460,6 +489,15 @@ class StudioChatStore {
     }
   }
 
+  /** Refresh the active session after reconnect or window resume. */
+  async refreshActiveSession() {
+    if (!this.activeSessionId || this.streaming) {
+      return;
+    }
+
+    await this.loadSession(this.activeSessionId);
+  }
+
   /** Send a message with SSE streaming. */
   async sendMessage(content: string): Promise<StudioMessage | null> {
     const session = this.activeSession;
@@ -472,6 +510,7 @@ class StudioChatStore {
     this.streaming = true;
     this.streamingContent = '';
     this.streamingMessageId = null;
+    this.activeExecutionId = null;
     this.activeToolCall = null;
     this.error = '';
 
@@ -560,11 +599,13 @@ class StudioChatStore {
             case 'stream_start': {
               const event = parseStreamStartEvent(data);
               if (!event) break;
+              this.activeExecutionId = event.execution_id ?? null;
               this.streamingMessageId = event.message_id;
               session.messages[assistantMsgIndex] = {
                 ...session.messages[assistantMsgIndex],
                 id: event.message_id,
               };
+              session.messages = [...session.messages];
               break;
             }
 
@@ -580,6 +621,7 @@ class StudioChatStore {
                 ...session.messages[assistantMsgIndex],
                 content: this.streamingContent,
               };
+              session.messages = [...session.messages];
               break;
             }
 
@@ -597,6 +639,7 @@ class StudioChatStore {
                   status: 'running',
                 }),
               };
+              session.messages = [...session.messages];
 
               // WP5-C: 5-minute tool call timeout.
               if (this.toolTimeoutId) clearTimeout(this.toolTimeoutId);
@@ -734,8 +777,8 @@ class StudioChatStore {
           };
           session.messages = [...session.messages];
 
-          // Schedule a background reload — the agent task continues on the
-          // backend even after the SSE stream drops.
+          // Schedule a background reload in case the backend persisted
+          // additional events before the stream ended unexpectedly.
           setTimeout(() => {
             if (!this.streaming && this.activeSessionId === session.id) {
               this.loadSession(session.id);
@@ -748,6 +791,7 @@ class StudioChatStore {
       this.streaming = false;
       this.streamingContent = '';
       this.streamingMessageId = null;
+      this.activeExecutionId = null;
       this.activeToolCall = null;
       this.abortController = null;
       this.persistenceWarning = '';
@@ -769,8 +813,26 @@ class StudioChatStore {
     return session.messages[assistantMsgIndex] ?? null;
   }
 
+  private async cancelRemoteExecution(executionId: string) {
+    try {
+      const client = await getGhostClient();
+      await client.liveExecutions.cancel(executionId, { idempotency: 'required' });
+    } catch (e: unknown) {
+      this.error =
+        e instanceof Error
+          ? `Failed to cancel remote execution: ${e.message}`
+          : 'Failed to cancel remote execution';
+    }
+  }
+
   /** Cancel an in-flight streaming response. */
   cancelStreaming() {
+    const executionId = this.activeExecutionId;
+    this.activeExecutionId = null;
+    if (executionId) {
+      void this.cancelRemoteExecution(executionId);
+    }
+
     if (this.abortController) {
       this.cancelledByUser = true;
       this.abortController.abort();
@@ -789,6 +851,7 @@ class StudioChatStore {
             ...lastMsg,
             content: this.streamingContent + '\n\n*(cancelled)*',
           };
+          session.messages = [...session.messages];
         }
       }
       this.streamingContent = '';

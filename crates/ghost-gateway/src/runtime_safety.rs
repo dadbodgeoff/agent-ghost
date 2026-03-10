@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use cortex_core::safety::trigger::TriggerEvent;
 use ghost_agent_loop::runner::{AgentRunner, AuthoritativeKillState, DegradedConvergenceMode};
 use ghost_llm::provider::ChatMessage;
 use ghost_policy::engine::{CorpPolicy, PolicyEngine};
@@ -27,6 +28,7 @@ const DEFAULT_SYNTHETIC_SPENDING_CAP: f64 = 10.0;
 pub struct ResolvedRuntimeAgent {
     pub id: Uuid,
     pub name: String,
+    pub full_access: bool,
     pub capabilities: Vec<String>,
     pub skill_allowlist: Option<Vec<String>>,
     pub spending_cap: f64,
@@ -37,6 +39,7 @@ impl ResolvedRuntimeAgent {
         Self {
             id: agent.id,
             name: agent.name.clone(),
+            full_access: agent.full_access,
             capabilities: agent.capabilities.clone(),
             skill_allowlist: agent.skills.clone(),
             spending_cap: agent.spending_cap,
@@ -48,6 +51,7 @@ impl ResolvedRuntimeAgent {
         Self {
             id: durable_agent_id(&name),
             name,
+            full_access: false,
             capabilities: Vec::new(),
             skill_allowlist: None,
             spending_cap: DEFAULT_SYNTHETIC_SPENDING_CAP,
@@ -58,6 +62,7 @@ impl ResolvedRuntimeAgent {
         Self {
             id,
             name: name.into(),
+            full_access: false,
             capabilities: Vec::new(),
             skill_allowlist: None,
             spending_cap: DEFAULT_SYNTHETIC_SPENDING_CAP,
@@ -122,6 +127,7 @@ pub struct RuntimeRunnerDependencies {
     pub db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     pub resolved_skills: crate::skill_catalog::ResolvedSkillSet,
     pub tools_config: ToolsConfig,
+    pub trigger_sender: Option<tokio::sync::mpsc::Sender<TriggerEvent>>,
     pub convergence_profile: String,
     pub monitor_enabled: bool,
     pub monitor_block_on_degraded: bool,
@@ -213,6 +219,7 @@ impl<'a> RuntimeSafetyBuilder<'a> {
             ),
             resolved_skills,
             tools_config: self.state.tools_config.clone(),
+            trigger_sender: Some(self.state.trigger_sender.clone()),
             convergence_profile: ctx.convergence_profile.clone(),
             monitor_enabled: self.state.monitor_enabled,
             monitor_block_on_degraded: self.state.monitor_block_on_degraded,
@@ -234,10 +241,22 @@ pub fn build_live_runner_with_dependencies(
     runner.db = deps.db.clone();
 
     if let Ok(cwd) = std::env::current_dir() {
-        runner.tool_executor.set_workspace_root(cwd);
+        if ctx.agent.full_access {
+            runner.tool_executor.set_unrestricted_workspace_root(cwd);
+        } else {
+            runner.tool_executor.set_workspace_root(cwd);
+        }
+    } else if ctx.agent.full_access {
+        runner
+            .tool_executor
+            .set_unrestricted_workspace_root(std::path::PathBuf::from("/"));
     }
     apply_tool_configs(&mut runner.tool_executor, &deps.tools_config);
-    let mut policy_engine = PolicyEngine::new(CorpPolicy::new());
+    let mut policy_engine = deps
+        .trigger_sender
+        .clone()
+        .map(|sender| PolicyEngine::new(CorpPolicy::new()).with_trigger_sender(sender))
+        .unwrap_or_else(|| PolicyEngine::new(CorpPolicy::new()));
     for capability in &ctx.capability_scope {
         policy_engine.grant_capability(ctx.agent.id, capability.clone());
     }
@@ -401,8 +420,12 @@ mod tests {
             name: name.to_string(),
             state: AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
+            full_access: false,
             capabilities: vec!["shell_execute".into()],
             skills: None,
+            baseline_capabilities: vec!["shell_execute".into()],
+            baseline_skills: None,
+            access_pullback_active: false,
             spending_cap: 7.5,
             template: None,
         }
@@ -485,6 +508,7 @@ mod tests {
                 db: None,
                 resolved_skills: crate::skill_catalog::ResolvedSkillSet::default(),
                 tools_config: ToolsConfig::default(),
+                trigger_sender: None,
                 convergence_profile: "standard".into(),
                 monitor_enabled: false,
                 monitor_block_on_degraded: false,
@@ -635,6 +659,7 @@ mod tests {
         let agent = ResolvedRuntimeAgent {
             id: uuid::Uuid::now_v7(),
             name: "runtime-agent".into(),
+            full_access: false,
             capabilities: Vec::new(),
             skill_allowlist: Some(vec!["note_take".into()]),
             spending_cap: 5.0,
@@ -657,6 +682,7 @@ mod tests {
                 db: Some(db.legacy_connection().unwrap()),
                 resolved_skills,
                 tools_config: ToolsConfig::default(),
+                trigger_sender: None,
                 convergence_profile: "standard".into(),
                 monitor_enabled: false,
                 monitor_block_on_degraded: false,
@@ -814,6 +840,7 @@ mod tests {
         let agent = ResolvedRuntimeAgent {
             id: uuid::Uuid::now_v7(),
             name: "external-runtime-agent".into(),
+            full_access: false,
             capabilities: Vec::new(),
             skill_allowlist: Some(vec!["echo".into()]),
             spending_cap: 5.0,
@@ -845,6 +872,7 @@ mod tests {
                 db: Some(db.legacy_connection().unwrap()),
                 resolved_skills,
                 tools_config: ToolsConfig::default(),
+                trigger_sender: None,
                 convergence_profile: "standard".into(),
                 monitor_enabled: false,
                 monitor_block_on_degraded: false,

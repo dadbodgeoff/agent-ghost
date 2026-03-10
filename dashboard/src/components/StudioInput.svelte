@@ -22,6 +22,15 @@
 
   let editorContainer: HTMLDivElement;
   let view: EditorView;
+  let refreshFrame = 0;
+
+  function scheduleRefresh() {
+    if (!view || refreshFrame) return;
+    refreshFrame = requestAnimationFrame(() => {
+      refreshFrame = 0;
+      view.requestMeasure();
+    });
+  }
 
   const sendKeymap = keymap.of([{
     key: 'Mod-Enter',
@@ -83,15 +92,50 @@
     });
     view = new EditorView({ state, parent: editorContainer });
     shortcuts.setContext('studioFocused', true);
+
+    const handleResume = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+      scheduleRefresh();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleRefresh();
+      }
+    };
+    const handleEditorFocus = () => {
+      scheduleRefresh();
+    };
+
+    window.addEventListener('focus', handleResume);
+    window.addEventListener('pageshow', handleResume);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    editorContainer.addEventListener('focusin', handleEditorFocus);
+
+    return () => {
+      window.removeEventListener('focus', handleResume);
+      window.removeEventListener('pageshow', handleResume);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      editorContainer.removeEventListener('focusin', handleEditorFocus);
+    };
   });
 
   onDestroy(() => {
+    if (refreshFrame) {
+      cancelAnimationFrame(refreshFrame);
+      refreshFrame = 0;
+    }
     view?.destroy();
     shortcuts.setContext('studioFocused', false);
   });
 
   export function focus() {
     view?.focus();
+  }
+
+  export function refresh() {
+    scheduleRefresh();
   }
 
   export function clear() {

@@ -1,0 +1,16 @@
+
+> @ghost/sdk@0.1.0 test /Users/geoffreyfernald/Documents/New project/agent-ghost/packages/sdk
+> vitest run
+
+
+ RUN  v3.2.4 /Users/geoffreyfernald/Documents/New project/agent-ghost/packages/sdk
+
+ ✓ src/__tests__/websocket.test.ts (8 tests) 12ms
+ ✓ src/__tests__/client.test.ts (73 tests) 674ms
+   ✓ Error handling > throws GhostTimeoutError on timeout  361ms
+
+ Test Files  2 passed (2)
+      Tests  81 passed (81)
+   Start at  00:48:38
+   Duration  1.47s (transform 242ms, setup 0ms, collect 536ms, tests 687ms, environment 0ms, prepare 236ms)
+

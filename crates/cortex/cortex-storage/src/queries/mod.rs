@@ -1,8 +1,13 @@
 //! Query modules for convergence tables.
 
 pub mod archival_queries;
+pub mod autonomy_queries;
 pub mod boundary_violation_queries;
 pub mod compaction_queries;
+pub mod context_attempt_job_queries;
+pub mod context_attempt_promotion_queries;
+pub mod context_attempt_queries;
+pub mod context_attempt_validation_queries;
 pub mod convergence_propagation_queries;
 pub mod convergence_score_queries;
 pub mod delegation_state_queries;

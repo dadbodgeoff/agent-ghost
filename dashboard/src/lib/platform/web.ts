@@ -81,6 +81,9 @@ export const webRuntime: RuntimePlatform = {
   async stopGateway() {
     throw new Error('Gateway lifecycle control is only available in the desktop app');
   },
+  async openExternalUrl(url: string) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  },
   async requestNotificationPermission() {
     if (typeof Notification === 'undefined') {
       return false;

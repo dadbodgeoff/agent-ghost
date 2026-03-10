@@ -35,6 +35,7 @@ pub mod secret;
 pub mod session;
 // Phase 4: mesh, skills, channels, heartbeat, cron
 pub mod channel;
+pub mod codex;
 pub mod cron;
 pub mod heartbeat;
 pub mod mesh;

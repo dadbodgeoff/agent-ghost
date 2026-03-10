@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import type { ProviderKeyInfo } from '@ghost/sdk';
+  import { onDestroy, onMount } from 'svelte';
+  import type { CodexStatusResult, ProviderKeyInfo } from '@ghost/sdk';
   import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime } from '$lib/platform/runtime';
 
   let providers = $state<ProviderKeyInfo[]>([]);
   let loading = $state(true);
@@ -10,9 +11,18 @@
   let editingEnv = $state<string | null>(null);
   let keyInput = $state('');
   let saving = $state(false);
+  let codexStatus = $state<CodexStatusResult | null>(null);
+  let codexLoading = $state(false);
+  let codexBusy = $state(false);
+  let codexPolling = $state(false);
+  let codexPollHandle: number | null = null;
 
   onMount(() => {
     loadProviders();
+  });
+
+  onDestroy(() => {
+    stopCodexPolling();
   });
 
   async function loadProviders() {
@@ -22,10 +32,100 @@
       const client = await getGhostClient();
       const data = await client.providerKeys.list();
       providers = data.providers ?? [];
+      await refreshCodexStatus();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load providers';
     } finally {
       loading = false;
+    }
+  }
+
+  function hasCodexSubscriptionProvider(): boolean {
+    return providers.some((provider) => provider.provider_name === 'codex' && !provider.env_name);
+  }
+
+  function stopCodexPolling() {
+    if (codexPollHandle !== null) {
+      window.clearInterval(codexPollHandle);
+      codexPollHandle = null;
+    }
+    codexPolling = false;
+  }
+
+  function startCodexPolling() {
+    stopCodexPolling();
+    codexPolling = true;
+    codexPollHandle = window.setInterval(() => {
+      void refreshCodexStatus();
+    }, 1500);
+  }
+
+  async function refreshCodexStatus() {
+    if (!hasCodexSubscriptionProvider()) {
+      codexStatus = null;
+      stopCodexPolling();
+      return;
+    }
+
+    codexLoading = true;
+    try {
+      const hadAccount = !!codexStatus?.account;
+      const client = await getGhostClient();
+      const status = await client.codex.status();
+      codexStatus = status;
+      if (status.account) {
+        const completedInteractiveLogin = codexPolling && !hadAccount;
+        stopCodexPolling();
+        if (completedInteractiveLogin) {
+          success = 'Codex login completed.';
+        }
+      }
+    } catch (e: unknown) {
+      codexStatus = null;
+      error = e instanceof Error ? e.message : 'Failed to load Codex status';
+      stopCodexPolling();
+    } finally {
+      codexLoading = false;
+    }
+  }
+
+  async function startCodexLogin() {
+    codexBusy = true;
+    error = null;
+    success = null;
+    try {
+      const client = await getGhostClient();
+      const login = await client.codex.startLogin();
+      if (login.auth_url) {
+        const runtime = await getRuntime();
+        await runtime.openExternalUrl(login.auth_url);
+      }
+      success = 'Opened ChatGPT login in your browser. Finish sign-in to connect Codex.';
+      startCodexPolling();
+      await refreshCodexStatus();
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to start Codex login';
+    } finally {
+      codexBusy = false;
+    }
+  }
+
+  async function logoutCodex() {
+    if (!confirm('Disconnect the current Codex login from this machine?')) return;
+    codexBusy = true;
+    error = null;
+    success = null;
+    try {
+      const client = await getGhostClient();
+      const result = await client.codex.logout();
+      codexStatus = null;
+      stopCodexPolling();
+      success = result.message;
+      await refreshCodexStatus();
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to disconnect Codex';
+    } finally {
+      codexBusy = false;
     }
   }
 
@@ -84,8 +184,34 @@
       'openai_compat': 'OpenAI-Compatible',
       'gemini': 'Google Gemini',
       'ollama': 'Ollama (Local)',
+      'codex': 'Codex (ChatGPT)',
     };
     return labels[name] ?? name;
+  }
+
+  function providerStatusLabel(provider: ProviderKeyInfo): string {
+    if (provider.env_name) {
+      return provider.is_set ? 'Configured' : 'Not configured';
+    }
+    if (provider.provider_name === 'codex') {
+      return 'ChatGPT Login';
+    }
+    return 'Local';
+  }
+
+  function providerAuthHint(provider: ProviderKeyInfo): string | null {
+    if (provider.provider_name === 'codex' && !provider.env_name) {
+      return 'Use the button below for ChatGPT subscription auth, or set `api_key_env` in `ghost.yml` to manage an API key here.';
+    }
+    return null;
+  }
+
+  function codexAccountSummary(): string | null {
+    if (!codexStatus?.account) return null;
+    if (codexStatus.account.type === 'chatgpt') {
+      return `${codexStatus.account.email} (${codexStatus.account.plan_type})`;
+    }
+    return 'Connected via API key';
   }
 </script>
 
@@ -93,7 +219,7 @@
   <header class="page-header">
     <div>
       <h1>LLM Providers</h1>
-      <p class="subtitle">Manage API keys for your configured LLM providers</p>
+      <p class="subtitle">Manage authentication for your configured LLM providers</p>
     </div>
   </header>
 
@@ -124,17 +250,15 @@
           <div class="provider-info">
             <div class="provider-header">
               <span class="provider-name">{providerLabel(p.provider_name)}</span>
-              {#if p.env_name}
-                <span class="provider-status" class:configured={p.is_set} class:missing={!p.is_set}>
-                  {p.is_set ? 'Configured' : 'Not configured'}
-                </span>
-              {:else}
-                <span class="provider-status configured">Local</span>
-              {/if}
+              <span class="provider-status" class:configured={p.is_set || !p.env_name} class:missing={!p.is_set && !!p.env_name}>
+                {providerStatusLabel(p)}
+              </span>
             </div>
             <span class="provider-model">{p.model}</span>
             {#if p.env_name}
               <span class="provider-env">{p.env_name}{p.preview ? ` = ${p.preview}` : ''}</span>
+            {:else if providerAuthHint(p)}
+              <span class="provider-env">{providerAuthHint(p)}</span>
             {/if}
           </div>
 
@@ -163,13 +287,36 @@
                 {/if}
               {/if}
             </div>
+          {:else if p.provider_name === 'codex'}
+            <div class="provider-actions">
+              {#if codexStatus?.account}
+                <button class="cancel-btn" disabled={codexBusy || codexLoading} onclick={refreshCodexStatus}>
+                  {codexLoading ? '...' : 'Refresh'}
+                </button>
+                <button class="delete-btn" disabled={codexBusy} onclick={logoutCodex}>
+                  {codexBusy ? '...' : 'Disconnect'}
+                </button>
+              {:else}
+                <button class="set-btn" disabled={codexBusy || codexLoading} onclick={startCodexLogin}>
+                  {codexBusy ? '...' : 'Connect ChatGPT'}
+                </button>
+                <button class="cancel-btn" disabled={codexBusy || codexLoading} onclick={refreshCodexStatus}>
+                  {codexLoading ? '...' : codexPolling ? 'Waiting...' : 'Refresh'}
+                </button>
+              {/if}
+            </div>
           {/if}
         </div>
+        {#if p.provider_name === 'codex' && !p.env_name && codexAccountSummary()}
+          <div class="hint">
+            <p>Connected: <code>{codexAccountSummary()}</code></p>
+          </div>
+        {/if}
       {/each}
     </div>
 
     <div class="hint">
-      <p>Keys are stored securely and take effect immediately. Provider configuration (name, model, base URL) is managed in <code>ghost.yml</code>.</p>
+      <p>Keys are stored securely and take effect immediately. Provider configuration (name, model, base URL, and optional <code>api_key_env</code>) is managed in <code>ghost.yml</code>.</p>
     </div>
   {/if}
 </div>

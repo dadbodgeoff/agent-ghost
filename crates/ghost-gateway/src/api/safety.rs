@@ -198,6 +198,12 @@ fn execute_persisted_safety_mutation<T>(
             if let Err(error) = persist_current_safety_state(state) {
                 state.kill_switch.restore_state(previous_state);
                 restore_kill_gate_state(state, previous_gate_state);
+                if let Err(sync_error) = state.sync_agent_access_pullbacks() {
+                    tracing::error!(
+                        error = %sync_error,
+                        "failed to restore agent access pullbacks after persistence rollback"
+                    );
+                }
                 return Err(error);
             }
             Ok(value)
@@ -205,6 +211,12 @@ fn execute_persisted_safety_mutation<T>(
         Err(error) => {
             state.kill_switch.restore_state(previous_state);
             restore_kill_gate_state(state, previous_gate_state);
+            if let Err(sync_error) = state.sync_agent_access_pullbacks() {
+                tracing::error!(
+                    error = %sync_error,
+                    "failed to restore agent access pullbacks after safety mutation error"
+                );
+            }
             Err(error)
         }
     }
@@ -766,7 +778,11 @@ pub async fn resume_agent(
                 state
                     .kill_switch
                     .resume_agent(agent_id, expected)
-                    .map_err(ApiError::internal)
+                    .map_err(ApiError::internal)?;
+                state
+                    .sync_agent_access_pullbacks()
+                    .map_err(ApiError::internal)?;
+                Ok(())
             })?;
             tracing::info!(agent_id = %agent_id, "Agent resumed via API");
             let is_quarantine = agent_state.map(|s| s.level) == Some(KillLevel::Quarantine);
@@ -862,6 +878,9 @@ pub async fn quarantine_agent(
                 state
                     .kill_switch
                     .activate_agent(agent_id, KillLevel::Quarantine, &trigger);
+                state
+                    .sync_agent_access_pullbacks()
+                    .map_err(ApiError::internal)?;
                 Ok(())
             })?;
 
@@ -1078,6 +1097,8 @@ mod tests {
             )),
             db: Arc::clone(&db),
             event_tx,
+            trigger_sender:
+                tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
             replay_buffer: Arc::new(crate::api::websocket::EventReplayBuffer::new(16)),
             cost_tracker: Arc::new(crate::cost::tracker::CostTracker::new()),
             kill_gate: None,
@@ -1096,6 +1117,7 @@ mod tests {
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
             background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            live_execution_controls: Arc::new(dashmap::DashMap::new()),
             safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
             monitor_address: "127.0.0.1:0".into(),
             monitor_enabled: false,
@@ -1109,6 +1131,7 @@ mod tests {
             )),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            autonomy: Arc::new(crate::autonomy::AutonomyService::default()),
         })
     }
 

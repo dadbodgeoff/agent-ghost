@@ -16,6 +16,22 @@ async fn health_endpoint_returns_200() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "alive");
     assert_eq!(body["state"], "Healthy");
+    assert_eq!(body["speculative_context"]["enabled"], true);
+    assert_eq!(body["speculative_context"]["available"], true);
+    assert_eq!(body["speculative_context"]["window_hours"], 24);
+    assert_eq!(body["speculative_context"]["attempts_created"], 0);
+    assert_eq!(body["speculative_context"]["promotions_created"], 0);
+    assert_eq!(body["speculative_context"]["pending_job_depth"], 0);
+    assert_eq!(body["speculative_context"]["dead_letter_jobs"], 0);
+    assert_eq!(body["speculative_context"]["ttl_backlog"], 0);
+    assert_eq!(
+        body["speculative_context"]["pending_jobs_by_type"],
+        serde_json::json!({})
+    );
+    assert_eq!(
+        body["speculative_context"]["status_counts"],
+        serde_json::json!({})
+    );
 
     gw.stop().await;
 }

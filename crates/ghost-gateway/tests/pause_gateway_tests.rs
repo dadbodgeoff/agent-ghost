@@ -15,8 +15,12 @@ async fn paused_agents_are_blocked_on_agent_chat_and_studio_message_routes() {
             name: "paused-agent".into(),
             state: ghost_gateway::agents::registry::AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
+            full_access: false,
             capabilities: Vec::new(),
             skills: None,
+            baseline_capabilities: Vec::new(),
+            baseline_skills: None,
+            access_pullback_active: false,
             spending_cap: 5.0,
             template: None,
         });

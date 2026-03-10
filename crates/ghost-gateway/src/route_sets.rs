@@ -52,6 +52,19 @@ fn live_execution_route(
         ))
 }
 
+fn live_execution_cancel_route(
+    app_state: Arc<AppState>,
+    path: &'static str,
+    method_router: axum::routing::MethodRouter<Arc<AppState>>,
+) -> axum::Router<Arc<AppState>> {
+    axum::Router::new()
+        .route(path, method_router)
+        .route_layer(from_fn_with_state(
+            app_state,
+            rbac::require_live_execution_cancel_route,
+        ))
+}
+
 pub fn public_routes() -> axum::Router<Arc<AppState>> {
     axum::Router::new()
         .route("/api/health", get(crate::api::health::health_handler))
@@ -192,6 +205,36 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         Method::GET,
         get(crate::api::integrity::verify_chain),
         spec(RouteId::IntegrityChainByAgentId, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/autonomy/status",
+        Method::GET,
+        get(crate::api::autonomy::get_status),
+        spec(RouteId::AutonomyStatus, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/autonomy/jobs",
+        Method::GET,
+        get(crate::api::autonomy::list_jobs),
+        spec(RouteId::AutonomyJobs, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/autonomy/runs",
+        Method::GET,
+        get(crate::api::autonomy::list_runs),
+        spec(RouteId::AutonomyRuns, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/autonomy/policies/global",
+        Method::GET,
+        get(crate::api::autonomy::get_global_policy),
+        spec(RouteId::AutonomyPoliciesGlobal, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/autonomy/policies/agents/:agent_id",
+        Method::GET,
+        get(crate::api::autonomy::get_agent_policy),
+        spec(RouteId::AutonomyPoliciesAgentById, Method::GET),
     ))
     .merge(action_route(
         "/api/workflows",
@@ -387,13 +430,37 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
     ))
 }
 
-pub fn operator_routes() -> axum::Router<Arc<AppState>> {
+pub fn operator_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
     action_route(
         "/api/safety/status",
         Method::GET,
         get(crate::api::safety::safety_status),
         spec(RouteId::SafetyStatus, Method::GET),
     )
+    .merge(action_route(
+        "/api/autonomy/policies/global",
+        Method::PUT,
+        put(crate::api::autonomy::put_global_policy),
+        spec(RouteId::AutonomyPoliciesGlobal, Method::PUT),
+    ))
+    .merge(action_route(
+        "/api/autonomy/policies/agents/:agent_id",
+        Method::PUT,
+        put(crate::api::autonomy::put_agent_policy),
+        spec(RouteId::AutonomyPoliciesAgentById, Method::PUT),
+    ))
+    .merge(action_route(
+        "/api/autonomy/suppressions",
+        Method::POST,
+        post(crate::api::autonomy::create_suppression),
+        spec(RouteId::AutonomySuppressions, Method::POST),
+    ))
+    .merge(action_route(
+        "/api/autonomy/runs/:run_id/approve",
+        Method::POST,
+        post(crate::api::autonomy::approve_run),
+        spec(RouteId::AutonomyRunApproveById, Method::POST),
+    ))
     .merge(action_route(
         "/api/agents",
         Method::POST,
@@ -435,6 +502,11 @@ pub fn operator_routes() -> axum::Router<Arc<AppState>> {
         Method::POST,
         post(crate::api::memory::unarchive_memory),
         spec(RouteId::MemoryUnarchiveById, Method::POST),
+    ))
+    .merge(live_execution_cancel_route(
+        Arc::clone(&app_state),
+        "/api/live-executions/:execution_id/cancel",
+        post(crate::api::live_executions::cancel_live_execution),
     ))
     .merge(action_route(
         "/api/workflows",
@@ -746,6 +818,12 @@ pub fn admin_routes() -> axum::Router<Arc<AppState>> {
         spec(RouteId::ProviderKeys, Method::GET),
     ))
     .merge(action_route(
+        "/api/admin/codex/status",
+        Method::GET,
+        get(crate::api::codex_auth::get_status),
+        spec(RouteId::CodexAuthStatus, Method::GET),
+    ))
+    .merge(action_route(
         "/api/pc-control/status",
         Method::GET,
         get(crate::api::pc_control::get_status),
@@ -846,6 +924,18 @@ pub fn admin_routes() -> axum::Router<Arc<AppState>> {
         Method::DELETE,
         delete(crate::api::provider_keys::delete_provider_key),
         spec(RouteId::ProviderKeyByEnvName, Method::DELETE),
+    ))
+    .merge(action_route(
+        "/api/admin/codex/login/start",
+        Method::POST,
+        post(crate::api::codex_auth::start_login),
+        spec(RouteId::CodexAuthLogin, Method::POST),
+    ))
+    .merge(action_route(
+        "/api/admin/codex/logout",
+        Method::POST,
+        post(crate::api::codex_auth::logout),
+        spec(RouteId::CodexAuthLogout, Method::POST),
     ))
     .merge(action_route(
         "/api/pc-control/allowed-apps",

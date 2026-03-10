@@ -41,8 +41,12 @@ fn register_agent_with_allowlist(
             name: name.to_string(),
             state: AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
+            full_access: false,
             capabilities: Vec::new(),
+            baseline_capabilities: Vec::new(),
+            baseline_skills: skills.clone(),
             skills,
+            access_pullback_active: false,
             spending_cap: 5.0,
             template: None,
         });

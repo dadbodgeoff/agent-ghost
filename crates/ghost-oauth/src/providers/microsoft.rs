@@ -145,6 +145,6 @@ impl OAuthProvider for MicrosoftOAuthProvider {
         access_token: &str,
         request: &ApiRequest,
     ) -> Result<ApiResponse, OAuthError> {
-        execute_bearer_request(&self.http, access_token, request)
+        execute_bearer_request(self.http, access_token, request)
     }
 }

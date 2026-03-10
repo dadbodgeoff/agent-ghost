@@ -88,6 +88,8 @@ pub async fn create_agent(
 
     let agent_id = crate::agents::registry::durable_agent_id(&body.name);
     let spending_cap = body.spending_cap.unwrap_or(5.0);
+    let capabilities = body.capabilities.unwrap_or_default();
+    let skills = body.skills;
 
     // Generate keypair if requested.
     let mut has_keypair = false;
@@ -112,8 +114,12 @@ pub async fn create_agent(
         name: body.name.clone(),
         state: AgentLifecycleState::Starting,
         channel_bindings: Vec::new(),
-        capabilities: body.capabilities.unwrap_or_default(),
-        skills: body.skills,
+        full_access: false,
+        capabilities: capabilities.clone(),
+        skills: skills.clone(),
+        baseline_capabilities: capabilities,
+        baseline_skills: skills,
+        access_pullback_active: false,
         spending_cap,
         template: None,
     };

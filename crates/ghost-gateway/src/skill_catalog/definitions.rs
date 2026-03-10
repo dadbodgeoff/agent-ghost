@@ -192,11 +192,7 @@ fn native_containment_mode_for_skill(
 fn audited_read_only_pc_control_skill(name: &str) -> bool {
     matches!(
         name,
-        "clipboard_read"
-            | "accessibility_tree"
-            | "ocr_extract"
-            | "list_windows"
-            | "list_processes"
+        "clipboard_read" | "accessibility_tree" | "ocr_extract" | "list_windows" | "list_processes"
     )
 }
 

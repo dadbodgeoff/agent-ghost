@@ -1,0 +1,175 @@
+
+> ghost-dashboard@0.1.0 lint /Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard
+> eslint .
+
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/lib/live_harness.mjs
+  197:30  error  'fetch' is not defined           no-undef
+  287:26  error  'fetch' is not defined           no-undef
+  404:20  error  'document' is not defined        no-undef
+  415:5   error  'localStorage' is not defined    no-undef
+  416:5   error  'sessionStorage' is not defined  no-undef
+  417:5   error  'localStorage' is not defined    no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/lib/live_reporting.mjs
+  141:23  error  'URL' is not defined  no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/lib/live_suite.mjs
+  41:9   error  'process' is not defined  no-undef
+  56:17  error  'process' is not defined  no-undef
+  59:17  error  'process' is not defined  no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_artifact_index.mjs
+  29:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_convergence_audit.mjs
+   72:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+  345:30  error  'fetch' is not defined                         no-undef
+  429:26  error  'fetch' is not defined                         no-undef
+  449:10  error  'Buffer' is not defined                        no-undef
+  453:15  error  'Buffer' is not defined                        no-undef
+  465:21  error  'Buffer' is not defined                        no-undef
+  708:20  error  'document' is not defined                      no-undef
+  811:7   error  'localStorage' is not defined                  no-undef
+  812:7   error  'sessionStorage' is not defined                no-undef
+  813:7   error  'localStorage' is not defined                  no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_coverage_manifest.mjs
+  29:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_critical_suite.mjs
+  66:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_database_audit.mjs
+    63:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+   300:30  error  'fetch' is not defined                         no-undef
+   384:26  error  'fetch' is not defined                         no-undef
+   653:20  error  'document' is not defined                      no-undef
+   664:5   error  'localStorage' is not defined                  no-undef
+   665:5   error  'sessionStorage' is not defined                no-undef
+   666:5   error  'localStorage' is not defined                  no-undef
+   726:16  error  'document' is not defined                      no-undef
+   732:32  error  'document' is not defined                      no-undef
+   740:11  error  'document' is not defined                      no-undef
+   754:34  error  'fetch' is not defined                         no-undef
+   763:34  error  'fetch' is not defined                         no-undef
+   772:37  error  'fetch' is not defined                         no-undef
+   914:18  error  'document' is not defined                      no-undef
+   919:22  error  'document' is not defined                      no-undef
+   958:22  error  'document' is not defined                      no-undef
+   970:34  error  'document' is not defined                      no-undef
+  1171:33  error  'accessToken' is defined but never used        @typescript-eslint/no-unused-vars
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_distributed_audit.mjs
+   64:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+  182:17  error  'Buffer' is not defined                        no-undef
+  198:36  error  'setTimeout' is not defined                    no-undef
+  243:36  error  'setTimeout' is not defined                    no-undef
+  364:56  error  'Buffer' is not defined                        no-undef
+  398:41  error  'Buffer' is not defined                        no-undef
+  426:55  error  'Buffer' is not defined                        no-undef
+  432:7   error  'Buffer' is not defined                        no-undef
+  552:20  error  'document' is not defined                      no-undef
+  572:37  error  'document' is not defined                      no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_infra_audit.mjs
+   59:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+  323:30  error  'fetch' is not defined                         no-undef
+  369:26  error  'fetch' is not defined                         no-undef
+  396:20  error  'document' is not defined                      no-undef
+  505:7   error  'localStorage' is not defined                  no-undef
+  506:7   error  'sessionStorage' is not defined                no-undef
+  507:7   error  'localStorage' is not defined                  no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_io_audit.mjs
+   67:7   error  Expected a 'break' statement before 'default'         no-fallthrough
+  215:19  error  'Buffer' is not defined                               no-undef
+  217:18  error  'Buffer' is not defined                               no-undef
+  261:28  error  'URL' is not defined                                  no-undef
+  264:19  error  'Buffer' is not defined                               no-undef
+  266:21  error  'Buffer' is not defined                               no-undef
+  280:31  error  'URL' is not defined                                  no-undef
+  290:26  error  'URLSearchParams' is not defined                      no-undef
+  325:26  error  'URLSearchParams' is not defined                      no-undef
+  661:11  error  'availableSkills' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_knowledge_audit.mjs
+   66:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+  139:26  error  'fetch' is not defined                         no-undef
+  754:21  error  'document' is not defined                      no-undef
+  772:21  error  'document' is not defined                      no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_ops_audit.mjs
+   64:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+  112:10  error  'yamlString' is defined but never used         @typescript-eslint/no-unused-vars
+  207:16  error  'querySqliteScalar' is defined but never used  @typescript-eslint/no-unused-vars
+  222:36  error  'setTimeout' is not defined                    no-undef
+  715:38  error  'document' is not defined                      no-undef
+  721:33  error  'document' is not defined                      no-undef
+  749:11  error  'URL' is not defined                           no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_poc_suite.mjs
+  64:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_preflight_audit.mjs
+  62:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_prune_artifacts.mjs
+  62:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_repo_suite.mjs
+  66:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_runtime_audit.mjs
+    72:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+   164:18  error  'document' is not defined                      no-undef
+   189:24  error  'document' is not defined                      no-undef
+   211:19  error  'URL' is not defined                           no-undef
+   219:23  error  'document' is not defined                      no-undef
+   488:22  error  'URL' is not defined                           no-undef
+   733:36  error  'fetch' is not defined                         no-undef
+   781:29  error  'fetch' is not defined                         no-undef
+   997:20  error  'document' is not defined                      no-undef
+   998:20  error  'document' is not defined                      no-undef
+  1001:20  error  'document' is not defined                      no-undef
+  1017:21  error  'document' is not defined                      no-undef
+  1030:21  error  'document' is not defined                      no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_soak_audit.mjs
+  74:7  error  Expected a 'break' statement before 'default'  no-fallthrough
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_studio_audit.mjs
+    75:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+   312:30  error  'fetch' is not defined                         no-undef
+   398:34  error  'fetch' is not defined                         no-undef
+   407:34  error  'fetch' is not defined                         no-undef
+   415:37  error  'fetch' is not defined                         no-undef
+   433:5   error  'localStorage' is not defined                  no-undef
+   434:5   error  'sessionStorage' is not defined                no-undef
+   435:5   error  'localStorage' is not defined                  no-undef
+   456:16  error  'document' is not defined                      no-undef
+   462:32  error  'document' is not defined                      no-undef
+   470:11  error  'document' is not defined                      no-undef
+   484:32  error  'document' is not defined                      no-undef
+   508:16  error  'document' is not defined                      no-undef
+   513:11  error  'document' is not defined                      no-undef
+   528:20  error  'document' is not defined                      no-undef
+   583:11  error  'document' is not defined                      no-undef
+   612:32  error  'document' is not defined                      no-undef
+   649:32  error  'document' is not defined                      no-undef
+   668:32  error  'document' is not defined                      no-undef
+   703:11  error  'document' is not defined                      no-undef
+   742:21  error  'document' is not defined                      no-undef
+   774:5   error  'localStorage' is not defined                  no-undef
+   775:5   error  'sessionStorage' is not defined                no-undef
+   776:5   error  'localStorage' is not defined                  no-undef
+  1129:72  error  'gatewayLogPath' is not defined                no-undef
+
+/Users/geoffreyfernald/Documents/New project/agent-ghost/dashboard/scripts/live_surface_audit.mjs
+   64:7   error  Expected a 'break' statement before 'default'  no-fallthrough
+  708:20  error  'document' is not defined                      no-undef
+  751:28  error  'URL' is not defined                           no-undef
+
+✖ 125 problems (125 errors, 0 warnings)
+
+ ELIFECYCLE  Command failed with exit code 1.

@@ -54,9 +54,19 @@ pub fn create_session(
     max_tokens: i64,
 ) -> CortexResult<()> {
     conn.execute(
-        "INSERT INTO studio_chat_sessions (id, agent_id, title, model, system_prompt, temperature, max_tokens)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![id, agent_id, title, model, system_prompt, temperature, max_tokens],
+        "INSERT INTO studio_chat_sessions (
+            id, agent_id, title, model, system_prompt, temperature, max_tokens, last_activity_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+        params![
+            id,
+            agent_id,
+            title,
+            model,
+            system_prompt,
+            temperature,
+            max_tokens
+        ],
     )
     .map_err(|e| to_storage_err(e.to_string()))?;
     Ok(())

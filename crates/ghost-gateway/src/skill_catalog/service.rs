@@ -1345,6 +1345,7 @@ mod tests {
         ResolvedRuntimeAgent {
             id: uuid::Uuid::now_v7(),
             name: "catalog-test-agent".to_string(),
+            full_access: false,
             capabilities: Vec::new(),
             skill_allowlist: None,
             spending_cap: 5.0,

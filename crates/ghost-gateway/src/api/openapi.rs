@@ -33,6 +33,15 @@ use utoipa::OpenApi;
     paths(
         health,
         ready,
+        autonomy_status,
+        autonomy_jobs,
+        autonomy_runs,
+        autonomy_global_policy_get,
+        autonomy_global_policy_put,
+        autonomy_agent_policy_get,
+        autonomy_agent_policy_put,
+        autonomy_suppressions_create,
+        autonomy_run_approve,
         list_agents,
         create_agent,
         delete_agent,
@@ -94,6 +103,9 @@ use utoipa::OpenApi;
         list_provider_keys,
         set_provider_key,
         delete_provider_key,
+        get_codex_status,
+        start_codex_login,
+        logout_codex,
         list_webhooks,
         create_webhook,
         update_webhook,
@@ -173,6 +185,7 @@ use utoipa::OpenApi;
         list_a2a_tasks,
         stream_a2a_task,
         discover_a2a_agents,
+        cancel_live_execution,
     ),
     components(
         schemas(
@@ -184,6 +197,7 @@ use utoipa::OpenApi;
             WorkflowSchema,
             WorkflowExecutionSchema,
             LiveExecutionSchema,
+            LiveExecutionCancelResponseSchema,
             StudioSessionSchema,
             StudioMessageSchema,
             StudioSessionWithMessagesResponseSchema,
@@ -209,6 +223,12 @@ use utoipa::OpenApi;
             crate::api::convergence::ConvergenceHistoryResponse,
             crate::api::convergence::ConvergenceScoreResponse,
             crate::api::convergence::ConvergenceScoresResponse,
+            crate::api::autonomy::ApproveRunRequest,
+            crate::api::autonomy::ApproveRunResponse,
+            crate::api::autonomy::AutonomyListParams,
+            crate::api::autonomy::AutonomyPolicyResponse,
+            crate::api::autonomy::CreateSuppressionRequest,
+            crate::api::autonomy::PutAutonomyPolicyRequest,
             crate::api::goals::GoalDecisionRequestBody,
             crate::api::goals::GoalDecisionResponse,
             crate::api::goals::GoalListResponse,
@@ -250,6 +270,17 @@ use utoipa::OpenApi;
             crate::api::mesh_viz::TrustEdge,
             crate::api::mesh_viz::TrustGraphResponse,
             crate::api::mesh_viz::TrustNode,
+            crate::autonomy::AutonomyJobListResponse,
+            crate::autonomy::AutonomyJobSummary,
+            crate::autonomy::AutonomyPolicyDocument,
+            crate::autonomy::AutonomyRunListResponse,
+            crate::autonomy::AutonomyRunSummary,
+            crate::autonomy::AutonomySaturationStatus,
+            crate::autonomy::AutonomyStatusResponse,
+            crate::autonomy::AutonomySuppressionSummary,
+            crate::autonomy::AutonomySuppressionsResponse,
+            crate::autonomy::InitiativeBudgetPolicy,
+            crate::autonomy::QuietHoursPolicy,
             crate::api::marketplace::AgentDelistResponse,
             crate::api::marketplace::AgentListingResponse,
             crate::api::marketplace::AgentListResponse,
@@ -312,6 +343,10 @@ use utoipa::OpenApi;
             crate::api::profiles::ProfileListResponse,
             crate::api::profiles::ProfileSummary,
             crate::api::profiles::UpdateProfileRequest,
+            crate::api::codex_auth::CodexAccountView,
+            crate::api::codex_auth::CodexStatusResponse,
+            crate::api::codex_auth::CodexLoginStartResponse,
+            crate::api::codex_auth::CodexLogoutResponse,
             crate::api::provider_keys::DeleteKeyResponse,
             crate::api::provider_keys::ProviderKeyInfo,
             crate::api::provider_keys::ProviderKeysResponse,
@@ -392,6 +427,7 @@ use utoipa::OpenApi;
         (name = "audit", description = "Audit log queries and export"),
         (name = "admin", description = "Backup, restore, and administrative data operations"),
         (name = "provider-keys", description = "Provider key management"),
+        (name = "codex", description = "Codex subscription login and status"),
         (name = "webhooks", description = "Webhook configuration and testing"),
         (name = "skills", description = "Gateway-owned mixed-source skill catalog management and execution"),
         (name = "channels", description = "Channel lifecycle and reconnect operations"),
@@ -532,6 +568,14 @@ pub struct LiveExecutionSchema {
     pub recovery_required: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct LiveExecutionCancelResponseSchema {
+    pub execution_id: String,
+    pub route_kind: String,
+    pub status: String,
+    pub cancel_signal_sent: bool,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -735,6 +779,105 @@ async fn health() {}
     )
 )]
 async fn ready() {}
+
+#[utoipa::path(
+    get, path = "/api/autonomy/status",
+    tag = "autonomy",
+    responses(
+        (status = 200, description = "Autonomy control-plane status", body = crate::autonomy::AutonomyStatusResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_status() {}
+
+#[utoipa::path(
+    get, path = "/api/autonomy/jobs",
+    tag = "autonomy",
+    params(("limit" = Option<u32>, Query, description = "Maximum jobs to return")),
+    responses(
+        (status = 200, description = "Autonomy ledger jobs", body = crate::autonomy::AutonomyJobListResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_jobs() {}
+
+#[utoipa::path(
+    get, path = "/api/autonomy/runs",
+    tag = "autonomy",
+    params(("limit" = Option<u32>, Query, description = "Maximum runs to return")),
+    responses(
+        (status = 200, description = "Autonomy ledger runs", body = crate::autonomy::AutonomyRunListResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_runs() {}
+
+#[utoipa::path(
+    get, path = "/api/autonomy/policies/global",
+    tag = "autonomy",
+    responses(
+        (status = 200, description = "Global autonomy policy", body = crate::api::autonomy::AutonomyPolicyResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_global_policy_get() {}
+
+#[utoipa::path(
+    put, path = "/api/autonomy/policies/global",
+    tag = "autonomy",
+    request_body = crate::api::autonomy::PutAutonomyPolicyRequest,
+    responses(
+        (status = 200, description = "Updated global autonomy policy", body = crate::api::autonomy::AutonomyPolicyResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_global_policy_put() {}
+
+#[utoipa::path(
+    get, path = "/api/autonomy/policies/agents/{agent_id}",
+    tag = "autonomy",
+    params(("agent_id" = String, Path, description = "Agent UUID")),
+    responses(
+        (status = 200, description = "Agent autonomy policy", body = crate::api::autonomy::AutonomyPolicyResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_agent_policy_get() {}
+
+#[utoipa::path(
+    put, path = "/api/autonomy/policies/agents/{agent_id}",
+    tag = "autonomy",
+    params(("agent_id" = String, Path, description = "Agent UUID")),
+    request_body = crate::api::autonomy::PutAutonomyPolicyRequest,
+    responses(
+        (status = 200, description = "Updated agent autonomy policy", body = crate::api::autonomy::AutonomyPolicyResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_agent_policy_put() {}
+
+#[utoipa::path(
+    post, path = "/api/autonomy/suppressions",
+    tag = "autonomy",
+    request_body = crate::api::autonomy::CreateSuppressionRequest,
+    responses(
+        (status = 200, description = "Active suppressions for the scope", body = crate::autonomy::AutonomySuppressionsResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_suppressions_create() {}
+
+#[utoipa::path(
+    post, path = "/api/autonomy/runs/{run_id}/approve",
+    tag = "autonomy",
+    params(("run_id" = String, Path, description = "Autonomy run id")),
+    request_body = crate::api::autonomy::ApproveRunRequest,
+    responses(
+        (status = 200, description = "Run approved", body = crate::api::autonomy::ApproveRunResponse),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn autonomy_run_approve() {}
 
 #[utoipa::path(
     get, path = "/api/agents",
@@ -1262,6 +1405,18 @@ async fn heartbeat_runtime_session() {}
 async fn get_live_execution() {}
 
 #[utoipa::path(
+    post, path = "/api/live-executions/{execution_id}/cancel",
+    tag = "executions",
+    params(("execution_id" = String, Path, description = "Durable live execution identifier")),
+    responses(
+        (status = 200, description = "Execution cancelled", body = LiveExecutionCancelResponseSchema),
+        (status = 404, description = "Execution not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn cancel_live_execution() {}
+
+#[utoipa::path(
     get, path = "/api/workflows",
     tag = "workflows",
     params(
@@ -1591,6 +1746,40 @@ async fn set_provider_key() {}
     security(("bearer_auth" = []))
 )]
 async fn delete_provider_key() {}
+
+#[utoipa::path(
+    get, path = "/api/admin/codex/status",
+    tag = "codex",
+    responses(
+        (status = 200, description = "Current Codex login status", body = crate::api::codex_auth::CodexStatusResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_codex_status() {}
+
+#[utoipa::path(
+    post, path = "/api/admin/codex/login/start",
+    tag = "codex",
+    responses(
+        (status = 200, description = "Started Codex ChatGPT login flow", body = crate::api::codex_auth::CodexLoginStartResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+        (status = 409, description = "Codex authentication conflict", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn start_codex_login() {}
+
+#[utoipa::path(
+    post, path = "/api/admin/codex/logout",
+    tag = "codex",
+    responses(
+        (status = 200, description = "Logged out Codex account", body = crate::api::codex_auth::CodexLogoutResponse),
+        (status = 403, description = "Admin role required", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn logout_codex() {}
 
 #[utoipa::path(
     get, path = "/api/channels",

@@ -27,6 +27,8 @@
   let scrollTop = $state(0);
   let container: HTMLDivElement;
   let isUserScrolledUp = $state(false);
+  let heightFlushFrame = 0;
+  let autoScrollFrame = 0;
 
   // Measured heights (updated after render).
   // Use a plain Map + a $state version counter to avoid creating a new Map
@@ -34,6 +36,22 @@
   // new Map → totalHeight changes → container resizes → ResizeObserver fires → repeat).
   const heightMap = new Map<string, number>();
   let heightVersion = $state(0);
+
+  function scheduleHeightFlush() {
+    if (heightFlushFrame) return;
+    heightFlushFrame = requestAnimationFrame(() => {
+      heightFlushFrame = 0;
+      heightVersion++;
+    });
+  }
+
+  function scheduleAutoScroll() {
+    if (autoScrollFrame) return;
+    autoScrollFrame = requestAnimationFrame(() => {
+      autoScrollFrame = 0;
+      container?.scrollTo({ top: container.scrollHeight });
+    });
+  }
 
   // WP5-A: Prune heightMap entries not in current message list (e.g. after session switch).
   $effect(() => {
@@ -46,7 +64,7 @@
       }
     }
     if (pruned > 0) {
-      heightVersion++;
+      scheduleHeightFlush();
     }
   });
 
@@ -108,27 +126,20 @@
     isUserScrolledUp = distanceFromBottom > 100;
   }
 
-  // Auto-scroll to bottom on new messages.
   $effect(() => {
     const _len = messages.length;
-    if (autoScroll && !isUserScrolledUp && container) {
-      requestAnimationFrame(() => {
-        container?.scrollTo({ top: container.scrollHeight });
-      });
-    }
-  });
-
-  // Also auto-scroll when the last message grows (streaming text after tool calls).
-  // Uses a separate effect that watches the last message's content length to avoid
-  // a reactivity loop with totalHeight ↔ ResizeObserver ↔ scroll.
-  $effect(() => {
     const lastMsg = messages[messages.length - 1];
     const _contentLen = lastMsg?.content?.length ?? 0;
     const _toolCount = lastMsg?.toolCalls?.length ?? 0;
     if (autoScroll && !isUserScrolledUp && container) {
-      requestAnimationFrame(() => {
-        container?.scrollTo({ top: container.scrollHeight });
-      });
+      scheduleAutoScroll();
+    }
+
+    return () => {
+      if (autoScrollFrame) {
+        cancelAnimationFrame(autoScrollFrame);
+        autoScrollFrame = 0;
+      }
     }
   });
 
@@ -140,7 +151,7 @@
         // Bump version counter to trigger derived recalculation.
         // This avoids creating a new Map (which would cause a layout
         // change → ResizeObserver → infinite loop).
-        heightVersion++;
+        scheduleHeightFlush();
       }
     });
     observer.observe(el);
@@ -161,6 +172,17 @@
     isUserScrolledUp = false;
     container?.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
   }
+
+  $effect(() => {
+    return () => {
+      if (heightFlushFrame) {
+        cancelAnimationFrame(heightFlushFrame);
+      }
+      if (autoScrollFrame) {
+        cancelAnimationFrame(autoScrollFrame);
+      }
+    };
+  });
 </script>
 
 <div

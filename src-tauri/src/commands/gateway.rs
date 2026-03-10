@@ -72,8 +72,33 @@ fn resolve_config_path(handle: &AppHandle) -> String {
         .to_string()
 }
 
+fn resolve_desktop_gateway_token() -> String {
+    if let Ok(token) = std::env::var("GHOST_TOKEN") {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    if let Ok(Some(token)) = crate::commands::desktop::load_auth_token() {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    format!("ghost-desktop-{}", uuid::Uuid::now_v7())
+}
+
 pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     let config_path = resolve_config_path(&handle);
+    let desktop_gateway_token = resolve_desktop_gateway_token();
+
+    crate::commands::desktop::sync_auth_token(&desktop_gateway_token).map_err(|reason| {
+        GhostDesktopError::ConfigError {
+            reason: format!("failed to persist desktop auth token: {reason}"),
+        }
+    })?;
 
     let port = read_port_from_config(&config_path);
 
@@ -158,12 +183,13 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
-        "GHOST_TOKEN",
     ] {
         if let Ok(val) = std::env::var(key) {
             cmd = cmd.env(key, &val);
         }
     }
+
+    cmd = cmd.env("GHOST_TOKEN", &desktop_gateway_token);
 
     let (mut rx, child) = cmd.spawn().map_err(|e| GhostDesktopError::GatewayStartFailed {
         reason: e.to_string(),

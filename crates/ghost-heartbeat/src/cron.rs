@@ -1,4 +1,7 @@
 //! Cron engine: standard cron syntax, timezone-aware, per-job cost tracking (Req 34 AC5-AC7).
+//!
+//! This module is not a live schedule authority in the gateway runtime. The
+//! autonomy control plane is the canonical owner for durable scheduling.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

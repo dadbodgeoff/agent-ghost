@@ -126,6 +126,17 @@ class WebSocketStore {
     ).connect();
   }
 
+  async reconnect() {
+    this.socket?.disconnect();
+    this.socket = null;
+    if (this.isLeader) {
+      this.state = 'disconnected';
+      this.lastError = '';
+      this.reconnectAttempt = 0;
+    }
+    await this.connect();
+  }
+
   disconnect() {
     this.socket?.disconnect();
     this.socket = null;

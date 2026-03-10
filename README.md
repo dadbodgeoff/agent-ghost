@@ -37,7 +37,7 @@ ghost> This is a Rust workspace with 37 crates implementing an autonomous agent 
 ├──────────────┬──────────────┬──────────────┬────────────────────┤
 │ ghost-agent  │   ghost-llm  │   ghost-     │   ghost-channels   │
 │    -loop     │              │  heartbeat   │  CLI·WS·Telegram   │
-│  6-gate loop │ 5 providers  │ tiered beats │  Discord·Slack     │
+│  6-gate loop │ 6 providers  │ tiered beats │  Discord·Slack     │
 │  tool exec   │ fallback     │ convergence  │  WhatsApp          │
 │  proposals   │ circuit break│   -aware     │                    │
 ├──────────────┴──────┬───────┴──────────────┴────────────────────┤
@@ -82,7 +82,7 @@ Most agent frameworks bolt safety on as middleware. GHOST builds it into the exe
 - Token budget management with context window awareness
 
 ### LLM Provider Layer
-- 5 providers: Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible
+- 6 providers: Anthropic, OpenAI, Gemini, Ollama, OpenAI-compatible, Codex
 - Automatic fallback chains with auth rotation on 401/429
 - Per-provider circuit breakers with exponential backoff + jitter
 - 30-second total retry budget across all providers
@@ -139,6 +139,7 @@ export ANTHROPIC_API_KEY="your-key-here"
 # Or: export OPENAI_API_KEY="your-key-here"
 # Or: export GEMINI_API_KEY="your-key-here"
 # Or: export OLLAMA_BASE_URL="http://localhost:11434"
+# Or: ghost codex login
 
 # Start chatting
 cargo run -p ghost-gateway -- chat
@@ -439,6 +440,8 @@ secrets:
 | `OPENAI_MODEL` | Override model | — |
 | `GEMINI_MODEL` | Override model | — |
 | `OLLAMA_MODEL` | Override model | — |
+
+Codex subscription auth is managed separately via `ghost codex login`. For API-key-backed Codex sessions, set `api_key_env` on a `codex` provider entry.
 
 ## Security
 

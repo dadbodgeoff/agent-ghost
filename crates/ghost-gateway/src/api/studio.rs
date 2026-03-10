@@ -197,6 +197,13 @@ pub async fn run_prompt(
                 context_window_size: 128_000,
             })
         }
+        "codex" => Arc::new(crate::codex::CodexProvider {
+            model: provider_config
+                .model
+                .clone()
+                .or_else(|| Some(model.clone())),
+            api_key_env: provider_config.api_key_env.clone(),
+        }),
         other => {
             return Err(ApiError::bad_request(format!(
                 "Unsupported model provider: {other}"

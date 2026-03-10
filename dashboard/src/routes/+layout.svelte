@@ -256,6 +256,7 @@
           <div class="settings-subnav">
             <a href="/settings/profiles" class:active={$page.url.pathname === '/settings/profiles'}>Profiles</a>
             <a href="/settings/policies" class:active={$page.url.pathname === '/settings/policies'}>Policies</a>
+            <a href="/settings/providers" class:active={$page.url.pathname === '/settings/providers'}>Providers</a>
             <a href="/settings/channels" class:active={$page.url.pathname === '/settings/channels'}>Channels</a>
             <a href="/settings/backups" class:active={$page.url.pathname === '/settings/backups'}>Backups</a>
             <a href="/settings/webhooks" class:active={$page.url.pathname === '/settings/webhooks'}>Webhooks</a>

@@ -264,6 +264,10 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
             RouteId::LiveExecutionById,
             Action::LiveExecutionRead,
         )),
+        (RouteId::LiveExecutionCancelById, "POST") => Some(owner_or_admin_spec(
+            RouteId::LiveExecutionCancelById,
+            Action::LiveExecutionCancel,
+        )),
         (RouteId::StateCrdtByAgentId, "GET") => Some(viewer_spec(
             RouteId::StateCrdtByAgentId,
             Action::StateCrdtRead,
@@ -288,6 +292,24 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
             RouteId::WorkflowExecutionsById,
             Action::WorkflowExecutionRead,
         )),
+        (RouteId::AutonomyStatus, "GET") => Some(viewer_spec(
+            RouteId::AutonomyStatus,
+            Action::AutonomyReadStatus,
+        )),
+        (RouteId::AutonomyJobs, "GET") => {
+            Some(viewer_spec(RouteId::AutonomyJobs, Action::AutonomyReadJobs))
+        }
+        (RouteId::AutonomyRuns, "GET") => {
+            Some(viewer_spec(RouteId::AutonomyRuns, Action::AutonomyReadRuns))
+        }
+        (RouteId::AutonomyPoliciesGlobal, "GET") => Some(viewer_spec(
+            RouteId::AutonomyPoliciesGlobal,
+            Action::AutonomyReadStatus,
+        )),
+        (RouteId::AutonomyPoliciesAgentById, "GET") => Some(viewer_spec(
+            RouteId::AutonomyPoliciesAgentById,
+            Action::AutonomyReadStatus,
+        )),
         (RouteId::WorkflowExecuteById, "POST") => Some(operator_spec(
             RouteId::WorkflowExecuteById,
             Action::WorkflowExecute,
@@ -295,6 +317,22 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
         (RouteId::WorkflowResumeExecutionById, "POST") => Some(operator_spec(
             RouteId::WorkflowResumeExecutionById,
             Action::WorkflowExecutionResume,
+        )),
+        (RouteId::AutonomyPoliciesGlobal, "PUT") => Some(operator_spec(
+            RouteId::AutonomyPoliciesGlobal,
+            Action::AutonomyPolicyWrite,
+        )),
+        (RouteId::AutonomyPoliciesAgentById, "PUT") => Some(operator_spec(
+            RouteId::AutonomyPoliciesAgentById,
+            Action::AutonomyPolicyWrite,
+        )),
+        (RouteId::AutonomySuppressions, "POST") => Some(operator_spec(
+            RouteId::AutonomySuppressions,
+            Action::AutonomySuppressionWrite,
+        )),
+        (RouteId::AutonomyRunApproveById, "POST") => Some(operator_spec(
+            RouteId::AutonomyRunApproveById,
+            Action::AutonomyRunApprove,
         )),
         (RouteId::StudioRun, "POST") => {
             Some(operator_spec(RouteId::StudioRun, Action::StudioRunPrompt))
@@ -619,6 +657,21 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
             Action::ProviderKeyDelete,
             true,
         )),
+        (RouteId::CodexAuthStatus, "GET") => Some(admin_spec(
+            RouteId::CodexAuthStatus,
+            Action::CodexAuthReadStatus,
+            false,
+        )),
+        (RouteId::CodexAuthLogin, "POST") => Some(admin_spec(
+            RouteId::CodexAuthLogin,
+            Action::CodexAuthLogin,
+            true,
+        )),
+        (RouteId::CodexAuthLogout, "POST") => Some(admin_spec(
+            RouteId::CodexAuthLogout,
+            Action::CodexAuthLogout,
+            true,
+        )),
         (RouteId::Webhooks, "GET") => {
             Some(admin_spec(RouteId::Webhooks, Action::WebhookReadList, true))
         }
@@ -774,7 +827,7 @@ pub struct RegisteredPolicy {
 
 pub fn policy_for(action: Action) -> RegisteredPolicy {
     match action {
-        Action::LiveExecutionRead => RegisteredPolicy {
+        Action::LiveExecutionRead | Action::LiveExecutionCancel => RegisteredPolicy {
             policy_id: "typed/live_execution_owner_or_admin",
             rule: PolicyRule {
                 allow_if: PolicyPredicate::Any(vec![
@@ -950,6 +1003,7 @@ pub fn admin_actions() -> &'static [Action] {
         Action::AdminBackupReadList,
         Action::AdminExportRead,
         Action::ProviderKeyReadList,
+        Action::CodexAuthReadStatus,
         Action::PcControlStatusRead,
         Action::PcControlStatusWrite,
         Action::PcControlActionRead,
@@ -965,6 +1019,8 @@ pub fn admin_actions() -> &'static [Action] {
         Action::AdminBackupCreate,
         Action::ProviderKeyWrite,
         Action::ProviderKeyDelete,
+        Action::CodexAuthLogin,
+        Action::CodexAuthLogout,
         Action::PcControlAllowedAppsWrite,
         Action::PcControlBlockedHotkeysWrite,
         Action::PcControlSafeZonesWrite,
@@ -1029,6 +1085,23 @@ mod tests {
     }
 
     #[test]
+    fn live_execution_cancel_allows_owner_without_admin_role() {
+        let actor = principal(BaseRole::Viewer);
+        let context = AuthorizationContext::new(
+            Action::LiveExecutionCancel,
+            RouteId::LiveExecutionCancelById,
+        )
+        .with_resource(crate::api::authz::ResourceContext::LiveExecution {
+            execution_id: "exec-1",
+            owner_subject: Some("actor-1"),
+        });
+
+        let decision = authorize(&actor, &context);
+        assert!(decision.allowed);
+        assert_eq!(decision.denial_reason, None);
+    }
+
+    #[test]
     fn safety_resume_allows_operator_with_safety_review() {
         let mut actor = principal(BaseRole::Operator);
         actor.capabilities.insert(Capability::SafetyReview);
@@ -1085,6 +1158,23 @@ mod tests {
             write_spec.authorization_kind,
             RouteAuthorizationKind::MinimumRole(BaseRole::Admin)
         );
+    }
+
+    #[test]
+    fn route_spec_for_codex_login_requires_admin_and_compatibility() {
+        let status_spec =
+            route_spec_for(RouteId::CodexAuthStatus, &Method::GET).expect("status spec");
+        let login_spec =
+            route_spec_for(RouteId::CodexAuthLogin, &Method::POST).expect("login spec");
+        let logout_spec =
+            route_spec_for(RouteId::CodexAuthLogout, &Method::POST).expect("logout spec");
+
+        assert_eq!(status_spec.action, Action::CodexAuthReadStatus);
+        assert!(!status_spec.compatibility_required);
+        assert_eq!(login_spec.action, Action::CodexAuthLogin);
+        assert!(login_spec.compatibility_required);
+        assert_eq!(logout_spec.action, Action::CodexAuthLogout);
+        assert!(logout_spec.compatibility_required);
     }
 
     #[test]

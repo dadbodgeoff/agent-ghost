@@ -1,615 +1,1153 @@
-# Remaining Hardening Phase Design
+# Autonomy Control Plane Design
+
+Status: proposed on March 10, 2026
+Scope: next major system after gateway/auth/runtime hardening
+Supersedes: the previous top-level "remaining hardening phase" design as the primary repo-level design document
+Execution tracker: [AUTONOMY_CONTROL_PLANE_TASKS.md](/Users/geoffreyfernald/Documents/New project/agent-ghost/AUTONOMY_CONTROL_PLANE_TASKS.md)
 
 ## Document Intent
 
-This document defines the next hardening phase after the first contract and
-runtime stabilization slice.
+This document defines the next system to build after the gateway, auth,
+capability, runtime-safety, and quarantine foundations are in place.
 
-This phase is not feature work. It exists to make the project safe to operate
-as a public OSS system with:
+The goal is not "more automation."
 
-- truthful contracts
-- explicit ownership boundaries
-- low silent-failure risk
-- auditable release gates
-- contributor-safe extension points
+The goal is one trustworthy autonomy control plane that can run:
 
-The central problem is no longer only broken behavior. It is governance drift:
-multiple things still look canonical when they are not.
+- ambient heartbeats
+- precise schedules
+- workflow triggers
+- retries
+- escalations
+- deferred follow-ups
+- user-visible proactive actions
 
-## Executive Goal
+without creating a second unsafe product inside the first one.
 
-Reach a state where an external user or contributor can rely on the following
-without reading the whole codebase:
+This document is intentionally grounded in the live repo, not only the
+aspirational architecture documents.
 
-1. The gateway is the only authority on API and event truth.
-2. The SDK is the only stable client contract for gateway consumers.
-3. The runtime adapter is the only dashboard entrypoint for desktop behavior.
-4. Offline and cache behavior cannot silently violate session or auth
-   expectations.
-5. CI fails immediately when any of those statements stop being true.
+## Implementation Refinements
 
-## What This Phase Must Close
+As implemented in the current cut:
 
-The first hardening slice addressed:
+- the live autonomy deployment mode is `single_gateway_leased`
+- quiet-hours enforcement supports `UTC` and fixed UTC offsets such as `-05:00`
+- approval is per-run, TTL-bounded, and revalidated at dispatch time
 
-- false auth probing
-- local-only logout
-- websocket auth/envelope drift
-- some desktop runtime bypasses
-- the fake live ITP page
-- stale SDK tests
+## Executive Thesis
 
-This phase still needs to close:
+The product should not grow more independent background loops.
 
-- stale or partial OpenAPI and generated-type truth
-- fake domain contracts, especially approvals
-- incomplete runtime ownership for desktop behavior
-- incomplete websocket regression protection
-- service worker auth/cache safety guarantees
-- missing contract governance and CI drift gates
+It should grow one durable autonomy kernel with:
 
-## Why This Work Is Justified
+1. one persisted job ledger
+2. one execution state machine
+3. one policy and budget model
+4. one user-visible audit trail for "why did this run?"
+5. one set of pause, quarantine, rollback, and suppression controls
 
-For an OSS project, false contracts are more dangerous than missing features.
+If the platform gets this right, the system becomes meaningfully better than
+most agent products:
 
-External users and contributors will trust:
+- more proactive than chat-only agents
+- more understandable than black-box automation
+- more controllable than DIY cron plus prompts
+- safer than agents that can freely schedule and message on their own
 
-- exported types
-- OpenAPI
-- route behavior implied by UI
-- desktop affordances that appear available
-- cache behavior that appears safe
+That is the actual novelty target.
 
-If those surfaces are only partially real, the project will accumulate:
+## Why This Work Is Timely Now
 
-- hard-to-reproduce regressions
-- broken community integrations
-- low-trust bug reports
-- accidental reintroduction of removed drift
+The sequencing is finally correct.
 
-This phase is therefore correctness work, not process theater.
+Recent work has already pushed the substrate in the right direction:
 
-## Scope
+- auth and gateway contracts are tighter
+- capability grants are explicit
+- tool and skill pullback exists
+- quarantine and kill paths exist
+- Studio cancellation and failure handling are materially better
 
-### In Scope
+That means the next leverage point is autonomy.
 
-- API contract truthfulness
-- schema/router parity
-- SDK export truthfulness
-- approvals contract replacement or demotion
-- runtime boundary completion
-- websocket contract regression coverage
-- service worker auth/session safety
-- contract ownership documentation
-- CI gates that prevent drift from re-entering
+If autonomy had been built before those controls, it would have amplified unsafe
+behavior. Built now, it can amplify usefulness without losing operator control.
 
-### Out of Scope
+## Current-State Audit
 
-- net-new product features
-- large UI redesign
-- unrelated performance tuning
-- broad codebase cleanup outside these boundaries
-- replacing Tauri, Svelte, Axum, or the SDK shape wholesale
+This section records what is live today versus what only exists as scaffolding.
+
+### Live Facts From The Repo
+
+1. The gateway does not start an agent heartbeat engine or cron engine during
+   bootstrap. The tracked background tasks today are WAL checkpointing,
+   convergence watching, config watching, backup scheduling, auto triggers, and
+   cost persistence in
+   [bootstrap.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-gateway/src/bootstrap.rs#L398).
+
+2. The `ghost-heartbeat` crate exists and has meaningful code, but it is not
+   wired into the live gateway runtime. The crate exposes `HeartbeatEngine`,
+   `CronEngine`, and tier logic in:
+   [heartbeat.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/heartbeat.rs),
+   [cron.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/cron.rs),
+   [tiers.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/tiers.rs).
+
+3. The heartbeat tier model is not actually active in execution. The engine's
+   `fire()` path still always runs a full agent turn in
+   [heartbeat.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/heartbeat.rs#L224).
+   The tier selector exists, but is not used to choose an execution mode.
+
+4. The heartbeat configuration surface is only partially real. Fields such as
+   `active_hours_start`, `active_hours_end`, and `timezone_offset_hours` are
+   defined in
+   [heartbeat.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/heartbeat.rs#L32),
+   but there is no live runtime consumer using them.
+
+5. The cron engine is not timezone-aware in practice despite carrying a
+   timezone field. It evaluates jobs against `Utc::now()` and matches cron
+   fields directly in
+   [cron.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/cron.rs#L99)
+   and
+   [cron.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/cron.rs#L127).
+
+6. The cron syntax is intentionally incomplete. It supports `*` and numeric
+   fields only. It does not support ranges, steps, or named weekdays in
+   [cron.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-heartbeat/src/cron.rs#L127).
+
+7. The current heartbeat CLI is not a truthful engine status view. It reads
+   `heartbeat_frequency`, `convergence_tier`, `last_heartbeat`, and
+   `agents_count` from `/api/health` in
+   [cli/heartbeat.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-gateway/src/cli/heartbeat.rs#L36),
+   but the actual health endpoint does not return those fields in
+   [health.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-gateway/src/api/health.rs#L23).
+
+8. The current `/api/sessions/:id/heartbeat` route is a frontend session
+   keepalive, not an autonomous agent heartbeat. That route exists in
+   [route_sets.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-gateway/src/route_sets.rs#L482)
+   and is implemented in
+   [sessions.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-gateway/src/api/sessions.rs#L765).
+
+9. There is no real `HEARTBEAT.md` file in the repo or under `~/.ghost` for
+   the running system to consume. The current heartbeat message refers to a file
+   that does not exist in the active environment.
+
+10. The product already has a second candidate scheduling authority in the
+    workflow system. Workflow CRUD and execution are live in
+    [workflows.rs](/Users/geoffreyfernald/Documents/New project/agent-ghost/crates/ghost-gateway/src/api/workflows.rs),
+    which means autonomy work must avoid creating permanent split ownership
+    between workflow schedules and `ghost-heartbeat` cron jobs.
+
+### Diagnosis
+
+The repo currently has the parts of an autonomy system, but not one coherent
+autonomy runtime.
+
+The danger is not that the repo lacks ideas.
+
+The danger is that it has multiple half-authorities:
+
+- a heartbeat crate
+- a cron crate
+- a generic periodic scheduler
+- workflow execution
+- client session heartbeats
+- CLI commands that imply runtime behavior not actually present
+
+That is exactly the kind of drift this design must remove.
+
+## Core Problem Statement
+
+Users want an agent that is persistent and proactive.
+
+Users also want:
+
+- low surprise
+- low cost
+- reversibility
+- clear blame when something runs
+- no spam
+- no hidden background activity
+- immediate pullback when the system is flagged
+
+Those goals conflict.
+
+The system therefore needs an autonomy control plane that treats initiative as a
+governed resource, not a free side effect of scheduling.
+
+## Design Goals
+
+### Primary Goals
+
+1. One authority for all autonomous work.
+2. Durable state for all scheduled or deferred execution.
+3. Clear user-visible "why now?" reasoning for every autonomous action.
+4. Safe proactive behavior that degrades before it surprises.
+5. Immediate pullback when policy, safety, or trust thresholds are crossed.
+6. No silent loss of due work and no silent duplicate execution.
+7. Honest health and operator tooling.
+8. Safe migration and cutover without hidden duplicate execution or status
+   regressions.
+
+### Secondary Goals
+
+1. Reuse existing gateway, workflow, and policy primitives instead of inventing
+   a parallel runtime.
+2. Keep the system local-first and vendor-agnostic.
+3. Preserve deterministic auditing and postmortem analysis.
+
+### Non-Goals
+
+1. Replacing the existing workflow DAG engine.
+2. Building a generic distributed scheduler for arbitrary cluster scale.
+3. Introducing a third independent task model beside jobs and workflows.
+4. Shipping unrestricted autonomous messaging.
 
 ## Non-Negotiable Invariants
 
-These are release-blocking.
+These are release-blocking for autonomy.
 
-### Invariant 1: No False Source of Truth
+### Invariant 1: One Autonomy Ledger
 
-No file, export, schema, or generated artifact may be presented as canonical if
-it does not represent real gateway behavior.
+Every autonomous action must be represented by a persisted job or run record.
+No hidden timers may directly invoke the agent loop.
 
-### Invariant 2: No Duplicate Ownership
+### Invariant 2: One Execution State Machine
 
-For each boundary there must be one owner:
+All background work must use the same lifecycle:
 
-- gateway for API/event semantics
-- SDK for client transport and typed client surface
-- runtime adapter for desktop behavior
-- dashboard for presentation and local view state only
+- queued
+- leased
+- running
+- waiting
+- succeeded
+- failed
+- paused
+- quarantined
+- aborted
 
-### Invariant 3: No Hidden Bypasses
+### Invariant 3: No Unexplained Initiative
 
-A supported path must be obvious from the architecture. No dashboard route,
-store, or component may bypass the intended SDK/runtime path silently.
+Every agent-initiated run must store a machine-readable explanation of:
 
-### Invariant 4: No Silent Auth Drift
+- trigger source
+- why it is due now
+- what changed since the previous run
+- why user interruption is or is not justified
 
-Auth, session, logout, refresh, and cache behavior must distinguish:
+### Invariant 4: Policy Before Execution
 
-- authentication failure
-- service failure
-- network failure
-- stale cached data
+Pause, quarantine, kill switches, capability pullback, cost ceilings, and
+initiative budgets are evaluated before the agent loop is entered.
 
-### Invariant 5: Every Public Type Must Be Semantically Honest
+### Invariant 5: Reversible By Default
 
-A type-safe surface that encodes fake semantics is considered broken, even if
-it compiles.
+Any non-trivial autonomous action must be cancelable, suppressible, and where
+possible reversible.
 
-### Invariant 6: Drift Must Fail in CI
+### Invariant 6: Honest Health Surfaces
 
-Any new router/spec mismatch, runtime bypass, unknown websocket event consumer,
-or fake public contract must be detectable automatically.
+CLI and API status endpoints may only report fields backed by live runtime
+state. Placeholder or inferred health is considered broken.
 
-## Boundary Model
+### Invariant 7: Explicit Overlap And Catch-Up Semantics
 
-### Gateway Owns
+Every job type must define:
 
-- mounted REST routes
-- websocket event enum and envelope
-- auth/session semantics
-- DTO truth
-- OpenAPI or any exported schema
+- overlap policy
+- missed-run policy
+- retry policy
+- idempotency key
 
-### SDK Owns
+No implicit scheduler behavior is allowed.
 
-- HTTP request construction
-- websocket connection/auth/replay behavior
-- error normalization
-- public client DTO exposure
-- generated types only if generated source is truthful
+### Invariant 8: Migration Before Deletion
 
-### Runtime Adapter Owns
+No drifted autonomy seam may be deleted or demoted until the replacement path
+is live, observable, and covered by rollback criteria.
 
-- desktop auth persistence
-- gateway lifecycle control
-- desktop capability access
+### Invariant 9: Measurable Runtime Health
+
+The control plane must define explicit service-level indicators for queue lag,
+lease recovery, duplicate execution, and proactive action quality before old
+paths are retired.
+
+### Invariant 10: Sensitive Autonomy Data Has A Lifecycle
+
+`why_now`, suppressions, approval records, and proactive audit artifacts must
+have explicit retention, redaction, and export semantics.
+
+### Invariant 11: No Exactly-Once Fiction
+
+The control plane must explicitly model at-least-once dispatch with durable
+idempotency and side-effect correlation. It may not imply exactly-once
+execution where the underlying system cannot prove it.
+
+## Proposed Architecture
+
+### 1. System Shape
+
+The target system is a single autonomy control plane inside the gateway.
+
+It has six layers:
+
+1. Trigger intake
+2. Durable job ledger
+3. Policy and budget evaluator
+4. Lease and dispatch runtime
+5. Executor adapters
+6. Audit and user-facing explanation surfaces
+
+### Trigger Intake
+
+Trigger intake normalizes all reasons work might need to happen:
+
+- reactive follow-up from a user conversation
+- schedule fire
+- ambient heartbeat observation
+- retry after failure
+- workflow continuation
+- safety-driven escalation
+- external webhook or channel signal
+
+Each trigger becomes a normalized job request.
+
+### Durable Job Ledger
+
+This is the core source of truth. It replaces scattered timer state.
+
+Proposed canonical tables:
+
+- `autonomy_jobs`
+- `autonomy_runs`
+- `autonomy_leases`
+- `autonomy_policies`
+- `autonomy_suppressions`
+- `autonomy_notifications`
+
+The ledger belongs in `cortex-storage` so state survives gateway restart and can
+be audited alongside the rest of the platform.
+
+### Policy And Budget Evaluator
+
+This layer decides whether a queued job is allowed to become executable.
+
+It consults:
+
+- kill switch state
+- pause/quarantine state
+- capability pullback state
+- convergence state
+- cost tracker
+- initiative budgets
+- user policy
+- quiet hours
+
+This is where the product becomes novel: initiative is budgeted, not assumed.
+
+### Lease And Dispatch Runtime
+
+The runtime owns polling due jobs, leasing them, enforcing overlap policy,
+running them once, and writing the outcome back to the ledger.
+
+It must be the only owner of autonomous execution.
+
+### Executor Adapters
+
+Executors translate jobs into real work:
+
+- heartbeat observer adapter
+- workflow executor adapter
+- agent turn adapter
+- notification adapter
+- retry adapter
+
+Executors do not own schedule semantics.
+
+### Audit And Explanation Surfaces
+
+Every autonomous run produces:
+
+- a structured audit event
+- a user-visible explanation
+- operator-visible runtime state
+
+If the system cannot explain why something ran, the run model is incomplete.
+
+### 2. Canonical Job Model
+
+All autonomous work should map into a single job model.
+
+Proposed fields:
+
+- `id`
+- `job_type`
+- `owner_agent_id`
+- `source`
+- `intent`
+- `payload`
+- `payload_schema_version`
+- `trigger_kind`
+- `schedule_spec`
+- `priority`
+- `cost_budget`
+- `initiative_budget`
+- `trust_budget`
+- `quiet_hours_policy`
+- `overlap_policy`
+- `missed_run_policy`
+- `retry_policy`
+- `idempotency_scope`
+- `side_effect_key`
+- `status`
+- `next_run_at`
+- `last_run_at`
+- `last_success_at`
+- `last_failure_at`
+- `last_result_summary`
+- `last_why_now`
+- `created_at`
+- `updated_at`
+
+### Job Types
+
+Initial canonical job types:
+
+- `heartbeat_observe`
+- `schedule_prompt`
+- `workflow_run`
+- `retry_run`
+- `deferred_followup`
+- `safety_escalation`
+- `notification_delivery`
+
+`heartbeat_observe` is intentionally not the same thing as "run a full agent
+turn." It begins as observation and only escalates when justified.
+
+#### Delivery Semantics And Side-Effect Contract
+
+The control plane should target durable at-least-once execution with explicit
+idempotency boundaries.
+
+That means:
+
+- the scheduler may dispatch again after lease loss or crash recovery
+- handlers must be idempotent within a declared scope
+- external side effects must carry a precomputed correlation key derived from
+  logical job identity plus the relevant scheduled fire or run identity
+- notification delivery should be backed by the same durable ledger or an
+  explicit outbox-style equivalent, not an in-memory "send and hope" path
+
+Exhausted retries must not simply vanish into a generic failed state. Jobs that
+cannot safely auto-retry should move to an operator-visible terminal or
+manual-review disposition.
+
+#### Backpressure And Fairness
+
+The control plane must define:
+
+- max global dispatch concurrency
+- per-agent or per-tenant concurrency ceilings
+- a starvation/fairness rule so one noisy agent cannot monopolize dispatch
+- what happens when the dispatcher is saturated
+
+Runtime overload may degrade throughput, but it may not silently disable the
+control plane or silently drop due work.
+
+### 3. Initiative Budget Model
+
+This is the central product differentiator.
+
+Most systems budget only tokens or money. This system also budgets initiative.
+
+Every agent receives multiple budgets:
+
+- cost budget
+- risk budget
+- interruption budget
+- novelty budget
+- trust budget
+
+### Cost Budget
+
+The hard dollar/token envelope for autonomous behavior.
+
+### Risk Budget
+
+How much non-reversible or externally visible action is allowed.
+
+### Interruption Budget
+
+How many times the agent is allowed to proactively interrupt the user in a
+window, weighted by severity.
+
+### Novelty Budget
+
+How much the system may do something behaviorally new versus something the user
+has already accepted.
+
+### Trust Budget
+
+How much initiative the agent is allowed based on recent accuracy, reversals,
+user dismissals, suppressions, and policy hits.
+
+### Operational Rule
+
+If a job exceeds available initiative budget, the system must degrade it before
+execution:
+
+- from notify to draft
+- from act to propose
+- from propose to observe
+- from observe to suppress
+
+This turns autonomy from a binary "allowed or denied" system into a graded and
+trustworthy one.
+
+### 4. Heartbeat Redesign
+
+The current heartbeat concept must be split into two pieces:
+
+1. observation
+2. intervention
+
+### Problem In Current Design
+
+The current crate claims multiple heartbeat tiers, but the only real fire path
+still runs a full agent turn. That defeats the point of tiering and will not
+scale safely.
+
+### New Heartbeat Model
+
+#### Tier H0: Liveness
+
+- zero-token process liveness or session freshness signal
+- updates internal state only
+- never invokes the agent loop
+
+#### Tier H1: State Diff
+
+- reads convergence, task backlog, failed runs, pending approvals
+- computes a delta against previous state
+- persists the delta
+- still does not invoke the agent loop
+
+#### Tier H2: Reasoning Snapshot
+
+- uses a compact deterministic evaluator
+- decides whether anything justifies attention
+- may create a deferred follow-up job or draft notification
+
+#### Tier H3: Full Agent Turn
+
+- only entered when lower tiers conclude that model reasoning is justified
+- must consume initiative budget
+- must produce a structured "why now?"
+
+### `HEARTBEAT.md`
+
+`HEARTBEAT.md` should not be the runtime authority.
+
+If retained, it becomes a generated or operator-authored explanatory view of the
+typed heartbeat policy, not the executable source of truth.
+
+The runtime authority should be typed policy stored in the ledger or config.
+
+### 5. Scheduling Redesign
+
+The product needs real schedule semantics, not best-effort timer loops.
+
+### Canonical Schedule Fields
+
+Each scheduled job must define:
+
+- timezone
+- next fire time
+- overlap policy
+- missed-run policy
+- retry policy
+- jitter policy
+- max runtime
+
+### Required Overlap Policies
+
+- `allow`
+- `forbid`
+- `replace`
+- `queue_one`
+
+### Required Missed-Run Policies
+
+- `skip`
+- `catch_up_one`
+- `catch_up_all_with_cap`
+- `reschedule_from_now`
+
+### Required Retry Policies
+
+- max attempts
+- max retry duration
+- exponential backoff
+- min backoff
+- max backoff
+- retryable failure classes
+
+### Why This Is Required
+
+This aligns with mature scheduler practice:
+
+- Kubernetes CronJobs explicitly model `timeZone`,
+  `concurrencyPolicy`, and `startingDeadlineSeconds`
+  ([docs](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/)).
+- Cloud Scheduler exposes retry count and backoff controls
+  ([docs](https://cloud.google.com/scheduler/docs/configuring/retry-jobs)).
+- Google SRE guidance for periodic schedulers emphasizes durable state and
+  idempotent job semantics
+  ([Distributed Periodic Scheduling with Cron Service](https://sre.google/sre-book/distributed-periodic-scheduling/)).
+
+The current cron crate is not close to this bar and should not be promoted as
+production-grade until these semantics exist.
+
+### 6. Workflow Integration
+
+The workflow system is already a real product surface. The autonomy design must
+not compete with it.
+
+### Rule
+
+Workflows remain the graph-of-steps execution model.
+
+The autonomy control plane becomes the scheduling, retry, and triggering
+authority that can enqueue workflow runs.
+
+That means:
+
+- workflow definitions stay in `api/workflows.rs`
+- workflow execution state remains durable
+- schedules for workflows move into the autonomy ledger
+- cron-as-a-separate-world is retired or reduced to a compatibility adapter
+
+### 7. Migration, Shadow Mode, And Cutover
+
+The control plane should not replace drifted autonomy seams with a flag day and
+hope.
+
+### Required Migration Inputs
+
+Before cutover, the system must inventory and classify:
+
+- existing workflow schedule records
+- old heartbeat or cron runtime state
+- fake or placeholder autonomy status fields
+- any persistent retry metadata
+
+### Backfill Rule
+
+If an old surface has durable state that affects due work, that state must be
+mapped into the ledger or explicitly retired with operator-visible reasoning.
+Silent dropping of due or pending work is not allowed.
+
+### Shadow Mode
+
+Before the old seams are removed, the new control plane should run in shadow
+mode where practical and record:
+
+- due-job selection differences
+- next-fire computation differences
+- status-surface differences
+- duplicate-dispatch risk signals
+
+Shadow mode is not permanent dual execution. It is comparison without
+duplicate side effects.
+
+### Cutover Requirements
+
+Cutover must define:
+
+- the activation flag or migration boundary
+- the exact old surfaces being retired
+- rollback criteria
+- rollback procedure
+- operator-visible status proving which authority is live
+
+### Rollback Triggers
+
+At minimum, cutover rollback criteria should include:
+
+- duplicate execution above threshold
+- queue lag or overdue age above threshold
+- stuck leases beyond recovery budget
+- false health or status reporting
+- unexpected proactive notification spikes
+- cost spikes attributable to the new control plane
+
+### 8. Multi-Process And Lease Semantics
+
+The design must be explicit about whether one gateway process or many may lease
+jobs concurrently.
+
+### Current Deployment Assumption
+
+If the runtime is initially single-gateway only, that must be documented as a
+hard invariant and defended with tests so the system is not accidentally scaled
+into duplicate execution.
+
+### Lease Contract
+
+The ledger and runtime must define:
+
+- lease owner identity
+- lease duration
+- renewal cadence
+- expiry recovery semantics
+- what happens when a process crashes after leasing but before completion write
+- what happens when a process crashes after a side effect but before run
+  finalization
+
+### Multi-Process Readiness
+
+Even if the initial implementation remains single-process, the lease algorithm
+must not make future multi-process hardening impossible. Lease ownership,
+idempotency keys, and recovery semantics should be explicit from day one.
+
+### 9. User Trust Model
+
+Autonomy must be legible to users, not only safe to operators.
+
+Every autonomous action should expose:
+
+- why this ran
+- why it ran now
+- what changed
+- what it plans to do
+- what it actually did
+- how to stop similar future actions
+
+### User Controls
+
+Required user-facing controls:
+
+- pause all autonomy
+- pause one agent
+- suppress one class of proactive behavior
+- quiet hours
+- require approval for external notifications
+- dry-run mode
+- rollback or undo where action is reversible
+
+### Behavioral Rule
+
+If the user repeatedly suppresses a behavior, the trust budget for that behavior
+class should decay automatically.
+
+### 10. Data Retention And Privacy
+
+Autonomy artifacts are not ordinary logs. They encode behavioral and preference
+signals about the user and the agent.
+
+### Required Policy Surface
+
+The system must define retention and redaction rules for:
+
+- `why_now` reasoning
+- suppression records
+- approval history
+- proactive notification audit trails
+- lease and run failure diagnostics when they contain user context
+
+### Required Behaviors
+
+- retention windows must be explicit
+- export behavior must be explicit
+- deletion or redaction behavior must be explicit
+- sensitive artifacts must not silently persist forever because they were
+  convenient for debugging
+
+### 11. Human Approval Semantics
+
+Approval-required mode must be a real execution contract, not just a UI flag.
+
+### Required Contract
+
+Approval-gated jobs must define:
+
+- what work may be prepared before approval
+- what side effects are blocked before approval
+- how long approval remains valid
+- whether approval is scoped to one run, one behavior class, or one agent
+- what happens if policy, budget, or context changes before approval arrives
+
+### Revalidation Rule
+
+When approval is delayed, the runtime must re-evaluate policy, budget, and
+context before execution. Old approval may authorize reconsideration, but it
+must not force stale execution.
+
+### 12. Safety And Policy Integration
+
+The autonomy control plane must reuse the safety work already built.
+
+### Required Inputs
+
+- kill switch
+- quarantine state
+- capability pullback
+- convergence protection level
+- policy denial counts
+- cost tracking
+
+### Required Outputs
+
+- structured safety events for autonomous runs
+- automatic downgrade from action to draft/proposal
+- automatic pause after repeated denials or reversals
+- quarantine-aware suppression of future jobs
+
+### Key Rule
+
+Autonomy is not allowed to bypass the same constraints that user-triggered turns
+obey.
+
+If a capability is pulled back, autonomous jobs lose it too.
+
+### 13. Honest Health And Operator Surfaces
+
+The current health and CLI surfaces drift from reality. The redesign must fix
+that before autonomy is considered production-ready.
+
+### `/api/health`
+
+Should report actual autonomy runtime state, not implied state:
+
+- control plane enabled
+- scheduler loop state
+- dispatcher loop state
+- runtime mode or deployment assumption when autonomy depends on single-gateway
+  ownership
+- due jobs
+- leased jobs
+- failed jobs
+- terminal/manual-review jobs
+- oldest overdue job
+- last successful heartbeat observation
+- queue lag
+- dispatcher backpressure or saturation state
+
+### CLI
+
+`ghost heartbeat status` and `ghost cron` should become honest views over the
+new ledger and runtime state. They must not derive nonexistent fields from
+generic health responses.
+
+### 14. Operational SLOs And Rollback
+
+The control plane should not ship as a black box with "works in testing" as the
+only operating standard.
+
+### Required Initial SLOs
+
+The first production-grade cut should define at least:
+
+- max due-job selection lag
+- max oldest overdue job age
+- max lease recovery window
+- duplicate-run rate
+- false-positive proactive notification rate
+- autonomy cost per day or billing window
+
+### Rollback Contract
+
+Every rollout phase that replaces live behavior must include:
+
+- rollback trigger thresholds
+- rollback operator steps
+- proof that old status surfaces are not left lying during rollback
+- post-rollback validation steps
+
+### 15. Implementation Shape In This Repo
+
+This design should land as a refactor and unification effort, not a bolt-on.
+
+### Primary Crates To Touch
+
+- `crates/ghost-gateway`
+- `crates/ghost-heartbeat`
+- `crates/ghost-agent-loop`
+- `crates/cortex/cortex-storage`
+- `packages/sdk`
+- `dashboard`
+
+### Planned Ownership
+
+### Repo Alignment Rule
+
+The control plane should reuse existing durable ownership patterns already live
+in the repo unless a written incompatibility requires deviation.
+
+Specifically, the current `operation_journal` and `workflow_executions`
+contracts already use `owner_token`, `lease_epoch`, durable lease renewal, and
+versioned state semantics. The autonomy ledger should extend or align with
+those patterns rather than inventing a conflicting lease dialect.
+
+Likewise, any new autonomy API surfaces must update gateway route contracts,
+OpenAPI exposure, SDK types, and dashboard consumers together.
+
+#### `crates/cortex/cortex-storage`
+
+Add durable tables and queries for:
+
+- autonomy jobs
+- autonomy runs
+- leases
+- suppressions
+- policies
 - notifications
-- keybindings
-- PTY capability
-- shell/default environment resolution
 
-### Dashboard Owns
+Also extend schema-contract validation so the autonomy ledger is part of the
+same storage contract discipline as workflow and operation-journal state.
 
-- pages
-- local interaction state
-- rendering
-- view-only derivations that do not invent domain semantics
+#### `crates/ghost-gateway`
 
-## Required Audit Method
+Own:
 
-This phase will not proceed by opportunistic edits. It requires a structured
-audit pass first.
+- bootstrap wiring
+- scheduler runtime
+- dispatcher runtime
+- policy and budget evaluation
+- API and CLI status surfaces
+- workflow integration
 
-### Step 1: Build a Boundary Inventory
+Likely files:
 
-For every relevant surface, record:
+- `src/bootstrap.rs`
+- `src/periodic.rs` or a new `src/autonomy/`
+- `src/api/health.rs`
+- `src/api/workflows.rs`
+- `src/cli/heartbeat.rs`
+- `src/cli/cron.rs`
+- `src/state.rs`
 
-- name
-- owner
-- transport
-- auth mode
-- source-of-truth file
-- consumer files
-- exported type location
-- tests covering it
-- CI gate covering it
-- current status: `canonical`, `transitional`, `drifted`, or `dead`
-
-Boundaries to inventory:
-
-- gateway REST routes
-- gateway websocket events
-- SDK public modules
-- dashboard route/store/component consumers
-- runtime adapter methods
-- service worker cached API behavior
-
-### Step 2: Build a Source-of-Truth Matrix
-
-For each boundary answer:
-
-1. What is the canonical contract?
-2. Who is allowed to call it directly?
-3. What invariants must always hold?
-4. What test or CI job fails if it drifts?
-
-### Step 3: Classify Every Remaining Gap
-
-Each gap must be categorized as one of:
-
-- `fake-contract`
-- `duplicate-contract`
-- `runtime-bypass`
-- `dead-transitional-code`
-- `missing-invariant`
-- `missing-test`
-- `missing-ci-gate`
-
-### Step 4: Produce Evidence
-
-No audit statement is accepted without:
-
-- implementation file
-- consumer file
-- impact statement
-- recommended owner
-- proposed release classification
-
-## Planning Artifacts Required
-
-This phase should generate and maintain the following supporting artifacts.
-
-### `contracts.md`
-
-One section per boundary with:
-
-- contract name
-- owner
-- request/response/event/command schema
-- auth semantics
-- allowed consumers
-- prohibited bypasses
-- test coverage
-- migration status
-
-### `drift-register.md`
-
-A structured ledger with columns:
-
-- id
-- category
-- severity
-- source owner
-- violating files
-- user/runtime impact
-- fix strategy
-- blocking status
-- required tests
-
-### `release-gates.md`
-
-Explicit release conditions with:
-
-- gate name
-- rationale
-- owner
-- automated check or manual check
-- failure action
-
-### `execution-plan.md`
-
-Sequenced implementation plan grouped by contract area, not by file.
-
-## Workstreams
-
-## Workstream A: Contract Truth Audit and Freeze
-
-### Goal
-
-Freeze an accurate inventory of all remaining contract surfaces before further
-implementation.
-
-### Deliverables
-
-- boundary inventory
-- source-of-truth matrix
-- drift register
-- route/event/consumer maps
-
-### Required Checks
-
-- router-to-schema map
-- websocket event-to-consumer map
-- runtime method-to-consumer map
-- service worker cacheable endpoint map
-
-### Exit Criteria
-
-- every dashboard boundary touchpoint is accounted for
-- every remaining drift item is named and classified
-- no unknown public contract remains in use
-
-## Workstream B: OpenAPI and Generated-Type Truthfulness
-
-### Problem
-
-The router and the exported generated schema/types are not guaranteed to match.
-That makes docs and type exports unsafe.
-
-### Goal
+#### `crates/ghost-heartbeat`
 
 Either:
 
-- make the exported schema truthful and route-complete, or
-- stop presenting generated types as canonical until truthfulness exists
+1. become a thin library of heartbeat-specific policy and observation logic, or
+2. be subsumed into a new `autonomy` module inside the gateway
 
-### Tasks
+The current state argues for option 1 as a migration bridge, then possible
+consolidation later.
 
-- enumerate mounted routes from `build_router`
-- compare them against the exported schema
-- classify uncovered routes:
-  - dashboard-used and must be modeled now
-  - internal-only and can remain intentionally omitted if explicitly marked
-- decide whether the generated SDK export remains enabled
-- add parity checks to CI
+#### `crates/ghost-agent-loop`
 
-### Required Decisions
+Stay responsible for executing a turn once the autonomy runtime decides a full
+agent turn is justified.
 
-- route-complete OpenAPI now vs temporary export demotion
-- dashboard-used route minimum coverage threshold
-- treatment of internal/private routes
+Do not let it become a scheduler.
 
-### Failure Modes To Block
+#### `packages/sdk` and `dashboard`
 
-- route exists, spec missing
-- spec exists, route missing
-- SDK exported type compiles for a route the gateway does not actually honor
+Expose:
 
-### Definition of Done
+- autonomy status
+- run explanations
+- suppression controls
+- pause and rollback controls
+- due and overdue job visibility
 
-- schema truth policy is documented
-- generated export policy is documented
-- CI fails on router/schema drift
+### 16. Phased Rollout
 
-## Workstream C: Approvals Contract Replacement
+This should be built in five phases.
 
-### Problem
+### Phase 1: Ledger And Honest Status
 
-`ApprovalsAPI` currently looks like a first-class domain surface while deriving
-semantics heuristically from goals.
+Deliverables:
 
-### Goal
+- durable autonomy tables
+- truthful `/api/health` autonomy section
+- truthful CLI surfaces
+- bootstrap starts one control-plane runtime
 
-End the fake approvals contract.
+Exit criteria:
 
-### Options
+- no heartbeat or cron status field is placeholder-derived
+- runtime survives restart with durable state
+- due jobs and overdue jobs are inspectable
 
-1. Promote approvals into a real gateway contract with first-class DTOs and
-   endpoints.
-2. Demote the UI and SDK surface to explicit goal/proposal semantics until a
-   real approvals model exists.
+### Phase 2: Migration, Backfill, And Shadow
 
-### Tasks
+Deliverables:
 
-- define desired approval semantics
-- compare current dashboard behavior to actual gateway data
-- remove heuristic inference from public client code
-- eliminate N+1 detail fetch behavior
-- update UI language if the contract is not truly approvals
+- legacy schedule and retry state inventory
+- durable backfill rules for any migrated state
+- shadow comparison for due-job selection and status reporting
+- cutover and rollback playbook
 
-### Failure Modes To Block
+Exit criteria:
 
-- typed but misleading metadata
-- wrong risk/category labels
-- `agent_name` populated from `agent_id`
-- performance collapse with large queues
+- migrated state does not silently lose due work
+- shadow results are explained and accepted
+- rollback triggers and procedures are documented and testable
 
-### Definition of Done
+### Phase 3: Workflow And Schedule Unification
 
-- public surface matches real semantics
-- no heuristic-only domain type remains public without explicit `Compat` status
+Deliverables:
 
-## Workstream D: Runtime Ownership Completion
+- workflow runs can be scheduled through the ledger
+- overlap and missed-run policies exist
+- timezone-aware scheduling exists
+- retry policy is durable and explicit
 
-### Problem
+Exit criteria:
 
-Desktop behavior is improved but still not fully owned by the runtime boundary.
+- no second schedule authority exists
+- scheduled workflow execution has deterministic replay semantics
 
-### Goal
+### Phase 4: Heartbeat Observation Tiers
 
-Make the runtime adapter the exclusive dashboard entrypoint for desktop-only
-behavior.
+Deliverables:
 
-### Tasks
+- H0/H1/H2/H3 tier execution path
+- no default full-turn heartbeat
+- typed heartbeat policy
+- generated or demoted `HEARTBEAT.md`
 
-- inventory all desktop-only behaviors
-- remove remaining direct plugin or desktop package imports from dashboard code
-- decide whether PTY is:
-  - fully runtime-owned, or
-  - a documented exception with tests and rationale
-- formalize capability failure semantics for desktop-only features
+Exit criteria:
 
-### Runtime Capabilities To Cover
+- most heartbeats do not invoke the model
+- initiative budget is enforced for H3
 
-- auth persistence
-- gateway lifecycle
-- notifications
-- keybindings
-- PTY
-- shell resolution
-- any future desktop configuration reads
+### Phase 5: User Trust Controls
 
-### Failure Modes To Block
+Deliverables:
 
-- silent no-op when a command is missing
-- frontend import of desktop plugin in a non-runtime file
-- platform-specific assumptions hidden in components
+- why-now explanations
+- suppressions
+- quiet hours
+- draft-only and approval-required modes
+- rollback where possible
+- explicit retention and redaction semantics for autonomy artifacts
 
-### Definition of Done
+Exit criteria:
 
-- dashboard has no unapproved desktop bypasses
-- capability failure paths are explicit and testable
+- proactive actions are user-legible and reversible
+- suppression behavior feeds trust-budget decay
+- approval-gated actions revalidate before execution
 
-## Workstream E: Websocket Governance and Regression Protection
+### 17. Test Strategy
 
-### Problem
+This system should not ship without explicit cross-layer tests.
 
-The transport contract is better, but still under-protected against future
-drift.
+### Storage Tests
 
-### Goal
+- due job selection
+- lease acquisition and lease expiry
+- overlap policy correctness
+- missed-run policy correctness
+- retry backoff correctness
 
-Lock the websocket model behind one canonical contract and strong regression
-coverage.
+### Gateway Tests
 
-### Tasks
+- bootstrap starts autonomy runtime exactly once
+- pause/quarantine blocks queued jobs
+- kill switch drains execution safely
+- health endpoint reflects actual runtime state
+- dispatcher saturation is visible and does not silently disable the runtime
+- terminal/manual-review jobs remain visible until explicitly resolved
 
-- document the canonical event union and envelope
-- document supported auth path
-- document replay/resync semantics
-- ensure every dashboard consumer maps to a real gateway event
-- add gateway and SDK integration coverage for:
-  - auth
-  - envelope parsing
-  - replay
-  - resync
-  - topic filtering
+### Workflow Tests
 
-### Failure Modes To Block
+- scheduled workflow enqueue
+- retry and resume after crash
+- no double execution under overlap policies
 
-- new dashboard consumer of non-existent event
-- renamed field silently consumed via `any`
-- replay cursor lost during multi-tab leadership changes
-- unsupported auth path reintroduced
+### Heartbeat Tests
 
-### Definition of Done
+- H0/H1/H2 do not invoke full agent turns
+- H3 does invoke the agent loop only when justified
+- initiative budget downgrades notify to draft/proposal/observe
 
-- websocket contract is documented once
-- all consumers are mapped
-- CI and tests fail on event drift
+### UI And SDK Tests
 
-## Workstream F: Service Worker Auth and Session Safety
+- user can see why a run happened
+- user can suppress future similar runs
+- user can pause and resume autonomy
 
-### Problem
+### Adversarial Tests
 
-The service worker is safer than before, but not yet governed by a strict
-session-safe policy.
+- repeated failures disable or downgrade noisy jobs
+- stale leases recover safely
+- cost ceiling stops future proactive runs
+- capability pullback immediately constrains autonomous jobs
+- DB write failure after lease acquisition is recoverable
+- crash after side effect but before completion write does not create silent
+  ambiguity
+- clock skew or delayed timer wakeups do not violate missed-run policy
+- delayed approvals and stale suppressions force re-evaluation before execution
+- concurrent lease contenders do not double-dispatch the same logical work
+- exhausted retries move to visible terminal/manual-review disposition
+- at-least-once recovery does not create duplicate external side effects inside
+  the declared idempotency scope
 
-### Goal
+### 18. Migration Rules
 
-Make offline behavior explicit, scoped, and incapable of leaking data or
-crossing auth boundaries silently.
+To avoid another round of drift, migration must follow these rules:
 
-### Tasks
+1. Do not add new autonomous timers outside the control plane.
+2. Do not expose CLI or API status for behavior that is not live.
+3. Do not let workflow scheduling and cron scheduling diverge semantically.
+4. Do not market `HEARTBEAT.md` as the authority unless the runtime actually
+   loads it.
+5. Do not ship tier language unless the runtime really executes by tier.
+6. Do not delete or demote old seams until replacement status surfaces are live
+   and rollback notes exist.
+7. Do not treat cutover or backfill as operator folklore. They must be written,
+   tested, and visible.
+8. Do not imply exactly-once semantics where the system actually depends on
+   durable idempotency.
+9. Do not add new autonomy payloads or schedule specs without explicit schema
+   versioning.
 
-- classify every cached API path as:
-  - unauthenticated-safe
-  - authenticated-but-cacheable
-  - never-cache
-- decide whether authenticated cache partitioning is needed or whether
-  authenticated API caching should be disabled entirely
-- define logout, token rotation, and session change invalidation policy
-- test offline replay semantics against session sequencing rules
+### 19. Open Questions
 
-### Failure Modes To Block
+These questions are real, but they should not block Phase 1.
 
-- data from user/session A shown after logout or user/session B login
-- auth endpoint cached
-- stale authenticated API data shown without attribution
-- replay queue applies stale session actions without detection
+1. Should the autonomy ledger live fully inside `cortex-storage`, or should
+   some fast-changing lease state remain in gateway memory with durable write
+   through?
+2. Should typed autonomy policy live in config, DB, or both?
+3. Should workflow schedules be stored as first-class autonomy jobs or as
+   workflow-owned records projected into the autonomy queue?
+4. Should notification delivery be part of the same state machine or a child
+   action with its own ledger?
 
-### Definition of Done
+### 20. Final Position
 
-- cache policy matrix exists
-- auth-sensitive endpoints are protected by policy and tests
-- logout/session transitions invalidate relevant cached state
+The next truly important system in this repo is not another skill, workflow
+node, or dashboard page.
 
-## Workstream G: Test and CI Governance
+It is a trustworthy autonomy control plane.
 
-### Problem
+That is the piece that turns the project from:
 
-The codebase can still drift back into broken states because most invariants are
-social, not enforced.
+- a secure agent runtime
 
-### Goal
+into:
 
-Turn the critical architectural rules into automated gates.
+- a secure, persistent, understandable, user-trustworthy agent platform
 
-### Required CI Gates
+The repo is ready for this now.
 
-- router/schema parity gate
-- SDK test suite
-- gateway critical-path integration tests
-- runtime check for missing desktop commands
-- dashboard guard against forbidden direct desktop imports
-- dashboard guard against unknown websocket event subscriptions
-- dashboard guard against raw gateway transport outside approved files
+It is not ready for more scattered autonomy.
 
-### Required Test Additions
+## References
 
-- gateway tests for `GET /api/auth/session`
-- websocket contract integration tests
-- approvals semantic tests once the contract decision is made
-- service-worker auth/cache transition tests
-- runtime command tests for keybindings/shell resolution
+These sources inform the scheduling and durability parts of the design:
 
-### Definition of Done
-
-- each major invariant has an automated owner
-- CI detects drift before release review
-
-## Adversarial Test Matrix
-
-The phase is not complete without failure-oriented tests.
-
-### Contract Truth
-
-- mounted route absent from schema
-- schema route absent from router
-- SDK export present for unsupported route
-
-### Approvals
-
-- goal payload shape changes unexpectedly
-- empty or partial goal content
-- large queue reveals N+1 behavior
-
-### Runtime
-
-- desktop command missing
-- notification permission denied
-- PTY unavailable
-- web mode attempts desktop behavior
-
-### Websocket
-
-- invalid subprotocol auth
-- revoked token auth
-- malformed envelope
-- replay inside buffer
-- replay outside buffer
-- duplicate event delivery
-- follower tab promoted after leader close
-
-### Service Worker
-
-- login A, cache data, logout, login B
-- token rotation while offline cache exists
-- offline replay against stale session sequence
-- safety write attempted offline
-
-## Release Gates
-
-The project should not claim broad OSS readiness for this phase until all are
-true:
-
-1. The exported schema policy is truthful and enforced.
-2. No fake public domain contract remains undocumented or mislabeled.
-3. No unapproved direct desktop/runtime bypass remains in dashboard code.
-4. Websocket event consumers all map to real gateway events.
-5. Auth/session/cache transitions cannot silently leak or reuse stale data.
-6. CI fails on the main classes of architectural drift.
-
-## Sequencing
-
-Recommended execution order:
-
-1. Contract truth audit and freeze
-2. OpenAPI/generated-type decision and parity work
-3. approvals contract replacement or demotion
-4. runtime ownership completion
-5. websocket regression protection
-6. service-worker safety completion
-7. CI gate installation
-8. re-audit against release gates
-
-This order matters. It is incorrect to add broad tests before deciding what the
-canonical contract actually is.
-
-## Definition of Done
-
-This phase is complete only when all of the following are true:
-
-- every remaining boundary has one declared owner
-- every public contract is semantically honest
-- every bypass is either removed or explicitly documented as an exception
-- every critical failure mode has an adversarial test
-- every architectural invariant has a CI check or a documented manual release
-  gate
-- an external contributor could identify the intended path for API, websocket,
-  runtime, and cache behavior from the docs without reverse-engineering the
-  repo
+- Kubernetes CronJob concepts:
+  [https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/)
+- Google Cloud Scheduler retry behavior:
+  [https://cloud.google.com/scheduler/docs/configuring/retry-jobs](https://cloud.google.com/scheduler/docs/configuring/retry-jobs)
+- Google SRE, distributed periodic scheduling:
+  [https://sre.google/sre-book/distributed-periodic-scheduling/](https://sre.google/sre-book/distributed-periodic-scheduling/)
+- Tokio missed tick behavior:
+  [https://docs.rs/tokio/latest/tokio/time/enum.MissedTickBehavior.html](https://docs.rs/tokio/latest/tokio/time/enum.MissedTickBehavior.html)

@@ -7,6 +7,10 @@
 //!   Stable→120s, Active→30s, Escalated→15s, Critical→5s
 //! - L4 is NOT disabled — uses Tier0 binary pings at 5s intervals
 //! - Checks PLATFORM_KILLED and per-agent pause/quarantine before every execution
+//!
+//! This crate is not the live runtime owner today. Gateway bootstrap does not
+//! start it, and the autonomy control plane is the canonical future owner for
+//! heartbeat scheduling, leasing, dispatch, and policy enforcement.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

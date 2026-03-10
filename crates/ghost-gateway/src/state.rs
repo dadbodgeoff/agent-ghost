@@ -6,10 +6,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use cortex_core::safety::trigger::TriggerEvent;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::agents::registry::AgentRegistry;
 use crate::api::websocket::{EventReplayBuffer, WsEnvelope};
+use crate::autonomy::AutonomyService;
 use crate::cost::tracker::CostTracker;
 use crate::db_pool::DbPool;
 use crate::gateway::GatewaySharedState;
@@ -42,6 +46,9 @@ pub struct AppState {
 
     /// Broadcast channel for real-time events to WebSocket clients.
     pub event_tx: broadcast::Sender<WsEnvelope>,
+
+    /// Shared trigger channel feeding automatic safety evaluation.
+    pub trigger_sender: tokio::sync::mpsc::Sender<TriggerEvent>,
 
     /// Ring buffer for event replay on WebSocket reconnect (Task 1.6).
     pub replay_buffer: Arc<EventReplayBuffer>,
@@ -94,6 +101,9 @@ pub struct AppState {
     /// T-5.3.6: JoinHandles for background tasks (convergence_watcher, backup_scheduler, etc.)
     pub background_tasks: Arc<tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 
+    /// Active live execution cancellation controls keyed by execution id.
+    pub live_execution_controls: Arc<dashmap::DashMap<String, Arc<CancellationToken>>>,
+
     /// T-5.11.2: Safety endpoint cooldown tracker (3 actions / 10 min → 5 min cooldown).
     pub safety_cooldown: Arc<crate::api::rate_limit::SafetyCooldown>,
 
@@ -128,6 +138,71 @@ pub struct AppState {
 
     /// WP9-D: Session TTL in days. Inactive sessions beyond this are soft-deleted.
     pub session_ttl_days: u32,
+
+    /// Canonical gateway-owned autonomy control plane.
+    pub autonomy: Arc<AutonomyService>,
+}
+
+pub struct LiveExecutionControlGuard {
+    state: Arc<AppState>,
+    execution_id: String,
+    token: Arc<CancellationToken>,
+}
+
+impl Drop for LiveExecutionControlGuard {
+    fn drop(&mut self) {
+        if let Some(entry) = self.state.live_execution_controls.get(&self.execution_id) {
+            let should_remove = Arc::ptr_eq(entry.value(), &self.token);
+            drop(entry);
+            if should_remove {
+                self.state
+                    .live_execution_controls
+                    .remove(&self.execution_id);
+            }
+        }
+    }
+}
+
+impl AppState {
+    pub fn sync_agent_access_pullbacks(&self) -> Result<Vec<Uuid>, String> {
+        let kill_state = self.kill_switch.current_state();
+        let mut agents = self
+            .agents
+            .write()
+            .map_err(|_| "agent registry lock poisoned".to_string())?;
+        Ok(agents.sync_access_pullbacks(&kill_state))
+    }
+
+    pub fn acquire_live_execution_control(
+        self: &Arc<Self>,
+        execution_id: impl Into<String>,
+    ) -> (Arc<CancellationToken>, LiveExecutionControlGuard) {
+        let execution_id = execution_id.into();
+        let token = Arc::new(self.shutdown_token.child_token());
+        if let Some(previous) = self
+            .live_execution_controls
+            .insert(execution_id.clone(), Arc::clone(&token))
+        {
+            previous.cancel();
+        }
+        (
+            Arc::clone(&token),
+            LiveExecutionControlGuard {
+                state: Arc::clone(self),
+                execution_id,
+                token,
+            },
+        )
+    }
+
+    pub fn cancel_live_execution(&self, execution_id: &str) -> bool {
+        if let Some(token) = self.live_execution_controls.get(execution_id) {
+            token.cancel();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // ── Thread-safe API key store ────────────────────────────────────────

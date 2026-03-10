@@ -1,4 +1,5 @@
 import type { GhostRequestFn } from './client.js';
+import type { AutonomyStatus } from './autonomy.js';
 
 // ── Types ──
 
@@ -6,6 +7,7 @@ export interface HealthStatus {
   status: 'alive' | 'unavailable';
   state: 'Healthy' | 'Degraded' | 'Recovering' | 'Initializing' | 'ShuttingDown' | 'FatalError';
   platform_killed: boolean;
+  autonomy?: AutonomyStatus;
   convergence_monitor?: {
     connected: boolean;
   };

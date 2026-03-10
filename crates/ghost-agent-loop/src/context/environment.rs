@@ -26,7 +26,10 @@ pub fn build_environment_context(workspace_root: Option<&Path>) -> String {
 
     // Date (minute precision for KV cache stability — no seconds)
     let now = chrono::Local::now();
-    sections.push(format!("Date: {}", now.format("%Y-%m-%d %H:%M")));
+    sections.push(format!(
+        "Runtime Date (authoritative): {}",
+        now.format("%Y-%m-%d %H:%M")
+    ));
 
     // Working directory
     let cwd = workspace_root
@@ -198,7 +201,7 @@ mod tests {
     fn test_build_environment_context_no_workspace() {
         let ctx = build_environment_context(None);
         assert!(ctx.contains("Platform:"));
-        assert!(ctx.contains("Date:"));
+        assert!(ctx.contains("Runtime Date (authoritative):"));
     }
 
     #[test]

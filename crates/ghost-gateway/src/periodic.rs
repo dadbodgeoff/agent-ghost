@@ -4,6 +4,10 @@
 //! scheduler. The gateway bootstrap is the natural orchestration point.
 //! Each task runs in its own `tokio::spawn` (failure in one doesn't block others).
 //! After `max_failures` consecutive failures, a task is disabled with `tracing::error!`.
+//!
+//! Autonomy freeze: this scheduler is not allowed to own proactive agent work,
+//! schedule selection, retry dispatch, or any other autonomy control-plane
+//! behavior. Those responsibilities belong to the gateway autonomy runtime.
 
 use std::collections::BTreeMap;
 use std::future::Future;

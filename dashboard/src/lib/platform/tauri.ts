@@ -111,6 +111,10 @@ export const tauriRuntime: RuntimePlatform = {
   async stopGateway() {
     return invoke<string>('stop_gateway');
   },
+  async openExternalUrl(url: string) {
+    const { open } = await import('@tauri-apps/plugin-shell');
+    await open(url);
+  },
   async requestNotificationPermission() {
     const { isPermissionGranted, requestPermission } = await import('@tauri-apps/plugin-notification');
     if (await isPermissionGranted()) {

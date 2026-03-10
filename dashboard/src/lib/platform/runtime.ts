@@ -24,6 +24,7 @@ export interface RuntimePlatform {
   gatewayStatus(): Promise<string>;
   startGateway(): Promise<string>;
   stopGateway(): Promise<string>;
+  openExternalUrl(url: string): Promise<void>;
   requestNotificationPermission(): Promise<boolean>;
   sendNotification(notification: { title: string; body?: string }): Promise<void>;
   readKeybindings(): Promise<Array<{ key: string; command: string; when?: string }>>;

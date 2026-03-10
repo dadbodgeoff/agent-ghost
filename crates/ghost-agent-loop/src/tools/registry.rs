@@ -1,6 +1,6 @@
 //! ToolRegistry — register, lookup, schema generation, level-filtered schemas (A2.7).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ghost_llm::provider::ToolSchema;
 
@@ -59,6 +59,19 @@ impl ToolRegistry {
     /// Get all registered tool names.
     pub fn tool_names(&self) -> Vec<&str> {
         self.tools.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Collect the unique capability names required by the registered tools.
+    pub fn required_capabilities(&self) -> Vec<String> {
+        self.tools
+            .values()
+            .filter_map(|tool| {
+                let capability = tool.capability.trim();
+                (!capability.is_empty()).then(|| capability.to_string())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Number of registered tools.

@@ -49,6 +49,47 @@ pub fn latest_by_memory(conn: &Connection, memory_id: &str) -> CortexResult<Opti
     Ok(rows.into_iter().next())
 }
 
+pub fn latest_for_actor(
+    conn: &Connection,
+    actor_id: &str,
+    limit: u32,
+) -> CortexResult<Vec<SnapshotRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT ms.id, ms.memory_id, ms.snapshot, ms.created_at
+             FROM memory_snapshots ms
+             JOIN (
+                 SELECT memory_id, MAX(id) AS max_id
+                 FROM memory_snapshots
+                 GROUP BY memory_id
+             ) latest ON latest.max_id = ms.id
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM memory_events me
+                 WHERE me.memory_id = ms.memory_id
+                   AND me.actor_id = ?1
+             )
+             ORDER BY ms.created_at DESC
+             LIMIT ?2",
+        )
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    let rows = stmt
+        .query_map(params![actor_id, limit], |row| {
+            Ok(SnapshotRow {
+                id: row.get(0)?,
+                memory_id: row.get(1)?,
+                snapshot: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| to_storage_err(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| to_storage_err(e.to_string()))?;
+
+    Ok(rows)
+}
+
 #[derive(Debug, Clone)]
 pub struct SnapshotRow {
     pub id: i64,

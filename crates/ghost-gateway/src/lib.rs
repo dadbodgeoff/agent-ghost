@@ -6,9 +6,11 @@
 pub mod agents;
 pub mod api;
 pub mod auth;
+pub mod autonomy;
 pub mod backup_scheduler;
 pub mod bootstrap;
 pub mod cli;
+pub mod codex;
 pub mod config;
 pub mod config_watcher;
 pub mod convergence_watcher;
@@ -31,6 +33,7 @@ pub mod session;
 pub mod shutdown;
 pub mod skill_catalog;
 pub mod skill_ingest;
+pub mod speculative_context;
 pub mod state;
 
 #[cfg(feature = "otel")]

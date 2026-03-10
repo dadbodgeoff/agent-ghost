@@ -9,6 +9,7 @@ gateway:
 agents:
   - name: "ghost"
     spending_cap: 5.0
+    full_access: true
     capabilities:
       - "web_search"
       - "file_read"
@@ -22,6 +23,11 @@ channels:
 models:
   default_provider: "openai_compat"
   providers:
+    # ChatGPT/Codex subscription-backed option:
+    - name: "codex"
+      api_key_env: ""
+      # model: "default" # optional; omit to let Codex choose
+      # Set api_key_env to a real env var name to use API-key-backed Codex instead.
     - name: "openai_compat"
       base_url: "https://api.x.ai"
       model: "grok-4-1-fast-reasoning"
@@ -39,6 +45,8 @@ tools:
     allow_http: false
     timeout_secs: 15
   shell:
+    # Empty string prefix = allow any shell command. Testing only.
+    allowed_prefixes: [""]
     timeout_secs: 30
 
 pc_control:

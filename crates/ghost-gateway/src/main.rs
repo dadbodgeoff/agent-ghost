@@ -114,6 +114,9 @@ enum Commands {
     Logout,
     /// Run platform health checks.
     Doctor,
+    /// Manage Codex authentication and account status.
+    #[command(subcommand)]
+    Codex(CodexCommands),
     /// Generate shell completions.
     Completions {
         /// Shell to generate completions for.
@@ -461,6 +464,26 @@ enum CronCommands {
     },
 }
 
+#[derive(clap::Subcommand)]
+enum CodexCommands {
+    /// Show Codex account status.
+    Status,
+    /// Start Codex login. Defaults to ChatGPT browser auth.
+    Login {
+        /// Read an API key from this environment variable instead of using ChatGPT login.
+        #[arg(long)]
+        api_key_env: Option<String>,
+        /// Return immediately after printing the browser URL.
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Remove the stored Codex login.
+    Logout,
+    /// Show Codex account rate limits.
+    #[command(name = "rate-limits")]
+    RateLimits,
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 fn main() {
@@ -654,6 +677,21 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             Ok(())
         }
         Commands::Doctor => cli::doctor::run().await,
+        Commands::Codex(sub) => match sub {
+            CodexCommands::Status => cli::codex::run_status().await,
+            CodexCommands::Login {
+                api_key_env,
+                no_wait,
+            } => {
+                cli::codex::run_login(cli::codex::CodexLoginArgs {
+                    api_key_env,
+                    wait: !no_wait,
+                })
+                .await
+            }
+            CodexCommands::Logout => cli::codex::run_logout().await,
+            CodexCommands::RateLimits => cli::codex::run_rate_limits().await,
+        },
 
         // ─── Phase 2: ghost logs ───────────────────────────────────────────
         Commands::Logs {

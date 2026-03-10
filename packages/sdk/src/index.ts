@@ -92,6 +92,20 @@ export type {
 export { HealthAPI } from './health.js';
 export type { HealthStatus, ReadyStatus } from './health.js';
 
+// ── Autonomy ──
+export { AutonomyAPI } from './autonomy.js';
+export type {
+  AutonomyStatus,
+  AutonomySaturationStatus,
+  AutonomyJob,
+  AutonomyRun,
+  AutonomyPolicyDocument,
+  AutonomyPolicyResponse,
+  AutonomySuppression,
+  AutonomySuppressionsResponse,
+  ApproveAutonomyRunResponse,
+} from './autonomy.js';
+
 // ── Auth ──
 export { AuthAPI } from './auth.js';
 export type { LoginParams, AuthTokenResponse, LogoutResponse, SessionResponse } from './auth.js';
@@ -117,6 +131,13 @@ export type {
   SearchMemoriesParams,
   SearchMemoriesResult,
 } from './memory.js';
+
+// ── Live Executions ──
+export { LiveExecutionsAPI } from './live-executions.js';
+export type {
+  LiveExecutionResult,
+  LiveExecutionCancelResult,
+} from './live-executions.js';
 
 // ── Runtime Sessions ──
 export { RuntimeSessionsAPI } from './runtime-sessions.js';
@@ -204,6 +225,15 @@ export type {
   SetProviderKeyResult,
   DeleteProviderKeyResult,
 } from './provider-keys.js';
+
+// ── Codex ──
+export { CodexAPI } from './codex.js';
+export type {
+  CodexAccount,
+  CodexStatusResult,
+  CodexLoginStartResult,
+  CodexLogoutResult,
+} from './codex.js';
 
 // ── Push ──
 export { PushAPI } from './push.js';

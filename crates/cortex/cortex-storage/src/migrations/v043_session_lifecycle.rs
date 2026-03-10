@@ -11,11 +11,14 @@ use rusqlite::Connection;
 pub fn migrate(conn: &Connection) -> CortexResult<()> {
     conn.execute_batch(
         "-- Add lifecycle columns to studio_chat_sessions.
+         --
+         -- SQLite does not allow ADD COLUMN with a non-constant default like
+         -- datetime('now'), so add the column nullable and backfill it below.
          ALTER TABLE studio_chat_sessions
-             ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT (datetime('now'));
+             ADD COLUMN last_activity_at TEXT;
 
          ALTER TABLE studio_chat_sessions
-             ADD COLUMN deleted_at TEXT DEFAULT NULL;
+             ADD COLUMN deleted_at TEXT;
 
          -- Backfill last_activity_at from the latest message or updated_at.
          UPDATE studio_chat_sessions
@@ -23,8 +26,10 @@ pub fn migrate(conn: &Connection) -> CortexResult<()> {
              (SELECT MAX(created_at) FROM studio_chat_messages
               WHERE studio_chat_messages.session_id = studio_chat_sessions.id),
              updated_at,
-             created_at
-         );
+             created_at,
+             datetime('now')
+         )
+         WHERE last_activity_at IS NULL OR last_activity_at = '';
 
          -- Index for efficient TTL cleanup queries.
          CREATE INDEX IF NOT EXISTS idx_studio_sessions_last_activity

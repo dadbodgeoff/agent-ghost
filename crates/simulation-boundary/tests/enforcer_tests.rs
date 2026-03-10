@@ -136,6 +136,18 @@ fn simulation_boundary_prompt_non_empty() {
 }
 
 #[test]
+fn simulation_boundary_prompt_grounds_runtime_context() {
+    assert!(SIMULATION_BOUNDARY_PROMPT.contains("runtime environment context"));
+    assert!(SIMULATION_BOUNDARY_PROMPT.contains("authoritative for this session"));
+    assert!(SIMULATION_BOUNDARY_PROMPT.contains("outside the simulation"));
+}
+
+#[test]
+fn simulation_boundary_prompt_does_not_frame_all_execution_as_simulation() {
+    assert!(!SIMULATION_BOUNDARY_PROMPT.contains("operating within a simulation framework"));
+}
+
+#[test]
 fn simulation_boundary_version_present() {
     assert!(!SIMULATION_BOUNDARY_VERSION.is_empty());
     assert!(SIMULATION_BOUNDARY_VERSION.starts_with("v"));

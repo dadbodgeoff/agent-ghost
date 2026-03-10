@@ -8,6 +8,7 @@ use ghost_llm::provider::{
 };
 use ghost_llm::streaming::StreamChunkStream;
 
+use crate::codex::CodexProvider;
 use crate::config::ProviderConfig;
 use crate::state::AppState;
 
@@ -43,7 +44,7 @@ pub fn build_fallback_chain(providers: &[ProviderConfig]) -> LLMFallbackChain {
                 );
             }
             "anthropic" => {
-                if let Some(key) = provider_api_key(provider, "ANTHROPIC_API_KEY") {
+                if let Some(key) = provider_api_key(provider, Some("ANTHROPIC_API_KEY")) {
                     chain.add_provider(
                         Arc::new(AnthropicProvider {
                             model: provider
@@ -60,7 +61,7 @@ pub fn build_fallback_chain(providers: &[ProviderConfig]) -> LLMFallbackChain {
                 }
             }
             "openai" => {
-                if let Some(key) = provider_api_key(provider, "OPENAI_API_KEY") {
+                if let Some(key) = provider_api_key(provider, Some("OPENAI_API_KEY")) {
                     chain.add_provider(
                         Arc::new(OpenAIProvider {
                             model: provider.model.clone().unwrap_or_else(|| "gpt-4o".into()),
@@ -74,7 +75,7 @@ pub fn build_fallback_chain(providers: &[ProviderConfig]) -> LLMFallbackChain {
                 }
             }
             "gemini" => {
-                if let Some(key) = provider_api_key(provider, "GEMINI_API_KEY") {
+                if let Some(key) = provider_api_key(provider, Some("GEMINI_API_KEY")) {
                     chain.add_provider(
                         Arc::new(GeminiProvider {
                             model: provider
@@ -91,7 +92,7 @@ pub fn build_fallback_chain(providers: &[ProviderConfig]) -> LLMFallbackChain {
                 }
             }
             "openai_compat" => {
-                if let Some(key) = provider_api_key(provider, "OPENAI_API_KEY") {
+                if let Some(key) = provider_api_key(provider, Some("OPENAI_API_KEY")) {
                     chain.add_provider(
                         Arc::new(OpenAICompatProvider {
                             model: provider.model.clone().unwrap_or_else(|| "default".into()),
@@ -108,6 +109,15 @@ pub fn build_fallback_chain(providers: &[ProviderConfig]) -> LLMFallbackChain {
                         }],
                     );
                 }
+            }
+            "codex" => {
+                chain.add_provider(
+                    Arc::new(CodexProvider {
+                        model: provider.model.clone(),
+                        api_key_env: provider.api_key_env.clone(),
+                    }),
+                    vec![],
+                );
             }
             _ => {}
         }
@@ -137,7 +147,7 @@ pub fn build_provider_stream(
                     .clone()
                     .unwrap_or_else(|| "claude-sonnet-4-20250514".into()),
                 api_key: std::sync::RwLock::new(
-                    provider_api_key(provider, "ANTHROPIC_API_KEY").unwrap_or_default(),
+                    provider_api_key(provider, Some("ANTHROPIC_API_KEY")).unwrap_or_default(),
                 ),
             }),
             messages,
@@ -147,7 +157,7 @@ pub fn build_provider_stream(
             Arc::new(OpenAIProvider {
                 model: provider.model.clone().unwrap_or_else(|| "gpt-4o".into()),
                 api_key: std::sync::RwLock::new(
-                    provider_api_key(provider, "OPENAI_API_KEY").unwrap_or_default(),
+                    provider_api_key(provider, Some("OPENAI_API_KEY")).unwrap_or_default(),
                 ),
             }),
             messages,
@@ -160,7 +170,7 @@ pub fn build_provider_stream(
                     .clone()
                     .unwrap_or_else(|| "gemini-2.0-flash".into()),
                 api_key: std::sync::RwLock::new(
-                    provider_api_key(provider, "GEMINI_API_KEY").unwrap_or_default(),
+                    provider_api_key(provider, Some("GEMINI_API_KEY")).unwrap_or_default(),
                 ),
             }),
             messages,
@@ -169,13 +179,18 @@ pub fn build_provider_stream(
         "openai_compat" => OpenAICompatProvider {
             model: provider.model.clone().unwrap_or_else(|| "default".into()),
             api_key: std::sync::RwLock::new(
-                provider_api_key(provider, "OPENAI_API_KEY").unwrap_or_default(),
+                provider_api_key(provider, Some("OPENAI_API_KEY")).unwrap_or_default(),
             ),
             base_url: provider
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "http://localhost:8080".into()),
             context_window_size: 128_000,
+        }
+        .stream_chat(&messages, &tools),
+        "codex" => CodexProvider {
+            model: provider.model.clone(),
+            api_key_env: provider.api_key_env.clone(),
         }
         .stream_chat(&messages, &tools),
         _ => OllamaProvider {
@@ -189,7 +204,7 @@ pub fn build_provider_stream(
     }
 }
 
-fn provider_api_key(provider: &ProviderConfig, default_env: &str) -> Option<String> {
-    crate::state::get_api_key(provider.api_key_env.as_deref().unwrap_or(default_env))
-        .filter(|key| !key.is_empty())
+fn provider_api_key(provider: &ProviderConfig, default_env: Option<&str>) -> Option<String> {
+    let env_name = provider.api_key_env.as_deref().or(default_env)?;
+    crate::state::get_api_key(env_name).filter(|key| !key.is_empty())
 }

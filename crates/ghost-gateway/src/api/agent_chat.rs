@@ -88,6 +88,8 @@ struct AgentChatExecutionState {
 
 #[derive(Debug, Clone)]
 struct AgentStreamAcceptance {
+    #[allow(dead_code)]
+    execution_id: String,
     session_id: String,
     message_id: String,
     stream_start_seq: i64,
@@ -299,6 +301,20 @@ pub async fn agent_chat(
                     )
                     .await;
                 }
+                "cancelled" => {
+                    let cancelled_body = agent_chat_cancelled_body(&execution_state);
+                    return finalize_agent_chat_cancelled_response(
+                        &state,
+                        &lease,
+                        &operation_context,
+                        &agent_audit_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        cancelled_body,
+                    )
+                    .await;
+                }
                 "accepted" => {}
                 other => {
                     return error_response_with_idempotency(ApiError::internal(format!(
@@ -339,6 +355,10 @@ pub async fn agent_chat(
                 mut runner,
                 providers,
             } = prepared_runtime;
+
+            let (cancel_token, _execution_control_guard) =
+                state.acquire_live_execution_control(execution_id.clone());
+            runner.set_cancel_token(Arc::clone(&cancel_token));
 
             if providers.is_empty() {
                 let (status, body) = api_error_status_and_body(ApiError::bad_request(
@@ -389,6 +409,25 @@ pub async fn agent_chat(
                 }
             };
 
+            if cancel_token.is_cancelled() {
+                let heartbeat_result = heartbeat.stop().await;
+                if let Err(error) = heartbeat_result {
+                    return error_response_with_idempotency(error);
+                }
+                let cancelled_body = agent_chat_cancelled_body(&execution_state);
+                return finalize_agent_chat_cancelled_response(
+                    &state,
+                    &lease,
+                    &operation_context,
+                    &agent_id,
+                    actor,
+                    &execution_id,
+                    execution_state,
+                    cancelled_body,
+                )
+                .await;
+            }
+
             if let Err(error) = {
                 let db = state.db.write().await;
                 update_agent_execution_state(&db, &execution_id, "running", &execution_state)
@@ -409,6 +448,24 @@ pub async fn agent_chat(
                         return error_response_with_idempotency(error);
                     }
                     result
+                }
+                Err(ghost_agent_loop::runner::RunError::Cancelled) => {
+                    let heartbeat_result = heartbeat.stop().await;
+                    if let Err(error) = heartbeat_result {
+                        return error_response_with_idempotency(error);
+                    }
+                    let cancelled_body = agent_chat_cancelled_body(&execution_state);
+                    return finalize_agent_chat_cancelled_response(
+                        &state,
+                        &lease,
+                        &operation_context,
+                        &agent_id,
+                        actor,
+                        &execution_id,
+                        execution_state,
+                        cancelled_body,
+                    )
+                    .await;
                 }
                 Err(error) => {
                     let heartbeat_result = heartbeat.stop().await;
@@ -438,7 +495,7 @@ pub async fn agent_chat(
 
             let response_content = result.output.clone().unwrap_or_default();
             let body = serde_json::to_value(AgentChatResponse {
-                content: response_content,
+                content: response_content.clone(),
                 session_id: runtime_ctx.session_id.to_string(),
                 tool_calls_made: result.tool_calls_made,
                 total_tokens: result.total_tokens,
@@ -456,6 +513,26 @@ pub async fn agent_chat(
                 ) {
                     return error_response_with_idempotency(error);
                 }
+            }
+            if let Err(error) = crate::speculative_context::record_completed_turn(
+                &state,
+                crate::speculative_context::CompletedTurnInput {
+                    agent_id: runtime_ctx.agent.id,
+                    session_id: runtime_ctx.session_id,
+                    turn_id: execution_id.clone(),
+                    route_kind: "agent_chat",
+                    user_message: req.message.clone(),
+                    assistant_message: response_content.clone(),
+                },
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    execution_id = %execution_id,
+                    session_id = %runtime_ctx.session_id,
+                    "failed to record speculative context for agent chat turn"
+                );
             }
             finalize_agent_chat_terminal_response(
                 &state,
@@ -613,6 +690,7 @@ pub async fn agent_chat_stream(
                         let accepted_body = agent_stream_accepted_body(
                             &execution_state.session_id,
                             &execution_state.agent_id,
+                            &record.id,
                             &execution_state.message_id,
                             execution_state.stream_start_seq,
                         );
@@ -671,6 +749,11 @@ pub async fn agent_chat_stream(
                             "session_id": session_id,
                             "message_id": message_id,
                         });
+                        let runtime_start_payload = serde_json::json!({
+                            "session_id": session_id,
+                            "message_id": message_id,
+                            "message": req.message,
+                        });
                         let start_seq =
                             match cortex_storage::queries::stream_event_queries::insert_stream_event(
                                 &db,
@@ -697,7 +780,7 @@ pub async fn agent_chat_stream(
                             &session_id,
                             &prepared_runtime.agent_id,
                             "stream_start",
-                            &start_payload,
+                            &runtime_start_payload,
                             None,
                         ) {
                             let _ = cortex_storage::queries::stream_event_queries::delete_events_for_message(
@@ -732,6 +815,7 @@ pub async fn agent_chat_stream(
                         let accepted_body = agent_stream_accepted_body(
                             &session_id,
                             &prepared_runtime.agent_id,
+                            &message_id,
                             &message_id,
                             start_seq,
                         );
@@ -771,8 +855,44 @@ pub async fn agent_chat_stream(
                 }
             };
 
+            if execution_state.terminal_event_type.is_some() || execution_state.recovery_required {
+                let persisted_events = {
+                    let db = match state.db.read() {
+                        Ok(db) => db,
+                        Err(error) => {
+                            return response_with_idempotency(
+                                ApiError::db_error("replay_stream_read", error).into_response(),
+                                IdempotencyStatus::Executed,
+                            );
+                        }
+                    };
+                    match cortex_storage::queries::stream_event_queries::recover_events_after(
+                        &db,
+                        &acceptance.session_id,
+                        &acceptance.message_id,
+                        0,
+                    ) {
+                        Ok(events) => events,
+                        Err(error) => {
+                            return response_with_idempotency(
+                                ApiError::db_error("replay_stream_read", error).into_response(),
+                                IdempotencyStatus::Executed,
+                            );
+                        }
+                    }
+                };
+
+                return agent_replay_stream_response(
+                    acceptance,
+                    persisted_events,
+                    Some(execution_state),
+                    IdempotencyStatus::Executed,
+                );
+            }
+
             let (stream_rx, task_handle) = spawn_agent_chat_stream_execution(
                 Arc::clone(&state),
+                execution_id.clone(),
                 requested_agent_id,
                 acceptance.session_id.clone(),
                 acceptance.message_id.clone(),
@@ -839,6 +959,16 @@ fn agent_chat_recovery_body(state: &AgentChatExecutionState) -> serde_json::Valu
         object.insert("recovery_required".into(), serde_json::Value::Bool(true));
     }
     body
+}
+
+fn agent_chat_cancelled_body(state: &AgentChatExecutionState) -> serde_json::Value {
+    state.final_response.clone().unwrap_or_else(|| {
+        serde_json::to_value(ErrorResponse::new(
+            "EXECUTION_CANCELLED",
+            "Execution cancelled by user",
+        ))
+        .unwrap_or(serde_json::Value::Null)
+    })
 }
 
 fn parse_agent_chat_execution_state(
@@ -1107,6 +1237,7 @@ fn agent_chat_audit_details(body: &serde_json::Value) -> serde_json::Value {
 fn agent_stream_accepted_body(
     session_id: &str,
     agent_id: &str,
+    execution_id: &str,
     message_id: &str,
     stream_start_seq: i64,
 ) -> serde_json::Value {
@@ -1114,6 +1245,7 @@ fn agent_stream_accepted_body(
         "status": "accepted",
         "session_id": session_id,
         "agent_id": agent_id,
+        "execution_id": execution_id,
         "message_id": message_id,
         "stream_start_seq": stream_start_seq,
     })
@@ -1206,17 +1338,24 @@ fn update_agent_stream_execution_state(
 fn parse_agent_stream_acceptance(
     body: &serde_json::Value,
 ) -> Result<AgentStreamAcceptance, ApiError> {
+    let message_id = body
+        .get("message_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| ApiError::internal("missing accepted message_id"))?
+        .to_string();
+
     Ok(AgentStreamAcceptance {
+        execution_id: body
+            .get("execution_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(message_id.as_str())
+            .to_string(),
         session_id: body
             .get("session_id")
             .and_then(|value| value.as_str())
             .ok_or_else(|| ApiError::internal("missing accepted session_id"))?
             .to_string(),
-        message_id: body
-            .get("message_id")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ApiError::internal("missing accepted message_id"))?
-            .to_string(),
+        message_id,
         stream_start_seq: body
             .get("stream_start_seq")
             .and_then(|value| value.as_i64())
@@ -1286,6 +1425,7 @@ fn agent_stream_error_payload(
     terminal: bool,
     recovery_required: bool,
     reconstructed: bool,
+    cancelled: bool,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({ "message": message });
     if let Some(error_type) = error_type {
@@ -1302,6 +1442,9 @@ fn agent_stream_error_payload(
     }
     if recovery_required {
         payload["recovery_required"] = serde_json::json!(true);
+    }
+    if cancelled {
+        payload["cancelled"] = serde_json::json!(true);
     }
     if reconstructed {
         payload = mark_reconstructed_payload(payload);
@@ -1496,13 +1639,20 @@ fn agent_replay_stream_response(
         }
         if replay_missing_terminal {
             if let Some(execution_state) = execution_state {
-                if execution_state.recovery_required {
-                    let payload = execution_state
-                        .terminal_payload
-                        .unwrap_or_else(|| agent_stream_recovery_payload(
-                            "Stream replay requires recovery because durable persistence did not complete",
-                        ));
-                    yield Ok(Event::default().event("error").data(mark_reconstructed_payload(payload).to_string()));
+                if let (Some(event_type), Some(payload)) = (
+                    execution_state.terminal_event_type.as_deref(),
+                    execution_state.terminal_payload,
+                ) {
+                    yield Ok(Event::default()
+                        .event(event_type)
+                        .data(mark_reconstructed_payload(payload).to_string()));
+                } else if execution_state.recovery_required {
+                    let payload = agent_stream_recovery_payload(
+                        "Stream replay requires recovery because durable persistence did not complete",
+                    );
+                    yield Ok(Event::default()
+                        .event("error")
+                        .data(mark_reconstructed_payload(payload).to_string()));
                 }
             }
         }
@@ -1514,6 +1664,46 @@ fn agent_replay_stream_response(
             .into_response(),
         idempotency_status,
     )
+}
+
+async fn finalize_agent_chat_cancelled_response(
+    state: &Arc<AppState>,
+    lease: &crate::api::idempotency::PreparedOperationLease,
+    operation_context: &OperationContext,
+    agent_id: &str,
+    actor: &str,
+    execution_id: &str,
+    mut execution_state: AgentChatExecutionState,
+    body: serde_json::Value,
+) -> Response {
+    execution_state.final_status_code = Some(StatusCode::CONFLICT.as_u16());
+    execution_state.final_response = Some(body.clone());
+
+    let db = state.db.write().await;
+    if let Err(error) =
+        update_agent_execution_state(&db, execution_id, "cancelled", &execution_state)
+    {
+        return error_response_with_idempotency(error);
+    }
+
+    match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::CONFLICT, &body)
+    {
+        Ok(outcome) => {
+            write_mutation_audit_entry(
+                &db,
+                agent_id,
+                "agent_chat",
+                "medium",
+                actor,
+                "cancelled",
+                agent_chat_audit_details(&outcome.body),
+                operation_context,
+                &outcome.idempotency_status,
+            );
+            json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
+        }
+        Err(error) => error_response_with_idempotency(error),
+    }
 }
 
 fn agent_live_stream_response(
@@ -1743,6 +1933,7 @@ fn agent_live_stream_response(
                     provider,
                     fallback,
                     terminal,
+                    cancelled,
                 } => {
                     let payload = agent_stream_error_payload(
                         &message,
@@ -1750,8 +1941,9 @@ fn agent_live_stream_response(
                         provider.as_deref(),
                         fallback,
                         terminal,
-                        terminal,
+                        terminal && !cancelled,
                         false,
+                        cancelled,
                     );
 
                     if !terminal {
@@ -1767,13 +1959,13 @@ fn agent_live_stream_response(
                         "error",
                         &payload,
                     ).await.ok();
-                    execution_state.recovery_required = true;
+                    execution_state.recovery_required = !cancelled;
                     execution_state.terminal_event_type = Some("error".to_string());
                     execution_state.terminal_payload = Some(payload.clone());
                     persist_agent_stream_terminal_state(
                         &db_for_stream,
                         &execution_id,
-                        "recovery_required",
+                        if cancelled { "cancelled" } else { "recovery_required" },
                         &execution_state,
                     ).await;
                     let mut ev = Event::default().event("error").data(payload.to_string());
@@ -1814,6 +2006,7 @@ fn agent_live_stream_response(
 
 fn spawn_agent_chat_stream_execution(
     state: Arc<AppState>,
+    execution_id: String,
     requested_agent_id: Option<String>,
     session_id: String,
     message_id: String,
@@ -1825,6 +2018,8 @@ fn spawn_agent_chat_stream_execution(
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(256);
     let state_for_task = Arc::clone(&state);
     let handle = tokio::spawn(async move {
+        let (cancel_token, _execution_control_guard) =
+            state_for_task.acquire_live_execution_control(execution_id);
         let runtime_session_id = Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::now_v7());
         let prepared_runtime = match prepare_requested_runtime_execution(
             &state_for_task,
@@ -1848,6 +2043,7 @@ fn spawn_agent_chat_stream_execution(
             providers,
             ..
         } = prepared_runtime;
+        runner.set_cancel_token(Arc::clone(&cancel_token));
 
         if let Some(run_result) = execute_streaming_turn(
             &tx,
@@ -1861,6 +2057,26 @@ fn spawn_agent_chat_stream_execution(
         )
         .await
         {
+            if let Err(error) = crate::speculative_context::record_completed_turn(
+                &state_for_task,
+                crate::speculative_context::CompletedTurnInput {
+                    agent_id: runtime_ctx.agent.id,
+                    session_id: runtime_ctx.session_id,
+                    turn_id: message_id.clone(),
+                    route_kind: "agent_chat_stream",
+                    user_message: user_message.clone(),
+                    assistant_message: run_result.output.clone().unwrap_or_default(),
+                },
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    message_id = %message_id,
+                    session_id = %runtime_ctx.session_id,
+                    "failed to record speculative context for agent chat stream"
+                );
+            }
             let output_inspection = inspect_text_safety(
                 run_result.output.as_deref().unwrap_or_default(),
                 runtime_ctx.agent.id,
@@ -1896,6 +2112,7 @@ mod tests {
     #[tokio::test]
     async fn replayed_agent_stream_terminal_errors_are_marked_reconstructed() {
         let acceptance = AgentStreamAcceptance {
+            execution_id: "execution-1".to_string(),
             session_id: "session-1".to_string(),
             message_id: "message-1".to_string(),
             stream_start_seq: 7,

@@ -1,58 +1,6 @@
 <script lang="ts">
-  import { marked } from 'marked';
-  import { markedHighlight } from 'marked-highlight';
-  import hljs from 'highlight.js/lib/core';
-  import javascript from 'highlight.js/lib/languages/javascript';
-  import typescript from 'highlight.js/lib/languages/typescript';
-  import python from 'highlight.js/lib/languages/python';
-  import rust from 'highlight.js/lib/languages/rust';
-  import bash from 'highlight.js/lib/languages/bash';
-  import json from 'highlight.js/lib/languages/json';
-  import yaml from 'highlight.js/lib/languages/yaml';
-  import sql from 'highlight.js/lib/languages/sql';
-  import css from 'highlight.js/lib/languages/css';
-  import xml from 'highlight.js/lib/languages/xml';
-  import go from 'highlight.js/lib/languages/go';
-  import DOMPurify from 'dompurify';
   import type { StudioMessage } from '$lib/stores/studioChat.svelte';
-
-  // Register languages.
-  hljs.registerLanguage('javascript', javascript);
-  hljs.registerLanguage('js', javascript);
-  hljs.registerLanguage('typescript', typescript);
-  hljs.registerLanguage('ts', typescript);
-  hljs.registerLanguage('python', python);
-  hljs.registerLanguage('py', python);
-  hljs.registerLanguage('rust', rust);
-  hljs.registerLanguage('rs', rust);
-  hljs.registerLanguage('bash', bash);
-  hljs.registerLanguage('sh', bash);
-  hljs.registerLanguage('shell', bash);
-  hljs.registerLanguage('json', json);
-  hljs.registerLanguage('yaml', yaml);
-  hljs.registerLanguage('yml', yaml);
-  hljs.registerLanguage('sql', sql);
-  hljs.registerLanguage('css', css);
-  hljs.registerLanguage('html', xml);
-  hljs.registerLanguage('xml', xml);
-  hljs.registerLanguage('go', go);
-
-  // Configure marked with syntax highlighting.
-  marked.use(
-    markedHighlight({
-      langPrefix: 'hljs language-',
-      highlight(code: string, lang: string) {
-        if (lang && hljs.getLanguage(lang)) {
-          try { return hljs.highlight(code, { language: lang }).value; }
-          catch { /* fallback below */ }
-        }
-        try { return hljs.highlightAuto(code).value; }
-        catch { return code; }
-      },
-    }),
-  );
-
-  marked.setOptions({ breaks: true, gfm: true });
+  import { renderStudioMarkdown } from '$lib/render/studioMarkdown';
 
   interface Props {
     message: StudioMessage;
@@ -64,25 +12,9 @@
   let copied = $state(false);
 
   let renderedHtml = $derived.by(() => {
-    if (message.role === 'user') {
-      return escapeHtml(message.content);
-    }
-    if (!message.content) return '';
-    const raw = marked.parse(message.content) as string;
-    return DOMPurify.sanitize(raw, {
-      ALLOWED_TAGS: [
-        'p', 'br', 'strong', 'em', 'code', 'pre', 'span', 'ul', 'ol', 'li',
-        'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'blockquote', 'table',
-        'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'del', 'img',
-        'details', 'summary', 'mark', 'kbd', 'sub', 'sup', 'figure', 'figcaption',
-      ],
-      ALLOWED_ATTR: ['class', 'href', 'target', 'rel', 'src', 'alt', 'title'],
-    });
+    if (message.role !== 'assistant' || !message.content) return '';
+    return renderStudioMarkdown(message.content);
   });
-
-  function escapeHtml(text: string): string {
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
 
   function formatTimestamp(iso: string): string {
     try {

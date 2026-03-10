@@ -85,18 +85,26 @@ fn mask_key(key: &str) -> String {
     format!("{prefix}...{suffix}")
 }
 
-/// Providers that require an API key (ollama is local, no key needed).
-fn needs_api_key(provider_name: &str) -> bool {
-    !matches!(provider_name, "ollama")
-}
-
 /// Default env var name for a provider.
 fn default_key_env(provider_name: &str) -> &str {
     match provider_name {
         "anthropic" => "ANTHROPIC_API_KEY",
-        "openai" => "OPENAI_API_KEY",
+        "openai" | "openai_compat" => "OPENAI_API_KEY",
         "gemini" => "GEMINI_API_KEY",
         _ => "OPENAI_API_KEY",
+    }
+}
+
+fn provider_key_env(provider: &crate::config::ProviderConfig) -> Option<String> {
+    match provider.name.as_str() {
+        "ollama" => None,
+        "codex" => provider.api_key_env.clone(),
+        _ => Some(
+            provider
+                .api_key_env
+                .clone()
+                .unwrap_or_else(|| default_key_env(&provider.name).to_string()),
+        ),
     }
 }
 
@@ -110,31 +118,25 @@ pub async fn list_provider_keys(
     let mut providers = Vec::new();
 
     for p in &state.model_providers {
-        if !needs_api_key(&p.name) {
+        if let Some(env_name) = provider_key_env(p) {
+            let current_value = crate::state::get_api_key(&env_name);
+
+            providers.push(ProviderKeyInfo {
+                provider_name: p.name.clone(),
+                model: p.model.clone().unwrap_or_default(),
+                env_name,
+                is_set: current_value.is_some(),
+                preview: current_value.as_deref().map(mask_key),
+            });
+        } else {
             providers.push(ProviderKeyInfo {
                 provider_name: p.name.clone(),
                 model: p.model.clone().unwrap_or_default(),
                 env_name: String::new(),
-                is_set: true, // local providers are always "set"
+                is_set: true,
                 preview: None,
             });
-            continue;
         }
-
-        let env_name = p
-            .api_key_env
-            .clone()
-            .unwrap_or_else(|| default_key_env(&p.name).to_string());
-
-        let current_value = crate::state::get_api_key(&env_name);
-
-        providers.push(ProviderKeyInfo {
-            provider_name: p.name.clone(),
-            model: p.model.clone().unwrap_or_default(),
-            env_name,
-            is_set: current_value.is_some(),
-            preview: current_value.as_deref().map(mask_key),
-        });
     }
 
     Ok(Json(ProviderKeysResponse { providers }))
@@ -170,16 +172,11 @@ pub async fn set_provider_key(
     }
 
     // Validate that env_name matches a configured provider.
-    let valid = state.model_providers.iter().any(|p| {
-        if !needs_api_key(&p.name) {
-            return false;
-        }
-        let expected = p
-            .api_key_env
-            .as_deref()
-            .unwrap_or_else(|| default_key_env(&p.name));
-        expected == body.env_name
-    });
+    let valid = state
+        .model_providers
+        .iter()
+        .filter_map(provider_key_env)
+        .any(|expected| expected == body.env_name);
 
     if !valid {
         return error_response_with_idempotency(ApiError::bad_request(
@@ -258,16 +255,11 @@ pub async fn delete_provider_key(
     let actor = actor_id(request.extensions()).to_string();
 
     // Validate env_name matches a configured provider.
-    let valid = state.model_providers.iter().any(|p| {
-        if !needs_api_key(&p.name) {
-            return false;
-        }
-        let expected = p
-            .api_key_env
-            .as_deref()
-            .unwrap_or_else(|| default_key_env(&p.name));
-        expected == env_name
-    });
+    let valid = state
+        .model_providers
+        .iter()
+        .filter_map(provider_key_env)
+        .any(|expected| expected == env_name);
 
     if !valid {
         return error_response_with_idempotency(ApiError::bad_request(
@@ -322,5 +314,39 @@ pub async fn delete_provider_key(
             json_response_with_idempotency(outcome.status, outcome.body, outcome.idempotency_status)
         }
         Err(error) => error_response_with_idempotency(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::ProviderConfig;
+
+    use super::provider_key_env;
+
+    #[test]
+    fn codex_without_api_key_env_is_managed_outside_provider_keys() {
+        let provider = ProviderConfig {
+            name: "codex".into(),
+            api_key_env: None,
+            model: None,
+            base_url: None,
+        };
+
+        assert_eq!(provider_key_env(&provider), None);
+    }
+
+    #[test]
+    fn codex_with_api_key_env_is_exposed_in_provider_keys() {
+        let provider = ProviderConfig {
+            name: "codex".into(),
+            api_key_env: Some("OPENAI_API_KEY".into()),
+            model: None,
+            base_url: None,
+        };
+
+        assert_eq!(
+            provider_key_env(&provider).as_deref(),
+            Some("OPENAI_API_KEY")
+        );
     }
 }

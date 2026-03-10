@@ -56,6 +56,8 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResp
     );
     let distributed_kill =
         distributed_kill_status_value(state.distributed_kill_enabled, state.kill_gate.as_ref());
+    let autonomy = state.autonomy.status(&state).await;
+    let speculative_context = crate::speculative_context::status(&state).await;
 
     (
         status_code,
@@ -66,6 +68,8 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResp
             "convergence_monitor": monitor_status,
             "convergence_protection": convergence_protection,
             "distributed_kill": distributed_kill,
+            "autonomy": autonomy,
+            "speculative_context": speculative_context,
         })),
     )
 }

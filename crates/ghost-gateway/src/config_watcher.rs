@@ -170,14 +170,13 @@ fn handle_config_change(path: &std::path::Path, state: &Arc<AppState>) {
 ///   2. Send SIGHUP or modify config file
 fn rotate_provider_keys(providers: &[crate::config::ProviderConfig]) {
     for pc in providers {
-        let key_env = match pc.api_key_env.as_deref() {
-            Some(env) => env,
-            None => match pc.name.as_str() {
-                "anthropic" => "ANTHROPIC_API_KEY",
-                "openai" | "openai_compat" => "OPENAI_API_KEY",
-                "gemini" => "GEMINI_API_KEY",
-                _ => continue,
-            },
+        let Some(key_env) = pc.api_key_env.as_deref().or(match pc.name.as_str() {
+            "anthropic" => Some("ANTHROPIC_API_KEY"),
+            "openai" | "openai_compat" => Some("OPENAI_API_KEY"),
+            "gemini" => Some("GEMINI_API_KEY"),
+            _ => None,
+        }) else {
+            continue;
         };
 
         // Re-read from environment (the source of truth for rotation).

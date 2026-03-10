@@ -36,7 +36,13 @@ export type StreamWarningType = 'persistence_degraded';
  * so the live stream contract remains hand-maintained here.
  */
 export type StreamEvent =
-  | { type: 'stream_start'; message_id: string; session_id?: string; reconstructed?: boolean }
+  | {
+      type: 'stream_start';
+      message_id: string;
+      execution_id?: string;
+      session_id?: string;
+      reconstructed?: boolean;
+    }
   | { type: 'text_delta'; content: string; reconstructed?: boolean }
   | { type: 'tool_use'; tool: string; tool_id: string; status: string }
   | { type: 'tool_result'; tool: string; tool_id: string; status: string; preview?: string }
@@ -55,6 +61,7 @@ export type StreamEvent =
       provider?: string;
       fallback?: boolean;
       terminal?: boolean;
+      cancelled?: boolean;
       reconstructed?: boolean;
     }
   | {

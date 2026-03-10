@@ -4,4 +4,4 @@
 pub const SIMULATION_BOUNDARY_PROMPT: &str = include_str!("../prompts/simulation_boundary_v1.txt");
 
 /// Version string for prompt tracking.
-pub const SIMULATION_BOUNDARY_VERSION: &str = "v1.0.0";
+pub const SIMULATION_BOUNDARY_VERSION: &str = "v1.1.0";

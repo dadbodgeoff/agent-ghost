@@ -6,9 +6,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cortex_core::safety::trigger::TriggerEvent;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::kill_switch::{KillLevel, KillSwitch};
+use crate::api::websocket::{broadcast_event, WsEvent};
+use crate::state::AppState;
 
 /// Deduplication key: trigger variant + agent_id.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,6 +128,52 @@ impl AutoTriggerEvaluator {
     }
 }
 
+pub async fn auto_trigger_task(state: Arc<AppState>, mut rx: mpsc::Receiver<TriggerEvent>) {
+    let mut evaluator = AutoTriggerEvaluator::new(Arc::clone(&state.kill_switch));
+
+    while let Some(trigger) = rx.recv().await {
+        handle_trigger_event(&state, &mut evaluator, trigger);
+    }
+}
+
+fn handle_trigger_event(
+    state: &AppState,
+    evaluator: &mut AutoTriggerEvaluator,
+    trigger: TriggerEvent,
+) {
+    let previous_state = state.kill_switch.current_state();
+    let reason = trigger_reason(&trigger);
+    let agent_id = trigger_agent_id(&trigger).map(|id| id.to_string());
+
+    let Some(level) = evaluator.process(trigger) else {
+        return;
+    };
+
+    if let Err(error) = state.sync_agent_access_pullbacks() {
+        tracing::error!(error = %error, "failed to sync agent access pullbacks after trigger");
+    }
+    if let Err(error) = crate::api::safety::persist_current_safety_state(state) {
+        state.kill_switch.restore_state(previous_state);
+        if let Err(sync_error) = state.sync_agent_access_pullbacks() {
+            tracing::error!(
+                error = %sync_error,
+                "failed to restore agent access pullbacks after trigger persistence error"
+            );
+        }
+        tracing::error!(error = %error, "failed to persist safety state after trigger");
+        return;
+    }
+
+    broadcast_event(
+        state,
+        WsEvent::KillSwitchActivation {
+            level: kill_level_label(level).into(),
+            agent_id,
+            reason,
+        },
+    );
+}
+
 /// Classify a trigger to its kill level and affected agent.
 fn classify_trigger(trigger: &TriggerEvent) -> (KillLevel, Option<Uuid>) {
     match trigger {
@@ -180,5 +229,74 @@ fn compute_dedup_key(trigger: &TriggerEvent) -> DedupKey {
     DedupKey {
         trigger_type: trigger_type.into(),
         agent_id,
+    }
+}
+
+fn trigger_agent_id(trigger: &TriggerEvent) -> Option<Uuid> {
+    match trigger {
+        TriggerEvent::SoulDrift { agent_id, .. }
+        | TriggerEvent::SpendingCapExceeded { agent_id, .. }
+        | TriggerEvent::PolicyDenialThreshold { agent_id, .. }
+        | TriggerEvent::SandboxEscape { agent_id, .. }
+        | TriggerEvent::MemoryHealthCritical { agent_id, .. }
+        | TriggerEvent::ManualPause { agent_id, .. }
+        | TriggerEvent::ManualQuarantine { agent_id, .. }
+        | TriggerEvent::NetworkEgressViolation { agent_id, .. } => Some(*agent_id),
+        TriggerEvent::CredentialExfiltration { agent_id, .. } => Some(*agent_id),
+        TriggerEvent::MultiAgentQuarantine { .. }
+        | TriggerEvent::ManualKillAll { .. }
+        | TriggerEvent::DistributedKillGate { .. } => None,
+    }
+}
+
+fn kill_level_label(level: KillLevel) -> &'static str {
+    match level {
+        KillLevel::Normal => "NORMAL",
+        KillLevel::Pause => "PAUSE",
+        KillLevel::Quarantine => "QUARANTINE",
+        KillLevel::KillAll => "KILL_ALL",
+    }
+}
+
+fn trigger_reason(trigger: &TriggerEvent) -> String {
+    match trigger {
+        TriggerEvent::PolicyDenialThreshold { denial_count, .. } => {
+            format!("policy denial threshold reached ({denial_count})")
+        }
+        TriggerEvent::NetworkEgressViolation {
+            domain,
+            violation_count,
+            ..
+        } => format!("network egress violation for {domain} ({violation_count})"),
+        TriggerEvent::SandboxEscape {
+            skill_name,
+            escape_attempt,
+            ..
+        } => format!("sandbox escape in {skill_name}: {escape_attempt}"),
+        TriggerEvent::SoulDrift { drift_score, .. } => {
+            format!("soul drift detected ({drift_score:.3})")
+        }
+        TriggerEvent::SpendingCapExceeded {
+            daily_total, cap, ..
+        } => {
+            format!("spending cap exceeded ({daily_total:.2}/{cap:.2})")
+        }
+        TriggerEvent::CredentialExfiltration {
+            credential_id,
+            exfil_type,
+            ..
+        } => format!("credential exfiltration {credential_id} via {exfil_type:?}"),
+        TriggerEvent::MultiAgentQuarantine {
+            count, threshold, ..
+        } => {
+            format!("multi-agent quarantine cascade ({count}/{threshold})")
+        }
+        TriggerEvent::MemoryHealthCritical { health_score, .. } => {
+            format!("memory health critical ({health_score:.3})")
+        }
+        TriggerEvent::DistributedKillGate { reason, .. }
+        | TriggerEvent::ManualKillAll { reason, .. }
+        | TriggerEvent::ManualPause { reason, .. }
+        | TriggerEvent::ManualQuarantine { reason, .. } => reason.clone(),
     }
 }

@@ -10,6 +10,7 @@
 //! Pre-loop orchestrator: 11 steps executed IN ORDER before run() enters
 //! the recursive loop (per AGENT_LOOP_SEQUENCE_FLOW §3).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -17,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime};
 use read_only_pipeline::snapshot::{AgentSnapshot, ConvergenceState};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::circuit_breaker::CircuitBreaker;
@@ -30,6 +32,14 @@ use crate::tools::executor::ToolExecutor;
 use crate::tools::registry::ToolRegistry;
 
 type CostRecorder = Arc<dyn Fn(Uuid, Uuid, f64, bool) + Send + Sync>;
+
+const MAX_CONSECUTIVE_TOOL_FAILURES: u32 = 3;
+const MAX_TOOL_CALL_ATTEMPTS_PER_TURN: u32 = 16;
+const MAX_FAILED_DUPLICATE_TOOL_CALL_ATTEMPTS_PER_TURN: u32 = 2;
+const REPEATED_TOOL_FAILURE_MESSAGE: &str = "Repeated tool failures prevented completion";
+const TOOL_CALL_LIMIT_MESSAGE: &str = "Tool call limit reached for this turn";
+const REPEATED_IDENTICAL_TOOL_FAILURE_MESSAGE: &str =
+    "Repeated identical failing tool call prevented completion";
 
 /// Lightweight reference to convergence shared state read from the
 /// atomic state file published by the convergence monitor.
@@ -71,20 +81,37 @@ pub enum RunError {
         message: String,
         partial_output: bool,
     },
+    #[error("{message}")]
+    ToolLoopAborted {
+        message: String,
+        partial_output: bool,
+    },
     #[error("credential exfiltration detected — KILL ALL")]
     CredentialExfiltration,
+    #[error("stream cancelled")]
+    StreamCancelled,
+    #[error("execution cancelled")]
+    Cancelled,
 }
 
 impl RunError {
     pub fn llm_error(message: impl Into<String>) -> Self {
+        Self::llm_error_with_partial_output(message, false)
+    }
+
+    pub fn llm_error_with_partial_output(message: impl Into<String>, partial_output: bool) -> Self {
         Self::LLMError {
             message: message.into(),
-            partial_output: false,
+            partial_output,
         }
     }
 
     pub fn streaming_llm_error(message: impl Into<String>, partial_output: bool) -> Self {
-        Self::LLMError {
+        Self::llm_error_with_partial_output(message, partial_output)
+    }
+
+    pub fn tool_loop_aborted(message: impl Into<String>, partial_output: bool) -> Self {
+        Self::ToolLoopAborted {
             message: message.into(),
             partial_output,
         }
@@ -209,6 +236,8 @@ pub enum AgentStreamEvent {
         fallback: bool,
         #[serde(default = "bool_true", skip_serializing_if = "is_true")]
         terminal: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        cancelled: bool,
     },
     /// Heartbeat — agent is alive, transitioning between phases.
     Heartbeat { phase: String },
@@ -222,6 +251,7 @@ impl AgentStreamEvent {
             provider: None,
             fallback: false,
             terminal: true,
+            cancelled: false,
         }
     }
 
@@ -238,6 +268,18 @@ impl AgentStreamEvent {
             provider,
             fallback,
             terminal,
+            cancelled: false,
+        }
+    }
+
+    pub fn cancelled_error(message: impl Into<String>) -> Self {
+        Self::Error {
+            message: message.into(),
+            error_type: Some(AgentStreamErrorType::RuntimeError),
+            provider: None,
+            fallback: false,
+            terminal: true,
+            cancelled: true,
         }
     }
 }
@@ -268,6 +310,8 @@ pub struct AgentRunner {
     pub convergence_state_stale_after: Duration,
     /// Maximum recursion depth (default 10).
     pub max_recursion_depth: u32,
+    /// Maximum tool call attempts allowed in a single turn.
+    pub max_tool_call_count: u32,
     /// Spending cap.
     pub spending_cap: f64,
     /// Current daily spend.
@@ -283,6 +327,8 @@ pub struct AgentRunner {
     /// Multi-turn conversation history (injected between system prompt and user message).
     /// Set this before calling `run_turn` for multi-turn sessions.
     pub conversation_history: Vec<ghost_llm::provider::ChatMessage>,
+    /// Explicit per-execution cancellation token supplied by the gateway.
+    pub cancel_token: Option<Arc<CancellationToken>>,
 }
 
 impl AgentRunner {
@@ -304,6 +350,7 @@ impl AgentRunner {
             degraded_convergence_mode: DegradedConvergenceMode::Allow,
             convergence_state_stale_after: Duration::from_secs(300),
             max_recursion_depth: 10,
+            max_tool_call_count: MAX_TOOL_CALL_ATTEMPTS_PER_TURN,
             spending_cap: 10.0,
             daily_spend: 0.0,
             db: None,
@@ -311,7 +358,108 @@ impl AgentRunner {
             soul_identity: String::new(),
             environment: String::new(),
             conversation_history: Vec::new(),
+            cancel_token: None,
         }
+    }
+
+    pub fn set_cancel_token(&mut self, cancel_token: Arc<CancellationToken>) {
+        self.cancel_token = Some(cancel_token);
+    }
+
+    fn ensure_not_cancelled(&self) -> Result<(), RunError> {
+        if self
+            .cancel_token
+            .as_ref()
+            .is_some_and(|cancel_token| cancel_token.is_cancelled())
+        {
+            return Err(RunError::Cancelled);
+        }
+        Ok(())
+    }
+
+    fn note_consecutive_tool_failure(
+        consecutive_tool_failures: &mut u32,
+        partial_output: bool,
+    ) -> Result<(), RunError> {
+        *consecutive_tool_failures += 1;
+        if *consecutive_tool_failures >= MAX_CONSECUTIVE_TOOL_FAILURES {
+            return Err(RunError::llm_error_with_partial_output(
+                REPEATED_TOOL_FAILURE_MESSAGE,
+                partial_output,
+            ));
+        }
+        Ok(())
+    }
+
+    fn reset_consecutive_tool_failures(consecutive_tool_failures: &mut u32) {
+        *consecutive_tool_failures = 0;
+    }
+
+    fn note_tool_call_attempt(
+        tool_call_count: &mut u32,
+        max_tool_call_count: u32,
+        partial_output: bool,
+    ) -> Result<(), RunError> {
+        if *tool_call_count >= max_tool_call_count {
+            return Err(RunError::tool_loop_aborted(
+                format!("{TOOL_CALL_LIMIT_MESSAGE} ({tool_call_count}/{max_tool_call_count})"),
+                partial_output,
+            ));
+        }
+        *tool_call_count += 1;
+        Ok(())
+    }
+
+    fn tool_call_signature(call: &ghost_llm::provider::LLMToolCall) -> String {
+        let args = serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".into());
+        format!("{}::{args}", call.name)
+    }
+
+    fn record_failed_tool_call(
+        failed_tool_calls: &mut HashMap<String, u32>,
+        call: &ghost_llm::provider::LLMToolCall,
+    ) {
+        failed_tool_calls
+            .entry(Self::tool_call_signature(call))
+            .or_insert(1);
+    }
+
+    fn clear_failed_tool_call(
+        failed_tool_calls: &mut HashMap<String, u32>,
+        call: &ghost_llm::provider::LLMToolCall,
+    ) {
+        failed_tool_calls.remove(&Self::tool_call_signature(call));
+    }
+
+    fn maybe_suppress_duplicate_failed_tool_call(
+        failed_tool_calls: &mut HashMap<String, u32>,
+        call: &ghost_llm::provider::LLMToolCall,
+        partial_output: bool,
+    ) -> Result<Option<String>, RunError> {
+        let signature = Self::tool_call_signature(call);
+        let Some(attempts) = failed_tool_calls.get_mut(&signature) else {
+            return Ok(None);
+        };
+
+        *attempts += 1;
+        if *attempts > MAX_FAILED_DUPLICATE_TOOL_CALL_ATTEMPTS_PER_TURN {
+            return Err(RunError::tool_loop_aborted(
+                format!("{REPEATED_IDENTICAL_TOOL_FAILURE_MESSAGE} ({})", call.name),
+                partial_output,
+            ));
+        }
+
+        Ok(Some(format!(
+            "ERROR: Duplicate failing tool call suppressed — '{}' with the same arguments already failed in this turn. Choose a different tool or change the arguments.",
+            call.name
+        )))
+    }
+
+    async fn send_stream_event(
+        tx: &tokio::sync::mpsc::Sender<AgentStreamEvent>,
+        event: AgentStreamEvent,
+    ) -> Result<(), RunError> {
+        tx.send(event).await.map_err(|_| RunError::StreamCancelled)
     }
 
     /// Execute gate checks in EXACT order. Returns error if any gate blocks.
@@ -941,8 +1089,12 @@ impl AgentRunner {
             total_cost: 0.0,
             halted_by: None,
         };
+        let mut consecutive_tool_failures = 0;
+        let mut failed_tool_calls: HashMap<String, u32> = HashMap::new();
 
         loop {
+            self.ensure_not_cancelled()?;
+
             // ── GATE CHECKS (every iteration) ───────────────────────
             let mut gate_log = GateCheckLog::default();
             if let Err(e) = self.check_gates(ctx, &mut gate_log) {
@@ -958,15 +1110,29 @@ impl AgentRunner {
             }
 
             // ── LLM CALL ────────────────────────────────────────────
-            let completion = fallback_chain
-                .complete(&conversation, &tool_schemas)
-                .await
-                .map_err(|e| {
-                    let error_str = e.to_string();
-                    let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
-                    self.circuit_breaker.record_classified_failure(failure_type);
-                    RunError::llm_error(error_str)
-                })?;
+            let completion = if let Some(cancel_token) = self.cancel_token.clone() {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => Err(RunError::Cancelled),
+                    completion = fallback_chain.complete(&conversation, &tool_schemas) => {
+                        completion.map_err(|e| {
+                            let error_str = e.to_string();
+                            let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
+                            self.circuit_breaker.record_classified_failure(failure_type);
+                            RunError::llm_error(error_str)
+                        })
+                    }
+                }?
+            } else {
+                fallback_chain
+                    .complete(&conversation, &tool_schemas)
+                    .await
+                    .map_err(|e| {
+                        let error_str = e.to_string();
+                        let failure_type = crate::circuit_breaker::classify_llm_error(&error_str);
+                        self.circuit_breaker.record_classified_failure(failure_type);
+                        RunError::llm_error(error_str)
+                    })?
+            };
 
             // Record success + update context.
             self.circuit_breaker.record_success();
@@ -1101,6 +1267,10 @@ impl AgentRunner {
                                 tool_call_id: Some(call.id.clone()),
                             });
                         }
+                        Self::note_consecutive_tool_failure(
+                            &mut consecutive_tool_failures,
+                            result.output.is_some(),
+                        )?;
                         ctx.recursion_depth += 1;
                         continue;
                     }
@@ -1124,22 +1294,62 @@ impl AgentRunner {
                         is_compaction_flush: false,
                     };
                     for call in &calls {
-                        let tool_result = self
-                            .tool_executor
-                            .execute(call, &self.tool_registry, &exec_ctx)
-                            .await;
+                        self.ensure_not_cancelled()?;
+
+                        Self::note_tool_call_attempt(
+                            &mut ctx.tool_call_count,
+                            self.max_tool_call_count,
+                            result.output.is_some(),
+                        )?;
+
+                        if let Some(output) = Self::maybe_suppress_duplicate_failed_tool_call(
+                            &mut failed_tool_calls,
+                            call,
+                            result.output.is_some(),
+                        )? {
+                            conversation.push(ChatMessage {
+                                role: MessageRole::Tool,
+                                content: output,
+                                tool_calls: None,
+                                tool_call_id: Some(call.id.clone()),
+                            });
+
+                            Self::note_consecutive_tool_failure(
+                                &mut consecutive_tool_failures,
+                                result.output.is_some(),
+                            )?;
+                            continue;
+                        }
+
+                        let tool_result = if let Some(cancel_token) = self.cancel_token.clone() {
+                            tokio::select! {
+                                _ = cancel_token.cancelled() => return Err(RunError::Cancelled),
+                                result = self.tool_executor.execute(call, &self.tool_registry, &exec_ctx) => result,
+                            }
+                        } else {
+                            self.tool_executor
+                                .execute(call, &self.tool_registry, &exec_ctx)
+                                .await
+                        };
+                        let tool_failed = tool_result.is_err();
 
                         let output = match tool_result {
                             Ok(tr) => {
+                                Self::reset_consecutive_tool_failures(
+                                    &mut consecutive_tool_failures,
+                                );
+                                Self::clear_failed_tool_call(&mut failed_tool_calls, call);
                                 result.tool_calls_made += 1;
-                                ctx.tool_call_count += 1;
                                 // Track destructive tools in damage counter.
                                 if call.name == "write_file" || call.name == "shell" {
                                     self.damage_counter.increment();
                                 }
                                 tr.output
                             }
-                            Err(e) => format!("ERROR: {e}"),
+                            Err(e) => {
+                                Self::record_failed_tool_call(&mut failed_tool_calls, call);
+                                format!("ERROR: {e}")
+                            }
                         };
 
                         conversation.push(ChatMessage {
@@ -1148,6 +1358,13 @@ impl AgentRunner {
                             tool_calls: None,
                             tool_call_id: Some(call.id.clone()),
                         });
+
+                        if tool_failed {
+                            Self::note_consecutive_tool_failure(
+                                &mut consecutive_tool_failures,
+                                result.output.is_some(),
+                            )?;
+                        }
                     }
 
                     ctx.recursion_depth += 1;
@@ -1260,6 +1477,10 @@ impl AgentRunner {
                                 tool_call_id: Some(call.id.clone()),
                             });
                         }
+                        Self::note_consecutive_tool_failure(
+                            &mut consecutive_tool_failures,
+                            result.output.is_some(),
+                        )?;
                         ctx.recursion_depth += 1;
                         continue;
                     }
@@ -1282,21 +1503,61 @@ impl AgentRunner {
                         is_compaction_flush: false,
                     };
                     for call in &tool_calls {
-                        let tool_result = self
-                            .tool_executor
-                            .execute(call, &self.tool_registry, &exec_ctx)
-                            .await;
+                        self.ensure_not_cancelled()?;
+
+                        Self::note_tool_call_attempt(
+                            &mut ctx.tool_call_count,
+                            self.max_tool_call_count,
+                            result.output.is_some(),
+                        )?;
+
+                        if let Some(output) = Self::maybe_suppress_duplicate_failed_tool_call(
+                            &mut failed_tool_calls,
+                            call,
+                            result.output.is_some(),
+                        )? {
+                            conversation.push(ChatMessage {
+                                role: MessageRole::Tool,
+                                content: output,
+                                tool_calls: None,
+                                tool_call_id: Some(call.id.clone()),
+                            });
+
+                            Self::note_consecutive_tool_failure(
+                                &mut consecutive_tool_failures,
+                                result.output.is_some(),
+                            )?;
+                            continue;
+                        }
+
+                        let tool_result = if let Some(cancel_token) = self.cancel_token.clone() {
+                            tokio::select! {
+                                _ = cancel_token.cancelled() => return Err(RunError::Cancelled),
+                                result = self.tool_executor.execute(call, &self.tool_registry, &exec_ctx) => result,
+                            }
+                        } else {
+                            self.tool_executor
+                                .execute(call, &self.tool_registry, &exec_ctx)
+                                .await
+                        };
+                        let tool_failed = tool_result.is_err();
 
                         let output = match tool_result {
                             Ok(tr) => {
+                                Self::reset_consecutive_tool_failures(
+                                    &mut consecutive_tool_failures,
+                                );
+                                Self::clear_failed_tool_call(&mut failed_tool_calls, call);
                                 result.tool_calls_made += 1;
-                                ctx.tool_call_count += 1;
                                 if call.name == "write_file" || call.name == "shell" {
                                     self.damage_counter.increment();
                                 }
                                 tr.output
                             }
-                            Err(e) => format!("ERROR: {e}"),
+                            Err(e) => {
+                                Self::record_failed_tool_call(&mut failed_tool_calls, call);
+                                format!("ERROR: {e}")
+                            }
                         };
 
                         conversation.push(ChatMessage {
@@ -1305,6 +1566,13 @@ impl AgentRunner {
                             tool_calls: None,
                             tool_call_id: Some(call.id.clone()),
                         });
+
+                        if tool_failed {
+                            Self::note_consecutive_tool_failure(
+                                &mut consecutive_tool_failures,
+                                result.output.is_some(),
+                            )?;
+                        }
                     }
 
                     ctx.recursion_depth += 1;
@@ -1396,14 +1664,20 @@ impl AgentRunner {
         };
 
         let mut accumulated_output = String::new();
+        let mut consecutive_tool_failures = 0;
+        let mut failed_tool_calls: HashMap<String, u32> = HashMap::new();
 
         loop {
+            self.ensure_not_cancelled()?;
+
             // Emit heartbeat so frontend knows agent is alive between turns.
-            let _ = tx
-                .send(AgentStreamEvent::Heartbeat {
+            Self::send_stream_event(
+                &tx,
+                AgentStreamEvent::Heartbeat {
                     phase: "gate_check".into(),
-                })
-                .await;
+                },
+            )
+            .await?;
 
             // ── GATE CHECKS ──────────────────────────────────────────
             let mut gate_log = GateCheckLog::default();
@@ -1425,11 +1699,13 @@ impl AgentRunner {
             }
 
             // ── STREAMING LLM CALL ───────────────────────────────────
-            let _ = tx
-                .send(AgentStreamEvent::Heartbeat {
+            Self::send_stream_event(
+                &tx,
+                AgentStreamEvent::Heartbeat {
                     phase: "llm_streaming".into(),
-                })
-                .await;
+                },
+            )
+            .await?;
             let mut stream = get_stream(conversation.clone(), tool_schemas.clone());
             let mut segment_text = String::new();
             let mut segment_tool_calls: Vec<LLMToolCall> = Vec::new();
@@ -1438,23 +1714,43 @@ impl AgentRunner {
             let mut segment_usage = ghost_llm::provider::UsageStats::default();
             let mut partial_output_emitted = false;
 
-            while let Some(chunk_result) = stream.next().await {
+            loop {
+                let next_chunk = if let Some(cancel_token) = self.cancel_token.clone() {
+                    tokio::select! {
+                        _ = tx.closed() => return Err(RunError::StreamCancelled),
+                        _ = cancel_token.cancelled() => return Err(RunError::Cancelled),
+                        chunk_result = stream.next() => chunk_result,
+                    }
+                } else {
+                    tokio::select! {
+                        _ = tx.closed() => return Err(RunError::StreamCancelled),
+                        chunk_result = stream.next() => chunk_result,
+                    }
+                };
+
+                let Some(chunk_result) = next_chunk else {
+                    break;
+                };
+
                 match chunk_result {
                     Ok(StreamChunk::TextDelta(text)) => {
                         partial_output_emitted = true;
                         segment_text.push_str(&text);
-                        let _ = tx.send(AgentStreamEvent::TextDelta { content: text }).await;
+                        Self::send_stream_event(&tx, AgentStreamEvent::TextDelta { content: text })
+                            .await?;
                     }
                     Ok(StreamChunk::ToolCallStart { id, name }) => {
                         partial_output_emitted = true;
                         segment_tool_call_args.insert(id.clone(), (name.clone(), String::new()));
-                        let _ = tx
-                            .send(AgentStreamEvent::ToolUse {
+                        Self::send_stream_event(
+                            &tx,
+                            AgentStreamEvent::ToolUse {
                                 tool: name,
                                 tool_id: id,
                                 status: "parsing".into(),
-                            })
-                            .await;
+                            },
+                        )
+                        .await?;
                     }
                     Ok(StreamChunk::ToolCallDelta {
                         id,
@@ -1636,6 +1932,10 @@ impl AgentRunner {
                                 tool_call_id: Some(call.id.clone()),
                             });
                         }
+                        Self::note_consecutive_tool_failure(
+                            &mut consecutive_tool_failures,
+                            !accumulated_output.is_empty(),
+                        )?;
                         ctx.recursion_depth += 1;
                         continue;
                     }
@@ -1659,13 +1959,69 @@ impl AgentRunner {
                         is_compaction_flush: false,
                     };
                     for call in &segment_tool_calls {
-                        let _ = tx
-                            .send(AgentStreamEvent::ToolUse {
+                        self.ensure_not_cancelled()?;
+
+                        Self::note_tool_call_attempt(
+                            &mut ctx.tool_call_count,
+                            self.max_tool_call_count,
+                            !accumulated_output.is_empty(),
+                        )?;
+
+                        if let Some(output) = Self::maybe_suppress_duplicate_failed_tool_call(
+                            &mut failed_tool_calls,
+                            call,
+                            !accumulated_output.is_empty(),
+                        )? {
+                            let preview = if output.len() > 200 {
+                                format!("{}…", &output[..200])
+                            } else {
+                                output.clone()
+                            };
+
+                            Self::send_stream_event(
+                                &tx,
+                                AgentStreamEvent::ToolUse {
+                                    tool: call.name.clone(),
+                                    tool_id: call.id.clone(),
+                                    status: "suppressed".into(),
+                                },
+                            )
+                            .await?;
+
+                            Self::send_stream_event(
+                                &tx,
+                                AgentStreamEvent::ToolResult {
+                                    tool: call.name.clone(),
+                                    tool_id: call.id.clone(),
+                                    status: "error".into(),
+                                    preview,
+                                },
+                            )
+                            .await?;
+
+                            conversation.push(ChatMessage {
+                                role: MessageRole::Tool,
+                                content: output,
+                                tool_calls: None,
+                                tool_call_id: Some(call.id.clone()),
+                            });
+
+                            Self::note_consecutive_tool_failure(
+                                &mut consecutive_tool_failures,
+                                !accumulated_output.is_empty(),
+                            )?;
+                            continue;
+                        }
+
+                        Self::send_stream_event(
+                            &tx,
+                            AgentStreamEvent::ToolUse {
                                 tool: call.name.clone(),
                                 tool_id: call.id.clone(),
                                 status: "running".into(),
-                            })
-                            .await;
+                            },
+                        )
+                        .await?;
 
                         // Execute tool with concurrent heartbeat sender.
                         // Sends a heartbeat every 15s during execution to prevent
@@ -1674,6 +2030,17 @@ impl AgentRunner {
                         // as soon as the tool execution completes.
                         let heartbeat_tx = tx.clone();
                         let heartbeat_tool_name = call.name.clone();
+                        enum ToolExecutionOutcome {
+                            StreamClosed,
+                            Cancelled,
+                            Finished(
+                                Result<
+                                    crate::tools::executor::ToolResult,
+                                    crate::tools::executor::ToolError,
+                                >,
+                            ),
+                        }
+
                         let tool_result = {
                             // Spawn heartbeat as a background task that we abort
                             // when tool execution completes. This avoids select!
@@ -1697,24 +2064,47 @@ impl AgentRunner {
                                     }
                                 }
                             });
-                            let result = self
-                                .tool_executor
-                                .execute(call, &self.tool_registry, &exec_ctx)
-                                .await;
+                            let result = if let Some(cancel_token) = self.cancel_token.clone() {
+                                tokio::select! {
+                                    _ = tx.closed() => ToolExecutionOutcome::StreamClosed,
+                                    _ = cancel_token.cancelled() => ToolExecutionOutcome::Cancelled,
+                                    result = self.tool_executor.execute(call, &self.tool_registry, &exec_ctx) => ToolExecutionOutcome::Finished(result),
+                                }
+                            } else {
+                                tokio::select! {
+                                    _ = tx.closed() => ToolExecutionOutcome::StreamClosed,
+                                    result = self.tool_executor.execute(call, &self.tool_registry, &exec_ctx) => ToolExecutionOutcome::Finished(result),
+                                }
+                            };
                             heartbeat_handle.abort();
-                            result
+                            match result {
+                                ToolExecutionOutcome::Finished(result) => result,
+                                ToolExecutionOutcome::StreamClosed => {
+                                    return Err(RunError::StreamCancelled);
+                                }
+                                ToolExecutionOutcome::Cancelled => {
+                                    return Err(RunError::Cancelled);
+                                }
+                            }
                         };
+                        let tool_failed = tool_result.is_err();
 
                         let (output, status) = match tool_result {
                             Ok(tr) => {
+                                Self::reset_consecutive_tool_failures(
+                                    &mut consecutive_tool_failures,
+                                );
+                                Self::clear_failed_tool_call(&mut failed_tool_calls, call);
                                 result.tool_calls_made += 1;
-                                ctx.tool_call_count += 1;
                                 if call.name == "write_file" || call.name == "shell" {
                                     self.damage_counter.increment();
                                 }
                                 (tr.output, "done")
                             }
-                            Err(e) => (format!("ERROR: {e}"), "error"),
+                            Err(e) => {
+                                Self::record_failed_tool_call(&mut failed_tool_calls, call);
+                                (format!("ERROR: {e}"), "error")
+                            }
                         };
 
                         let preview = if output.len() > 200 {
@@ -1723,14 +2113,16 @@ impl AgentRunner {
                             output.clone()
                         };
 
-                        let _ = tx
-                            .send(AgentStreamEvent::ToolResult {
+                        Self::send_stream_event(
+                            &tx,
+                            AgentStreamEvent::ToolResult {
                                 tool: call.name.clone(),
                                 tool_id: call.id.clone(),
                                 status: status.into(),
                                 preview,
-                            })
-                            .await;
+                            },
+                        )
+                        .await?;
 
                         conversation.push(ChatMessage {
                             role: MessageRole::Tool,
@@ -1738,6 +2130,13 @@ impl AgentRunner {
                             tool_calls: None,
                             tool_call_id: Some(call.id.clone()),
                         });
+
+                        if tool_failed {
+                            Self::note_consecutive_tool_failure(
+                                &mut consecutive_tool_failures,
+                                !accumulated_output.is_empty(),
+                            )?;
+                        }
                     }
 
                     ctx.recursion_depth += 1;
@@ -1898,6 +2297,10 @@ fn fallback_chain_pricing(chain: &LLMFallbackChain) -> ghost_llm::provider::Toke
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use read_only_pipeline::snapshot::{AgentSnapshot, ConvergenceState};
 
     fn write_convergence_state(home: &std::path::Path, agent_id: Uuid, body: &str) {
         let dir = home.join(".ghost").join("data").join("convergence_state");
@@ -1972,5 +2375,153 @@ mod tests {
             runner.handle_degraded_convergence_health(agent_id, &health),
             Err(RunError::ConvergenceProtectionDegraded(status)) if status == "corrupted"
         ));
+    }
+
+    #[test]
+    fn repeated_tool_failures_become_terminal_error() {
+        let mut consecutive_tool_failures = 0;
+
+        assert!(
+            AgentRunner::note_consecutive_tool_failure(&mut consecutive_tool_failures, true)
+                .is_ok()
+        );
+        assert!(
+            AgentRunner::note_consecutive_tool_failure(&mut consecutive_tool_failures, true)
+                .is_ok()
+        );
+
+        let error =
+            AgentRunner::note_consecutive_tool_failure(&mut consecutive_tool_failures, true)
+                .expect_err("third consecutive tool failure should terminate the turn");
+
+        assert!(matches!(
+            error,
+            RunError::LLMError {
+                message,
+                partial_output: true
+            } if message == REPEATED_TOOL_FAILURE_MESSAGE
+        ));
+    }
+
+    #[test]
+    fn tool_call_attempt_limit_stops_turn() {
+        let mut tool_call_count = MAX_TOOL_CALL_ATTEMPTS_PER_TURN;
+        let error = AgentRunner::note_tool_call_attempt(
+            &mut tool_call_count,
+            MAX_TOOL_CALL_ATTEMPTS_PER_TURN,
+            true,
+        )
+        .expect_err("tool call limit should abort the turn");
+
+        assert!(matches!(
+            error,
+            RunError::ToolLoopAborted {
+                message,
+                partial_output: true
+            } if message.contains(TOOL_CALL_LIMIT_MESSAGE)
+        ));
+    }
+
+    #[test]
+    fn duplicate_failed_tool_calls_are_suppressed_once_then_aborted() {
+        let mut failed_tool_calls = HashMap::new();
+        let call = ghost_llm::provider::LLMToolCall {
+            id: "call-1".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"command":"ls /"}),
+        };
+
+        AgentRunner::record_failed_tool_call(&mut failed_tool_calls, &call);
+
+        let message = AgentRunner::maybe_suppress_duplicate_failed_tool_call(
+            &mut failed_tool_calls,
+            &call,
+            false,
+        )
+        .expect("first duplicate should be suppressed")
+        .expect("suppressed duplicate should emit guidance");
+        assert!(message.contains("Duplicate failing tool call suppressed"));
+
+        let error = AgentRunner::maybe_suppress_duplicate_failed_tool_call(
+            &mut failed_tool_calls,
+            &call,
+            true,
+        )
+        .expect_err("third identical attempt should abort the turn");
+
+        assert!(matches!(
+            error,
+            RunError::ToolLoopAborted {
+                message,
+                partial_output: true
+            } if message.contains(REPEATED_IDENTICAL_TOOL_FAILURE_MESSAGE)
+        ));
+    }
+
+    fn cancelled_run_context() -> crate::context::run_context::RunContext {
+        crate::context::run_context::RunContext {
+            agent_id: Uuid::now_v7(),
+            session_id: Uuid::now_v7(),
+            session_started_at: Instant::now(),
+            recursion_depth: 0,
+            max_recursion_depth: 10,
+            total_tokens: 0,
+            total_cost: 0.0,
+            tool_call_count: 0,
+            proposal_count: 0,
+            snapshot: AgentSnapshot::new(
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                ConvergenceState::default(),
+                String::new(),
+            ),
+            intervention_level: 0,
+            cb_failures: 0,
+            damage_count: 0,
+            spending_cap: 10.0,
+            daily_spend: 0.0,
+            kill_switch_active: false,
+            context_window: 1024,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_turn_stops_before_llm_when_cancelled() {
+        let mut runner = AgentRunner::new(1024);
+        let cancel_token = Arc::new(CancellationToken::new());
+        cancel_token.cancel();
+        runner.set_cancel_token(cancel_token);
+
+        let mut ctx = cancelled_run_context();
+        let mut fallback_chain = LLMFallbackChain::new();
+        let error = runner
+            .run_turn(&mut ctx, &mut fallback_chain, "hello")
+            .await
+            .expect_err("cancelled execution should stop before provider call");
+
+        assert!(matches!(error, RunError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn run_turn_streaming_stops_before_provider_when_cancelled() {
+        let mut runner = AgentRunner::new(1024);
+        let cancel_token = Arc::new(CancellationToken::new());
+        cancel_token.cancel();
+        runner.set_cancel_token(cancel_token);
+
+        let mut ctx = cancelled_run_context();
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let error = runner
+            .run_turn_streaming(&mut ctx, "hello", tx, |_messages, _tools| {
+                use futures::stream;
+                Box::pin(stream::pending::<
+                    Result<ghost_llm::streaming::StreamChunk, ghost_llm::provider::LLMError>,
+                >())
+            })
+            .await
+            .expect_err("cancelled execution should stop before provider stream");
+
+        assert!(matches!(error, RunError::Cancelled));
     }
 }

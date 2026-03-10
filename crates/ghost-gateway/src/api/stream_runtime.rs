@@ -81,6 +81,29 @@ pub async fn execute_streaming_turn(
                     result = Ok(run_result);
                     break;
                 }
+                Err(RunError::StreamCancelled) => {
+                    tracing::info!(
+                        route,
+                        provider = %provider_config.name,
+                        index = provider_idx,
+                        "streaming cancelled by client"
+                    );
+                    return None;
+                }
+                Err(RunError::Cancelled) => {
+                    tracing::info!(
+                        route,
+                        provider = %provider_config.name,
+                        index = provider_idx,
+                        "streaming execution cancelled by user"
+                    );
+                    let _ = tx
+                        .send(ghost_agent_loop::runner::AgentStreamEvent::cancelled_error(
+                            "Execution cancelled by user",
+                        ))
+                        .await;
+                    return None;
+                }
                 Err(error) => {
                     let failure = StreamFailure::from_run_error(&error);
                     let has_fallback = provider_idx + 1 < providers.len();

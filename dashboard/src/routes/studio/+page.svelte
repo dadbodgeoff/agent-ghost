@@ -7,7 +7,9 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
-  import { getRuntime } from '$lib/platform/runtime';
+  import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
+  import { shortcuts } from '$lib/shortcuts';
+  import type { StudioMessage } from '$lib/stores/studioChat.svelte';
   import ChatMessage from '../../components/ChatMessage.svelte';
   import ToolCallIndicator from '../../components/ToolCallIndicator.svelte';
   import AgentTemplateSelector from '../../components/AgentTemplateSelector.svelte';
@@ -24,13 +26,46 @@
   let chatAreaHeight = $state(0);
   let studioInputRef = $state<StudioInput | null>(null);
   let creatingSession = $state(false);
+  let resumeSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  let resumeSyncInFlight = false;
 
   // WP9-G: Auth expiry detection.
   let authExpiryWarning = $state(false);
   let authCheckInterval: ReturnType<typeof setInterval> | null = null;
+  const artifactCache = new Map<string, Artifact[]>();
+  const ARTIFACT_CACHE_MAX = 50;
+
+  function collectArtifacts(messages: StudioMessage[]): Artifact[] {
+    const artifactCandidates = messages.filter(
+      (msg) => msg.role === 'assistant' && !!msg.content && msg.content.includes('```'),
+    );
+    if (artifactCandidates.length === 0) {
+      return [];
+    }
+
+    const cacheKey = artifactCandidates
+      .map((msg) => `${msg.id}:${msg.content.length}`)
+      .join('|');
+    const cached = artifactCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const nextArtifacts = artifactCandidates.flatMap((msg) => extractArtifacts(msg.content));
+    if (artifactCache.size >= ARTIFACT_CACHE_MAX) {
+      const firstKey = artifactCache.keys().next().value;
+      if (firstKey !== undefined) artifactCache.delete(firstKey);
+    }
+    artifactCache.set(cacheKey, nextArtifacts);
+    return nextArtifacts;
+  }
 
   onMount(() => {
     studioChatStore.init();
+    shortcuts.registerCommand('studio.cancelStream', () => {
+      studioChatStore.cancelStreaming();
+    });
+    let disposeTauriFocus: (() => void) | null = null;
 
     // WP9-G: Check JWT expiry every 60s.
     authCheckInterval = setInterval(() => {
@@ -45,10 +80,55 @@
         } catch { /* malformed token — ignore */ }
       })();
     }, 60_000);
+
+    const handleWindowFocus = () => {
+      scheduleStudioResumeSync();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        scheduleStudioResumeSync();
+      }
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    window.addEventListener('pageshow', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    if (isTauriEnvironment()) {
+      void import('@tauri-apps/api/window')
+        .then(({ getCurrentWindow }) =>
+          getCurrentWindow().onFocusChanged(({ payload }) => {
+            if (payload) {
+              scheduleStudioResumeSync();
+            }
+          }),
+        )
+        .then((unlisten) => {
+          disposeTauriFocus = unlisten;
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      disposeTauriFocus?.();
+      window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('pageshow', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   });
 
   onDestroy(() => {
+    if (resumeSyncTimer) {
+      clearTimeout(resumeSyncTimer);
+      resumeSyncTimer = null;
+    }
     if (authCheckInterval) clearInterval(authCheckInterval);
+    shortcuts.unregisterCommand('studio.cancelStream');
+    shortcuts.setContext('studioStreaming', false);
+  });
+
+  $effect(() => {
+    shortcuts.setContext('studioStreaming', studioChatStore.streaming);
   });
 
   // Derived state.
@@ -65,12 +145,7 @@
   // Extract artifacts from messages when they change.
   $effect(() => {
     const msgs = messages;
-    const allArtifacts: Artifact[] = [];
-    for (const msg of msgs) {
-      if (msg.role === 'assistant' && msg.content) {
-        allArtifacts.push(...extractArtifacts(msg.content));
-      }
-    }
+    const allArtifacts = collectArtifacts(msgs);
     artifacts = allArtifacts;
     if (allArtifacts.length > 0) showArtifacts = true;
   });
@@ -132,6 +207,38 @@
     if (!last) return 'No messages';
     const text = last.content?.slice(0, 40) || '';
     return text.length >= 40 ? text + '...' : text;
+  }
+
+  async function syncStudioAfterResume() {
+    if (resumeSyncInFlight) {
+      return;
+    }
+
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return;
+    }
+
+    resumeSyncInFlight = true;
+    try {
+      studioInputRef?.refresh();
+      await wsStore.reconnect();
+      await studioChatStore.refreshActiveSession();
+    } catch {
+      // Best-effort foreground recovery. Existing banners surface real failures.
+    } finally {
+      resumeSyncInFlight = false;
+    }
+  }
+
+  function scheduleStudioResumeSync() {
+    if (resumeSyncTimer) {
+      clearTimeout(resumeSyncTimer);
+    }
+
+    resumeSyncTimer = setTimeout(() => {
+      resumeSyncTimer = null;
+      void syncStudioAfterResume();
+    }, 150);
   }
 </script>
 

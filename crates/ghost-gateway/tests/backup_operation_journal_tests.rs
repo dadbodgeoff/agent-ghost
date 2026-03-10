@@ -256,6 +256,8 @@ impl PersistentGateway {
             )),
             db: Arc::clone(&db),
             event_tx,
+            trigger_sender:
+                tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
             replay_buffer,
             cost_tracker,
             kill_gate: None,
@@ -274,6 +276,7 @@ impl PersistentGateway {
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: CancellationToken::new(),
             background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            live_execution_controls: Arc::new(dashmap::DashMap::new()),
             safety_cooldown: Arc::new(ghost_gateway::api::rate_limit::SafetyCooldown::new()),
             monitor_address: "127.0.0.1:0".to_string(),
             monitor_enabled: false,
@@ -287,6 +290,7 @@ impl PersistentGateway {
             ),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            autonomy: Arc::new(ghost_gateway::autonomy::AutonomyService::default()),
         });
 
         shared_state

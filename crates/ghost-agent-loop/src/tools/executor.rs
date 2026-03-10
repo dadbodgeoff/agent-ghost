@@ -114,6 +114,11 @@ impl ToolExecutor {
         self.filesystem = Some(FilesystemTool::new(root));
     }
 
+    /// Configure the filesystem tool without workspace path restrictions.
+    pub fn set_unrestricted_workspace_root(&mut self, root: PathBuf) {
+        self.filesystem = Some(FilesystemTool::new_unrestricted(root));
+    }
+
     /// Configure the runtime policy engine. Live execution must provide this.
     pub fn set_policy_engine(&mut self, engine: PolicyEngine) {
         self.policy_engine = Some(Arc::new(Mutex::new(engine)));

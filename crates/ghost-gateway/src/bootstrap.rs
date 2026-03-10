@@ -6,10 +6,12 @@
 
 use thiserror::Error;
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 
 use crate::agents::registry::AgentRegistry;
 use crate::api::websocket::{EventReplayBuffer, WsEnvelope};
+use crate::autonomy::AutonomyService;
 use crate::config::GhostConfig;
 use crate::gateway::{GatewaySharedState, GatewayState};
 use crate::health::MonitorConnection;
@@ -17,6 +19,7 @@ use crate::runtime::GatewayRuntime;
 use crate::safety::kill_switch::KillSwitch;
 use crate::safety::quarantine::QuarantineManager;
 use crate::state::AppState;
+use cortex_core::safety::trigger::TriggerEvent;
 use ghost_egress::EgressPolicy;
 
 /// Exit codes per sysexits.h convention.
@@ -138,19 +141,20 @@ impl GatewayBootstrap {
         // Step 1b.1: Hydrate provider API keys from secret_provider into env vars.
         // This ensures keys saved through the dashboard UI survive gateway restarts.
         for provider in &config.models.providers {
-            if matches!(provider.name.as_str(), "ollama") {
+            if matches!(provider.name.as_str(), "ollama" | "codex")
+                && provider.api_key_env.is_none()
+            {
                 continue; // No API key needed for local providers.
             }
-            let env_name =
-                provider
-                    .api_key_env
-                    .as_deref()
-                    .unwrap_or(match provider.name.as_str() {
-                        "anthropic" => "ANTHROPIC_API_KEY",
-                        "openai" => "OPENAI_API_KEY",
-                        "gemini" => "GEMINI_API_KEY",
-                        _ => continue,
-                    });
+            let env_name = match provider.api_key_env.as_deref() {
+                Some(env_name) => env_name,
+                None => match provider.name.as_str() {
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    "openai" | "openai_compat" => "OPENAI_API_KEY",
+                    "gemini" => "GEMINI_API_KEY",
+                    _ => continue,
+                },
+            };
             // Only hydrate if key is not already set (env/store takes precedence).
             if crate::state::get_api_key(env_name).is_some() {
                 continue;
@@ -334,6 +338,10 @@ impl GatewayBootstrap {
             "Skill catalog initialized"
         );
 
+        let (trigger_sender, trigger_receiver) = tokio::sync::mpsc::channel::<TriggerEvent>(128);
+
+        let autonomy = Arc::new(AutonomyService::default());
+
         let app_state = Arc::new(AppState {
             gateway: Arc::clone(&shared_state),
             config_path: crate::config::GhostConfig::default_path(config_path),
@@ -342,6 +350,7 @@ impl GatewayBootstrap {
             quarantine: Arc::new(RwLock::new(QuarantineManager::new())),
             db,
             event_tx,
+            trigger_sender,
             replay_buffer,
             cost_tracker,
             kill_gate,
@@ -359,6 +368,7 @@ impl GatewayBootstrap {
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             background_tasks: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            live_execution_controls: Arc::new(dashmap::DashMap::new()),
             safety_cooldown: Arc::new(crate::api::rate_limit::SafetyCooldown::new()),
             monitor_address: config.convergence.monitor.address.clone(),
             monitor_enabled: config.convergence.monitor.enabled,
@@ -372,7 +382,21 @@ impl GatewayBootstrap {
             skill_catalog,
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: config.gateway.session_ttl_days,
+            autonomy: Arc::clone(&autonomy),
         });
+
+        autonomy
+            .reconcile_bootstrap_jobs(&app_state)
+            .await
+            .map_err(|error| {
+                BootstrapError::Database(format!("autonomy bootstrap reconciliation: {error}"))
+            })?;
+
+        if let Err(error) = app_state.sync_agent_access_pullbacks() {
+            return Err(BootstrapError::AgentInit(format!(
+                "restore agent access pullbacks: {error}"
+            )));
+        }
 
         if app_state.kill_gate.is_some() {
             crate::api::safety::persist_current_safety_state(&app_state).map_err(|error| {
@@ -413,6 +437,32 @@ impl GatewayBootstrap {
             crate::backup_scheduler::backup_scheduler_task(Arc::clone(&app_state)),
         );
         tracing::info!("Step 5d: Backup scheduler started (tracked)");
+
+        runtime.spawn_tracked(
+            "auto_triggers",
+            crate::safety::auto_triggers::auto_trigger_task(
+                Arc::clone(&app_state),
+                trigger_receiver,
+            ),
+        );
+        tracing::info!("Step 5e: Auto trigger evaluator started (tracked)");
+
+        Arc::clone(&app_state.autonomy).start(&runtime, Arc::clone(&app_state));
+        tracing::info!("Step 5f: Autonomy control plane started (tracked)");
+
+        runtime.spawn_tracked(
+            "speculative_context_validation",
+            crate::speculative_context::validation_worker_task(Arc::clone(&app_state)),
+        );
+        runtime.spawn_tracked(
+            "speculative_context_promotion",
+            crate::speculative_context::promotion_worker_task(Arc::clone(&app_state)),
+        );
+        runtime.spawn_tracked(
+            "speculative_context_expiry",
+            crate::speculative_context::expiry_worker_task(Arc::clone(&app_state)),
+        );
+        tracing::info!("Step 5g: Speculative context Phase 2 workers started (tracked)");
 
         // WP4-A: Periodic cost tracker persistence (every 5 minutes).
         {
@@ -491,6 +541,10 @@ impl GatewayBootstrap {
                                     base_url,
                                 }))
                             }
+                            "codex" => Some(Arc::new(crate::codex::CodexProvider {
+                                model: pc.model.clone(),
+                                api_key_env: pc.api_key_env.clone(),
+                            })),
                             _ => None,
                         };
                     if let Some(p) = provider {
@@ -727,13 +781,19 @@ impl GatewayBootstrap {
                 );
             }
 
+            let capabilities = effective_agent_capabilities(agent);
+            let skills = effective_agent_skills(agent);
             let registered = crate::agents::registry::RegisteredAgent {
                 id: crate::agents::registry::durable_agent_id(&agent.name),
                 name: agent.name.clone(),
                 state: crate::agents::registry::AgentLifecycleState::Starting,
                 channel_bindings: Vec::new(),
-                capabilities: agent.capabilities.clone(),
-                skills: agent.skills.clone(),
+                full_access: agent.full_access,
+                capabilities: capabilities.clone(),
+                skills: skills.clone(),
+                baseline_capabilities: capabilities,
+                baseline_skills: skills,
+                access_pullback_active: false,
                 spending_cap: agent.spending_cap,
                 template: agent.template.clone(),
             };
@@ -783,7 +843,7 @@ impl GatewayBootstrap {
     ) -> axum::Router {
         let public_routes = crate::route_sets::public_routes();
         let read_routes = crate::route_sets::read_routes(Arc::clone(&app_state));
-        let operator_routes = crate::route_sets::operator_routes();
+        let operator_routes = crate::route_sets::operator_routes(Arc::clone(&app_state));
         let admin_routes = crate::route_sets::admin_routes();
         let superadmin_routes = crate::route_sets::superadmin_routes();
 
@@ -1277,12 +1337,40 @@ impl GatewayBootstrap {
     }
 }
 
+fn builtin_tool_capabilities() -> Vec<String> {
+    let mut registry = ghost_agent_loop::tools::registry::ToolRegistry::new();
+    ghost_agent_loop::tools::executor::register_builtin_tools(&mut registry);
+    registry.required_capabilities()
+}
+
+fn effective_agent_capabilities(agent: &crate::config::AgentConfig) -> Vec<String> {
+    let mut capabilities = agent.capabilities.iter().cloned().collect::<BTreeSet<_>>();
+    if agent.full_access {
+        capabilities.extend(builtin_tool_capabilities());
+    }
+    capabilities.into_iter().collect()
+}
+
+fn effective_agent_skills(agent: &crate::config::AgentConfig) -> Option<Vec<String>> {
+    if agent.full_access {
+        return None;
+    }
+
+    agent.skills.as_ref().map(|skills| {
+        skills
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    })
+}
+
 fn mesh_keys_dir() -> std::path::PathBuf {
     ghost_home().join("agents").join("platform").join("keys")
 }
 
-fn load_or_create_mesh_signing_key(
-) -> Result<
+fn load_or_create_mesh_signing_key() -> Result<
     (
         Arc<std::sync::Mutex<ghost_signing::SigningKey>>,
         ghost_signing::VerifyingKey,
@@ -1291,13 +1379,19 @@ fn load_or_create_mesh_signing_key(
 > {
     let keys_dir = mesh_keys_dir();
     std::fs::create_dir_all(&keys_dir).map_err(|error| {
-        BootstrapError::AgentInit(format!("create mesh key directory '{}': {error}", keys_dir.display()))
+        BootstrapError::AgentInit(format!(
+            "create mesh key directory '{}': {error}",
+            keys_dir.display()
+        ))
     })?;
 
     let seed_path = keys_dir.join("agent.key");
     let signing_key = if seed_path.exists() {
         let seed = std::fs::read(&seed_path).map_err(|error| {
-            BootstrapError::AgentInit(format!("read mesh signing seed '{}': {error}", seed_path.display()))
+            BootstrapError::AgentInit(format!(
+                "read mesh signing seed '{}': {error}",
+                seed_path.display()
+            ))
         })?;
         let seed_bytes: [u8; 32] = seed.try_into().map_err(|_| {
             BootstrapError::AgentInit(format!(
@@ -1346,7 +1440,10 @@ fn persist_mesh_signing_seed(
 fn persist_mesh_public_key(public_key: &[u8; 32]) -> Result<(), BootstrapError> {
     let keys_dir = mesh_keys_dir();
     std::fs::create_dir_all(&keys_dir).map_err(|error| {
-        BootstrapError::AgentInit(format!("create mesh key directory '{}': {error}", keys_dir.display()))
+        BootstrapError::AgentInit(format!(
+            "create mesh key directory '{}': {error}",
+            keys_dir.display()
+        ))
     })?;
     let public_key_path = keys_dir.join("agent.pub");
     std::fs::write(&public_key_path, public_key).map_err(|error| {
@@ -1531,5 +1628,35 @@ mod tests {
         assert!(error
             .to_string()
             .contains("client_secret_env not found: BOOTSTRAP_OAUTH_CLIENT_SECRET_MISSING"));
+    }
+
+    #[test]
+    fn step4_full_access_expands_builtin_capabilities_and_clears_skill_allowlist() {
+        let config = GhostConfig {
+            agents: vec![crate::config::AgentConfig {
+                name: "full-access".into(),
+                spending_cap: 5.0,
+                capabilities: vec!["custom_capability".into()],
+                full_access: true,
+                isolation: crate::config::IsolationMode::InProcess,
+                template: None,
+                skills: Some(vec!["note_take".into()]),
+                network: None,
+            }],
+            ..GhostConfig::default()
+        };
+
+        let registry = GatewayBootstrap::step4_init_agents_channels(&config).unwrap();
+        let agent = registry.lookup_by_name("full-access").unwrap();
+
+        assert!(agent
+            .capabilities
+            .iter()
+            .any(|cap| cap == "custom_capability"));
+        assert!(agent.capabilities.iter().any(|cap| cap == "web_search"));
+        assert!(agent.capabilities.iter().any(|cap| cap == "shell_execute"));
+        assert_eq!(agent.skills, None);
+        assert_eq!(agent.baseline_capabilities, agent.capabilities);
+        assert_eq!(agent.baseline_skills, agent.skills);
     }
 }

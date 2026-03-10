@@ -36,28 +36,30 @@ pub async fn require_route(
     Ok(next.run(req).await)
 }
 
-pub async fn require_live_execution_read_route(
+async fn require_live_execution_route(
     State(state): State<Arc<AppState>>,
     Path(execution_id): Path<String>,
     mut req: Request,
     next: Next,
+    action: Action,
+    route_id: RouteId,
 ) -> Result<Response, ApiError> {
     let claims = req.extensions().get::<Claims>();
     let db = state
         .db
         .read()
-        .map_err(|error| ApiError::db_error("require_live_execution_read_route", error))?;
+        .map_err(|error| ApiError::db_error("require_live_execution_route", error))?;
     let Some(record) =
         cortex_storage::queries::live_execution_queries::get_by_id(&db, &execution_id)
-            .map_err(|error| ApiError::db_error("require_live_execution_read_route", error))?
+            .map_err(|error| ApiError::db_error("require_live_execution_route", error))?
     else {
         return Err(ApiError::not_found(format!(
             "live execution {execution_id} not found"
         )));
     };
 
-    let context = AuthorizationContext::new(Action::LiveExecutionRead, RouteId::LiveExecutionById)
-        .with_resource(ResourceContext::LiveExecution {
+    let context =
+        AuthorizationContext::new(action, route_id).with_resource(ResourceContext::LiveExecution {
             execution_id: &execution_id,
             owner_subject: Some(record.actor_key.as_str()),
         });
@@ -69,6 +71,40 @@ pub async fn require_live_execution_read_route(
             record,
         ));
     Ok(next.run(req).await)
+}
+
+pub async fn require_live_execution_read_route(
+    state: State<Arc<AppState>>,
+    path: Path<String>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    require_live_execution_route(
+        state,
+        path,
+        req,
+        next,
+        Action::LiveExecutionRead,
+        RouteId::LiveExecutionById,
+    )
+    .await
+}
+
+pub async fn require_live_execution_cancel_route(
+    state: State<Arc<AppState>>,
+    path: Path<String>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    require_live_execution_route(
+        state,
+        path,
+        req,
+        next,
+        Action::LiveExecutionCancel,
+        RouteId::LiveExecutionCancelById,
+    )
+    .await
 }
 
 #[cfg(test)]

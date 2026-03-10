@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::safety::kill_switch::{KillLevel, KillSwitchState};
+
 const DURABLE_AGENT_NAMESPACE: Uuid = Uuid::from_u128(0x6ba7b812_9dad_11d1_80b4_00c04fd430c8);
 
 pub fn durable_agent_id(name: &str) -> Uuid {
@@ -38,11 +40,39 @@ pub struct RegisteredAgent {
     pub name: String,
     pub state: AgentLifecycleState,
     pub channel_bindings: Vec<String>,
+    pub full_access: bool,
     pub capabilities: Vec<String>,
     pub skills: Option<Vec<String>>,
+    pub baseline_capabilities: Vec<String>,
+    pub baseline_skills: Option<Vec<String>>,
+    pub access_pullback_active: bool,
     pub spending_cap: f64,
     /// Optional template name for agent initialization (Finding #16).
     pub template: Option<String>,
+}
+
+impl RegisteredAgent {
+    pub fn apply_access_pullback(&mut self) -> bool {
+        if self.access_pullback_active {
+            return false;
+        }
+
+        self.capabilities.clear();
+        self.skills = Some(Vec::new());
+        self.access_pullback_active = true;
+        true
+    }
+
+    pub fn restore_access_profile(&mut self) -> bool {
+        if !self.access_pullback_active {
+            return false;
+        }
+
+        self.capabilities = self.baseline_capabilities.clone();
+        self.skills = self.baseline_skills.clone();
+        self.access_pullback_active = false;
+        true
+    }
 }
 
 /// Agent registry for the gateway.
@@ -126,10 +156,90 @@ impl AgentRegistry {
         agent.state = to;
         Ok(())
     }
+
+    pub fn sync_access_pullbacks(&mut self, kill_state: &KillSwitchState) -> Vec<Uuid> {
+        let mut changed = Vec::new();
+        let pull_back_all = kill_state.platform_level == KillLevel::KillAll;
+
+        for agent in self.agents_by_id.values_mut() {
+            let should_pull_back = pull_back_all
+                || kill_state
+                    .per_agent
+                    .get(&agent.id)
+                    .is_some_and(|state| state.level == KillLevel::Quarantine);
+
+            let updated = if should_pull_back {
+                agent.apply_access_pullback()
+            } else {
+                agent.restore_access_profile()
+            };
+
+            if updated {
+                changed.push(agent.id);
+            }
+        }
+
+        changed
+    }
 }
 
 impl Default for AgentRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_access_pullbacks_strips_and_restores_effective_access() {
+        let agent_id = Uuid::now_v7();
+        let mut registry = AgentRegistry::new();
+        registry.register(RegisteredAgent {
+            id: agent_id,
+            name: "pullback-target".into(),
+            state: AgentLifecycleState::Ready,
+            channel_bindings: Vec::new(),
+            full_access: false,
+            capabilities: vec!["shell_execute".into(), "web_search".into()],
+            skills: None,
+            baseline_capabilities: vec!["shell_execute".into(), "web_search".into()],
+            baseline_skills: None,
+            access_pullback_active: false,
+            spending_cap: 5.0,
+            template: None,
+        });
+
+        let mut kill_state = KillSwitchState::default();
+        kill_state.per_agent.insert(
+            agent_id,
+            crate::safety::kill_switch::AgentKillState {
+                agent_id,
+                level: KillLevel::Quarantine,
+                activated_at: None,
+                trigger: Some("test".into()),
+            },
+        );
+
+        let changed = registry.sync_access_pullbacks(&kill_state);
+        assert_eq!(changed, vec![agent_id]);
+
+        let pulled_back = registry.lookup_by_id(agent_id).unwrap();
+        assert!(pulled_back.capabilities.is_empty());
+        assert_eq!(pulled_back.skills, Some(Vec::new()));
+        assert!(pulled_back.access_pullback_active);
+
+        let changed = registry.sync_access_pullbacks(&KillSwitchState::default());
+        assert_eq!(changed, vec![agent_id]);
+
+        let restored = registry.lookup_by_id(agent_id).unwrap();
+        assert_eq!(
+            restored.capabilities,
+            vec!["shell_execute".to_string(), "web_search".to_string()]
+        );
+        assert_eq!(restored.skills, None);
+        assert!(!restored.access_pullback_active);
     }
 }

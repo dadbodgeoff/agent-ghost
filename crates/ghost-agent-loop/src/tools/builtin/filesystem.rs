@@ -20,16 +20,32 @@ pub enum FsError {
 /// Filesystem tool scoped to a workspace root.
 pub struct FilesystemTool {
     workspace_root: PathBuf,
+    allow_absolute_paths: bool,
 }
 
 impl FilesystemTool {
     pub fn new(workspace_root: PathBuf) -> Self {
         let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
-        Self { workspace_root }
+        Self {
+            workspace_root,
+            allow_absolute_paths: false,
+        }
+    }
+
+    pub fn new_unrestricted(workspace_root: PathBuf) -> Self {
+        let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+        Self {
+            workspace_root,
+            allow_absolute_paths: true,
+        }
     }
 
     /// Resolve and validate a path within the workspace.
     fn resolve(&self, relative: &str) -> Result<PathBuf, FsError> {
+        if self.allow_absolute_paths {
+            return Ok(self.resolve_unrestricted(relative));
+        }
+
         let mut normalized = PathBuf::new();
         for component in Path::new(relative).components() {
             match component {
@@ -47,6 +63,39 @@ impl FilesystemTool {
         }
 
         Ok(self.workspace_root.join(normalized))
+    }
+
+    fn resolve_unrestricted(&self, path: &str) -> PathBuf {
+        let input = Path::new(path);
+        let mut resolved = if input.is_absolute() {
+            PathBuf::new()
+        } else {
+            self.workspace_root.clone()
+        };
+
+        for component in input.components() {
+            match component {
+                Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+                Component::RootDir => {
+                    if resolved.as_os_str().is_empty() {
+                        resolved.push(std::path::MAIN_SEPARATOR_STR);
+                    } else {
+                        resolved.push(std::path::MAIN_SEPARATOR_STR);
+                    }
+                }
+                Component::CurDir => {}
+                Component::Normal(part) => resolved.push(part),
+                Component::ParentDir => {
+                    let _ = resolved.pop();
+                }
+            }
+        }
+
+        if resolved.as_os_str().is_empty() {
+            self.workspace_root.clone()
+        } else {
+            resolved
+        }
     }
 
     /// Read a file within the workspace.
@@ -100,5 +149,19 @@ mod tests {
 
         let created = root.path().join("nested").join("created.txt");
         assert_eq!(std::fs::read_to_string(created).unwrap(), "ok");
+    }
+
+    #[test]
+    fn unrestricted_mode_allows_absolute_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("absolute.txt");
+        std::fs::write(&target, "ok").unwrap();
+
+        let fs = FilesystemTool::new_unrestricted(root.path().to_path_buf());
+
+        assert_eq!(
+            fs.read_file(target.to_string_lossy().as_ref()).unwrap(),
+            "ok"
+        );
     }
 }

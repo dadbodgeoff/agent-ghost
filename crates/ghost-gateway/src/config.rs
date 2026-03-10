@@ -215,6 +215,10 @@ pub struct AgentConfig {
     pub spending_cap: f64,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Expand this agent to all builtin tool capabilities and remove any
+    /// skill allowlist so all runtime-visible skills are exposed.
+    #[serde(default)]
+    pub full_access: bool,
     #[serde(default)]
     pub isolation: IsolationMode,
     #[serde(default)]

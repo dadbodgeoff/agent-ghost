@@ -120,12 +120,31 @@ fn latest_version_db_missing_audit_log_fails_verification() {
 fn latest_version_db_missing_latest_migration_table_fails_verification() {
     let conn = Connection::open_in_memory().unwrap();
     cortex_storage::run_all_migrations(&conn).unwrap();
-    conn.execute_batch("DROP TABLE rate_limit_buckets;")
-        .unwrap();
+    conn.execute_batch("DROP TABLE autonomy_jobs;").unwrap();
 
     let err = require_schema_ready(&conn).unwrap_err();
     assert!(
-        err.to_string().contains("missing table rate_limit_buckets"),
+        err.to_string().contains("missing table autonomy_jobs"),
+        "{err}"
+    );
+}
+
+#[test]
+fn latest_version_db_missing_autonomy_side_effect_uniqueness_fails_verification() {
+    let conn = Connection::open_in_memory().unwrap();
+    cortex_storage::run_all_migrations(&conn).unwrap();
+    conn.execute_batch(
+        "DROP INDEX idx_autonomy_runs_side_effect;
+         CREATE INDEX idx_autonomy_runs_side_effect
+            ON autonomy_runs(side_effect_correlation_key);",
+    )
+    .unwrap();
+
+    let err = require_schema_ready(&conn).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "index idx_autonomy_runs_side_effect missing contract autonomy side effect correlation uniqueness"
+        ),
         "{err}"
     );
 }
