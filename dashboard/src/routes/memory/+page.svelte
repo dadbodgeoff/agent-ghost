@@ -3,9 +3,12 @@
    * Memory Browser — search + filter memories (T-2.3.1).
    * Supports text search, type/importance/confidence filtering.
    */
-  import { onMount } from 'svelte';
+  import { page } from '$app/stores';
+  import { onDestroy, onMount } from 'svelte';
+  import { tick } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
   import type { MemoryEntry, MemorySearchResultEntry } from '@ghost/sdk';
+  import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
   import MemoryCard from '../../components/MemoryCard.svelte';
 
   interface MemoryCardItem {
@@ -22,9 +25,49 @@
   let typeFilter = $state('');
   let importanceFilter = $state('');
   let isSearchMode = $state(false);
+  let focusedMemoryId = $state('');
+  let mounted = $state(false);
+  let lastUrlState = $state('');
+  let unsubs: Array<() => void> = [];
+
+  const memoryTypeOptions = [
+    { value: '', label: 'All Types' },
+    { value: 'Episodic', label: 'Episodic' },
+    { value: 'Semantic', label: 'Semantic' },
+    { value: 'Procedural', label: 'Procedural' },
+    { value: 'Conversation', label: 'Conversation' },
+    { value: 'Goal', label: 'Goal' },
+    { value: 'AgentGoal', label: 'Agent Goal' },
+    { value: 'AgentReflection', label: 'Agent Reflection' },
+  ];
+
+  const importanceOptions = [
+    { value: '', label: 'All Importance' },
+    { value: 'Critical', label: 'Critical' },
+    { value: 'High', label: 'High' },
+    { value: 'Normal', label: 'Normal' },
+    { value: 'Low', label: 'Low' },
+    { value: 'Trivial', label: 'Trivial' },
+  ];
 
   onMount(async () => {
-    await loadMemories();
+    mounted = true;
+    lastUrlState = $page.url.search;
+    unsubs = [
+      wsStore.on('ProposalDecision', (_msg: WsMessage) => {
+        void refreshForCurrentMode();
+      }),
+      wsStore.onResync(() => {
+        void refreshForCurrentMode();
+      }),
+    ];
+    await hydrateFromUrl();
+  });
+
+  onDestroy(() => {
+    for (const unsub of unsubs) {
+      unsub();
+    }
   });
 
   async function loadMemories() {
@@ -35,6 +78,7 @@
       const data = await client.memory.list();
       memories = (data.memories ?? []).map(toMemoryCardItem);
       isSearchMode = false;
+      await focusMemory();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load memories';
     }
@@ -60,6 +104,7 @@
       });
       memories = (data.results ?? []).map(toSearchMemoryCardItem);
       isSearchMode = true;
+      await focusMemory();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Search failed';
     }
@@ -71,7 +116,50 @@
     agentFilter = '';
     typeFilter = '';
     importanceFilter = '';
+    focusedMemoryId = '';
     loadMemories();
+  }
+
+  $effect(() => {
+    if (!mounted) return;
+    const urlState = $page.url.search;
+    if (urlState === lastUrlState) return;
+    lastUrlState = urlState;
+    hydrateFromUrl();
+  });
+
+  async function hydrateFromUrl() {
+    const q = ($page.url.searchParams.get('q') ?? '').trim();
+    const agent = ($page.url.searchParams.get('agent_id') ?? '').trim();
+    const memoryType = ($page.url.searchParams.get('memory_type') ?? '').trim();
+    const importance = ($page.url.searchParams.get('importance') ?? '').trim();
+    focusedMemoryId = ($page.url.searchParams.get('focus') ?? '').trim();
+
+    searchQuery = q;
+    agentFilter = agent;
+    typeFilter = memoryType;
+    importanceFilter = importance;
+
+    if (q || agent || memoryType || importance) {
+      await handleSearch();
+    } else {
+      await loadMemories();
+    }
+  }
+
+  async function refreshForCurrentMode() {
+    if (searchQuery.trim() || agentFilter || typeFilter || importanceFilter) {
+      await handleSearch();
+    } else {
+      await loadMemories();
+    }
+  }
+
+  async function focusMemory() {
+    if (!focusedMemoryId) return;
+    await tick();
+    const target = document.getElementById(`memory-${focusedMemoryId}`);
+    target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 
   function toMemoryCardItem(memory: MemoryEntry): MemoryCardItem {
@@ -113,20 +201,14 @@
   <div class="filter-row">
     <input type="text" class="filter-input" placeholder="Agent ID" bind:value={agentFilter} />
     <select class="filter-select" bind:value={typeFilter}>
-      <option value="">All Types</option>
-      <option value="episodic">Episodic</option>
-      <option value="semantic">Semantic</option>
-      <option value="procedural">Procedural</option>
-      <option value="working">Working</option>
-      <option value="reflection">Reflection</option>
+      {#each memoryTypeOptions as option}
+        <option value={option.value}>{option.label}</option>
+      {/each}
     </select>
     <select class="filter-select" bind:value={importanceFilter}>
-      <option value="">All Importance</option>
-      <option value="critical">Critical</option>
-      <option value="high">High</option>
-      <option value="medium">Medium</option>
-      <option value="low">Low</option>
-      <option value="trivial">Trivial</option>
+      {#each importanceOptions as option}
+        <option value={option.value}>{option.label}</option>
+      {/each}
     </select>
   </div>
 </div>
@@ -149,11 +231,14 @@
 {:else}
   <div class="memory-list">
     {#each memories as mem (mem.memory_id)}
-      <MemoryCard
-        memory_id={mem.memory_id}
-        snapshot={mem.snapshot}
-        created_at={mem.created_at}
-      />
+      <a class="memory-link" href={`/memory/${mem.memory_id}`}>
+        <MemoryCard
+          memory_id={mem.memory_id}
+          snapshot={mem.snapshot}
+          created_at={mem.created_at}
+          focused={mem.memory_id === focusedMemoryId}
+        />
+      </a>
     {/each}
   </div>
 {/if}
@@ -234,6 +319,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-2);
+  }
+
+  .memory-link {
+    text-decoration: none;
+    color: inherit;
   }
 
   .skeleton-block {

@@ -62,6 +62,11 @@ export type ListGoalsResult = Omit<
 > & {
   proposals: Proposal[];
 };
+export type ActiveGoal = components['schemas']['ActiveGoalSummary'];
+export type ListActiveGoalsResult = {
+  goals: ActiveGoal[];
+  total: number;
+};
 
 // ── API ──
 
@@ -77,6 +82,16 @@ export class GoalsAPI {
     if (params?.page_size !== undefined) query.set('page_size', String(params.page_size));
     const qs = query.toString();
     return this.request<ListGoalsResult>('GET', `/api/goals${qs ? `?${qs}` : ''}`);
+  }
+
+  /** List the canonical active goal set. */
+  async listActive(params?: Omit<ListGoalsParams, 'status'>): Promise<ListActiveGoalsResult> {
+    const query = new URLSearchParams();
+    if (params?.agent_id) query.set('agent_id', params.agent_id);
+    if (params?.page !== undefined) query.set('page', String(params.page));
+    if (params?.page_size !== undefined) query.set('page_size', String(params.page_size));
+    const qs = query.toString();
+    return this.request<ListActiveGoalsResult>('GET', `/api/goals/active${qs ? `?${qs}` : ''}`);
   }
 
   /** Get a single proposal with full detail. */

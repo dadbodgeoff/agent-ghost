@@ -26,7 +26,11 @@
     spending_cap: number;
     intervention_level: 'normal' | 'elevated' | 'high' | 'critical';
     convergence_profile: string;
-    // Step 6: Channels
+    sandbox_enabled: boolean;
+    sandbox_mode: 'off' | 'read_only' | 'workspace_write' | 'strict';
+    sandbox_on_violation: 'warn' | 'pause' | 'quarantine' | 'kill_all';
+    sandbox_network_access: boolean;
+  // Step 6: Channels
     channels: string[];
   }
 
@@ -49,6 +53,10 @@
     spending_cap: 10,
     intervention_level: 'normal',
     convergence_profile: 'default',
+    sandbox_enabled: true,
+    sandbox_mode: 'workspace_write',
+    sandbox_on_violation: 'pause',
+    sandbox_network_access: false,
     channels: ['cli'],
   });
 
@@ -93,11 +101,8 @@
   ];
 
   const AVAILABLE_CHANNELS = [
-    { id: 'cli', label: 'CLI', description: 'Command line interface' },
-    { id: 'slack', label: 'Slack', description: 'Slack workspace integration' },
-    { id: 'discord', label: 'Discord', description: 'Discord server integration' },
-    { id: 'telegram', label: 'Telegram', description: 'Telegram bot integration' },
-    { id: 'webhook', label: 'Webhook', description: 'HTTP webhook endpoint' },
+    { id: 'cli', label: 'CLI', description: 'Immediate local control channel' },
+    { id: 'websocket', label: 'WebSocket', description: 'Local socket adapter using the default listener config' },
   ];
 
   const CONVERGENCE_PROFILES = ['default', 'strict', 'permissive', 'research'];
@@ -167,8 +172,33 @@
         name: data.name,
         capabilities: data.tools,
         spending_cap: data.spending_cap,
+        sandbox: {
+          enabled: data.sandbox_enabled,
+          mode: data.sandbox_mode,
+          on_violation: data.sandbox_on_violation,
+          network_access: data.sandbox_network_access,
+          allowed_shell_prefixes: [],
+        },
       });
       const agentId = result?.id;
+      if (agentId) {
+        try {
+          for (const channelType of data.channels) {
+            await client.channels.create({
+              channel_type: channelType,
+              agent_id: agentId,
+            });
+          }
+        } catch (channelError) {
+          await client.agents.delete(agentId).catch(() => undefined);
+          throw new Error(
+            channelError instanceof Error
+              ? `Agent rollback completed after channel provisioning failed: ${channelError.message}`
+              : 'Agent rollback completed after channel provisioning failed',
+          );
+        }
+      }
+
       if (agentId) {
         goto(`/agents/${agentId}`);
       } else {
@@ -326,13 +356,43 @@
             {/each}
           </select>
         </div>
+        <div class="field">
+          <label class="checkbox">
+            <input type="checkbox" bind:checked={data.sandbox_enabled} />
+            <span>Enable builtin sandbox</span>
+          </label>
+        </div>
+        <div class="field">
+          <label for="sandbox-mode">Sandbox Mode</label>
+          <select id="sandbox-mode" bind:value={data.sandbox_mode}>
+            <option value="off">Off</option>
+            <option value="read_only">Read Only</option>
+            <option value="workspace_write">Workspace Write</option>
+            <option value="strict">Strict</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="sandbox-action">On Violation</label>
+          <select id="sandbox-action" bind:value={data.sandbox_on_violation}>
+            <option value="warn">Warn</option>
+            <option value="pause">Pause</option>
+            <option value="quarantine">Quarantine</option>
+            <option value="kill_all">Kill All</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="checkbox">
+            <input type="checkbox" bind:checked={data.sandbox_network_access} />
+            <span>Allow networked builtin tools</span>
+          </label>
+        </div>
       </div>
 
     <!-- Step 6: Channels -->
     {:else if step === 6}
       <div class="step-panel">
         <h2>Channels</h2>
-        <p class="step-desc">Select which channels this agent will be accessible through.</p>
+        <p class="step-desc">Select the bootstrap channels to create with the agent. Credentialed integrations are configured later in the dedicated Channels surface.</p>
         <div class="tool-grid">
           {#each AVAILABLE_CHANNELS as channel}
             <label class="tool-option" class:selected={data.channels.includes(channel.id)}>
@@ -382,6 +442,7 @@
               <dt>Spending Cap</dt><dd>${data.spending_cap}</dd>
               <dt>Intervention</dt><dd>{data.intervention_level}</dd>
               <dt>Convergence</dt><dd>{data.convergence_profile}</dd>
+              <dt>Sandbox</dt><dd>{data.sandbox_enabled ? `${data.sandbox_mode} / ${data.sandbox_on_violation}` : 'disabled'}</dd>
             </dl>
           </div>
           <div class="review-section">

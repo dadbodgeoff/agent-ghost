@@ -5,9 +5,9 @@
  *
  * Caching strategy (tiered — T-4.7.1):
  *   - Static assets (HTML, CSS, JS): cache-first (pre-cached shell)
- *   - Stale-while-revalidate: /api/agents, /api/convergence, /api/costs, /api/skills
+ *   - Stale-while-revalidate: /api/agents, /api/convergence, /api/skills
  *   - Network-first: /api/audit, /api/sessions, /api/memory, /api/goals, /api/workflows
- *   - NEVER cached: /api/safety/* writes — returns 503 when offline (T-4.7.2)
+ *   - NEVER queued: /api/safety/* writes and proposal decisions — returns 503 when offline
  *
  * Push events: convergence alerts, kill switch activations, proposal approvals.
  * Background sync: queued non-safety actions replayed on reconnect (T-4.7.3).
@@ -38,7 +38,6 @@ const PRECACHE_ASSETS = [...build, ...files];
 const STALE_REVALIDATE_PATHS = [
   '/api/agents',
   '/api/convergence',
-  '/api/costs',
   '/api/skills',
   '/api/health',
   '/api/profiles',
@@ -119,6 +118,10 @@ self.addEventListener('fetch', (event: FetchEvent) => {
       event.respondWith(networkOnly(event.request));
       return;
     }
+    if (isProposalDecisionPath(event.request.url)) {
+      event.respondWith(proposalDecisionWriteGuard(event.request));
+      return;
+    }
     if (event.request.method !== 'GET' && event.request.method !== 'HEAD') {
       event.respondWith(networkWriteWithQueue(event.request));
       return;
@@ -148,6 +151,14 @@ function isStaleRevalidatePath(pathname: string): boolean {
 
 function isAuthPath(pathname: string): boolean {
   return pathname.startsWith('/api/auth/');
+}
+
+function isProposalDecisionPath(pathOrUrl: string): boolean {
+  const normalized = pathOrUrl.toLowerCase().replace(/\/+$/, '');
+  return (
+    normalized.includes('/api/goals/') &&
+    (/\/approve(?:[/?#]|$)/.test(normalized) || /\/reject(?:[/?#]|$)/.test(normalized))
+  );
 }
 
 function isCacheableApiRequest(request: Request): boolean {
@@ -329,7 +340,29 @@ async function safetyWriteGuard(request: Request): Promise<Response> {
   }
 }
 
+async function proposalDecisionWriteGuard(request: Request): Promise<Response> {
+  try {
+    return await fetch(request);
+  } catch {
+    return new Response(
+      JSON.stringify({
+        error: 'Proposal decisions require network connection',
+        offline: true,
+        message: 'Cannot approve or reject proposals while offline. Reconnect and retry the decision.',
+      }),
+      {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+  }
+}
+
 async function networkWriteWithQueue(request: Request): Promise<Response> {
+  if (isProposalDecisionPath(request.url)) {
+    return proposalDecisionWriteGuard(request);
+  }
+
   const replayRequest = request.clone();
   try {
     const response = await fetch(request);
@@ -422,6 +455,10 @@ async function replayPendingActions(): Promise<void> {
           await deletePendingAction(db, action.id);
           continue;
         }
+        if (isProposalDecisionPath(action.url)) {
+          await deletePendingAction(db, action.id);
+          continue;
+        }
         if (
           action.client_id !== activeAuth.client_id ||
           action.session_epoch !== activeAuth.session_epoch
@@ -495,6 +532,8 @@ async function replayPendingActions(): Promise<void> {
 }
 
 async function queuePendingAction(request: Request): Promise<boolean> {
+  if (isProposalDecisionPath(request.url)) return false;
+
   const auth = await loadReplayAuthState();
   if (!auth?.token) return false;
 

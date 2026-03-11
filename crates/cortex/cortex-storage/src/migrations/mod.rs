@@ -48,6 +48,10 @@ pub mod v059_autonomy_control_plane;
 pub mod v060_speculative_context_phase1;
 pub mod v061_speculative_context_phase3;
 pub mod v062_live_execution_cancelled_status;
+pub mod v063_sandbox_reviews;
+pub mod v064_execution_reliability;
+pub mod v065_sessions_contract_canonicalization;
+pub mod v066_channels_runtime_authority;
 
 use std::path::{Path, PathBuf};
 
@@ -57,14 +61,14 @@ use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
 use rusqlite::{Connection, DatabaseName};
 
-pub const LATEST_VERSION: u32 = 62;
+pub const LATEST_VERSION: u32 = 66;
 
 /// Maximum number of migration backup files to retain.
 const MAX_MIGRATION_BACKUPS: usize = 3;
 
 type MigrationFn = fn(&Connection) -> CortexResult<()>;
 
-const MIGRATIONS: [(u32, &str, MigrationFn); 47] = [
+const MIGRATIONS: [(u32, &str, MigrationFn); 51] = [
     (16, "convergence_safety", v016_convergence_safety::migrate),
     (17, "convergence_tables", v017_convergence_tables::migrate),
     (18, "delegation_state", v018_delegation_state::migrate),
@@ -175,6 +179,22 @@ const MIGRATIONS: [(u32, &str, MigrationFn); 47] = [
         62,
         "live_execution_cancelled_status",
         v062_live_execution_cancelled_status::migrate,
+    ),
+    (63, "sandbox_reviews", v063_sandbox_reviews::migrate),
+    (
+        64,
+        "execution_reliability",
+        v064_execution_reliability::migrate,
+    ),
+    (
+        65,
+        "sessions_contract_canonicalization",
+        v065_sessions_contract_canonicalization::migrate,
+    ),
+    (
+        66,
+        "channels_runtime_authority",
+        v066_channels_runtime_authority::migrate,
     ),
 ];
 

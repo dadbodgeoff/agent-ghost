@@ -19,6 +19,8 @@ export interface SessionResponse {
   authenticated: boolean;
   subject: string;
   role: string;
+  capabilities?: string[];
+  authz_v?: number | null;
   mode: 'jwt' | 'legacy' | 'none';
 }
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::gateway::{GatewayError, GatewaySharedState, GatewayState};
+use crate::itp_router::ITPEventRouter;
 
 /// Connection state to the convergence monitor.
 #[derive(Debug, Clone)]
@@ -126,6 +127,7 @@ impl MonitorHealthChecker {
 pub struct RecoveryCoordinator {
     pub shared_state: Arc<GatewaySharedState>,
     pub monitor_address: String,
+    pub itp_router: Option<Arc<ITPEventRouter>>,
 }
 
 impl RecoveryCoordinator {
@@ -148,6 +150,18 @@ impl RecoveryCoordinator {
             if !ok {
                 tracing::warn!(check = i, "Recovery stability check failed, aborting");
                 // Back to Degraded via validated FSM transition
+                self.shared_state.transition_to(GatewayState::Degraded)?;
+                return Ok(false);
+            }
+        }
+
+        if let Some(router) = &self.itp_router {
+            let remaining = router.replay_buffered().await;
+            if remaining > 0 {
+                tracing::warn!(
+                    remaining,
+                    "Recovery replay left buffered ITP events pending, returning to degraded"
+                );
                 self.shared_state.transition_to(GatewayState::Degraded)?;
                 return Ok(false);
             }

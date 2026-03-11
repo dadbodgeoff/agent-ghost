@@ -6,7 +6,9 @@ export interface ChannelInfo {
   status: string;
   status_message?: string | null;
   agent_id: string;
-  agent_name?: string;
+  agent_name?: string | null;
+  routing_key: string;
+  source: string;
   config: Record<string, unknown>;
   last_message_at: string | null;
   message_count: number;
@@ -25,6 +27,8 @@ export interface CreateChannelParams {
 export interface CreateChannelResult {
   id: string;
   status: 'created';
+  channel_type: string;
+  agent_id: string;
 }
 
 export interface ReconnectChannelResult {

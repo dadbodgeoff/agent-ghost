@@ -20,6 +20,7 @@ export interface AuditQueryParams {
   severity?: string;
   tool_name?: string;
   search?: string;
+  operation_id?: string;
   page?: number;
   page_size?: number;
 }
@@ -37,6 +38,11 @@ export interface AuditExportParams {
   agent_id?: string;
   time_start?: string;
   time_end?: string;
+  event_type?: string;
+  severity?: string;
+  tool_name?: string;
+  search?: string;
+  operation_id?: string;
 }
 
 export class AuditAPI {
@@ -55,6 +61,7 @@ export class AuditAPI {
     if (params?.severity) query.set('severity', params.severity);
     if (params?.tool_name) query.set('tool_name', params.tool_name);
     if (params?.search) query.set('search', params.search);
+    if (params?.operation_id) query.set('operation_id', params.operation_id);
     if (params?.page !== undefined) query.set('page', String(params.page));
     if (params?.page_size !== undefined) query.set('page_size', String(params.page_size));
 
@@ -69,6 +76,11 @@ export class AuditAPI {
     if (params?.agent_id) query.set('agent_id', params.agent_id);
     if (params?.time_start) query.set('time_start', params.time_start);
     if (params?.time_end) query.set('time_end', params.time_end);
+    if (params?.event_type) query.set('event_type', params.event_type);
+    if (params?.severity) query.set('severity', params.severity);
+    if (params?.tool_name) query.set('tool_name', params.tool_name);
+    if (params?.search) query.set('search', params.search);
+    if (params?.operation_id) query.set('operation_id', params.operation_id);
 
     const qs = query.toString();
     return this.request<unknown>('GET', `/api/audit/export${qs ? `?${qs}` : ''}`);
@@ -81,6 +93,11 @@ export class AuditAPI {
     if (params?.agent_id) query.set('agent_id', params.agent_id);
     if (params?.time_start) query.set('time_start', params.time_start);
     if (params?.time_end) query.set('time_end', params.time_end);
+    if (params?.event_type) query.set('event_type', params.event_type);
+    if (params?.severity) query.set('severity', params.severity);
+    if (params?.tool_name) query.set('tool_name', params.tool_name);
+    if (params?.search) query.set('search', params.search);
+    if (params?.operation_id) query.set('operation_id', params.operation_id);
 
     const qs = query.toString();
     const baseUrl = this.options.baseUrl ?? 'http://127.0.0.1:39780';

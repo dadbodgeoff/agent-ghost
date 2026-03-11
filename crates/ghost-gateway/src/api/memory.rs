@@ -50,6 +50,68 @@ fn memory_actor(claims: Option<&Claims>, fallback: Option<&str>) -> String {
         .unwrap_or_else(|| "anonymous".to_string())
 }
 
+fn normalize_memory_type_filter(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let canonical = match trimmed.to_ascii_lowercase().as_str() {
+        "agentgoal" | "agent_goal" => "AgentGoal",
+        "agentreflection" | "agent_reflection" | "reflection" => "AgentReflection",
+        "convergenceevent" | "convergence_event" => "ConvergenceEvent",
+        "boundaryviolation" | "boundary_violation" => "BoundaryViolation",
+        "proposalrecord" | "proposal_record" => "ProposalRecord",
+        "simulationresult" | "simulation_result" => "SimulationResult",
+        "interventionplan" | "intervention_plan" => "InterventionPlan",
+        "attachmentindicator" | "attachment_indicator" => "AttachmentIndicator",
+        "patternrationale" | "pattern_rationale" => "PatternRationale",
+        "constraintoverride" | "constraint_override" => "ConstraintOverride",
+        "decisioncontext" | "decision_context" => "DecisionContext",
+        "codesmell" | "code_smell" => "CodeSmell",
+        "core" => "Core",
+        "tribal" => "Tribal",
+        "procedural" => "Procedural",
+        "semantic" => "Semantic",
+        "episodic" => "Episodic",
+        "decision" => "Decision",
+        "insight" => "Insight",
+        "reference" => "Reference",
+        "preference" => "Preference",
+        "conversation" => "Conversation",
+        "feedback" => "Feedback",
+        "skill" => "Skill",
+        "goal" => "Goal",
+        "relationship" => "Relationship",
+        "context" => "Context",
+        "observation" => "Observation",
+        "hypothesis" => "Hypothesis",
+        "experiment" => "Experiment",
+        "lesson" => "Lesson",
+        _ => return Some(trimmed.to_string()),
+    };
+
+    Some(canonical.to_string())
+}
+
+fn normalize_importance_filter(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let canonical = match trimmed.to_ascii_lowercase().as_str() {
+        "critical" => "Critical",
+        "high" => "High",
+        "medium" | "normal" => "Normal",
+        "low" => "Low",
+        "trivial" => "Trivial",
+        _ => return Some(trimmed.to_string()),
+    };
+
+    Some(canonical.to_string())
+}
+
 /// Query parameters for memory listing.
 #[derive(Debug, Deserialize)]
 pub struct MemoryQueryParams {
@@ -150,6 +212,12 @@ pub struct SearchMemoriesResponse {
     pub query: Option<String>,
     pub search_mode: String,
     pub filters: MemorySearchFilters,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExecutedMemorySearch {
+    pub response: SearchMemoriesResponse,
+    pub total_matches: usize,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -447,6 +515,14 @@ pub async fn search_memories(
     State(state): State<Arc<AppState>>,
     Query(params): Query<MemorySearchParams>,
 ) -> ApiResult<SearchMemoriesResponse> {
+    let executed = execute_memory_search(state.as_ref(), params).await?;
+    Ok(Json(executed.response))
+}
+
+pub(crate) async fn execute_memory_search(
+    state: &AppState,
+    params: MemorySearchParams,
+) -> Result<ExecutedMemorySearch, ApiError> {
     let limit = params.limit.unwrap_or(50).min(200);
     let include_archived = params.include_archived.unwrap_or(false);
 
@@ -549,6 +625,7 @@ pub async fn search_memories(
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit as usize);
 
+    let total_matches = scored.len();
     let results: Vec<MemorySearchResultEntry> = scored
         .iter()
         .map(|(c, score)| {
@@ -564,19 +641,22 @@ pub async fn search_memories(
         })
         .collect();
 
-    Ok(Json(SearchMemoriesResponse {
-        count: results.len(),
-        results,
-        query: params.q,
-        search_mode: if use_fts { "fts5" } else { "like" }.to_string(),
-        filters: MemorySearchFilters {
-            agent_id: params.agent_id,
-            memory_type: params.memory_type,
-            importance: params.importance,
-            confidence_min: params.confidence_min,
-            confidence_max: params.confidence_max,
+    Ok(ExecutedMemorySearch {
+        total_matches,
+        response: SearchMemoriesResponse {
+            count: results.len(),
+            results,
+            query: params.q,
+            search_mode: if use_fts { "fts5" } else { "like" }.to_string(),
+            filters: MemorySearchFilters {
+                agent_id: params.agent_id,
+                memory_type: params.memory_type,
+                importance: params.importance,
+                confidence_min: params.confidence_min,
+                confidence_max: params.confidence_max,
+            },
         },
-    }))
+    })
 }
 
 struct SearchCandidate {
@@ -1091,13 +1171,15 @@ fn apply_snapshot_filters(candidate: &SearchCandidate, params: &MemorySearchPara
     };
 
     if let Some(ref mt) = params.memory_type {
-        if snapshot.get("memory_type").and_then(|v| v.as_str()) != Some(mt.as_str()) {
+        let expected = normalize_memory_type_filter(mt).unwrap_or_else(|| mt.clone());
+        if snapshot.get("memory_type").and_then(|v| v.as_str()) != Some(expected.as_str()) {
             return false;
         }
     }
 
     if let Some(ref imp) = params.importance {
-        if snapshot.get("importance").and_then(|v| v.as_str()) != Some(imp.as_str()) {
+        let expected = normalize_importance_filter(imp).unwrap_or_else(|| imp.clone());
+        if snapshot.get("importance").and_then(|v| v.as_str()) != Some(expected.as_str()) {
             return false;
         }
     }
@@ -1213,7 +1295,19 @@ pub async fn write_memory(
         WRITE_MEMORY_ROUTE_TEMPLATE,
         &request_body,
         |conn| {
-            let event_hash = blake3::hash(body.memory_id.as_bytes());
+            let previous_hash = cortex_storage::queries::memory_event_queries::latest_event_hash(
+                conn,
+                &body.memory_id,
+            )
+            .map_err(|e| ApiError::internal(format!("memory hash lookup failed: {e}")))?;
+            let event_hash = blake3::hash(
+                format!(
+                    "{}:{}:{}:{}",
+                    body.memory_id, body.event_type, body.actor_id, operation_context.request_id
+                )
+                .as_bytes(),
+            );
+            let previous_hash = previous_hash.unwrap_or_else(|| vec![0u8; 32]);
 
             cortex_storage::queries::memory_event_queries::insert_event(
                 conn,
@@ -1222,7 +1316,7 @@ pub async fn write_memory(
                 &body.delta,
                 &body.actor_id,
                 event_hash.as_bytes(),
-                &[0u8; 32],
+                previous_hash.as_slice(),
             )
             .map_err(|e| ApiError::internal(format!("memory event insert failed: {e}")))?;
 
@@ -1635,5 +1729,46 @@ mod tests {
 
         assert_eq!(graph.edges.len(), 1);
         assert_eq!(graph.edges[0].relationship, "Semantic");
+    }
+
+    #[test]
+    fn filter_normalization_maps_dashboard_aliases_to_canonical_values() {
+        assert_eq!(
+            normalize_memory_type_filter("reflection").as_deref(),
+            Some("AgentReflection")
+        );
+        assert_eq!(
+            normalize_importance_filter("medium").as_deref(),
+            Some("Normal")
+        );
+    }
+
+    #[test]
+    fn snapshot_filters_accept_lowercase_alias_filters_against_canonical_snapshot() {
+        let candidate = SearchCandidate {
+            id: 1,
+            memory_id: "memory-1".to_string(),
+            snapshot: serde_json::json!({
+                "memory_type": "Semantic",
+                "importance": "Normal",
+                "confidence": 0.8
+            })
+            .to_string(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        assert!(apply_snapshot_filters(
+            &candidate,
+            &MemorySearchParams {
+                q: None,
+                agent_id: None,
+                memory_type: Some("semantic".to_string()),
+                importance: Some("medium".to_string()),
+                confidence_min: None,
+                confidence_max: None,
+                limit: None,
+                include_archived: None,
+            }
+        ));
     }
 }

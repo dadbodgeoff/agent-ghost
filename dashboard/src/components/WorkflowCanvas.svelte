@@ -1,22 +1,19 @@
 <script lang="ts">
   /**
-   * WorkflowCanvas — visual DAG editor for workflow nodes + edges (T-2.6.1, T-4.8).
-   * Supports parallel branches, condition nodes, sub-workflows, A/B testing,
-   * and live execution overlay with real-time status updates.
+   * WorkflowCanvas — visual DAG editor for the currently supported runtime nodes.
+   * The canvas is intentionally limited to semantics the backend can execute.
    */
-
-  import { wsStore } from '$lib/stores/websocket.svelte';
 
   export interface WorkflowNode {
     id: string;
-    type: 'llm_call' | 'tool_exec' | 'gate_check' | 'transform' | 'condition' | 'parallel_branch' | 'sub_workflow' | 'ab_test' | string;
+    type: 'llm_call' | 'tool_exec' | 'gate_check' | 'transform' | 'condition' | 'wait' | string;
     label: string;
     x: number;
     y: number;
     config: Record<string, any>;
     branch_group?: string;
     condition?: string;
-    execution_status?: 'pending' | 'running' | 'completed' | 'failed';
+    execution_status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'passed';
   }
 
   export interface WorkflowEdge {
@@ -65,9 +62,7 @@
     gate_check: 'var(--color-severity-normal)',
     transform: 'var(--color-brand-primary)',
     condition: 'var(--color-severity-hard)',
-    parallel_branch: 'var(--color-score-mid)',
-    sub_workflow: 'var(--color-score-high)',
-    ab_test: 'var(--color-score-low)',
+    wait: 'var(--color-score-mid)',
   };
 
   const EXEC_STATUS_COLORS: Record<string, string> = {
@@ -75,6 +70,8 @@
     running: 'var(--color-severity-active)',
     completed: 'var(--color-score-high)',
     failed: 'var(--color-severity-hard)',
+    skipped: 'var(--color-text-muted)',
+    passed: 'var(--color-score-high)',
   };
 
   function nodeColor(type: string): string {
@@ -90,7 +87,7 @@
   }
 
   function isSubWorkflow(type: string): boolean {
-    return type === 'sub_workflow';
+    return false;
   }
 
   // ── Pointer handlers ─────────────────────────────────────────────
@@ -461,17 +458,6 @@
       {/if}
 
       <!-- A/B test variant labels -->
-      {#if node.type === 'ab_test' && node.config?.variants}
-        <text
-          x={node.x + NODE_W / 2}
-          y={node.y + NODE_H + 14}
-          font-size="8"
-          fill="var(--color-text-muted)"
-          text-anchor="middle"
-        >
-          {(node.config.variants as Array<{label: string; ratio: number}>).map((v: {label: string; ratio: number}) => `${v.label}: ${v.ratio}%`).join(' | ')}
-        </text>
-      {/if}
     </g>
   {/each}
 </svg>

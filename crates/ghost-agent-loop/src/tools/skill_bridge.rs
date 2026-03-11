@@ -19,6 +19,9 @@ use super::registry::{RegisteredTool, ToolRegistry};
 pub struct ExecutionContext {
     pub agent_id: Uuid,
     pub session_id: Uuid,
+    pub execution_id: Option<String>,
+    pub route_kind: Option<String>,
+    pub interactive: bool,
     pub intervention_level: u8,
     pub session_duration: Duration,
     pub session_reflection_count: u32,

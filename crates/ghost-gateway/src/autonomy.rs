@@ -2074,14 +2074,20 @@ trait CloneForBackground {
 impl CloneForBackground for AppState {
     fn clone_for_background(&self) -> Self {
         Self {
+            started_at: self.started_at,
             gateway: Arc::clone(&self.gateway),
             config_path: self.config_path.clone(),
             agents: Arc::clone(&self.agents),
+            channel_manager: Arc::clone(&self.channel_manager),
             kill_switch: Arc::clone(&self.kill_switch),
             quarantine: Arc::clone(&self.quarantine),
             db: Arc::clone(&self.db),
             event_tx: self.event_tx.clone(),
             trigger_sender: self.trigger_sender.clone(),
+            sandbox_reviews: Arc::clone(&self.sandbox_reviews),
+            itp_emitter: self.itp_emitter.clone(),
+            itp_router: self.itp_router.clone(),
+            itp_session_tracker: self.itp_session_tracker.clone(),
             replay_buffer: Arc::clone(&self.replay_buffer),
             cost_tracker: Arc::clone(&self.cost_tracker),
             kill_gate: self.kill_gate.clone(),
@@ -2093,7 +2099,9 @@ impl CloneForBackground for AppState {
             model_providers: self.model_providers.clone(),
             default_model_provider: self.default_model_provider.clone(),
             pc_control_circuit_breaker: Arc::clone(&self.pc_control_circuit_breaker),
+            pc_control_runtime: Arc::clone(&self.pc_control_runtime),
             websocket_auth_tickets: Arc::clone(&self.websocket_auth_tickets),
+            ws_connection_tracker: Arc::clone(&self.ws_connection_tracker),
             ws_ticket_auth_only: self.ws_ticket_auth_only,
             tools_config: self.tools_config.clone(),
             custom_safety_checks: Arc::clone(&self.custom_safety_checks),
@@ -2106,11 +2114,14 @@ impl CloneForBackground for AppState {
             monitor_block_on_degraded: self.monitor_block_on_degraded,
             convergence_state_stale_after: self.convergence_state_stale_after,
             monitor_healthy: Arc::clone(&self.monitor_healthy),
+            monitor_runtime_status: Arc::clone(&self.monitor_runtime_status),
             distributed_kill_enabled: self.distributed_kill_enabled,
             embedding_engine: Arc::clone(&self.embedding_engine),
             skill_catalog: Arc::clone(&self.skill_catalog),
             client_heartbeats: Arc::clone(&self.client_heartbeats),
             session_ttl_days: self.session_ttl_days,
+            backup_scheduler_status: Arc::clone(&self.backup_scheduler_status),
+            config_watcher_status: Arc::clone(&self.config_watcher_status),
             autonomy: Arc::clone(&self.autonomy),
         }
     }
@@ -2138,6 +2149,7 @@ mod tests {
             name: "autonomy-test-agent".into(),
             state: crate::agents::registry::AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
+            isolation: crate::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: vec!["skill:echo".into()],
             skills: None,
@@ -2157,11 +2169,27 @@ mod tests {
         ));
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
+        let replay_buffer = Arc::new(crate::api::websocket::EventReplayBuffer::new(16));
+        let sandbox_reviews = crate::sandbox_reviews::SandboxReviewCoordinator::new(
+            Arc::clone(&db),
+            Arc::clone(&replay_buffer),
+            event_tx.clone(),
+        );
+
+        let agents = Arc::new(RwLock::new(registry));
+        let channel_manager = Arc::new(crate::channel_manager::ChannelManager::new(
+            Arc::clone(&db),
+            Arc::clone(&agents),
+            event_tx.clone(),
+            Arc::clone(&replay_buffer),
+        ));
 
         Arc::new(AppState {
+            started_at: std::time::Instant::now(),
             gateway: Arc::new(crate::gateway::GatewaySharedState::new()),
             config_path: std::path::PathBuf::from("ghost.yml"),
-            agents: Arc::new(RwLock::new(registry)),
+            agents,
+            channel_manager,
             kill_switch: Arc::new(crate::safety::kill_switch::KillSwitch::new()),
             quarantine: Arc::new(RwLock::new(
                 crate::safety::quarantine::QuarantineManager::new(),
@@ -2170,7 +2198,11 @@ mod tests {
             event_tx,
             trigger_sender:
                 tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
-            replay_buffer: Arc::new(crate::api::websocket::EventReplayBuffer::new(16)),
+            sandbox_reviews,
+            itp_emitter: None,
+            itp_router: None,
+            itp_session_tracker: None,
+            replay_buffer,
             cost_tracker: Arc::new(crate::cost::tracker::CostTracker::new()),
             kill_gate: None,
             secret_provider: Arc::new(ghost_secrets::EnvProvider),
@@ -2182,7 +2214,12 @@ mod tests {
             default_model_provider: None,
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
+            pc_control_runtime: Arc::new(crate::pc_control_runtime::PcControlRuntimeService::new(
+                &ghost_pc_control::safety::PcControlConfig::default(),
+                "tests",
+            )),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_connection_tracker: Arc::new(crate::api::websocket::WsConnectionTracker::new()),
             ws_ticket_auth_only: false,
             tools_config: crate::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
@@ -2195,6 +2232,9 @@ mod tests {
             monitor_block_on_degraded: false,
             convergence_state_stale_after: std::time::Duration::from_secs(300),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            monitor_runtime_status: Arc::new(RwLock::new(
+                crate::state::MonitorRuntimeStatus::default(),
+            )),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             skill_catalog: Arc::new(crate::skill_catalog::SkillCatalogService::empty_for_tests(
@@ -2202,6 +2242,12 @@ mod tests {
             )),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            backup_scheduler_status: Arc::new(RwLock::new(
+                crate::state::BackupSchedulerRuntimeStatus::default(),
+            )),
+            config_watcher_status: Arc::new(RwLock::new(
+                crate::state::ConfigWatcherRuntimeStatus::default(),
+            )),
             autonomy: Arc::new(AutonomyService::default()),
         })
     }

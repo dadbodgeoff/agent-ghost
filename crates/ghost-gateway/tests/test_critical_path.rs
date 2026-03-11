@@ -171,6 +171,37 @@ async fn session_heartbeat_accepts_existing_runtime_session() {
 }
 
 #[tokio::test]
+async fn session_heartbeat_accepts_active_runtime_session_before_persistence() {
+    let gw = common::TestGateway::start().await;
+    let runtime_session_id = uuid::Uuid::now_v7();
+    let runtime_agent_id = uuid::Uuid::now_v7();
+
+    gw.app_state
+        .itp_session_tracker
+        .as_ref()
+        .expect("test gateway should provide ITP session tracker")
+        .record_start(runtime_session_id, runtime_agent_id, "api")
+        .await;
+
+    let resp = gw
+        .client
+        .post(gw.url(&format!("/api/sessions/{runtime_session_id}/heartbeat")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert!(
+        gw.app_state
+            .client_heartbeats
+            .get(&runtime_session_id.to_string())
+            .is_some(),
+        "active runtime session heartbeat should be tracked before persistence"
+    );
+
+    gw.stop().await;
+}
+
+#[tokio::test]
 async fn session_heartbeat_rejects_unknown_session_id() {
     let gw = common::TestGateway::start().await;
     let session_id = "missing-session-heartbeat";

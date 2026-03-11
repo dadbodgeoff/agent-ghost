@@ -18,6 +18,45 @@ fn to_audit_err(msg: String) -> AuditError {
     AuditError::Storage(msg)
 }
 
+fn parse_filter_values(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn push_scalar_or_list_filter(
+    conditions: &mut Vec<String>,
+    param_values: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    column: &str,
+    raw: &str,
+) {
+    let values = parse_filter_values(raw);
+    if values.is_empty() {
+        return;
+    }
+
+    if values.len() == 1 {
+        conditions.push(format!("{column} = ?{}", param_values.len() + 1));
+        param_values.push(Box::new(
+            values.into_iter().next().expect("single filter value"),
+        ));
+        return;
+    }
+
+    let placeholders = values
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("?{}", param_values.len() + index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    conditions.push(format!("{column} IN ({placeholders})"));
+    for value in values {
+        param_values.push(Box::new(value));
+    }
+}
+
 /// A single audit log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -127,12 +166,10 @@ impl<'a> AuditQueryEngine<'a> {
             param_values.push(Box::new(agent.clone()));
         }
         if let Some(ref et) = filter.event_type {
-            conditions.push(format!("event_type = ?{}", param_values.len() + 1));
-            param_values.push(Box::new(et.clone()));
+            push_scalar_or_list_filter(&mut conditions, &mut param_values, "event_type", et);
         }
         if let Some(ref sev) = filter.severity {
-            conditions.push(format!("severity = ?{}", param_values.len() + 1));
-            param_values.push(Box::new(sev.clone()));
+            push_scalar_or_list_filter(&mut conditions, &mut param_values, "severity", sev);
         }
         if let Some(ref tool) = filter.tool_name {
             conditions.push(format!("tool_name = ?{}", param_values.len() + 1));

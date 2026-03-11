@@ -4,10 +4,11 @@
 
 use std::sync::Arc;
 
-use chrono::Timelike;
+use chrono::{Timelike, Utc};
 
 use crate::api::websocket::WsEvent;
 use crate::state::AppState;
+use crate::state::{BackupSchedulerRuntimeStatus, RuntimeSubsystemStatus};
 
 /// Default backup time: 3 AM daily.
 const DEFAULT_BACKUP_HOUR: u32 = 3;
@@ -27,6 +28,8 @@ pub fn spawn_backup_scheduler(state: Arc<AppState>) {
 /// Designed to be wrapped by `GatewayRuntime::spawn_tracked()` which
 /// adds cancellation handling.
 pub async fn backup_scheduler_task(state: Arc<AppState>) {
+    initialize_backup_status(&state);
+
     // Check if backups are enabled.
     let backup_dir = std::env::var("GHOST_BACKUP_DIR").unwrap_or_else(|_| "./backups".into());
     // T-5.8.1: Require explicit passphrase — never use hardcoded default.
@@ -41,6 +44,13 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
                         "No backup passphrase configured (GHOST_BACKUP_PASSPHRASE) \
                              and no key file at {key_path} — scheduled backups disabled"
                     );
+                    update_backup_status(&state, |status| {
+                        status.enabled = false;
+                        status.status = RuntimeSubsystemStatus::Disabled;
+                        status.last_error = Some(format!(
+                            "Missing backup passphrase and no key file at {key_path}"
+                        ));
+                    });
                     return;
                 }
             }
@@ -51,6 +61,11 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_RETENTION_DAYS);
     let ghost_dir = std::env::var("GHOST_DIR").unwrap_or_else(|_| ".".into());
+    update_backup_status(&state, |status| {
+        status.enabled = true;
+        status.status = RuntimeSubsystemStatus::Healthy;
+        status.last_error = None;
+    });
 
     // Compute time until next backup hour, then sleep precisely.
     loop {
@@ -74,6 +89,7 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
 
         if let Err(e) = std::fs::create_dir_all(&backup_dir) {
             tracing::error!(error = %e, "Failed to create backup directory");
+            record_backup_failure(&state, format!("Failed to create backup directory: {e}"));
             continue;
         }
 
@@ -142,9 +158,11 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
                     size_bytes = size,
                     "Scheduled archive export complete"
                 );
+                record_backup_success(&state);
             }
             Err(e) => {
                 tracing::error!(error = %e, "Scheduled archive export failed");
+                record_backup_failure(&state, e.to_string());
             }
         }
 
@@ -156,6 +174,41 @@ pub async fn backup_scheduler_task(state: Arc<AppState>) {
 
         // WP9-D: Session lifecycle cleanup.
         prune_inactive_sessions(&state).await;
+    }
+}
+
+fn initialize_backup_status(state: &Arc<AppState>) {
+    update_backup_status(state, |status| {
+        status.enabled = false;
+        status.status = RuntimeSubsystemStatus::Unavailable;
+        status.last_error = None;
+    });
+}
+
+fn record_backup_success(state: &Arc<AppState>) {
+    update_backup_status(state, |status| {
+        status.enabled = true;
+        status.status = RuntimeSubsystemStatus::Healthy;
+        status.last_success_at = Some(Utc::now().to_rfc3339());
+        status.last_error = None;
+    });
+}
+
+fn record_backup_failure(state: &Arc<AppState>, error: String) {
+    update_backup_status(state, |status| {
+        status.enabled = true;
+        status.status = RuntimeSubsystemStatus::Degraded;
+        status.last_failure_at = Some(Utc::now().to_rfc3339());
+        status.last_error = Some(error);
+    });
+}
+
+fn update_backup_status(
+    state: &Arc<AppState>,
+    update: impl FnOnce(&mut BackupSchedulerRuntimeStatus),
+) {
+    if let Ok(mut status) = state.backup_scheduler_status.write() {
+        update(&mut status);
     }
 }
 

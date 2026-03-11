@@ -24,7 +24,7 @@ pub struct CrdtQueryParams {
     pub offset: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CrdtDelta {
     pub event_id: i64,
     pub memory_id: String,
@@ -36,7 +36,7 @@ pub struct CrdtDelta {
     pub previous_hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CrdtStateResponse {
     pub agent_id: String,
     pub deltas: Vec<CrdtDelta>,

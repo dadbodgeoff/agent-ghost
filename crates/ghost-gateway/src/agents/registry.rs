@@ -40,6 +40,7 @@ pub struct RegisteredAgent {
     pub name: String,
     pub state: AgentLifecycleState,
     pub channel_bindings: Vec<String>,
+    pub isolation: crate::config::IsolationMode,
     pub full_access: bool,
     pub capabilities: Vec<String>,
     pub skills: Option<Vec<String>>,
@@ -80,6 +81,7 @@ pub struct AgentRegistry {
     agents_by_id: BTreeMap<Uuid, RegisteredAgent>,
     name_to_id: BTreeMap<String, Uuid>,
     channel_to_id: BTreeMap<String, Uuid>,
+    sandbox_by_id: BTreeMap<Uuid, crate::config::AgentSandboxConfig>,
 }
 
 impl AgentRegistry {
@@ -88,16 +90,75 @@ impl AgentRegistry {
             agents_by_id: BTreeMap::new(),
             name_to_id: BTreeMap::new(),
             channel_to_id: BTreeMap::new(),
+            sandbox_by_id: BTreeMap::new(),
         }
     }
 
     pub fn register(&mut self, agent: RegisteredAgent) {
+        let sandbox = if agent.full_access {
+            crate::config::AgentSandboxConfig::off()
+        } else {
+            crate::config::AgentSandboxConfig::default()
+        };
+        self.register_with_sandbox(agent, sandbox);
+    }
+
+    pub fn register_with_sandbox(
+        &mut self,
+        agent: RegisteredAgent,
+        sandbox: crate::config::AgentSandboxConfig,
+    ) {
         let id = agent.id;
         self.name_to_id.insert(agent.name.clone(), id);
         for binding in &agent.channel_bindings {
             self.channel_to_id.insert(binding.clone(), id);
         }
         self.agents_by_id.insert(id, agent);
+        self.sandbox_by_id.insert(id, sandbox);
+    }
+
+    pub fn bind_channel(&mut self, channel: String, agent_id: Uuid) -> Result<(), String> {
+        if !self.agents_by_id.contains_key(&agent_id) {
+            return Err(format!("Agent {agent_id} not found"));
+        }
+
+        if let Some(previous_agent_id) = self.channel_to_id.insert(channel.clone(), agent_id) {
+            if previous_agent_id != agent_id {
+                if let Some(previous_agent) = self.agents_by_id.get_mut(&previous_agent_id) {
+                    previous_agent
+                        .channel_bindings
+                        .retain(|binding| binding != &channel);
+                }
+            }
+        }
+
+        let agent = self
+            .agents_by_id
+            .get_mut(&agent_id)
+            .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+        if !agent
+            .channel_bindings
+            .iter()
+            .any(|binding| binding == &channel)
+        {
+            agent.channel_bindings.push(channel);
+        }
+        Ok(())
+    }
+
+    pub fn unbind_channel(&mut self, channel: &str) -> Option<Uuid> {
+        let agent_id = self.channel_to_id.remove(channel)?;
+        if let Some(agent) = self.agents_by_id.get_mut(&agent_id) {
+            agent.channel_bindings.retain(|binding| binding != channel);
+        }
+        Some(agent_id)
+    }
+
+    pub fn clear_channel_bindings(&mut self) {
+        self.channel_to_id.clear();
+        for agent in self.agents_by_id.values_mut() {
+            agent.channel_bindings.clear();
+        }
     }
 
     pub fn lookup_by_name(&self, name: &str) -> Option<&RegisteredAgent> {
@@ -120,6 +181,22 @@ impl AgentRegistry {
         self.agents_by_id.get_mut(&id)
     }
 
+    pub fn sandbox_for(&self, id: Uuid) -> crate::config::AgentSandboxConfig {
+        self.sandbox_by_id.get(&id).cloned().unwrap_or_default()
+    }
+
+    pub fn update_sandbox(
+        &mut self,
+        id: Uuid,
+        sandbox: crate::config::AgentSandboxConfig,
+    ) -> Result<(), String> {
+        if !self.agents_by_id.contains_key(&id) {
+            return Err(format!("Agent {id} not found"));
+        }
+        self.sandbox_by_id.insert(id, sandbox);
+        Ok(())
+    }
+
     pub fn default_agent(&self) -> Option<&RegisteredAgent> {
         self.name_to_id
             .values()
@@ -139,6 +216,7 @@ impl AgentRegistry {
             for binding in &agent.channel_bindings {
                 self.channel_to_id.remove(binding);
             }
+            self.sandbox_by_id.remove(&id);
             Some(agent)
         } else {
             None
@@ -202,6 +280,7 @@ mod tests {
             name: "pullback-target".into(),
             state: AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
+            isolation: crate::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: vec!["shell_execute".into(), "web_search".into()],
             skills: None,
@@ -241,5 +320,46 @@ mod tests {
         );
         assert_eq!(restored.skills, None);
         assert!(!restored.access_pullback_active);
+    }
+
+    #[test]
+    fn bind_and_unbind_channel_keep_reverse_index_in_sync() {
+        let agent_id = Uuid::now_v7();
+        let mut registry = AgentRegistry::new();
+        registry.register(RegisteredAgent {
+            id: agent_id,
+            name: "channel-owner".into(),
+            state: AgentLifecycleState::Ready,
+            channel_bindings: vec!["cli:channel-owner".into()],
+            isolation: crate::config::IsolationMode::InProcess,
+            full_access: false,
+            capabilities: Vec::new(),
+            skills: None,
+            baseline_capabilities: Vec::new(),
+            baseline_skills: None,
+            access_pullback_active: false,
+            spending_cap: 5.0,
+            template: None,
+        });
+
+        registry
+            .bind_channel("slack:workspace:ops".into(), agent_id)
+            .unwrap();
+        let found = registry.lookup_by_channel("slack:workspace:ops").unwrap();
+        assert_eq!(found.id, agent_id);
+        assert_eq!(
+            registry.lookup_by_id(agent_id).unwrap().channel_bindings,
+            vec![
+                "cli:channel-owner".to_string(),
+                "slack:workspace:ops".to_string()
+            ]
+        );
+
+        registry.unbind_channel("slack:workspace:ops");
+        assert!(registry.lookup_by_channel("slack:workspace:ops").is_none());
+        assert_eq!(
+            registry.lookup_by_id(agent_id).unwrap().channel_bindings,
+            vec!["cli:channel-owner".to_string()]
+        );
     }
 }

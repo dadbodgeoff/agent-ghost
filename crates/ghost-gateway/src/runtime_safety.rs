@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::agents::registry::{durable_agent_id, AgentRegistry, RegisteredAgent};
 use crate::api::apply_tool_configs;
+use crate::api::websocket::{EventReplayBuffer, WsEnvelope, WsEvent};
 use crate::config::ToolsConfig;
 use crate::cost::tracker::CostTracker;
 use crate::safety::kill_gate_bridge::KillGateBridge;
@@ -28,21 +29,28 @@ const DEFAULT_SYNTHETIC_SPENDING_CAP: f64 = 10.0;
 pub struct ResolvedRuntimeAgent {
     pub id: Uuid,
     pub name: String,
+    pub isolation_mode: crate::config::IsolationMode,
     pub full_access: bool,
     pub capabilities: Vec<String>,
     pub skill_allowlist: Option<Vec<String>>,
     pub spending_cap: f64,
+    pub sandbox_config: crate::config::AgentSandboxConfig,
 }
 
 impl ResolvedRuntimeAgent {
-    fn from_registered(agent: &RegisteredAgent) -> Self {
+    fn from_registered(
+        agent: &RegisteredAgent,
+        sandbox_config: crate::config::AgentSandboxConfig,
+    ) -> Self {
         Self {
             id: agent.id,
             name: agent.name.clone(),
+            isolation_mode: agent.isolation,
             full_access: agent.full_access,
             capabilities: agent.capabilities.clone(),
             skill_allowlist: agent.skills.clone(),
             spending_cap: agent.spending_cap,
+            sandbox_config,
         }
     }
 
@@ -51,10 +59,12 @@ impl ResolvedRuntimeAgent {
         Self {
             id: durable_agent_id(&name),
             name,
+            isolation_mode: crate::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: Vec::new(),
             skill_allowlist: None,
             spending_cap: DEFAULT_SYNTHETIC_SPENDING_CAP,
+            sandbox_config: crate::config::AgentSandboxConfig::default(),
         }
     }
 
@@ -62,10 +72,12 @@ impl ResolvedRuntimeAgent {
         Self {
             id,
             name: name.into(),
+            isolation_mode: crate::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: Vec::new(),
             skill_allowlist: None,
             spending_cap: DEFAULT_SYNTHETIC_SPENDING_CAP,
+            sandbox_config: crate::config::AgentSandboxConfig::default(),
         }
     }
 }
@@ -127,7 +139,13 @@ pub struct RuntimeRunnerDependencies {
     pub db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     pub resolved_skills: crate::skill_catalog::ResolvedSkillSet,
     pub tools_config: ToolsConfig,
+    pub event_tx: Option<tokio::sync::broadcast::Sender<WsEnvelope>>,
+    pub replay_buffer: Option<Arc<EventReplayBuffer>>,
     pub trigger_sender: Option<tokio::sync::mpsc::Sender<TriggerEvent>>,
+    pub sandbox_review_sender: Option<
+        tokio::sync::mpsc::Sender<ghost_agent_loop::tools::executor::SandboxReviewRequestEnvelope>,
+    >,
+    pub itp_emitter: Option<ghost_agent_loop::itp_emitter::ITPEmitter>,
     pub convergence_profile: String,
     pub monitor_enabled: bool,
     pub monitor_block_on_degraded: bool,
@@ -196,7 +214,9 @@ impl<'a> RuntimeSafetyBuilder<'a> {
             .map_err(|_| RuntimeSafetyError::AgentRegistryPoisoned)?;
         Ok(registry
             .lookup_by_id(agent_id)
-            .map(ResolvedRuntimeAgent::from_registered)
+            .map(|agent| {
+                ResolvedRuntimeAgent::from_registered(agent, registry.sandbox_for(agent.id))
+            })
             .unwrap_or_else(|| ResolvedRuntimeAgent::synthetic_with_id(synthetic_name, agent_id)))
     }
 
@@ -219,7 +239,11 @@ impl<'a> RuntimeSafetyBuilder<'a> {
             ),
             resolved_skills,
             tools_config: self.state.tools_config.clone(),
+            event_tx: Some(self.state.event_tx.clone()),
+            replay_buffer: Some(Arc::clone(&self.state.replay_buffer)),
             trigger_sender: Some(self.state.trigger_sender.clone()),
+            sandbox_review_sender: Some(self.state.sandbox_reviews.request_sender()),
+            itp_emitter: self.state.itp_emitter.clone(),
             convergence_profile: ctx.convergence_profile.clone(),
             monitor_enabled: self.state.monitor_enabled,
             monitor_block_on_degraded: self.state.monitor_block_on_degraded,
@@ -239,24 +263,64 @@ pub fn build_live_runner_with_dependencies(
     ghost_agent_loop::tools::executor::register_builtin_tools(&mut runner.tool_registry);
 
     runner.db = deps.db.clone();
+    let working_dir_path =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let working_dir = working_dir_path.display().to_string();
+    runner
+        .tool_executor
+        .set_filesystem_execution_backend(filesystem_execution_backend(
+            ctx.agent.isolation_mode,
+            &ctx.agent.sandbox_config,
+            &working_dir,
+        ));
+    runner
+        .tool_executor
+        .set_network_execution_backend(network_execution_backend(ctx.agent.isolation_mode));
 
-    if let Ok(cwd) = std::env::current_dir() {
-        if ctx.agent.full_access {
-            runner.tool_executor.set_unrestricted_workspace_root(cwd);
-        } else {
-            runner.tool_executor.set_workspace_root(cwd);
-        }
-    } else if ctx.agent.full_access {
+    if ctx.agent.sandbox_config.is_active() {
         runner
             .tool_executor
-            .set_unrestricted_workspace_root(std::path::PathBuf::from("/"));
+            .set_workspace_root(working_dir_path.clone());
+    } else if !ctx.agent.sandbox_config.is_active() {
+        runner
+            .tool_executor
+            .set_unrestricted_workspace_root(if working_dir_path.is_absolute() {
+                working_dir_path.clone()
+            } else {
+                std::path::PathBuf::from("/")
+            });
     }
     apply_tool_configs(&mut runner.tool_executor, &deps.tools_config);
+    let allowed_prefixes = resolved_shell_prefixes(&ctx.agent.sandbox_config, &deps.tools_config);
+    runner.tool_executor.set_shell_config(
+        ghost_agent_loop::tools::builtin::shell::ShellToolConfig {
+            allowed_prefixes,
+            working_dir: working_dir.clone(),
+            timeout: std::time::Duration::from_secs(deps.tools_config.shell.timeout_secs),
+            execution_backend: shell_execution_backend(
+                ctx.agent.isolation_mode,
+                &ctx.agent.sandbox_config,
+                &working_dir,
+            ),
+            ..Default::default()
+        },
+    );
+    runner
+        .tool_executor
+        .set_builtin_sandbox_policy(builtin_sandbox_policy(&ctx.agent.sandbox_config));
     let mut policy_engine = deps
         .trigger_sender
         .clone()
         .map(|sender| PolicyEngine::new(CorpPolicy::new()).with_trigger_sender(sender))
         .unwrap_or_else(|| PolicyEngine::new(CorpPolicy::new()));
+    if let Some(trigger_sender) = deps.trigger_sender.clone() {
+        runner.tool_executor.set_trigger_sender(trigger_sender);
+    }
+    if let Some(sandbox_review_sender) = deps.sandbox_review_sender.clone() {
+        runner
+            .tool_executor
+            .set_sandbox_review_sender(sandbox_review_sender);
+    }
     for capability in &ctx.capability_scope {
         policy_engine.grant_capability(ctx.agent.id, capability.clone());
     }
@@ -273,7 +337,11 @@ pub fn build_live_runner_with_dependencies(
         std::env::current_dir().ok().as_deref(),
     );
     runner.conversation_history = options.conversation_history;
+    runner.itp_emitter = deps.itp_emitter.clone();
     runner.spending_cap = ctx.agent.spending_cap;
+    if let Some(cost_tracker) = deps.cost_tracker.as_ref() {
+        runner.daily_spend = cost_tracker.get_daily_total(ctx.agent.id);
+    }
     runner.convergence_monitor_enabled = deps.monitor_enabled;
     runner.degraded_convergence_mode = if deps.monitor_block_on_degraded {
         DegradedConvergenceMode::Block
@@ -324,9 +392,43 @@ pub fn build_live_runner_with_dependencies(
     }
 
     if let Some(cost_tracker) = deps.cost_tracker {
+        let event_tx = deps.event_tx.clone();
+        let replay_buffer = deps.replay_buffer.clone();
+        let agent_id_str = ctx.agent.id.to_string();
+        let agent_name = ctx.agent.name.clone();
+        let session_id_str = ctx.session_id.to_string();
+        let spending_cap = ctx.agent.spending_cap;
         runner.cost_recorder = Some(Arc::new(
             move |agent_id, session_id, cost, is_compaction| {
                 cost_tracker.record(agent_id, session_id, cost, is_compaction);
+                if let (Some(event_tx), Some(replay_buffer)) =
+                    (event_tx.as_ref(), replay_buffer.as_ref())
+                {
+                    let daily_total = cost_tracker.get_daily_total(agent_id);
+                    let session_total = cost_tracker.get_session_total(session_id);
+                    let compaction_cost = cost_tracker.get_compaction_cost(agent_id);
+                    let cap_remaining = (spending_cap - daily_total).max(0.0);
+                    let cap_utilization_pct = if spending_cap > 0.0 {
+                        (daily_total / spending_cap * 100.0).min(100.0)
+                    } else {
+                        0.0
+                    };
+                    let _ = replay_buffer.push_and_broadcast(
+                        WsEvent::CostUpdate {
+                            agent_id: agent_id_str.clone(),
+                            agent_name: agent_name.clone(),
+                            session_id: session_id_str.clone(),
+                            daily_total,
+                            session_total,
+                            compaction_cost,
+                            spending_cap,
+                            cap_remaining,
+                            cap_utilization_pct,
+                            is_compaction,
+                        },
+                        event_tx,
+                    );
+                }
             },
         ));
     }
@@ -345,7 +447,7 @@ pub fn resolve_runtime_agent(
 
     Ok(registry
         .default_agent()
-        .map(ResolvedRuntimeAgent::from_registered)
+        .map(|agent| ResolvedRuntimeAgent::from_registered(agent, registry.sandbox_for(agent.id)))
         .unwrap_or_else(|| ResolvedRuntimeAgent::synthetic(synthetic_name)))
 }
 
@@ -385,14 +487,166 @@ fn resolve_explicit_runtime_agent(
     if let Ok(agent_id) = Uuid::parse_str(requested) {
         return registry
             .lookup_by_id(agent_id)
-            .map(ResolvedRuntimeAgent::from_registered)
+            .map(|agent| {
+                ResolvedRuntimeAgent::from_registered(agent, registry.sandbox_for(agent.id))
+            })
             .ok_or_else(|| RuntimeSafetyError::AgentNotFound(requested.to_string()));
     }
 
     registry
         .lookup_by_name(requested)
-        .map(ResolvedRuntimeAgent::from_registered)
+        .map(|agent| ResolvedRuntimeAgent::from_registered(agent, registry.sandbox_for(agent.id)))
         .ok_or_else(|| RuntimeSafetyError::AgentNotFound(requested.to_string()))
+}
+
+fn builtin_sandbox_policy(
+    config: &crate::config::AgentSandboxConfig,
+) -> ghost_agent_loop::tools::executor::BuiltinSandboxPolicy {
+    let mode = match config.mode {
+        crate::config::AgentSandboxMode::Off => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxMode::Off
+        }
+        crate::config::AgentSandboxMode::ReadOnly => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxMode::ReadOnly
+        }
+        crate::config::AgentSandboxMode::WorkspaceWrite => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxMode::WorkspaceWrite
+        }
+        crate::config::AgentSandboxMode::Strict => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxMode::Strict
+        }
+    };
+    let on_violation = match config.on_violation {
+        crate::config::AgentSandboxViolationAction::Warn => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxViolationAction::Warn
+        }
+        crate::config::AgentSandboxViolationAction::Pause => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxViolationAction::Pause
+        }
+        crate::config::AgentSandboxViolationAction::Quarantine => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxViolationAction::Quarantine
+        }
+        crate::config::AgentSandboxViolationAction::KillAll => {
+            ghost_agent_loop::tools::executor::BuiltinSandboxViolationAction::KillAll
+        }
+    };
+    ghost_agent_loop::tools::executor::BuiltinSandboxPolicy {
+        enabled: config.enabled,
+        mode,
+        on_violation,
+        network_access: config.network_access,
+    }
+}
+
+fn resolved_shell_prefixes(
+    sandbox: &crate::config::AgentSandboxConfig,
+    tools: &crate::config::ToolsConfig,
+) -> Vec<String> {
+    if !sandbox.is_active() {
+        return tools.shell.allowed_prefixes.clone();
+    }
+
+    match sandbox.mode {
+        crate::config::AgentSandboxMode::ReadOnly | crate::config::AgentSandboxMode::Strict => {
+            Vec::new()
+        }
+        crate::config::AgentSandboxMode::WorkspaceWrite => {
+            if sandbox.allowed_shell_prefixes.is_empty() {
+                tools.shell.allowed_prefixes.clone()
+            } else {
+                sandbox.allowed_shell_prefixes.clone()
+            }
+        }
+        crate::config::AgentSandboxMode::Off => tools.shell.allowed_prefixes.clone(),
+    }
+}
+
+fn shell_execution_backend(
+    isolation_mode: crate::config::IsolationMode,
+    sandbox: &crate::config::AgentSandboxConfig,
+    working_dir: &str,
+) -> ghost_agent_loop::tools::builtin::shell::ShellExecutionBackend {
+    match isolation_mode {
+        crate::config::IsolationMode::InProcess => {
+            ghost_agent_loop::tools::builtin::shell::ShellExecutionBackend::InProcess
+        }
+        crate::config::IsolationMode::Process => std::env::current_exe()
+            .ok()
+            .map(|path| {
+                ghost_agent_loop::tools::builtin::shell::ShellExecutionBackend::ProcessHelper {
+                    helper_executable: path.display().to_string(),
+                }
+            })
+            .unwrap_or(ghost_agent_loop::tools::builtin::shell::ShellExecutionBackend::InProcess),
+        crate::config::IsolationMode::Container => {
+            ghost_agent_loop::tools::builtin::shell::ShellExecutionBackend::Container {
+                image: "alpine:3.20".into(),
+                workspace_dir: working_dir.to_string(),
+                read_only_workspace: matches!(
+                    sandbox.mode,
+                    crate::config::AgentSandboxMode::ReadOnly
+                        | crate::config::AgentSandboxMode::Strict
+                ),
+                network_access: sandbox.network_access,
+            }
+        }
+    }
+}
+
+fn filesystem_execution_backend(
+    isolation_mode: crate::config::IsolationMode,
+    sandbox: &crate::config::AgentSandboxConfig,
+    working_dir: &str,
+) -> ghost_agent_loop::tools::builtin::filesystem::FilesystemExecutionBackend {
+    match isolation_mode {
+        crate::config::IsolationMode::InProcess => {
+            ghost_agent_loop::tools::builtin::filesystem::FilesystemExecutionBackend::InProcess
+        }
+        crate::config::IsolationMode::Process => std::env::current_exe()
+            .ok()
+            .map(|path| {
+                ghost_agent_loop::tools::builtin::filesystem::FilesystemExecutionBackend::ProcessHelper {
+                    helper_executable: path.display().to_string(),
+                }
+            })
+            .unwrap_or(
+                ghost_agent_loop::tools::builtin::filesystem::FilesystemExecutionBackend::InProcess,
+            ),
+        crate::config::IsolationMode::Container => {
+            ghost_agent_loop::tools::builtin::filesystem::FilesystemExecutionBackend::Container {
+                image: "alpine:3.20".into(),
+                workspace_dir: working_dir.to_string(),
+                read_only_workspace: matches!(
+                    sandbox.mode,
+                    crate::config::AgentSandboxMode::ReadOnly
+                        | crate::config::AgentSandboxMode::Strict
+                ),
+            }
+        }
+    }
+}
+
+fn network_execution_backend(
+    isolation_mode: crate::config::IsolationMode,
+) -> ghost_agent_loop::tools::executor::NetworkExecutionBackend {
+    match isolation_mode {
+        crate::config::IsolationMode::InProcess => {
+            ghost_agent_loop::tools::executor::NetworkExecutionBackend::InProcess
+        }
+        crate::config::IsolationMode::Process => std::env::current_exe()
+            .ok()
+            .map(
+                |path| ghost_agent_loop::tools::executor::NetworkExecutionBackend::ProcessHelper {
+                    helper_executable: path.display().to_string(),
+                },
+            )
+            .unwrap_or(ghost_agent_loop::tools::executor::NetworkExecutionBackend::InProcess),
+        crate::config::IsolationMode::Container => {
+            ghost_agent_loop::tools::executor::NetworkExecutionBackend::Container {
+                image: "curlimages/curl:8.10.1".into(),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -420,6 +674,7 @@ mod tests {
             name: name.to_string(),
             state: AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
+            isolation: crate::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: vec!["shell_execute".into()],
             skills: None,
@@ -508,7 +763,11 @@ mod tests {
                 db: None,
                 resolved_skills: crate::skill_catalog::ResolvedSkillSet::default(),
                 tools_config: ToolsConfig::default(),
+                event_tx: None,
+                replay_buffer: None,
                 trigger_sender: None,
+                sandbox_review_sender: None,
+                itp_emitter: None,
                 convergence_profile: "standard".into(),
                 monitor_enabled: false,
                 monitor_block_on_degraded: false,
@@ -537,6 +796,115 @@ mod tests {
             runner.check_gates(&run_ctx, &mut log),
             Err(ghost_agent_loop::runner::RunError::AgentPaused)
         ));
+    }
+
+    #[test]
+    fn builder_seeds_runner_daily_spend_from_cost_tracker() {
+        let tracker = Arc::new(CostTracker::new());
+        let agent = ResolvedRuntimeAgent::synthetic("cost-seeded-agent");
+        tracker.record(agent.id, Uuid::now_v7(), 4.25, false);
+        let ctx = RuntimeSafetyContext {
+            capability_scope: Vec::new(),
+            agent: agent.clone(),
+            session_id: Uuid::now_v7(),
+            run_id: Uuid::now_v7(),
+            message_id: None,
+            kill_switch: Arc::new(KillSwitch::new()),
+            kill_gate: None,
+            convergence_profile: "standard".into(),
+        };
+
+        let runner = build_live_runner_with_dependencies(
+            &ctx,
+            RuntimeRunnerDependencies {
+                db: None,
+                resolved_skills: crate::skill_catalog::ResolvedSkillSet::default(),
+                tools_config: ToolsConfig::default(),
+                event_tx: None,
+                replay_buffer: None,
+                trigger_sender: None,
+                sandbox_review_sender: None,
+                itp_emitter: None,
+                convergence_profile: "standard".into(),
+                monitor_enabled: false,
+                monitor_block_on_degraded: false,
+                convergence_state_stale_after: std::time::Duration::from_secs(300),
+                cost_tracker: Some(tracker),
+            },
+            RunnerBuildOptions::default(),
+        )
+        .unwrap();
+
+        assert!((runner.daily_spend - 4.25).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn cost_recorder_broadcasts_cost_update_event() {
+        let tracker = Arc::new(CostTracker::new());
+        let (event_tx, mut event_rx) = tokio::sync::broadcast::channel(4);
+        let replay_buffer = Arc::new(EventReplayBuffer::new(8));
+        let agent = ResolvedRuntimeAgent::synthetic("cost-broadcast-agent");
+        let ctx = RuntimeSafetyContext {
+            capability_scope: Vec::new(),
+            agent: agent.clone(),
+            session_id: Uuid::now_v7(),
+            run_id: Uuid::now_v7(),
+            message_id: None,
+            kill_switch: Arc::new(KillSwitch::new()),
+            kill_gate: None,
+            convergence_profile: "standard".into(),
+        };
+
+        let runner = build_live_runner_with_dependencies(
+            &ctx,
+            RuntimeRunnerDependencies {
+                db: None,
+                resolved_skills: crate::skill_catalog::ResolvedSkillSet::default(),
+                tools_config: ToolsConfig::default(),
+                event_tx: Some(event_tx),
+                replay_buffer: Some(replay_buffer),
+                trigger_sender: None,
+                sandbox_review_sender: None,
+                itp_emitter: None,
+                convergence_profile: "standard".into(),
+                monitor_enabled: false,
+                monitor_block_on_degraded: false,
+                convergence_state_stale_after: std::time::Duration::from_secs(300),
+                cost_tracker: Some(tracker),
+            },
+            RunnerBuildOptions::default(),
+        )
+        .unwrap();
+
+        runner.cost_recorder.as_ref().expect("cost recorder wired")(
+            ctx.agent.id,
+            ctx.session_id,
+            1.5,
+            false,
+        );
+
+        let envelope = event_rx.try_recv().expect("cost update event");
+        match envelope.event {
+            WsEvent::CostUpdate {
+                agent_id,
+                agent_name,
+                session_id,
+                daily_total,
+                session_total,
+                compaction_cost,
+                is_compaction,
+                ..
+            } => {
+                assert_eq!(agent_id, ctx.agent.id.to_string());
+                assert_eq!(agent_name, ctx.agent.name);
+                assert_eq!(session_id, ctx.session_id.to_string());
+                assert!((daily_total - 1.5).abs() < f64::EPSILON);
+                assert!((session_total - 1.5).abs() < f64::EPSILON);
+                assert!(compaction_cost.abs() < f64::EPSILON);
+                assert!(!is_compaction);
+            }
+            other => panic!("expected CostUpdate event, got {other:?}"),
+        }
     }
 
     #[test]
@@ -663,6 +1031,8 @@ mod tests {
             capabilities: Vec::new(),
             skill_allowlist: Some(vec!["note_take".into()]),
             spending_cap: 5.0,
+            isolation_mode: crate::config::IsolationMode::InProcess,
+            sandbox_config: crate::config::AgentSandboxConfig::default(),
         };
         let ctx = RuntimeSafetyContext {
             capability_scope: Vec::new(),
@@ -682,7 +1052,11 @@ mod tests {
                 db: Some(db.legacy_connection().unwrap()),
                 resolved_skills,
                 tools_config: ToolsConfig::default(),
+                event_tx: None,
+                replay_buffer: None,
                 trigger_sender: None,
+                sandbox_review_sender: None,
+                itp_emitter: None,
                 convergence_profile: "standard".into(),
                 monitor_enabled: false,
                 monitor_block_on_degraded: false,
@@ -712,6 +1086,9 @@ mod tests {
         let exec_ctx = ExecutionContext {
             agent_id: agent.id,
             session_id: ctx.session_id,
+            execution_id: None,
+            route_kind: Some("runtime_safety_test".into()),
+            interactive: false,
             intervention_level: 0,
             session_duration: std::time::Duration::ZERO,
             session_reflection_count: 0,
@@ -844,6 +1221,8 @@ mod tests {
             capabilities: Vec::new(),
             skill_allowlist: Some(vec!["echo".into()]),
             spending_cap: 5.0,
+            isolation_mode: crate::config::IsolationMode::InProcess,
+            sandbox_config: crate::config::AgentSandboxConfig::default(),
         };
         let ctx = RuntimeSafetyContext {
             capability_scope: Vec::new(),
@@ -872,7 +1251,11 @@ mod tests {
                 db: Some(db.legacy_connection().unwrap()),
                 resolved_skills,
                 tools_config: ToolsConfig::default(),
+                event_tx: None,
+                replay_buffer: None,
                 trigger_sender: None,
+                sandbox_review_sender: None,
+                itp_emitter: None,
                 convergence_profile: "standard".into(),
                 monitor_enabled: false,
                 monitor_block_on_degraded: false,
@@ -897,6 +1280,9 @@ mod tests {
                 &ExecutionContext {
                     agent_id: agent.id,
                     session_id: ctx.session_id,
+                    execution_id: None,
+                    route_kind: Some("runtime_safety_test".into()),
+                    interactive: false,
                     intervention_level: 0,
                     session_duration: std::time::Duration::ZERO,
                     session_reflection_count: 0,

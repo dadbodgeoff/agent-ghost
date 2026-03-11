@@ -185,37 +185,7 @@ pub async fn fetch_url(url: &str, config: &FetchConfig) -> Result<FetchResult, F
 
     // Read body with size limit.
     let body_bytes = read_limited_body(resp, config.max_body_bytes).await?;
-    let body = String::from_utf8_lossy(&body_bytes).to_string();
-
-    // Extract content based on content type — HTML is converted to markdown
-    // for token-efficient LLM consumption.
-    let extracted = if content_type.contains("text/html") || content_type.contains("xhtml") {
-        html_to_markdown(&body)
-    } else {
-        // Plain text, JSON, XML — return as-is with whitespace cleanup.
-        collapse_whitespace(&body)
-    };
-
-    // Truncate to max chars.
-    let truncated = extracted.len() > config.max_text_chars;
-    let content = if truncated {
-        let mut s = safe_truncate(&extracted, config.max_text_chars);
-        s.push_str("\n\n[Content truncated]");
-        s
-    } else {
-        extracted
-    };
-
-    let content_length = content.len();
-
-    Ok(FetchResult {
-        url: final_url,
-        status,
-        content,
-        content_type,
-        truncated,
-        content_length,
-    })
+    finalize_fetch_result(final_url, status, content_type, body_bytes, config)
 }
 
 // ── Internals ───────────────────────────────────────────────────────────
@@ -237,6 +207,57 @@ async fn read_limited_body(resp: reqwest::Response, max_bytes: u64) -> Result<Ve
     }
 
     Ok(bytes.to_vec())
+}
+
+pub(crate) fn finalize_fetch_result(
+    final_url: String,
+    status: u16,
+    content_type: String,
+    body_bytes: Vec<u8>,
+    config: &FetchConfig,
+) -> Result<FetchResult, FetchError> {
+    if body_bytes.len() as u64 > config.max_body_bytes {
+        return Err(FetchError::ResponseTooLarge {
+            size: body_bytes.len() as u64,
+            max: config.max_body_bytes,
+        });
+    }
+
+    let is_text = content_type.contains("text/")
+        || content_type.contains("application/json")
+        || content_type.contains("application/xml")
+        || content_type.contains("application/xhtml");
+
+    if !is_text {
+        return Err(FetchError::UnsupportedContentType(content_type));
+    }
+
+    let body = String::from_utf8_lossy(&body_bytes).to_string();
+    let extracted = if content_type.contains("text/html") || content_type.contains("xhtml") {
+        html_to_markdown(&body)
+    } else {
+        collapse_whitespace(&body)
+    };
+
+    let truncated = extracted.len() > config.max_text_chars;
+    let content = if truncated {
+        let mut s = safe_truncate(&extracted, config.max_text_chars);
+        s.push_str("\n\n[Content truncated]");
+        s
+    } else {
+        extracted
+    };
+
+    let content_length = content.len();
+
+    Ok(FetchResult {
+        url: final_url,
+        status,
+        content,
+        content_type,
+        truncated,
+        content_length,
+    })
 }
 
 /// Convert HTML to markdown for token-efficient LLM consumption.

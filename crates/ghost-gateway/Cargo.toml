@@ -38,6 +38,7 @@ ghost-llm = { workspace = true }
 ghost-secrets = { workspace = true }
 ghost-identity = { workspace = true }
 ghost-agent-loop = { workspace = true }
+itp-protocol = { workspace = true }
 ghost-audit = { workspace = true }
 ghost-backup = { workspace = true }
 ghost-export = { workspace = true }
@@ -51,6 +52,7 @@ ghost-skills = { workspace = true }
 ghost-pc-control = { workspace = true }
 ghost-marketplace = { workspace = true }
 cortex-embeddings = { workspace = true }
+ghost-channels = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

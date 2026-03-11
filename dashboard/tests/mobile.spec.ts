@@ -79,7 +79,9 @@ async function mockAllApis(page: Page) {
             proposer_type: 'llm',
             operation: 'write_file',
             target_type: 'filesystem',
-            decision: null,
+            status: 'pending_review',
+            current_state: 'pending_review',
+            decision: 'HumanReviewRequired',
             dimension_scores: {},
             flags: [],
             created_at: '2025-12-01T00:00:00Z',
@@ -169,7 +171,12 @@ async function mockAllApis(page: Page) {
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ sessions: [] }),
+      body: JSON.stringify({
+        data: [],
+        has_more: false,
+        next_cursor: null,
+        total_count: 0,
+      }),
     }),
   );
 
@@ -267,7 +274,7 @@ test.describe('Responsive shell', () => {
       await expect(nav).toBeVisible();
       await expect(nav.getByRole('link', { name: 'Overview' })).toBeVisible();
       await expect(nav.getByRole('link', { name: 'Memory' })).toBeVisible();
-      await expect(nav.getByRole('link', { name: 'Goals' })).toBeVisible();
+      await expect(nav.getByRole('link', { name: 'Proposals' })).toBeVisible();
       await expect(nav.getByRole('link', { name: 'Workflows' })).toBeVisible();
       await expect(nav.getByRole('link', { name: 'Orchestration' })).toBeVisible();
       await expect(nav.getByRole('link', { name: 'Settings' })).toBeVisible();
@@ -338,12 +345,25 @@ test.describe('Touch-ready visuals', () => {
 test.describe('Primary navigation', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('Goals link navigates and is marked current', async ({ page }) => {
+  test('Proposals link navigates and is marked current', async ({ page }) => {
     await navigateTo(page, '/');
     const nav = primaryNav(page);
-    await nav.getByRole('link', { name: 'Goals' }).click();
+    await nav.getByRole('link', { name: 'Proposals' }).click();
     await page.waitForURL('**/goals');
     await expect(nav.locator('a[href="/goals"]')).toHaveAttribute('aria-current', 'page');
+  });
+
+  test('pending review proposals remain actionable on the canonical /goals route', async ({ page }) => {
+    await navigateTo(page, '/goals');
+    await expect(page.getByRole('heading', { name: 'Proposals' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Approve' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reject' })).toBeVisible();
+    await expect(page.getByText('HumanReviewRequired')).toBeVisible();
+  });
+
+  test('legacy /approvals route redirects to /goals', async ({ page }) => {
+    await navigateTo(page, '/approvals');
+    await page.waitForURL('**/goals');
   });
 
   test('Memory link navigates and is marked current', async ({ page }) => {
@@ -495,7 +515,69 @@ test.describe('Offline awareness', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. AUTH REDIRECT
+// 6. SESSIONS SURFACE
+// ═══════════════════════════════════════════════════════════════════════════
+
+test.describe('Sessions surface', () => {
+  test('sessions page renders cursor-backed data', async ({ page }) => {
+    await mockAllApis(page);
+    await authenticate(page);
+
+    await page.route('**/api/sessions**', (route) => {
+      const url = new URL(route.request().url());
+      const cursor = url.searchParams.get('cursor');
+      const body = cursor
+        ? {
+            data: [
+              {
+                session_id: 'sess-b02',
+                agent_ids: ['agent-beta'],
+                started_at: '2026-03-10T10:05:00Z',
+                last_event_at: '2026-03-10T10:10:00Z',
+                event_count: 4,
+                chain_valid: true,
+                cumulative_cost: 0.0021,
+                branched_from: null,
+              },
+            ],
+            has_more: false,
+            next_cursor: null,
+            total_count: 2,
+          }
+        : {
+            data: [
+              {
+                session_id: 'sess-a01',
+                agent_ids: ['agent-alpha'],
+                started_at: '2026-03-10T10:00:00Z',
+                last_event_at: '2026-03-10T10:03:00Z',
+                event_count: 3,
+                chain_valid: true,
+                cumulative_cost: 0.0012,
+                branched_from: null,
+              },
+            ],
+            has_more: true,
+            next_cursor: 'cursor-2',
+            total_count: 2,
+          };
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    await page.goto('/sessions', { waitUntil: 'networkidle' });
+
+    await expect(page.locator('text=1 of 2 sessions loaded')).toBeVisible();
+    await expect(page.locator('text=sess-a01')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Load More' })).toBeVisible();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. AUTH REDIRECT
 // ═══════════════════════════════════════════════════════════════════════════
 
 test.describe('Auth redirect', () => {

@@ -267,10 +267,26 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: operations["get_agent"];
         put?: never;
         post?: never;
         delete: operations["delete_agent"];
+        options?: never;
+        head?: never;
+        patch: operations["update_agent"];
+        trace?: never;
+    };
+    "/api/agents/{id}/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_agent_overview"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -644,6 +660,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/goals/active": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_active_goals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/goals/{id}": {
         parameters: {
             query?: never;
@@ -750,6 +782,22 @@ export interface paths {
         get: operations["get_live_execution"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/live-executions/{execution_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancel_live_execution"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1332,6 +1380,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/observability/ade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_ade_observability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/pc-control/actions": {
         parameters: {
             query?: never;
@@ -1604,6 +1668,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/safety/sandbox-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_sandbox_reviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/safety/sandbox-reviews/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["approve_sandbox_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/safety/sandbox-reviews/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reject_sandbox_review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/safety/status": {
         parameters: {
             query?: never;
@@ -1644,6 +1756,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["list_sessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_runtime_session"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2084,6 +2212,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workflows/{id}/executions/{execution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_workflow_execution"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workflows/{id}/resume/{execution_id}": {
         parameters: {
             query?: never;
@@ -2152,6 +2296,147 @@ export interface components {
             target_app?: string | null;
             timestamp: string;
         };
+        ActiveGoalListResponse: {
+            goals: components["schemas"]["ActiveGoalSummary"][];
+            /** Format: int32 */
+            total: number;
+        };
+        ActiveGoalSummary: {
+            agent_id: string;
+            content: unknown;
+            created_at: string;
+            goal_text: string;
+            id: string;
+            origin: string;
+            parent_goal_id?: string | null;
+            proposal_id: string;
+            reviewed_revision: string;
+            scope: string;
+            session_id: string;
+            state: string;
+            subject_key: string;
+            subject_type: string;
+            updated_at: string;
+        };
+        AdeAgentSnapshot: {
+            active_count: number;
+            registered_count: number;
+        };
+        AdeBackupSchedulerSnapshot: {
+            enabled: boolean;
+            last_error?: string | null;
+            last_failure_at?: string | null;
+            last_success_at?: string | null;
+            /** Format: int64 */
+            retention_days: number;
+            schedule: string;
+            status: string;
+        };
+        AdeConfigWatcherSnapshot: {
+            enabled: boolean;
+            last_error?: string | null;
+            last_reload_at?: string | null;
+            mode?: string | null;
+            status: string;
+            watched_path?: string | null;
+        };
+        AdeConvergenceProtectionAgents: {
+            corrupted: number;
+            healthy: number;
+            missing: number;
+            stale: number;
+        };
+        AdeConvergenceProtectionSnapshot: {
+            agents: components["schemas"]["AdeConvergenceProtectionAgents"];
+            execution_mode: string;
+            /** Format: int64 */
+            stale_after_secs: number;
+        };
+        AdeDatabaseSnapshot: {
+            last_error?: string | null;
+            path?: string | null;
+            /** Format: int64 */
+            size_bytes?: number | null;
+            status: string;
+            wal_mode?: boolean | null;
+        };
+        AdeDistributedKillSnapshot: {
+            acked_nodes?: string[] | null;
+            authoritative: boolean;
+            /** Format: int64 */
+            chain_length?: number | null;
+            close_reason?: string | null;
+            closed_at?: string | null;
+            enabled: boolean;
+            error?: string | null;
+            node_id?: string | null;
+            reason?: string | null;
+            resume_permitted?: boolean | null;
+            status: string;
+        };
+        AdeGatewaySnapshot: {
+            liveness: string;
+            platform_killed: boolean;
+            readiness: string;
+            state: string;
+            /** Format: int64 */
+            uptime_seconds: number;
+        };
+        AdeMonitorSnapshot: {
+            agent_count?: number | null;
+            connected: boolean;
+            enabled: boolean;
+            /** Format: int64 */
+            event_count?: number | null;
+            last_computation?: string | null;
+            last_error?: string | null;
+            status: string;
+            /** Format: int64 */
+            uptime_seconds?: number | null;
+        };
+        AdeObservabilitySnapshot: {
+            agents: components["schemas"]["AdeAgentSnapshot"];
+            autonomy: components["schemas"]["AutonomyStatusResponse"];
+            backup_scheduler: components["schemas"]["AdeBackupSchedulerSnapshot"];
+            config_watcher: components["schemas"]["AdeConfigWatcherSnapshot"];
+            convergence_protection: components["schemas"]["AdeConvergenceProtectionSnapshot"];
+            database: components["schemas"]["AdeDatabaseSnapshot"];
+            distributed_kill: components["schemas"]["AdeDistributedKillSnapshot"];
+            gateway: components["schemas"]["AdeGatewaySnapshot"];
+            monitor: components["schemas"]["AdeMonitorSnapshot"];
+            sampled_at: string;
+            speculative_context: components["schemas"]["SpeculativeContextStatus"];
+            stale: boolean;
+            status: string;
+            websocket: components["schemas"]["AdeWebSocketSnapshot"];
+        };
+        AdeWebSocketSnapshot: {
+            /** Format: int32 */
+            active_connections: number;
+            /** Format: int32 */
+            per_ip_limit: number;
+            status: string;
+        };
+        AgentActionPolicy: {
+            can_delete: boolean;
+            can_pause: boolean;
+            can_quarantine: boolean;
+            can_resume: boolean;
+            /** Format: int32 */
+            monitoring_duration_hours?: number | null;
+            requires_forensic_review: boolean;
+            requires_second_confirmation: boolean;
+            resume_kind?: null | components["schemas"]["AgentResumeKind"];
+        };
+        AgentAuditEntrySummary: {
+            actor_id?: string | null;
+            agent_id: string;
+            details: string;
+            event_type: string;
+            id: string;
+            severity: string;
+            timestamp: string;
+        };
         AgentChatAcceptedResponse: {
             agent_id: string;
             execution_id: string;
@@ -2192,16 +2477,54 @@ export interface components {
             /** Format: double */
             spending_cap: number;
         };
+        AgentCostSummary: {
+            agent_id: string;
+            agent_name: string;
+            /** Format: double */
+            cap_remaining: number;
+            /** Format: double */
+            cap_utilization_pct: number;
+            /** Format: double */
+            compaction_cost: number;
+            /** Format: double */
+            daily_total: number;
+            /** Format: double */
+            spending_cap: number;
+        };
         AgentDelistResponse: {
             delisted: boolean;
         };
+        /** @enum {string} */
+        AgentEffectiveStateValue: "starting" | "ready" | "paused" | "quarantined" | "kill_all_blocked" | "stopping" | "stopped";
+        AgentInfo: {
+            action_policy: components["schemas"]["AgentActionPolicy"];
+            capabilities: string[];
+            effective_state: components["schemas"]["AgentEffectiveStateValue"];
+            has_keypair?: boolean | null;
+            id: string;
+            isolation: components["schemas"]["IsolationMode"];
+            lifecycle_state: components["schemas"]["AgentLifecycleStateValue"];
+            name: string;
+            safety_state: components["schemas"]["AgentSafetyStateValue"];
+            sandbox: components["schemas"]["AgentSandboxConfig"];
+            sandbox_metrics: components["schemas"]["AgentSandboxMetrics"];
+            /** Format: double */
+            spending_cap: number;
+            /** @description Compatibility field for older consumers. Mirrors `effective_state`. */
+            status: string;
+        };
         AgentInfoSchema: {
             id: string;
+            isolation: string;
             name: string;
+            sandbox: components["schemas"]["AgentSandboxSchema"];
+            sandbox_metrics: components["schemas"]["AgentSandboxMetricsSchema"];
             /** Format: double */
             spending_cap: number;
             status: string;
         };
+        /** @enum {string} */
+        AgentLifecycleStateValue: "starting" | "ready" | "stopping" | "stopped";
         AgentListResponse: {
             agents: components["schemas"]["AgentListingResponse"][];
         };
@@ -2227,6 +2550,80 @@ export interface components {
             trust_score: number;
             updated_at: string;
         };
+        AgentOverviewPanelHealth: {
+            convergence: components["schemas"]["OverviewPanelStatus"];
+            cost: components["schemas"]["OverviewPanelStatus"];
+            crdt_summary: components["schemas"]["OverviewPanelStatus"];
+            integrity_summary: components["schemas"]["OverviewPanelStatus"];
+            recent_audit_entries: components["schemas"]["OverviewPanelStatus"];
+            recent_sessions: components["schemas"]["OverviewPanelStatus"];
+        };
+        AgentOverviewQuery: {
+            /** Format: int32 */
+            audit_limit?: number | null;
+            /** Format: int32 */
+            crdt_limit?: number | null;
+            /** Format: int32 */
+            sessions_limit?: number | null;
+        };
+        AgentOverviewResponse: {
+            agent: components["schemas"]["AgentInfo"];
+            convergence?: null | components["schemas"]["ConvergenceScoreResponse"];
+            cost?: null | components["schemas"]["AgentCostSummary"];
+            crdt_summary?: null | components["schemas"]["CrdtStateResponse"];
+            integrity_summary?: null | components["schemas"]["VerifyChainResponse"];
+            panel_health: components["schemas"]["AgentOverviewPanelHealth"];
+            recent_audit_entries: components["schemas"]["AgentAuditEntrySummary"][];
+            recent_sessions: components["schemas"]["RuntimeSessionSummary"][];
+        };
+        /** @enum {string} */
+        AgentResumeKind: "pause" | "quarantine";
+        /** @enum {string} */
+        AgentSafetyStateValue: "normal" | "paused" | "quarantined" | "kill_all_blocked";
+        AgentSandboxConfig: {
+            allowed_shell_prefixes?: string[];
+            enabled?: boolean;
+            mode?: components["schemas"]["AgentSandboxMode"];
+            network_access?: boolean;
+            on_violation?: components["schemas"]["AgentSandboxViolationAction"];
+        };
+        AgentSandboxMetrics: {
+            /** Format: int32 */
+            approved_reviews: number;
+            /** Format: int32 */
+            expired_reviews: number;
+            last_requested_at?: string | null;
+            /** Format: int32 */
+            pending_reviews: number;
+            /** Format: int32 */
+            rejected_reviews: number;
+            /** Format: int32 */
+            total_reviews: number;
+        };
+        AgentSandboxMetricsSchema: {
+            /** Format: int32 */
+            approved_reviews: number;
+            /** Format: int32 */
+            expired_reviews: number;
+            last_requested_at?: string | null;
+            /** Format: int32 */
+            pending_reviews: number;
+            /** Format: int32 */
+            rejected_reviews: number;
+            /** Format: int32 */
+            total_reviews: number;
+        };
+        /** @enum {string} */
+        AgentSandboxMode: "off" | "read_only" | "workspace_write" | "strict";
+        AgentSandboxSchema: {
+            allowed_shell_prefixes: string[];
+            enabled: boolean;
+            mode: string;
+            network_access: boolean;
+            on_violation: string;
+        };
+        /** @enum {string} */
+        AgentSandboxViolationAction: "warn" | "pause" | "quarantine" | "kill_all";
         AgentStatusUpdateResponse: {
             updated: boolean;
         };
@@ -2396,24 +2793,24 @@ export interface components {
         BlockedHotkeysRequest: {
             hotkeys: string[];
         };
-        /** @description POST /api/sessions/:id/branch — branch a new session from a checkpoint. */
         BranchRequest: {
-            /** Format: int32 */
-            from_event_index: number;
+            /** Format: int64 */
+            from_sequence_number: number;
         };
         BranchSessionResponse: {
-            branched_from: string;
-            events_copied: number;
-            session_id: string;
+            session: components["schemas"]["RuntimeSessionSummary"];
         };
         ChannelListItem: {
             agent_id: string;
+            agent_name?: string | null;
             channel_type: string;
             config: unknown;
             id: string;
             last_message_at?: string | null;
             /** Format: int64 */
             message_count: number;
+            routing_key: string;
+            source: string;
             status: string;
             status_message?: string | null;
         };
@@ -2423,6 +2820,14 @@ export interface components {
         ChannelStatusResponse: {
             id: string;
             status: string;
+        };
+        CircuitBreakerConfigState: {
+            /** Format: int64 */
+            cooldown_seconds: number;
+            /** Format: int32 */
+            failure_threshold: number;
+            /** Format: int32 */
+            max_actions_per_second: number;
         };
         CodexAccountView: {
             /** @enum {string} */
@@ -2566,23 +2971,32 @@ export interface components {
             /** Format: int32 */
             total: number;
         };
+        CreateAgentRequest: {
+            capabilities?: string[] | null;
+            generate_keypair?: boolean | null;
+            name: string;
+            sandbox?: null | components["schemas"]["AgentSandboxConfig"];
+            skills?: string[] | null;
+            /** Format: double */
+            spending_cap?: number | null;
+        };
         CreateAgentRequestSchema: {
             capabilities?: string[] | null;
             generate_keypair?: boolean | null;
             name: string;
+            sandbox?: null | components["schemas"]["AgentSandboxSchema"];
             skills?: string[] | null;
             /** Format: double */
             spending_cap?: number | null;
         };
         CreateBookmarkRequest: {
-            /** Format: int32 */
-            eventIndex: number;
             id?: string | null;
             label: string;
+            /** Format: int64 */
+            sequence_number: number;
         };
         CreateBookmarkResponse: {
-            id: string;
-            status: string;
+            bookmark: components["schemas"]["SessionBookmark"];
         };
         CreateChannelRequest: {
             agent_id: string;
@@ -2651,6 +3065,12 @@ export interface components {
         DiscoverResponse: {
             agents: components["schemas"]["AgentListingResponse"][];
             total_matches: number;
+        };
+        DisplayGeometry: {
+            /** Format: int32 */
+            height: number;
+            /** Format: int32 */
+            width: number;
         };
         ErrorBodySchema: {
             code: string;
@@ -2732,6 +3152,7 @@ export interface components {
             proposer_type: string;
             resolved_at?: string | null;
             session_id: string;
+            status: string;
             target_type: string;
         };
         GoalProposalTransition: {
@@ -2747,6 +3168,20 @@ export interface components {
             reason_code?: string | null;
             request_id?: string | null;
             to_state: string;
+        };
+        HealthMonitorStatus: {
+            connected: boolean;
+            enabled: boolean;
+        };
+        HealthResponse: {
+            autonomy: components["schemas"]["AutonomyStatusResponse"];
+            convergence_monitor: components["schemas"]["HealthMonitorStatus"];
+            convergence_protection: components["schemas"]["AdeConvergenceProtectionSnapshot"];
+            distributed_kill: components["schemas"]["AdeDistributedKillSnapshot"];
+            platform_killed: boolean;
+            speculative_context: components["schemas"]["SpeculativeContextStatus"];
+            state: string;
+            status: string;
         };
         InitiativeBudgetPolicy: {
             /** Format: double */
@@ -2783,12 +3218,23 @@ export interface components {
             memory_events?: null | components["schemas"]["MemoryEventsIntegrity"];
         };
         IntegrityEventId: string | number;
+        /** @enum {string} */
+        IsolationMode: "inprocess" | "process" | "container";
         ItpEvent: {
+            /** Format: int64 */
+            content_length?: number | null;
             event_type: string;
             id: string;
-            platform: string;
+            platform?: string | null;
+            privacy_level: string;
+            replay_path: string;
+            route?: string | null;
+            sender?: string | null;
+            /** Format: int64 */
+            sequence_number: number;
             session_id: string;
-            source: string;
+            session_path: string;
+            source?: string | null;
             timestamp: string;
         };
         ItpEventsIntegrity: {
@@ -2799,10 +3245,30 @@ export interface components {
             verified_events: number;
         };
         ItpEventsResponse: {
-            /** Format: int64 */
-            buffer_count: number;
             events: components["schemas"]["ItpEvent"][];
-            extension_connected: boolean;
+            /** Format: int32 */
+            limit: number;
+            /** @description Indicates whether the client can keep this view fresh through WS + resync handling. */
+            live_updates_supported: boolean;
+            /** @description Truthful monitor connectivity bit from gateway health state. */
+            monitor_connected: boolean;
+            /** Format: int32 */
+            offset: number;
+            /**
+             * Format: int32
+             * @description Count of rows returned in this response page.
+             */
+            returned: number;
+            /**
+             * Format: int64
+             * @description Total rows that match the applied filters before pagination.
+             */
+            total_filtered: number;
+            /**
+             * Format: int64
+             * @description Total persisted rows across the entire `itp_events` table.
+             */
+            total_persisted: number;
         };
         ListAgentsQuery: {
             /** Format: int32 */
@@ -2850,6 +3316,12 @@ export interface components {
             limit?: number | null;
             /** Format: int32 */
             offset?: number | null;
+        };
+        LiveExecutionCancelResponseSchema: {
+            cancel_signal_sent: boolean;
+            execution_id: string;
+            route_kind: string;
+            status: string;
         };
         LiveExecutionSchema: {
             accepted_response: unknown;
@@ -2961,29 +3433,80 @@ export interface components {
         OAuthProviderSchema: {
             name: string;
         };
+        /** @enum {string} */
+        OverviewPanelState: "ready" | "empty" | "unavailable" | "error";
+        OverviewPanelStatus: {
+            message?: string | null;
+            state: components["schemas"]["OverviewPanelState"];
+        };
         PcControlActionsResponse: {
             actions: components["schemas"]["ActionLogEntry"][];
         };
         PcControlPersistedState: {
-            action_budget: components["schemas"]["ActionBudget"];
             allowed_apps: string[];
             blocked_hotkeys: string[];
+            budgets: components["schemas"]["PolicyBudgetConfig"];
+            circuit_breaker: components["schemas"]["CircuitBreakerConfigState"];
             enabled: boolean;
             safe_zone?: null | components["schemas"]["SafeZone"];
         };
         PcControlRuntimeState: {
+            activation_state: string;
             circuit_breaker_state: string;
+            effective_allowed_apps: string[];
+            effective_blocked_hotkeys: string[];
+            effective_safe_zone?: null | components["schemas"]["SafeZone"];
+            enabled: boolean;
+            last_applied_at: string;
+            last_apply_source: string;
+            /** Format: int64 */
+            revision: number;
         };
         PcControlStatus: {
+            /** @description Compatibility mirror of `telemetry.throughput`. */
             action_budget: components["schemas"]["ActionBudget"];
+            /** @description Compatibility mirror of `runtime.effective_allowed_apps`. */
             allowed_apps: string[];
+            /** @description Compatibility mirror of `runtime.effective_blocked_hotkeys`. */
             blocked_hotkeys: string[];
+            /** @description Compatibility mirror of `runtime.circuit_breaker_state`. */
             circuit_breaker_state: string;
+            display: components["schemas"]["DisplayGeometry"];
+            /** @description Compatibility mirror of `runtime.enabled`. */
             enabled: boolean;
             persisted: components["schemas"]["PcControlPersistedState"];
             runtime: components["schemas"]["PcControlRuntimeState"];
             safe_zone?: null | components["schemas"]["SafeZone"];
+            /** @description Compatibility mirror of the singular safe-zone model. */
             safe_zones: components["schemas"]["SafeZone"][];
+            telemetry: components["schemas"]["PcControlTelemetry"];
+        };
+        PcControlTelemetry: {
+            policy_budgets: components["schemas"]["PolicyBudgetConfig"];
+            throughput: components["schemas"]["ActionBudget"];
+            usage: components["schemas"]["PcControlUsageTelemetry"];
+        };
+        PcControlUsageTelemetry: {
+            /** Format: int32 */
+            blocked_this_hour: number;
+            /** Format: int32 */
+            blocked_this_minute: number;
+            /** Format: int32 */
+            executed_this_hour: number;
+            /** Format: int32 */
+            executed_this_minute: number;
+        };
+        PolicyBudgetConfig: {
+            /** Format: int32 */
+            keyboard_hotkey: number;
+            /** Format: int32 */
+            keyboard_type: number;
+            /** Format: int32 */
+            mouse_click: number;
+            /** Format: int32 */
+            mouse_drag: number;
+            /** Format: int32 */
+            total: number;
         };
         ProfileListResponse: {
             profiles: components["schemas"]["ProfileSummary"][];
@@ -3048,6 +3571,10 @@ export interface components {
             start_hour: number;
             timezone: string;
         };
+        ReadyResponse: {
+            state: string;
+            status: string;
+        };
         RegisterAgentRequest: {
             agent_id: string;
             /** Format: int64 */
@@ -3084,29 +3611,29 @@ export interface components {
         ReviewSubmittedResponse: {
             submitted: boolean;
         };
+        RuntimeSessionDetailResponse: {
+            /** Format: int64 */
+            bookmark_count: number;
+            session: components["schemas"]["RuntimeSessionSummary"];
+        };
         RuntimeSessionSummary: {
-            agents: string;
+            agent_ids: string[];
+            branched_from?: string | null;
+            chain_valid: boolean;
+            /** Format: double */
+            cumulative_cost: number;
             /** Format: int64 */
             event_count: number;
             last_event_at: string;
             session_id: string;
             started_at: string;
         };
-        RuntimeSessionsCursorResponse: {
+        RuntimeSessionsResponse: {
             data: components["schemas"]["RuntimeSessionSummary"][];
             has_more: boolean;
             next_cursor?: string | null;
             /** Format: int64 */
             total_count: number;
-        };
-        RuntimeSessionsPageResponse: {
-            /** Format: int32 */
-            page: number;
-            /** Format: int32 */
-            page_size: number;
-            sessions: components["schemas"]["RuntimeSessionSummary"][];
-            /** Format: int64 */
-            total: number;
         };
         SafeZone: {
             /** Format: int32 */
@@ -3123,6 +3650,38 @@ export interface components {
             safe_zone?: null | components["schemas"]["SafeZone"];
             zones?: components["schemas"]["SafeZone"][] | null;
         };
+        SandboxReviewDecisionRequestSchema: {
+            note?: string | null;
+        };
+        SandboxReviewDecisionResponseSchema: {
+            review_id: string;
+            status: string;
+        };
+        SandboxReviewListResponseSchema: {
+            reviews: components["schemas"]["SandboxReviewSchema"][];
+        };
+        SandboxReviewSchema: {
+            agent_id: string;
+            execution_id?: string | null;
+            id: string;
+            requested_at: string;
+            resolution_note?: string | null;
+            resolved_at?: string | null;
+            resolved_by?: string | null;
+            route_kind?: string | null;
+            sandbox_mode: string;
+            session_id: string;
+            status: string;
+            tool_name: string;
+            violation_reason: string;
+        };
+        SearchDomainWarningSchema: {
+            message: string;
+            result_type: string;
+        };
+        SearchMatchContextSchema: {
+            matched_fields: string[];
+        };
         SearchMemoriesResponse: {
             count: number;
             filters: components["schemas"]["MemorySearchFilters"];
@@ -3130,19 +3689,37 @@ export interface components {
             results: components["schemas"]["MemorySearchResultEntry"][];
             search_mode: string;
         };
+        SearchNavigationSchema: {
+            focus_id?: string | null;
+            href: string;
+            query?: string | null;
+            route_kind: string;
+        };
         SearchResponseSchema: {
+            degraded: boolean;
             query: string;
             results: components["schemas"]["SearchResultSchema"][];
             /** Format: int64 */
+            returned_count: number;
+            /** Format: int64 */
             total: number;
+            totals_by_type: components["schemas"]["SearchTypeCountSchema"][];
+            warnings: components["schemas"]["SearchDomainWarningSchema"][];
         };
         SearchResultSchema: {
             id: string;
+            match_context: components["schemas"]["SearchMatchContextSchema"];
+            navigation: components["schemas"]["SearchNavigationSchema"];
             result_type: string;
             /** Format: double */
             score: number;
             snippet: string;
             title: string;
+        };
+        SearchTypeCountSchema: {
+            result_type: string;
+            /** Format: int64 */
+            total: number;
         };
         SeedWalletRequest: {
             agent_id: string;
@@ -3150,11 +3727,12 @@ export interface components {
             amount?: number;
         };
         SessionBookmark: {
-            createdAt: string;
-            /** Format: int32 */
-            eventIndex: number;
+            created_at: string;
             id: string;
             label: string;
+            /** Format: int64 */
+            sequence_number: number;
+            session_id: string;
         };
         SessionBookmarksResponse: {
             bookmarks: components["schemas"]["SessionBookmark"][];
@@ -3183,17 +3761,20 @@ export interface components {
             /** Format: double */
             cumulative_cost: number;
             events: components["schemas"]["SessionEvent"][];
+            has_more: boolean;
             /** Format: int32 */
             limit: number;
-            /** Format: int32 */
-            offset: number;
+            /** Format: int64 */
+            next_after_sequence_number?: number | null;
             session_id: string;
             /** Format: int32 */
             total: number;
         };
-        SessionListResponse: components["schemas"]["RuntimeSessionsPageResponse"] | components["schemas"]["RuntimeSessionsCursorResponse"];
         SessionResponseSchema: {
             authenticated: boolean;
+            /** Format: int32 */
+            authz_v?: number | null;
+            capabilities: string[];
             mode: string;
             role: string;
             subject: string;
@@ -3294,6 +3875,30 @@ export interface components {
             start_time: string;
             status: string;
             trace_id: string;
+        };
+        SpeculativeContextStatus: {
+            attempts_created: number;
+            available: boolean;
+            /** Format: double */
+            blocked_rate: number;
+            dead_letter_jobs: number;
+            enabled: boolean;
+            error?: string | null;
+            /** Format: double */
+            expired_rate: number;
+            pending_job_depth: number;
+            pending_jobs_by_type: {
+                [key: string]: number;
+            };
+            promotions_created: number;
+            /** Format: double */
+            retrievable_rate: number;
+            status_counts: {
+                [key: string]: number;
+            };
+            ttl_backlog: number;
+            /** Format: int32 */
+            window_hours: number;
         };
         StudioCreateSessionRequestSchema: {
             agent_id?: string | null;
@@ -3459,6 +4064,18 @@ export interface components {
             id: string;
             name: string;
         };
+        UpdateAgentRequest: {
+            capabilities?: string[] | null;
+            sandbox?: null | components["schemas"]["AgentSandboxConfig"];
+            /** Format: double */
+            spending_cap?: number | null;
+        };
+        UpdateAgentRequestSchema: {
+            capabilities?: string[] | null;
+            sandbox?: null | components["schemas"]["AgentSandboxSchema"];
+            /** Format: double */
+            spending_cap?: number | null;
+        };
         UpdateAgentStatusRequest: {
             status: string;
         };
@@ -3518,9 +4135,15 @@ export interface components {
         };
         WorkflowExecutionSchema: {
             completed_at?: string | null;
+            current_node_id?: string | null;
+            /** Format: int64 */
+            current_step_index?: number | null;
             execution_id: string;
             input?: unknown;
             mode: string;
+            reason?: string | null;
+            recovery_action?: string | null;
+            recovery_required: boolean;
             started_at?: string | null;
             status: string;
             steps: unknown;
@@ -4149,7 +4772,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentInfoSchema"][];
+                    "application/json": components["schemas"]["AgentInfo"][];
                 };
             };
             /** @description Internal error */
@@ -4172,7 +4795,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateAgentRequestSchema"];
+                "application/json": components["schemas"]["CreateAgentRequest"];
             };
         };
         responses: {
@@ -4181,10 +4804,49 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AgentInfo"];
+                };
             };
             /** @description Agent name conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent UUID or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentInfo"];
+                };
+            };
+            /** @description Agent not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4227,6 +4889,91 @@ export interface operations {
             };
             /** @description Cannot delete quarantined agent */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_agent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent UUID or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description Agent updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentInfo"];
+                };
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_overview: {
+        parameters: {
+            query?: {
+                /** @description Maximum recent sessions to include */
+                sessions_limit?: number;
+                /** @description Maximum recent audit entries to include */
+                audit_limit?: number;
+                /** @description Maximum CRDT deltas to include */
+                crdt_limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Agent UUID or name */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cohesive agent overview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentOverviewResponse"];
+                };
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Internal error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4922,7 +5669,7 @@ export interface operations {
     list_goals: {
         parameters: {
             query?: {
-                /** @description Goal status filter: pending, approved, or rejected */
+                /** @description Goal status filter: pending, approved, rejected, history, or omit for all */
                 status?: string;
                 /** @description Filter by agent ID */
                 agent_id?: string;
@@ -4944,6 +5691,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GoalListResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_active_goals: {
+        parameters: {
+            query?: {
+                /** @description Filter by agent ID */
+                agent_id?: string;
+                /** @description Page number (1-based) */
+                page?: number;
+                /** @description Items per page (max 500) */
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical active goal set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActiveGoalListResponse"];
                 };
             };
             /** @description Internal error */
@@ -5091,14 +5872,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["HealthResponse"];
+                };
             };
             /** @description Gateway unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["HealthResponse"];
+                };
             };
         };
     };
@@ -5140,8 +5925,14 @@ export interface operations {
     list_itp_events: {
         parameters: {
             query?: {
-                /** @description Maximum number of recent events to return (default 200, max 500) */
+                /** @description Maximum number of rows to return (default 100, max 500) */
                 limit?: number;
+                /** @description Row offset for snapshot pagination */
+                offset?: number;
+                /** @description Filter to a specific runtime session */
+                session_id?: string;
+                /** @description Filter to a specific event type */
+                event_type?: string;
             };
             header?: never;
             path?: never;
@@ -5149,7 +5940,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Recent ITP event snapshot */
+            /** @description Filtered ITP event snapshot with truthful counters and live-update capability flags */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5188,6 +5979,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LiveExecutionSchema"];
+                };
+            };
+            /** @description Execution not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    cancel_live_execution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Durable live execution identifier */
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Execution cancelled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveExecutionCancelResponseSchema"];
                 };
             };
             /** @description Execution not found */
@@ -6687,6 +7510,26 @@ export interface operations {
             };
         };
     };
+    get_ade_observability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ADE observability snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdeObservabilitySnapshot"];
+                };
+            };
+        };
+    };
     list_pc_control_actions: {
         parameters: {
             query?: {
@@ -7169,14 +8012,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReadyResponse"];
+                };
             };
             /** @description Gateway not ready */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ReadyResponse"];
+                };
             };
         };
     };
@@ -7353,6 +8200,132 @@ export interface operations {
             };
         };
     };
+    list_sandbox_reviews: {
+        parameters: {
+            query?: {
+                /** @description Review status filter */
+                status?: string;
+                /** @description Agent ID filter */
+                agent_id?: string;
+                /** @description Maximum number of reviews to return */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sandbox review queue and history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxReviewListResponseSchema"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    approve_sandbox_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sandbox review ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SandboxReviewDecisionRequestSchema"];
+            };
+        };
+        responses: {
+            /** @description Sandbox review approved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxReviewDecisionResponseSchema"];
+                };
+            };
+            /** @description Sandbox review not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    reject_sandbox_review: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sandbox review ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SandboxReviewDecisionRequestSchema"];
+            };
+        };
+        responses: {
+            /** @description Sandbox review rejected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxReviewDecisionResponseSchema"];
+                };
+            };
+            /** @description Sandbox review not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
     safety_status: {
         parameters: {
             query?: never;
@@ -7410,13 +8383,11 @@ export interface operations {
     list_sessions: {
         parameters: {
             query?: {
-                /** @description Page number (1-based) */
-                page?: number;
-                /** @description Items per page (max 200) */
-                page_size?: number;
+                /** @description Only include sessions involving the specified agent */
+                agent_id?: string;
                 /** @description Cursor for runtime session pagination */
                 cursor?: string;
-                /** @description Items per page in cursor mode (default 50, max 200) */
+                /** @description Items per page (default 50, max 200) */
                 limit?: number;
             };
             header?: never;
@@ -7431,7 +8402,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionListResponse"];
+                    "application/json": components["schemas"]["RuntimeSessionsResponse"];
                 };
             };
             /** @description Internal error */
@@ -7440,6 +8411,38 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    get_runtime_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Runtime session ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runtime session detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeSessionDetailResponse"];
+                };
+            };
+            /** @description Session not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
             };
         };
     };
@@ -7502,6 +8505,15 @@ export interface operations {
             };
             /** @description Session not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+            /** @description Invalid bookmark checkpoint */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7579,13 +8591,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponseSchema"];
                 };
             };
+            /** @description Invalid branch checkpoint */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
         };
     };
     get_session_events: {
         parameters: {
             query?: {
-                /** @description Pagination offset */
-                offset?: number;
+                /** @description Return events strictly after this sequence number */
+                after_sequence_number?: number;
                 /** @description Maximum number of events to return */
                 limit?: number;
             };
@@ -8617,6 +9638,40 @@ export interface operations {
                 };
             };
             /** @description Workflow not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseSchema"];
+                };
+            };
+        };
+    };
+    get_workflow_execution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workflow ID */
+                id: string;
+                /** @description Workflow execution ID */
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workflow execution detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowExecutionSchema"];
+                };
+            };
+            /** @description Workflow or execution not found */
             404: {
                 headers: {
                     [name: string]: unknown;

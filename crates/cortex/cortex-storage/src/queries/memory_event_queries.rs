@@ -2,7 +2,7 @@
 
 use crate::to_storage_err;
 use cortex_core::models::error::CortexResult;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 pub fn insert_event(
     conn: &Connection,
@@ -22,6 +22,34 @@ pub fn insert_event(
             event_type,
             delta,
             actor_id,
+            event_hash,
+            previous_hash
+        ],
+    )
+    .map_err(|e| to_storage_err(e.to_string()))?;
+    Ok(())
+}
+
+pub fn insert_event_at(
+    conn: &Connection,
+    memory_id: &str,
+    event_type: &str,
+    delta: &str,
+    actor_id: &str,
+    recorded_at: &str,
+    event_hash: &[u8],
+    previous_hash: &[u8],
+) -> CortexResult<()> {
+    conn.execute(
+        "INSERT INTO memory_events (memory_id, event_type, delta, actor_id,
+         recorded_at, event_hash, previous_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            memory_id,
+            event_type,
+            delta,
+            actor_id,
+            recorded_at,
             event_hash,
             previous_hash
         ],
@@ -55,6 +83,20 @@ pub fn query_by_memory(conn: &Connection, memory_id: &str) -> CortexResult<Vec<M
         .map_err(|e| to_storage_err(e.to_string()))?;
 
     Ok(rows)
+}
+
+pub fn latest_event_hash(conn: &Connection, memory_id: &str) -> CortexResult<Option<Vec<u8>>> {
+    conn.query_row(
+        "SELECT event_hash
+         FROM memory_events
+         WHERE memory_id = ?1
+         ORDER BY recorded_at DESC, event_id DESC
+         LIMIT 1",
+        params![memory_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| to_storage_err(e.to_string()))
 }
 
 #[derive(Debug, Clone)]

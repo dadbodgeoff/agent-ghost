@@ -568,7 +568,7 @@ async function main() {
         method: 'POST',
         headers: mutationHeaders(accessToken, `knowledge-bookmark-${runLabel}`),
         body: JSON.stringify({
-          eventIndex: 1,
+          sequence_number: 1,
           label: `${marker} checkpoint`,
         }),
       },
@@ -583,11 +583,12 @@ async function main() {
         method: 'POST',
         headers: mutationHeaders(accessToken, `knowledge-branch-${runLabel}`),
         body: JSON.stringify({
-          from_event_index: 1,
+          from_sequence_number: 1,
         }),
       },
     );
-    const branchedSessionId = branchResponse.body?.session_id ?? null;
+    const createdBookmarkId = createBookmark.body?.bookmark?.id ?? null;
+    const branchedSessionId = branchResponse.body?.session?.session_id ?? null;
     const branchEvents = branchedSessionId
       ? await fetchJson(`${gatewayUrl}/api/sessions/${branchedSessionId}/events?limit=20`, {
         headers: authHeaders(accessToken),
@@ -605,11 +606,11 @@ async function main() {
       session_events_nonempty: (sessionEvents.body?.events?.length ?? 0) >= 2,
       session_chain_valid: sessionEvents.body?.chain_valid === true,
       bookmark_create_succeeded:
-        createBookmark.status === 201 && createBookmark.body?.status === 'created',
+        createBookmark.status === 201 && typeof createdBookmarkId === 'string',
       bookmark_list_contains_created:
         bookmarkList.status === 200 &&
         (bookmarkList.body?.bookmarks ?? []).some(
-          (bookmark) => bookmark.id === createBookmark.body?.id,
+          (bookmark) => bookmark.id === createdBookmarkId,
         ),
       branch_session_succeeded:
         branchResponse.status === 201 && typeof branchedSessionId === 'string',
@@ -627,10 +628,15 @@ async function main() {
       `${gatewayUrl}/api/search?q=${encodeURIComponent(seededSessionId)}&types=sessions&limit=20`,
       { headers: authHeaders(accessToken) },
     );
+    const searchAudit = await fetchJson(
+      `${gatewayUrl}/api/search?q=${encodeURIComponent(marker)}&types=audit&limit=20`,
+      { headers: authHeaders(accessToken) },
+    );
 
     summary.search = {
       memories: searchMemories.body,
       sessions: searchSessions.body,
+      audit: searchAudit.body,
     };
     Object.assign(summary.checks, {
       search_memories_returns_marker:
@@ -642,6 +648,11 @@ async function main() {
         searchSessions.status === 200 &&
         (searchSessions.body?.results ?? []).some(
           (entry) => entry.result_type === 'session' && entry.id === seededSessionId,
+        ),
+      search_audit_returns_marker:
+        searchAudit.status === 200 &&
+        (searchAudit.body?.results ?? []).some(
+          (entry) => entry.result_type === 'audit' && String(entry.snippet ?? '').includes(marker),
         ),
     });
 
@@ -778,6 +789,46 @@ async function main() {
       marker_visible: await page.locator('.result-item', { hasText: marker }).count() > 0,
     };
 
+    const memorySearchResult = page.locator('.result-group', { hasText: 'Memories' }).locator('.result-link').first();
+    if (await memorySearchResult.count()) {
+      await memorySearchResult.click({ timeout: options.timeoutMs });
+      await page.getByRole('heading', { name: 'Memory' }).waitFor({
+        state: 'visible',
+        timeout: options.timeoutMs,
+      });
+      summary.pages.search.memory_click = {
+        landed: page.url().includes('/memory'),
+        focused_marker_visible: await page.locator('.memory-card.focused', { hasText: marker }).count() > 0,
+      };
+    } else {
+      summary.pages.search.memory_click = {
+        landed: false,
+        focused_marker_visible: false,
+      };
+    }
+
+    await page.goto(`/search?q=${encodeURIComponent(marker)}`, {
+      waitUntil: 'networkidle',
+      timeout: options.timeoutMs,
+    });
+    const auditSearchResult = page.locator('.result-group', { hasText: 'Audit Log' }).locator('.result-link').first();
+    if (await auditSearchResult.count()) {
+      await auditSearchResult.click({ timeout: options.timeoutMs });
+      await page.getByRole('heading', { name: 'Security' }).waitFor({
+        state: 'visible',
+        timeout: options.timeoutMs,
+      });
+      summary.pages.search.audit_click = {
+        landed: page.url().includes('/security'),
+        focused_marker_visible: await page.locator('.timeline-entry.focused', { hasText: marker }).count() > 0,
+      };
+    } else {
+      summary.pages.search.audit_click = {
+        landed: false,
+        focused_marker_visible: false,
+      };
+    }
+
     await page.goto('/sessions', { waitUntil: 'networkidle', timeout: options.timeoutMs });
     summary.pages.sessions = {
       loaded_without_error: await waitForPageWithoutError(page, options.timeoutMs),
@@ -811,6 +862,12 @@ async function main() {
       memory_page_shows_marker: summary.pages.memory.marker_visible,
       search_page_loaded: summary.pages.search.loaded_without_error,
       search_page_shows_marker: summary.pages.search.marker_visible,
+      search_page_memory_click_lands: summary.pages.search.memory_click.landed,
+      search_page_memory_click_focuses_result:
+        summary.pages.search.memory_click.focused_marker_visible,
+      search_page_audit_click_lands: summary.pages.search.audit_click.landed,
+      search_page_audit_click_focuses_result:
+        summary.pages.search.audit_click.focused_marker_visible,
       sessions_page_loaded: summary.pages.sessions.loaded_without_error,
       sessions_page_shows_seeded_session: summary.pages.sessions.session_visible,
       itp_page_loaded: summary.pages.itp.loaded_without_error,

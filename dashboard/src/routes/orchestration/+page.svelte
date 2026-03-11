@@ -7,16 +7,10 @@
    */
   import { onMount } from 'svelte';
   import type {
-    A2ATask,
     ConsensusRound,
-    Delegation,
     DiscoveredA2AAgent,
-    SybilMetrics,
-    TrustEdge,
-    TrustNode,
   } from '@ghost/sdk';
-  import { getGhostClient } from '$lib/ghost-client';
-  import { wsStore } from '$lib/stores/websocket.svelte';
+  import { orchestrationStore } from '$lib/stores/orchestration.svelte';
   import A2AAgentCard from '../../components/A2AAgentCard.svelte';
   import A2ATaskTracker from '../../components/A2ATaskTracker.svelte';
   import {
@@ -27,27 +21,13 @@
     forceCollide,
     type SimulationNodeDatum,
     type SimulationLinkDatum,
+    type Simulation,
   } from 'd3-force';
-
-  // ── Types ────────────────────────────────────────────────────────
-
-  // ── State ────────────────────────────────────────────────────────
-
-  let trustNodes: TrustNode[] = $state([]);
-  let trustEdges: TrustEdge[] = $state([]);
-  let consensusRounds: ConsensusRound[] = $state([]);
-  let delegations: Delegation[] = $state([]);
-  let sybilMetrics: SybilMetrics = $state({ total_delegations: 0, max_chain_depth: 0, unique_delegators: 0 });
-  let error: string | null = $state(null);
   let activeTab: 'trust' | 'consensus' | 'sybil' | 'a2a' = $state('trust');
 
-  // A2A discovery state (T-4.4.1)
-  let discoveredAgents = $state<DiscoveredA2AAgent[]>([]);
-  let a2aTasks = $state<A2ATask[]>([]);
-  let discovering = $state(false);
-  let sendingTask = $state(false);
   let sendTarget = $state('');
   let sendInput = $state('');
+  let sendInputError = $state('');
 
   // d3-force simulation state
   interface SimNode extends SimulationNodeDatum {
@@ -64,103 +44,78 @@
   let simLinks: SimLink[] = $state([]);
   let ticked = $state(0);
   let viewBox = $state({ x: -300, y: -200, w: 600, h: 400 });
-
-  // ── Data loading ─────────────────────────────────────────────────
+  let simulation: Simulation<SimNode, SimLink> | null = null;
 
   onMount(() => {
-    loadAll();
-
-    // T-5.9.1: Wire A2ATaskUpdate WS event to refresh A2A tasks.
-    const unsub = wsStore.on('A2ATaskUpdate', () => { loadA2A(); });
-    const unsubResync = wsStore.onResync(() => { loadA2A(); });
+    void orchestrationStore.init();
     return () => {
-      unsub();
-      unsubResync();
+      simulation?.stop();
+      orchestrationStore.destroy();
     };
   });
 
-  async function loadAll() {
-    try {
-      const client = await getGhostClient();
-      const [trustRes, consensusRes, delegationsRes] = await Promise.all([
-        client.mesh.trustGraph(),
-        client.mesh.consensus(),
-        client.mesh.delegations(),
-      ]);
-      trustNodes = trustRes.nodes ?? [];
-      trustEdges = trustRes.edges ?? [];
-      consensusRounds = consensusRes.rounds ?? [];
-      delegations = delegationsRes.delegations ?? [];
-      sybilMetrics = delegationsRes.sybil_metrics ?? sybilMetrics;
-      initSimulation();
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to load orchestration data';
-    }
-  }
+  $effect(() => {
+    const trustNodes = orchestrationStore.trustNodes;
+    const trustEdges = orchestrationStore.trustEdges;
+    initSimulation(trustNodes, trustEdges);
+    return () => {
+      simulation?.stop();
+      simulation = null;
+    };
+  });
 
-  async function loadA2A() {
-    try {
-      const client = await getGhostClient();
-      const [agentsRes, tasksRes] = await Promise.all([
-        client.a2a.discoverAgents(),
-        client.a2a.listTasks(),
-      ]);
-      discoveredAgents = agentsRes.agents ?? [];
-      a2aTasks = tasksRes.tasks ?? [];
-    } catch (e: unknown) {
-      // T-5.9.2: Surface error for A2A load failures.
-      error = e instanceof Error ? e.message : 'Failed to load A2A data';
-    }
-  }
+  $effect(() => {
+    sendInputError = validateSendInput(sendInput);
+  });
 
   async function discoverAgents() {
-    discovering = true;
-    try {
-      const client = await getGhostClient();
-      const result = await client.a2a.discoverAgents();
-      discoveredAgents = result.agents ?? [];
-      const tasks = await client.a2a.listTasks();
-      a2aTasks = tasks.tasks ?? [];
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Agent discovery failed';
-    } finally {
-      discovering = false;
-    }
+    await orchestrationStore.discoverAgents();
   }
 
   async function sendA2ATask() {
     if (!sendTarget.trim() || !sendInput.trim()) return;
-    sendingTask = true;
+    if (sendInputError) {
+      return;
+    }
+    const parsedInput = JSON.parse(sendInput.trim());
+
     try {
-      const client = await getGhostClient();
-      await client.a2a.sendTask({
+      await orchestrationStore.sendTask({
         target_url: sendTarget.trim(),
-        input: JSON.parse(sendInput.trim()),
+        input: parsedInput,
       });
       sendTarget = '';
       sendInput = '';
-      await loadA2A();
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to send A2A task';
-    } finally {
-      sendingTask = false;
+    } catch {
+      // Store owns user-facing A2A errors.
     }
   }
 
-  function initSimulation() {
-    const sNodes: SimNode[] = trustNodes.map(n => ({
+  function initSimulation(
+    trustNodes: typeof orchestrationStore.trustNodes,
+    trustEdges: typeof orchestrationStore.trustEdges,
+  ) {
+    simulation?.stop();
+
+    const sNodes: SimNode[] = trustNodes.map((n) => ({
       id: n.id,
       name: n.name,
       convergence_level: n.convergence_level,
     }));
 
-    const sLinks: SimLink[] = trustEdges.map(e => ({
+    const sLinks: SimLink[] = trustEdges.map((e) => ({
       source: e.source,
       target: e.target,
       trust_score: e.trust_score,
     }));
 
-    forceSimulation(sNodes)
+    simNodes = sNodes;
+    simLinks = sLinks;
+    if (sNodes.length === 0) {
+      return;
+    }
+
+    simulation = forceSimulation(sNodes)
       .force('link', forceLink<SimNode, SimLink>(sLinks).id(d => d.id).distance(100))
       .force('charge', forceManyBody().strength(-200))
       .force('center', forceCenter(0, 0))
@@ -192,6 +147,31 @@
 
   function linkTarget(link: SimLink): SimNode | undefined {
     return typeof link.target === 'object' ? (link.target as SimNode) : undefined;
+  }
+
+  function consensusStatusClass(status: ConsensusRound['status']): 'approved' | 'rejected' | 'pending' {
+    if (status === 'approved') return 'approved';
+    if (status === 'rejected') return 'rejected';
+    return 'pending';
+  }
+
+  function consensusProgress(round: ConsensusRound): number {
+    return Math.min((round.approvals / Math.max(round.threshold, 1)) * 100, 100);
+  }
+
+  function handleSendTaskFromAgent(agent: DiscoveredA2AAgent) {
+    sendTarget = `${agent.endpoint_url}/.well-known/agent.json`;
+    activeTab = 'a2a';
+  }
+
+  function validateSendInput(value: string): string {
+    if (!value.trim()) return '';
+    try {
+      JSON.parse(value.trim());
+      return '';
+    } catch {
+      return 'Task input must be valid JSON.';
+    }
   }
 
   // ── Touch pan/zoom for trust graph ──────────────────────────────
@@ -249,15 +229,15 @@
     <p class="subtitle">Multi-agent trust graph, consensus, and sybil resistance</p>
   </header>
 
-  {#if error}
-    <p class="error-msg">{error}</p>
+  {#if orchestrationStore.error}
+    <p class="error-msg">{orchestrationStore.error}</p>
   {/if}
 
   <div class="tab-bar" role="tablist">
     <button role="tab" class:active={activeTab === 'trust'} aria-selected={activeTab === 'trust'} onclick={() => activeTab = 'trust'}>Trust Graph</button>
     <button role="tab" class:active={activeTab === 'consensus'} aria-selected={activeTab === 'consensus'} onclick={() => activeTab = 'consensus'}>Consensus</button>
     <button role="tab" class:active={activeTab === 'sybil'} aria-selected={activeTab === 'sybil'} onclick={() => activeTab = 'sybil'}>Sybil Resistance</button>
-    <button role="tab" class:active={activeTab === 'a2a'} aria-selected={activeTab === 'a2a'} onclick={() => { activeTab = 'a2a'; loadA2A(); }}>A2A Discovery</button>
+    <button role="tab" class:active={activeTab === 'a2a'} aria-selected={activeTab === 'a2a'} onclick={() => { activeTab = 'a2a'; void orchestrationStore.refreshTasks(); }}>A2A Discovery</button>
   </div>
 
   <div class="tab-content" role="tabpanel">
@@ -337,7 +317,7 @@
 
     {:else if activeTab === 'consensus'}
       <div class="consensus-panel">
-        {#if consensusRounds.length === 0}
+        {#if orchestrationStore.consensusRounds.length === 0}
           <p class="empty">No consensus rounds found.</p>
         {:else}
           <table class="data-table">
@@ -352,11 +332,11 @@
               </tr>
             </thead>
             <tbody>
-              {#each consensusRounds as round}
+              {#each orchestrationStore.consensusRounds as round}
                 <tr>
                   <td class="mono">{round.proposal_id.slice(0, 8)}…</td>
                   <td>
-                    <span class="status-badge" class:approved={round.status === 'approved'} class:rejected={round.status === 'rejected'} class:pending={round.status === 'pending'}>
+                    <span class="status-badge" class:approved={consensusStatusClass(round.status) === 'approved'} class:rejected={consensusStatusClass(round.status) === 'rejected'} class:pending={consensusStatusClass(round.status) === 'pending'}>
                       {round.status}
                     </span>
                   </td>
@@ -365,7 +345,7 @@
                   <td class="mono">{round.threshold}</td>
                   <td>
                     <div class="progress-bar">
-                      <div class="progress-fill" style="width: {Math.min((round.approvals / Math.max(round.threshold, 1)) * 100, 100)}%"></div>
+                      <div class="progress-fill" style="width: {consensusProgress(round)}%"></div>
                     </div>
                   </td>
                 </tr>
@@ -379,21 +359,21 @@
       <div class="sybil-panel">
         <div class="metric-cards">
           <div class="metric-card">
-            <span class="metric-value mono">{sybilMetrics.total_delegations}</span>
+            <span class="metric-value mono">{orchestrationStore.sybilMetrics.total_delegations}</span>
             <span class="metric-label">Total Delegations</span>
           </div>
           <div class="metric-card">
-            <span class="metric-value mono">{sybilMetrics.max_chain_depth}</span>
+            <span class="metric-value mono">{orchestrationStore.sybilMetrics.max_chain_depth}</span>
             <span class="metric-label">Max Chain Depth</span>
           </div>
           <div class="metric-card">
-            <span class="metric-value mono">{sybilMetrics.unique_delegators}</span>
+            <span class="metric-value mono">{orchestrationStore.sybilMetrics.unique_delegators}</span>
             <span class="metric-label">Unique Delegators</span>
           </div>
         </div>
 
-        {#if delegations.length === 0}
-          <p class="empty">No active delegations.</p>
+        {#if orchestrationStore.delegations.length === 0}
+          <p class="empty">No delegations recorded.</p>
         {:else}
           <table class="data-table">
             <thead>
@@ -406,7 +386,7 @@
               </tr>
             </thead>
             <tbody>
-              {#each delegations as d}
+              {#each orchestrationStore.delegations as d}
                 <tr>
                   <td class="mono">{d.delegator_id.slice(0, 8)}…</td>
                   <td class="mono">{d.delegate_id.slice(0, 8)}…</td>
@@ -423,19 +403,19 @@
     {:else if activeTab === 'a2a'}
       <div class="a2a-panel">
         <div class="a2a-controls">
-          <button class="discover-btn" onclick={discoverAgents} disabled={discovering}>
-            {discovering ? 'Discovering...' : 'Discover Agents'}
+          <button class="discover-btn" onclick={discoverAgents} disabled={orchestrationStore.discovering}>
+            {orchestrationStore.discovering ? 'Discovering...' : 'Discover Agents'}
           </button>
         </div>
 
         <section class="a2a-section">
-          <h2>Discovered Agents ({discoveredAgents.length})</h2>
-          {#if discoveredAgents.length === 0}
+          <h2>Discovered Agents ({orchestrationStore.discoveredAgents.length})</h2>
+          {#if orchestrationStore.discoveredAgents.length === 0}
             <p class="empty">No agents discovered yet. Click "Discover Agents" to probe mesh peers.</p>
           {:else}
             <div class="agent-grid">
-              {#each discoveredAgents as agent}
-                <A2AAgentCard {agent} />
+              {#each orchestrationStore.discoveredAgents as agent}
+                <A2AAgentCard {agent} onSendTask={handleSendTaskFromAgent} />
               {/each}
             </div>
           {/if}
@@ -446,15 +426,18 @@
           <div class="send-form">
             <input type="text" bind:value={sendTarget} placeholder="Target agent URL (e.g. http://host/.well-known/agent.json)" class="send-input" />
             <textarea bind:value={sendInput} placeholder={'Task input JSON (e.g. {"text": "Hello"})'} class="send-textarea" rows="3"></textarea>
-            <button class="send-btn" onclick={sendA2ATask} disabled={sendingTask || !sendTarget.trim() || !sendInput.trim()}>
-              {sendingTask ? 'Sending...' : 'Send Task'}
+            {#if sendInputError}
+              <p class="error-msg">{sendInputError}</p>
+            {/if}
+            <button class="send-btn" onclick={sendA2ATask} disabled={orchestrationStore.sendingTask || !sendTarget.trim() || !sendInput.trim() || !!sendInputError}>
+              {orchestrationStore.sendingTask ? 'Sending...' : 'Send Task'}
             </button>
           </div>
         </section>
 
         <section class="a2a-section">
-          <h2>In-Flight Tasks ({a2aTasks.length})</h2>
-          <A2ATaskTracker />
+          <h2>Tracked Tasks ({orchestrationStore.a2aTasks.length})</h2>
+          <A2ATaskTracker tasks={orchestrationStore.a2aTasks} loading={orchestrationStore.a2aLoading} error={orchestrationStore.a2aError} />
         </section>
       </div>
     {/if}

@@ -1,9 +1,5 @@
 <script lang="ts">
-  /**
-   * Session replay with bookmarks and branching (Phase 3, Task 3.9).
-   * TimelineSlider + event detail + GateCheckBar + bookmarks + play/pause + branch.
-   */
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
@@ -17,52 +13,58 @@
   let error = $state('');
   let total = $state(0);
   let currentIndex = $state(0);
+  let mutatingBookmark = $state(false);
+  let branching = $state(false);
 
-  // Playback
   let playing = $state(false);
   let playbackSpeed = $state(1);
   let playInterval: ReturnType<typeof setInterval> | null = null;
 
-  // Bookmarks
   let bookmarks: SessionBookmark[] = $state([]);
   let newBookmarkLabel = $state('');
   let showBookmarkForm = $state(false);
 
   let currentEvent = $derived(events[currentIndex] ?? null);
 
-  onMount(async () => {
+  async function loadReplay() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
-      const data = await client.runtimeSessions.events(sessionId, { limit: 500 });
-      events = data?.events ?? [];
-      total = data?.total ?? 0;
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to load session events';
+      const [eventPage, bookmarkPage] = await Promise.all([
+        client.runtimeSessions.events(sessionId, { limit: 500 }),
+        client.runtimeSessions.listBookmarks(sessionId),
+      ]);
+      events = eventPage?.events ?? [];
+      total = eventPage?.total ?? 0;
+      bookmarks = bookmarkPage?.bookmarks ?? [];
+      currentIndex = 0;
+    } catch (errorValue: unknown) {
+      error = errorValue instanceof Error ? errorValue.message : 'Failed to load session replay';
+      events = [];
+      bookmarks = [];
+      total = 0;
+    } finally {
+      loading = false;
     }
-    loading = false;
+  }
 
-    // Load bookmarks
-    try {
-      const client = await getGhostClient();
-      const bData = await client.runtimeSessions.listBookmarks(sessionId);
-      bookmarks = bData?.bookmarks ?? [];
-    } catch { /* bookmarks not supported yet — non-fatal */ }
+  onMount(() => {
+    void loadReplay();
   });
 
   onDestroy(() => {
     stopPlayback();
   });
 
-  function handleSliderChange(value: number) {
-    currentIndex = value;
-  }
-
   function startPlayback() {
-    if (playing) return;
+    if (playing || events.length === 0) {
+      return;
+    }
     playing = true;
     playInterval = setInterval(() => {
       if (currentIndex < events.length - 1) {
-        currentIndex++;
+        currentIndex += 1;
       } else {
         stopPlayback();
       }
@@ -78,8 +80,11 @@
   }
 
   function togglePlayback() {
-    if (playing) stopPlayback();
-    else startPlayback();
+    if (playing) {
+      stopPlayback();
+    } else {
+      startPlayback();
+    }
   }
 
   function setSpeed(speed: number) {
@@ -91,77 +96,122 @@
   }
 
   function stepForward() {
-    if (currentIndex < events.length - 1) currentIndex++;
-  }
-
-  function stepBackward() {
-    if (currentIndex > 0) currentIndex--;
-  }
-
-  async function addBookmark() {
-    const label = newBookmarkLabel.trim() || `Bookmark at event #${currentIndex}`;
-    const bookmark: SessionBookmark = {
-      id: crypto.randomUUID(),
-      eventIndex: currentIndex,
-      label,
-      createdAt: new Date().toISOString(),
-    };
-
-    try {
-      const client = await getGhostClient();
-      await client.runtimeSessions.createBookmark(sessionId, bookmark);
-    } catch { /* persist failed — keep locally */ }
-
-    bookmarks = [...bookmarks, bookmark].sort((a, b) => a.eventIndex - b.eventIndex);
-    newBookmarkLabel = '';
-    showBookmarkForm = false;
-  }
-
-  function jumpToBookmark(bm: SessionBookmark) {
-    currentIndex = bm.eventIndex;
-  }
-
-  function removeBookmark(id: string) {
-    bookmarks = bookmarks.filter(b => b.id !== id);
-    void getGhostClient()
-      .then((client) => client.runtimeSessions.deleteBookmark(sessionId, id))
-      .catch(() => {});
-  }
-
-  async function branchFromHere() {
-    if (!confirm(`Branch a new session from event #${currentIndex}? Events up to this point will be copied.`)) return;
-
-    try {
-      const client = await getGhostClient();
-      const result = await client.runtimeSessions.branch(sessionId, {
-        from_event_index: currentIndex,
-      });
-      if (result?.session_id) {
-        goto(`/sessions/${result.session_id}`);
-      }
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to branch session';
+    if (currentIndex < events.length - 1) {
+      currentIndex += 1;
     }
   }
 
-  // Build gate states from current event attributes.
-  let gates = $derived((() => {
-    if (!currentEvent) return undefined;
-    const attrs = currentEvent.attributes ?? {};
-    return [
-      { name: 'CB', status: attrs.gate_cb ?? 'unknown', detail: 'Circuit Breaker' },
-      { name: 'Depth', status: attrs.gate_depth ?? 'unknown', detail: 'Recursion Depth' },
-      { name: 'Damage', status: attrs.gate_damage ?? 'unknown', detail: 'Damage Assessment' },
-      { name: 'Cap', status: attrs.gate_cap ?? 'unknown', detail: 'Spending Cap' },
-      { name: 'Conv', status: attrs.gate_conv ?? 'unknown', detail: 'Convergence' },
-      { name: 'Hash', status: attrs.gate_hash ?? 'unknown', detail: 'Hash Chain' },
-    ] as Array<{ name: string; status: 'pass' | 'fail' | 'warning' | 'unknown'; detail: string }>;
-  })());
+  function stepBackward() {
+    if (currentIndex > 0) {
+      currentIndex -= 1;
+    }
+  }
+
+  function indexForSequence(sequenceNumber: number) {
+    return events.findIndex((event) => event.sequence_number === sequenceNumber);
+  }
+
+  function jumpToBookmark(bookmark: SessionBookmark) {
+    const index = indexForSequence(bookmark.sequence_number);
+    if (index >= 0) {
+      currentIndex = index;
+    }
+  }
+
+  async function addBookmark() {
+    if (!currentEvent || mutatingBookmark) {
+      return;
+    }
+
+    mutatingBookmark = true;
+    error = '';
+    try {
+      const client = await getGhostClient();
+      const response = await client.runtimeSessions.createBookmark(sessionId, {
+        sequence_number: currentEvent.sequence_number,
+        label:
+          newBookmarkLabel.trim() || `Bookmark at event #${currentEvent.sequence_number}`,
+      });
+      bookmarks = [...bookmarks, response.bookmark].sort(
+        (left, right) => left.sequence_number - right.sequence_number,
+      );
+      newBookmarkLabel = '';
+      showBookmarkForm = false;
+    } catch (errorValue: unknown) {
+      error = errorValue instanceof Error ? errorValue.message : 'Failed to create bookmark';
+    } finally {
+      mutatingBookmark = false;
+    }
+  }
+
+  async function removeBookmark(bookmarkId: string) {
+    if (mutatingBookmark) {
+      return;
+    }
+
+    mutatingBookmark = true;
+    error = '';
+    try {
+      const client = await getGhostClient();
+      await client.runtimeSessions.deleteBookmark(sessionId, bookmarkId);
+      bookmarks = bookmarks.filter((bookmark) => bookmark.id !== bookmarkId);
+    } catch (errorValue: unknown) {
+      error = errorValue instanceof Error ? errorValue.message : 'Failed to delete bookmark';
+    } finally {
+      mutatingBookmark = false;
+    }
+  }
+
+  async function branchFromHere() {
+    if (!currentEvent || branching) {
+      return;
+    }
+    if (
+      !confirm(
+        `Branch a new session from event #${currentEvent.sequence_number}? Events up to this point will be copied.`,
+      )
+    ) {
+      return;
+    }
+
+    branching = true;
+    error = '';
+    try {
+      const client = await getGhostClient();
+      const result = await client.runtimeSessions.branch(sessionId, {
+        from_sequence_number: currentEvent.sequence_number,
+      });
+      if (result?.session?.session_id) {
+        await goto(`/sessions/${result.session.session_id}`);
+      }
+    } catch (errorValue: unknown) {
+      error = errorValue instanceof Error ? errorValue.message : 'Failed to branch session';
+    } finally {
+      branching = false;
+    }
+  }
+
+  let gates = $derived(
+    (() => {
+      if (!currentEvent) {
+        return undefined;
+      }
+      const attributes = currentEvent.attributes ?? {};
+      return [
+        { name: 'CB', status: attributes.gate_cb ?? 'unknown', detail: 'Circuit Breaker' },
+        { name: 'Depth', status: attributes.gate_depth ?? 'unknown', detail: 'Recursion Depth' },
+        { name: 'Damage', status: attributes.gate_damage ?? 'unknown', detail: 'Damage Assessment' },
+        { name: 'Cap', status: attributes.gate_cap ?? 'unknown', detail: 'Spending Cap' },
+        { name: 'Conv', status: attributes.gate_conv ?? 'unknown', detail: 'Convergence' },
+        { name: 'Hash', status: attributes.gate_hash ?? 'unknown', detail: 'Hash Chain' },
+      ] as Array<{ name: string; status: 'pass' | 'fail' | 'warning' | 'unknown'; detail: string }>;
+    })(),
+  );
 </script>
 
 {#if loading}
   <div class="loading">Loading replay...</div>
-{:else if error}
+{:else if error && events.length === 0}
   <div class="error-state">
     <p>{error}</p>
     <a href={`/sessions/${sessionId}`}>Back to Session</a>
@@ -174,13 +224,16 @@
       <button class="btn-secondary" onclick={() => (showBookmarkForm = !showBookmarkForm)}>
         Bookmark
       </button>
-      <button class="btn-secondary" onclick={branchFromHere}>
-        Branch
+      <button class="btn-secondary" onclick={branchFromHere} disabled={branching || !currentEvent}>
+        {branching ? 'Branching…' : 'Branch'}
       </button>
     </div>
   </div>
 
-  <!-- Playback Controls -->
+  {#if error}
+    <p class="inline-error">{error}</p>
+  {/if}
+
   <div class="playback-controls">
     <button class="control-btn" onclick={stepBackward} disabled={currentIndex <= 0} aria-label="Step back">
       &lt;
@@ -193,70 +246,88 @@
     </button>
     <div class="speed-selector">
       {#each [1, 2, 4] as speed}
-        <button
-          class="speed-btn"
-          class:active={playbackSpeed === speed}
-          onclick={() => setSpeed(speed)}
-        >{speed}x</button>
+        <button class="speed-btn" class:active={playbackSpeed === speed} onclick={() => setSpeed(speed)}>
+          {speed}x
+        </button>
       {/each}
     </div>
-    <span class="event-counter">{currentIndex + 1} / {events.length}</span>
+    <span class="event-counter">{currentIndex + 1} / {events.length} loaded ({total} total)</span>
   </div>
 
-  <!-- Timeline Slider -->
   <div class="timeline-section">
     <TimelineSlider
       min={0}
       max={Math.max(0, events.length - 1)}
       bind:value={currentIndex}
       label="Event"
-      onchange={handleSliderChange}
+      onchange={(value) => (currentIndex = value)}
     />
-    <!-- Bookmark markers on timeline -->
     {#if bookmarks.length > 0 && events.length > 1}
       <div class="bookmark-markers">
-        {#each bookmarks as bm (bm.id)}
-          <button
-            class="bookmark-marker"
-            style="left: {(bm.eventIndex / (events.length - 1)) * 100}%"
-            title={bm.label}
-            onclick={() => jumpToBookmark(bm)}
-          ></button>
+        {#each bookmarks as bookmark (bookmark.id)}
+          {@const bookmarkIndex = indexForSequence(bookmark.sequence_number)}
+          {#if bookmarkIndex >= 0}
+            <button
+              class="bookmark-marker"
+              style={`left: ${(bookmarkIndex / (events.length - 1)) * 100}%`}
+              title={bookmark.label}
+              onclick={() => jumpToBookmark(bookmark)}
+            ></button>
+          {/if}
         {/each}
       </div>
     {/if}
   </div>
 
-  <!-- Bookmark Form -->
   {#if showBookmarkForm}
     <div class="bookmark-form">
       <input
         type="text"
         bind:value={newBookmarkLabel}
         placeholder="Bookmark label (optional)"
-        onkeydown={(e) => e.key === 'Enter' && addBookmark()}
+        onkeydown={(event) => event.key === 'Enter' && addBookmark()}
       />
-      <button class="btn-primary" onclick={addBookmark}>Add</button>
+      <button class="btn-primary" onclick={addBookmark} disabled={mutatingBookmark || !currentEvent}>
+        {mutatingBookmark ? 'Adding…' : 'Add'}
+      </button>
       <button class="btn-text" onclick={() => (showBookmarkForm = false)}>Cancel</button>
     </div>
   {/if}
 
-  <!-- Bookmarks List -->
   {#if bookmarks.length > 0}
     <div class="bookmarks-bar">
-      {#each bookmarks as bm (bm.id)}
-        <button class="bookmark-chip" class:active={currentIndex === bm.eventIndex} onclick={() => jumpToBookmark(bm)}>
+      {#each bookmarks as bookmark (bookmark.id)}
+        <button
+          class="bookmark-chip"
+          class:active={currentEvent?.sequence_number === bookmark.sequence_number}
+          onclick={() => jumpToBookmark(bookmark)}
+        >
           <span class="bm-icon">*</span>
-          <span class="bm-label">{bm.label}</span>
-          <span class="bm-index">#{bm.eventIndex}</span>
-          <span role="button" tabindex="0" class="bm-remove" onclick={(e: MouseEvent) => { e.stopPropagation(); removeBookmark(bm.id); }} onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') { e.stopPropagation(); removeBookmark(bm.id); } }}>x</span>
+          <span class="bm-label">{bookmark.label}</span>
+          <span class="bm-index">#{bookmark.sequence_number}</span>
+          <span
+            role="button"
+            tabindex="0"
+            class="bm-remove"
+            onclick={(event: MouseEvent) => {
+              event.stopPropagation();
+              void removeBookmark(bookmark.id);
+            }}
+            onkeydown={(event: KeyboardEvent) => {
+              if (event.key === 'Enter') {
+                event.stopPropagation();
+                void removeBookmark(bookmark.id);
+              }
+            }}
+          >
+            x
+          </span>
         </button>
       {/each}
     </div>
   {/if}
 
   {#if currentEvent}
-    <!-- Current Event Detail -->
     <div class="event-detail-grid">
       <section class="card">
         <h2>Event #{currentEvent.sequence_number}</h2>
@@ -265,7 +336,7 @@
           <dt>Sender</dt><dd>{currentEvent.sender ?? '—'}</dd>
           <dt>Timestamp</dt><dd>{new Date(currentEvent.timestamp).toLocaleString()}</dd>
           <dt>Tokens</dt><dd>{currentEvent.token_count ?? '—'}</dd>
-          <dt>Latency</dt><dd>{currentEvent.latency_ms != null ? currentEvent.latency_ms + 'ms' : '—'}</dd>
+          <dt>Latency</dt><dd>{currentEvent.latency_ms != null ? `${currentEvent.latency_ms}ms` : '—'}</dd>
           <dt>Privacy</dt><dd>{currentEvent.privacy_level}</dd>
         </dl>
       </section>
@@ -276,7 +347,6 @@
       </section>
     </div>
 
-    <!-- Gate Check Bar -->
     <div class="gates-section">
       <GateCheckBar {gates} />
     </div>
@@ -286,10 +356,16 @@
 {/if}
 
 <style>
-  .loading, .error-state {
+  .loading,
+  .error-state {
     text-align: center;
     padding: var(--spacing-12);
     color: var(--color-text-muted);
+  }
+
+  .inline-error {
+    margin-bottom: var(--spacing-3);
+    color: var(--color-severity-hard);
   }
 
   .back-link {
@@ -312,7 +388,8 @@
     flex: 1;
   }
 
-  .header-actions {
+  .header-actions,
+  .speed-selector {
     display: flex;
     gap: var(--spacing-2);
   }
@@ -326,159 +403,93 @@
     background: var(--color-bg-elevated-1);
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
+    flex-wrap: wrap;
   }
 
-  .control-btn {
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  .control-btn,
+  .speed-btn,
+  .btn-secondary,
+  .btn-primary {
+    padding: var(--spacing-2) var(--spacing-3);
     background: var(--color-bg-elevated-2);
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-sm);
     color: var(--color-text-primary);
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-bold);
-    cursor: pointer;
-  }
-
-  .control-btn:disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
-  }
-
-  .play-btn {
-    background: var(--color-interactive-primary);
-    color: var(--color-interactive-primary-text);
-    border-color: var(--color-interactive-primary);
-  }
-
-  .speed-selector {
-    display: flex;
-    gap: var(--spacing-1);
-    margin-left: var(--spacing-2);
-  }
-
-  .speed-btn {
-    padding: var(--spacing-1) var(--spacing-2);
-    background: none;
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-muted);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
   }
 
   .speed-btn.active {
     background: var(--color-interactive-primary);
     color: var(--color-interactive-primary-text);
-    border-color: var(--color-interactive-primary);
   }
 
   .event-counter {
     margin-left: auto;
-    font-size: var(--font-size-xs);
-    font-family: var(--font-family-mono);
+    font-size: var(--font-size-sm);
     color: var(--color-text-muted);
   }
 
-  .timeline-section {
-    position: relative;
+  .timeline-section,
+  .bookmark-form,
+  .bookmarks-bar,
+  .card {
     margin-bottom: var(--spacing-4);
-    padding: var(--spacing-4);
-    background: var(--color-bg-elevated-1);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-border-default);
-  }
-
-  .bookmark-markers {
-    position: relative;
-    height: 8px;
-    margin-top: var(--spacing-2);
-  }
-
-  .bookmark-marker {
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    background: var(--color-severity-soft);
-    border: 1px solid var(--color-text-inverse);
-    border-radius: 50%;
-    transform: translateX(-50%);
-    cursor: pointer;
-    padding: 0;
-  }
-
-  .bookmark-marker:hover {
-    background: var(--color-interactive-primary);
-    transform: translateX(-50%) scale(1.3);
   }
 
   .bookmark-form {
     display: flex;
     gap: var(--spacing-2);
-    align-items: center;
-    margin-bottom: var(--spacing-3);
-    padding: var(--spacing-3);
-    background: var(--color-bg-elevated-1);
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-md);
   }
 
   .bookmark-form input {
     flex: 1;
     padding: var(--spacing-2);
-    background: var(--color-bg-elevated-2);
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-primary);
-    font-size: var(--font-size-sm);
   }
 
   .bookmarks-bar {
     display: flex;
     flex-wrap: wrap;
     gap: var(--spacing-2);
-    margin-bottom: var(--spacing-4);
   }
 
   .bookmark-chip {
     display: inline-flex;
     align-items: center;
     gap: var(--spacing-1);
-    padding: var(--spacing-1) var(--spacing-2);
-    background: var(--color-bg-elevated-1);
+    padding: var(--spacing-2) var(--spacing-3);
     border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-xs);
-    cursor: pointer;
-    color: var(--color-text-primary);
+    border-radius: 999px;
+    background: var(--color-bg-elevated-1);
   }
 
   .bookmark-chip.active {
     border-color: var(--color-interactive-primary);
-    background: var(--color-surface-selected);
   }
-
-  .bm-icon { color: var(--color-severity-soft); }
-  .bm-index { color: var(--color-text-muted); font-family: var(--font-family-mono); }
 
   .bm-remove {
-    background: none;
-    border: none;
-    color: var(--color-text-muted);
-    cursor: pointer;
-    padding: 0 2px;
-    font-size: var(--font-size-xs);
+    margin-left: var(--spacing-1);
   }
-  .bm-remove:hover { color: var(--color-severity-hard); }
+
+  .bookmark-markers {
+    position: relative;
+    height: 16px;
+    margin-top: var(--spacing-2);
+  }
+
+  .bookmark-marker {
+    position: absolute;
+    top: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    border: none;
+    background: var(--color-interactive-primary);
+    transform: translateX(-50%);
+  }
 
   .event-detail-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: var(--spacing-4);
-    margin-bottom: var(--spacing-4);
   }
 
   .card {
@@ -488,74 +499,18 @@
     padding: var(--spacing-4);
   }
 
-  .card h2 {
-    font-size: var(--font-size-xs);
-    font-weight: var(--font-weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: var(--letter-spacing-wide);
-    color: var(--color-text-muted);
-    margin-bottom: var(--spacing-3);
-  }
-
   .detail-list {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: var(--spacing-1) var(--spacing-3);
+    gap: var(--spacing-2);
+  }
+
+  .attrs-json {
+    overflow: auto;
     margin: 0;
   }
 
-  .detail-list dt { font-size: var(--font-size-xs); color: var(--color-text-muted); }
-  .detail-list dd { font-size: var(--font-size-sm); margin: 0; }
-
-  .attrs-json {
-    font-family: var(--font-family-mono);
-    font-size: var(--font-size-xs);
-    background: var(--color-bg-elevated-2);
-    padding: var(--spacing-3);
-    border-radius: var(--radius-sm);
-    overflow-x: auto;
-    max-height: 200px;
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-
-  .gates-section { margin-bottom: var(--spacing-6); }
-
   .no-events {
-    text-align: center;
     color: var(--color-text-muted);
-    padding: var(--spacing-8);
-  }
-
-  .btn-primary {
-    padding: var(--spacing-2) var(--spacing-4);
-    background: var(--color-interactive-primary);
-    color: var(--color-interactive-primary-text);
-    border: none;
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-sm);
-    cursor: pointer;
-  }
-
-  .btn-secondary {
-    padding: var(--spacing-1) var(--spacing-3);
-    background: var(--color-bg-elevated-2);
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-primary);
-    font-size: var(--font-size-sm);
-    cursor: pointer;
-  }
-
-  .btn-text {
-    background: none;
-    border: none;
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
-    cursor: pointer;
-  }
-
-  @media (max-width: 640px) {
-    .event-detail-grid { grid-template-columns: 1fr; }
   }
 </style>

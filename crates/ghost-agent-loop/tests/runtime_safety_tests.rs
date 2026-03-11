@@ -11,6 +11,9 @@ fn exec_ctx(intervention_level: u8) -> ExecutionContext {
     ExecutionContext {
         agent_id: Uuid::now_v7(),
         session_id: Uuid::now_v7(),
+        execution_id: None,
+        route_kind: None,
+        interactive: false,
         intervention_level,
         session_duration: Duration::from_secs(60),
         session_reflection_count: 0,

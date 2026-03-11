@@ -380,4 +380,39 @@ test.describe('Service worker auth/session safety', () => {
       expect(replayedHeaders['x-ghost-expected-seq']).toBeUndefined();
     }
   });
+
+  test('proposal decisions fail offline instead of being queued for replay', async ({ page, context }) => {
+    await bootControlledLoginPage(page);
+    await postWorkerMessage(page, 'ghost-auth-session', {
+      client_id: 'client-1',
+      session_epoch: 7,
+      token: 'queued-token',
+    });
+    await context.setOffline(true);
+
+    const response = await page.evaluate(async () => {
+      const res = await fetch(new URL('/api/goals/p-1/approve', window.location.origin).toString(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer queued-token',
+        },
+        body: JSON.stringify({
+          expected_state: 'pending_review',
+          expected_lineage_id: 'lineage-1',
+          expected_subject_key: 'goal:p-1:primary',
+          expected_reviewed_revision: 'rev-1',
+        }),
+      });
+
+      return {
+        status: res.status,
+        body: await res.json(),
+      };
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.body.error).toBe('Proposal decisions require network connection');
+    await expect.poll(() => pendingActionCount(page)).toBe(0);
+  });
 });

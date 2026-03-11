@@ -17,7 +17,18 @@ export {
 
 // ── Agents ──
 export { AgentsAPI } from './agents.js';
-export type { Agent, AgentDetail, CreateAgentParams, DeleteAgentResult } from './agents.js';
+export type {
+  Agent,
+  AgentDetail,
+  AgentActionPolicy,
+  AgentOverview,
+  AgentOverviewPanelHealth,
+  GetAgentOverviewParams,
+  AgentSandboxConfig,
+  CreateAgentParams,
+  UpdateAgentParams,
+  DeleteAgentResult,
+} from './agents.js';
 
 // ── Sessions ──
 export { SessionsAPI } from './sessions.js';
@@ -59,10 +70,12 @@ export { GoalsAPI } from './goals.js';
 export type {
   Proposal,
   ProposalDetail,
+  ActiveGoal,
   GoalProposalTransition,
   GoalDecisionRequest,
   ListGoalsParams,
   ListGoalsResult,
+  ListActiveGoalsResult,
 } from './goals.js';
 
 // ── Skills ──
@@ -81,16 +94,38 @@ export type {
 export { SafetyAPI } from './safety.js';
 export type {
   SafetyStatus,
+  DistributedKillStatus,
+  ConvergenceProtectionSummary,
   KillAllResult,
   PauseResult,
   ResumeResult,
   QuarantineResult,
   ResumeParams,
+  SandboxReview,
+  SandboxReviewListParams,
+  SandboxReviewDecisionResult,
 } from './safety.js';
 
 // ── Health ──
 export { HealthAPI } from './health.js';
 export type { HealthStatus, ReadyStatus } from './health.js';
+
+// ── Observability ──
+export { ObservabilityAPI } from './observability.js';
+export type {
+  AdeAgentSnapshot,
+  AdeBackupSchedulerSnapshot,
+  AdeConfigWatcherSnapshot,
+  AdeConvergenceProtectionAgents,
+  AdeConvergenceProtectionSnapshot,
+  AdeDatabaseSnapshot,
+  AdeDistributedKillSnapshot,
+  AdeGatewaySnapshot,
+  AdeMonitorSnapshot,
+  AdeObservabilitySnapshot,
+  AdeWebSocketSnapshot,
+  SpeculativeContextStatus,
+} from './observability.js';
 
 // ── Autonomy ──
 export { AutonomyAPI } from './autonomy.js';
@@ -124,6 +159,8 @@ export type {
   MemoryEntry,
   ListMemoriesParams,
   ListMemoriesResult,
+  ArchiveMemoryParams,
+  MemoryArchiveStatus,
   MemoryGraphNode,
   MemoryGraphEdge,
   MemoryGraphResult,
@@ -143,6 +180,7 @@ export type {
 export { RuntimeSessionsAPI } from './runtime-sessions.js';
 export type {
   RuntimeSession,
+  RuntimeSessionDetailResult,
   SessionEvent,
   SessionEventsParams,
   SessionEventsResult,
@@ -156,11 +194,20 @@ export type {
   ListRuntimeSessionsParams,
   ListRuntimeSessionsPageResult,
   ListRuntimeSessionsCursorResult,
+  ListRuntimeSessionsResult,
 } from './runtime-sessions.js';
 
 // ── Search ──
 export { SearchAPI } from './search.js';
-export type { SearchParams, SearchResult, SearchResponse } from './search.js';
+export type {
+  SearchDomainWarning,
+  SearchMatchContext,
+  SearchNavigation,
+  SearchParams,
+  SearchResponse,
+  SearchResult,
+  SearchTypeCount,
+} from './search.js';
 
 // ── Traces ──
 export { TracesAPI } from './traces.js';
@@ -179,6 +226,8 @@ export type {
   UpdateWorkflowParams,
   UpdateWorkflowResult,
   ExecuteWorkflowParams,
+  WorkflowExecutionSummary,
+  ListWorkflowExecutionsResult,
   WorkflowExecutionStep,
   ExecuteWorkflowResult,
 } from './workflows.js';

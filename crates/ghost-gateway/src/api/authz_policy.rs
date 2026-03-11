@@ -185,6 +185,14 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
         }
         (RouteId::Agents, "GET") => Some(viewer_spec(RouteId::Agents, Action::AgentReadList)),
         (RouteId::Agents, "POST") => Some(operator_spec(RouteId::Agents, Action::AgentCreate)),
+        (RouteId::AgentById, "GET") => Some(viewer_spec(RouteId::AgentById, Action::AgentReadList)),
+        (RouteId::AgentOverviewById, "GET") => Some(viewer_spec(
+            RouteId::AgentOverviewById,
+            Action::AgentReadList,
+        )),
+        (RouteId::AgentById, "PATCH") => {
+            Some(operator_spec(RouteId::AgentById, Action::AgentUpdate))
+        }
         (RouteId::AgentById, "DELETE") => {
             Some(operator_spec(RouteId::AgentById, Action::AgentDelete))
         }
@@ -205,6 +213,9 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
             Action::ConvergenceScoreRead,
         )),
         (RouteId::Goals, "GET") => Some(viewer_spec(RouteId::Goals, Action::GoalReadList)),
+        (RouteId::GoalsActive, "GET") => {
+            Some(viewer_spec(RouteId::GoalsActive, Action::GoalReadList))
+        }
         (RouteId::GoalById, "GET") => Some(viewer_spec(RouteId::GoalById, Action::GoalReadItem)),
         (RouteId::GoalApproveById, "POST") => {
             Some(operator_spec(RouteId::GoalApproveById, Action::GoalApprove))
@@ -213,6 +224,9 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
             Some(operator_spec(RouteId::GoalRejectById, Action::GoalReject))
         }
         (RouteId::Sessions, "GET") => Some(viewer_spec(RouteId::Sessions, Action::SessionReadList)),
+        (RouteId::SessionById, "GET") => {
+            Some(viewer_spec(RouteId::SessionById, Action::SessionReadItem))
+        }
         (RouteId::SessionEventsById, "GET") => Some(viewer_spec(
             RouteId::SessionEventsById,
             Action::SessionEventRead,
@@ -290,6 +304,10 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
         }
         (RouteId::WorkflowExecutionsById, "GET") => Some(viewer_spec(
             RouteId::WorkflowExecutionsById,
+            Action::WorkflowExecutionRead,
+        )),
+        (RouteId::WorkflowExecutionById, "GET") => Some(viewer_spec(
+            RouteId::WorkflowExecutionById,
             Action::WorkflowExecutionRead,
         )),
         (RouteId::AutonomyStatus, "GET") => Some(viewer_spec(
@@ -402,6 +420,10 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
             Action::AgentProfileAssign,
         )),
         (RouteId::Search, "GET") => Some(viewer_spec(RouteId::Search, Action::SearchRead)),
+        (RouteId::ObservabilityAde, "GET") => Some(viewer_spec(
+            RouteId::ObservabilityAde,
+            Action::ObservabilityAdeRead,
+        )),
         (RouteId::Skills, "GET") => Some(viewer_spec(RouteId::Skills, Action::SkillReadList)),
         (RouteId::SkillInstallById, "POST") => Some(operator_spec(
             RouteId::SkillInstallById,
@@ -587,6 +609,24 @@ pub fn route_spec_for(route_id: RouteId, method: &Method) -> Option<RouteAuthori
             Action::SafetyStatusRead,
             false,
             RouteAuthorizationKind::MinimumRole(BaseRole::Operator),
+        )),
+        (RouteId::SandboxReviews, "GET") => Some(RouteAuthorizationSpec::new(
+            RouteId::SandboxReviews,
+            Action::SandboxReviewReadList,
+            false,
+            RouteAuthorizationKind::MinimumRole(BaseRole::Operator),
+        )),
+        (RouteId::SandboxReviewApproveById, "POST") => Some(RouteAuthorizationSpec::new(
+            RouteId::SandboxReviewApproveById,
+            Action::SandboxReviewApprove,
+            true,
+            RouteAuthorizationKind::SafetyReview,
+        )),
+        (RouteId::SandboxReviewRejectById, "POST") => Some(RouteAuthorizationSpec::new(
+            RouteId::SandboxReviewRejectById,
+            Action::SandboxReviewReject,
+            true,
+            RouteAuthorizationKind::SafetyReview,
         )),
         (RouteId::SafetyPauseAgent, "POST") => Some(admin_spec(
             RouteId::SafetyPauseAgent,
@@ -852,6 +892,20 @@ pub fn policy_for(action: Action) -> RegisteredPolicy {
                 audit_on_deny: true,
             },
         },
+        Action::SandboxReviewApprove | Action::SandboxReviewReject => RegisteredPolicy {
+            policy_id: "typed/sandbox_review_admin_or_operator_safety_review",
+            rule: PolicyRule {
+                allow_if: PolicyPredicate::Any(vec![
+                    PolicyPredicate::MinRole(BaseRole::Admin),
+                    PolicyPredicate::All(vec![
+                        PolicyPredicate::MinRole(BaseRole::Operator),
+                        PolicyPredicate::HasCapability(Capability::SafetyReview),
+                    ]),
+                ]),
+                deny_if: Vec::new(),
+                audit_on_deny: true,
+            },
+        },
         action if viewer_actions().contains(&action) => {
             minimum_role_rule("typed/min_role_viewer", BaseRole::Viewer)
         }
@@ -933,6 +987,7 @@ pub fn viewer_actions() -> &'static [Action] {
         Action::MarketplaceWalletRead,
         Action::MarketplaceWalletTransactionRead,
         Action::MarketplaceReviewReadList,
+        Action::SandboxReviewReadList,
     ]
 }
 
@@ -940,6 +995,7 @@ pub fn operator_actions() -> &'static [Action] {
     &[
         Action::SafetyStatusRead,
         Action::AgentCreate,
+        Action::AgentUpdate,
         Action::AgentDelete,
         Action::GoalApprove,
         Action::GoalReject,
@@ -994,6 +1050,7 @@ pub fn operator_actions() -> &'static [Action] {
         Action::MarketplaceWalletSeed,
         Action::MarketplaceReviewSubmit,
         Action::MarketplaceDiscover,
+        Action::SandboxReviewReadList,
     ]
 }
 

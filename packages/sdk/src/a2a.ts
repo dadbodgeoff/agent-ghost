@@ -30,6 +30,7 @@ export interface DiscoveredA2AAgent {
   trust_score: number;
   version: string;
   reachable: boolean;
+  verified?: boolean;
 }
 
 export interface DiscoverA2AAgentsResult {

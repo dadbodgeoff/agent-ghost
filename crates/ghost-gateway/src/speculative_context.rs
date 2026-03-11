@@ -26,6 +26,7 @@ use ghost_agent_loop::output_inspector::InspectionResult;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::runtime_execution::{inspect_text_safety, inspection_safety_status};
@@ -46,7 +47,7 @@ const SUMMARY_MAX_CHARS: usize = 600;
 const FACT_CANDIDATE_MAX_CHARS: usize = 220;
 const STATUS_WINDOW_HOURS: i64 = 24;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct SpeculativeContextStatus {
     pub enabled: bool,
     pub available: bool,

@@ -20,7 +20,7 @@
 //! 7. **Audit Trail** — every action (executed or blocked) is logged
 //!    to the `pc_control_actions` table.
 //! 8. **Kill Switch** — `pc_control.enabled = false` (the default)
-//!    prevents all PC control skills from registering.
+//!    keeps PC control skills runtime-blocked until explicitly enabled.
 //!
 //! ## Crate Layout
 //!
@@ -46,19 +46,20 @@ use std::sync::{Arc, Mutex};
 
 use ghost_skills::autonomy::AutonomyLevel;
 use ghost_skills::convergence_guard::{ConvergenceGuard, GuardConfig};
-use ghost_skills::skill::Skill;
+use ghost_skills::skill::{Skill, SkillContext, SkillError, SkillResult};
 
 use platform::accessibility_backend::AccessibilityBackend;
 use platform::input_backend::{EnigoBackend, InputBackend};
 use platform::ocr_backend::OcrBackend;
 use platform::window_backend::WindowBackend;
 use safety::config::PcControlConfig;
+use safety::{InputValidator, PcControlPolicyHandle, PcControlPolicySnapshot};
 
 /// Returns all Phase 9 PC control skills as boxed trait objects.
 ///
-/// Skills are only returned when `config.enabled` is `true`. If disabled
-/// (the default), returns an empty vec — no PC control skills are
-/// registered and the agent cannot interact with the desktop.
+/// This legacy helper only returns skills when `config.enabled` is `true`.
+/// The gateway runtime uses `all_pc_control_skills_with_runtime(...)` so the
+/// catalog stays stable across enable/disable transitions.
 ///
 /// Each skill is wrapped with `ConvergenceGuard` for convergence-aware
 /// safety gating. Input skills additionally carry their own `InputValidator`
@@ -68,7 +69,16 @@ use safety::config::PcControlConfig;
 ///
 /// * `config` — The `pc_control` section from `ghost.yml`.
 pub fn all_pc_control_skills(config: &PcControlConfig) -> Vec<Box<dyn Skill>> {
-    all_pc_control_skills_with_circuit_breaker(config, config.circuit_breaker())
+    if !config.enabled {
+        tracing::info!("PC control disabled — no skills registered");
+        return Vec::new();
+    }
+
+    all_pc_control_skills_with_runtime(
+        config,
+        PcControlPolicyHandle::new(PcControlPolicySnapshot::from_config(config)),
+        config.circuit_breaker(),
+    )
 }
 
 #[allow(clippy::vec_init_then_push)]
@@ -81,7 +91,20 @@ pub fn all_pc_control_skills_with_circuit_breaker(
         return Vec::new();
     }
 
-    let validator = config.input_validator();
+    all_pc_control_skills_with_runtime(
+        config,
+        PcControlPolicyHandle::new(PcControlPolicySnapshot::from_config(config)),
+        circuit_breaker,
+    )
+}
+
+#[allow(clippy::vec_init_then_push)]
+pub fn all_pc_control_skills_with_runtime(
+    config: &PcControlConfig,
+    policy_handle: PcControlPolicyHandle,
+    circuit_breaker: Arc<Mutex<safety::circuit_breaker::PcControlCircuitBreaker>>,
+) -> Vec<Box<dyn Skill>> {
+    let validator = Arc::new(InputValidator::from_runtime_policy(policy_handle.clone()));
 
     // Build the input backend. Falls back to a no-op if no display server.
     let backend: Arc<Mutex<dyn InputBackend>> = match EnigoBackend::try_new() {
@@ -125,102 +148,123 @@ pub fn all_pc_control_skills_with_circuit_breaker(
 
     // ── Input skills (Medium risk, Level 2, ActWithConfirmation) ─────
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        input::mouse_move::MouseMoveSkill::new(
-            validator.clone(),
-            circuit_breaker.clone(),
-            backend.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(config.budgets.total),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            input::mouse_move::MouseMoveSkill::new(
+                validator.clone(),
+                circuit_breaker.clone(),
+                backend.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(config.budgets.total),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        input::mouse_click::MouseClickSkill::new(
-            validator.clone(),
-            circuit_breaker.clone(),
-            backend.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(config.budgets.mouse_click),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            input::mouse_click::MouseClickSkill::new(
+                validator.clone(),
+                circuit_breaker.clone(),
+                backend.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(config.budgets.mouse_click),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        input::mouse_drag::MouseDragSkill::new(
-            validator.clone(),
-            circuit_breaker.clone(),
-            backend.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(config.budgets.mouse_drag),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            input::mouse_drag::MouseDragSkill::new(
+                validator.clone(),
+                circuit_breaker.clone(),
+                backend.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(config.budgets.mouse_drag),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        input::keyboard_type::KeyboardTypeSkill::new(
-            validator.clone(),
-            circuit_breaker.clone(),
-            backend.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(config.budgets.keyboard_type),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            input::keyboard_type::KeyboardTypeSkill::new(
+                validator.clone(),
+                circuit_breaker.clone(),
+                backend.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(config.budgets.keyboard_type),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        input::keyboard_hotkey::KeyboardHotkeySkill::new(
-            validator.clone(),
-            circuit_breaker.clone(),
-            backend.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(config.budgets.keyboard_hotkey),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            input::keyboard_hotkey::KeyboardHotkeySkill::new(
+                validator.clone(),
+                circuit_breaker.clone(),
+                backend.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(config.budgets.keyboard_hotkey),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        input::keyboard_press::KeyboardPressSkill::new(
-            validator.clone(),
-            circuit_breaker.clone(),
-            backend.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(config.budgets.keyboard_type), // same budget as keyboard_type
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            input::keyboard_press::KeyboardPressSkill::new(
+                validator.clone(),
+                circuit_breaker.clone(),
+                backend.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(config.budgets.keyboard_type), // same budget as keyboard_type
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        input::scroll::ScrollSkill::new(
-            validator.clone(),
-            circuit_breaker.clone(),
-            backend.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(config.budgets.total),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            input::scroll::ScrollSkill::new(
+                validator.clone(),
+                circuit_breaker.clone(),
+                backend.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(config.budgets.total),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
     // ── Perception skills (Low risk, Level 4, ActAutonomously) ──────
@@ -234,130 +278,163 @@ pub fn all_pc_control_skills_with_circuit_breaker(
             ))
         });
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        screenshot_skill,
-        GuardConfig {
-            max_convergence_level: 4,
-            autonomy_level: AutonomyLevel::ActAutonomously,
-            action_budget: None,
-            app_allowlist: None,
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            screenshot_skill,
+            GuardConfig {
+                max_convergence_level: 4,
+                autonomy_level: AutonomyLevel::ActAutonomously,
+                action_budget: None,
+                app_allowlist: None,
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        perception::accessibility_tree::AccessibilityTreeSkill::new(accessibility_backend),
-        GuardConfig {
-            max_convergence_level: 4,
-            autonomy_level: AutonomyLevel::ActAutonomously,
-            action_budget: None,
-            app_allowlist: None,
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            perception::accessibility_tree::AccessibilityTreeSkill::new(accessibility_backend),
+            GuardConfig {
+                max_convergence_level: 4,
+                autonomy_level: AutonomyLevel::ActAutonomously,
+                action_budget: None,
+                app_allowlist: None,
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        perception::ocr_extract::OcrExtractSkill::new(ocr_screen_capture, ocr_backend),
-        GuardConfig {
-            max_convergence_level: 4,
-            autonomy_level: AutonomyLevel::ActAutonomously,
-            action_budget: None,
-            app_allowlist: None,
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            perception::ocr_extract::OcrExtractSkill::new(ocr_screen_capture, ocr_backend),
+            GuardConfig {
+                max_convergence_level: 4,
+                autonomy_level: AutonomyLevel::ActAutonomously,
+                action_budget: None,
+                app_allowlist: None,
+            },
+        )),
+        policy_handle.clone(),
     )));
 
     // ── Window skills (mixed risk levels) ───────────────────────────
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        window::list_windows::ListWindowsSkill::new(window_backend.clone()),
-        GuardConfig {
-            max_convergence_level: 4,
-            autonomy_level: AutonomyLevel::ActAutonomously,
-            action_budget: None,
-            app_allowlist: None,
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            window::list_windows::ListWindowsSkill::new(window_backend.clone()),
+            GuardConfig {
+                max_convergence_level: 4,
+                autonomy_level: AutonomyLevel::ActAutonomously,
+                action_budget: None,
+                app_allowlist: None,
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        window::focus_window::FocusWindowSkill::new(
-            window_backend.clone(),
-            validator.clone(),
-            circuit_breaker.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 3,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: None,
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            window::focus_window::FocusWindowSkill::new(
+                window_backend.clone(),
+                validator.clone(),
+                circuit_breaker.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 3,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: None,
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        window::resize_window::ResizeWindowSkill::new(
-            window_backend.clone(),
-            validator.clone(),
-            circuit_breaker.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: None,
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            window::resize_window::ResizeWindowSkill::new(
+                window_backend.clone(),
+                validator.clone(),
+                circuit_breaker.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: None,
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        window::launch_app::LaunchAppSkill::new(
-            window_backend.clone(),
-            validator.clone(),
-            circuit_breaker.clone(),
-        ),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(10),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            window::launch_app::LaunchAppSkill::new(
+                window_backend.clone(),
+                validator.clone(),
+                circuit_breaker.clone(),
+            ),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(10),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        window::kill_process::KillProcessSkill::new(validator.clone(), circuit_breaker.clone()),
-        GuardConfig {
-            max_convergence_level: 1,
-            autonomy_level: AutonomyLevel::PlanAndPropose,
-            action_budget: Some(5),
-            app_allowlist: app_allowlist.clone(),
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            window::kill_process::KillProcessSkill::new(validator.clone(), circuit_breaker.clone()),
+            GuardConfig {
+                max_convergence_level: 1,
+                autonomy_level: AutonomyLevel::PlanAndPropose,
+                action_budget: Some(5),
+                app_allowlist: app_allowlist.clone(),
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        window::list_processes::ListProcessesSkill::new(),
-        GuardConfig {
-            max_convergence_level: 4,
-            autonomy_level: AutonomyLevel::ActAutonomously,
-            action_budget: None,
-            app_allowlist: None,
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            window::list_processes::ListProcessesSkill::new(),
+            GuardConfig {
+                max_convergence_level: 4,
+                autonomy_level: AutonomyLevel::ActAutonomously,
+                action_budget: None,
+                app_allowlist: None,
+            },
+        )),
+        policy_handle.clone(),
     )));
 
     // ── Clipboard skills (Medium risk) ──────────────────────────────
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        clipboard::clipboard_read::ClipboardReadSkill::new(),
-        GuardConfig {
-            max_convergence_level: 2,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: None,
-            app_allowlist: None,
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            clipboard::clipboard_read::ClipboardReadSkill::new(),
+            GuardConfig {
+                max_convergence_level: 2,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: None,
+                app_allowlist: None,
+            },
+        )),
+        policy_handle.clone(),
     )));
 
-    skills.push(Box::new(ConvergenceGuard::new(
-        clipboard::clipboard_write::ClipboardWriteSkill::new(circuit_breaker.clone()),
-        GuardConfig {
-            max_convergence_level: 3,
-            autonomy_level: AutonomyLevel::ActWithConfirmation,
-            action_budget: Some(100),
-            app_allowlist: None,
-        },
+    skills.push(Box::new(PcControlEnabledGuard::new(
+        Box::new(ConvergenceGuard::new(
+            clipboard::clipboard_write::ClipboardWriteSkill::new(circuit_breaker.clone()),
+            GuardConfig {
+                max_convergence_level: 3,
+                autonomy_level: AutonomyLevel::ActWithConfirmation,
+                action_budget: Some(100),
+                app_allowlist: None,
+            },
+        )),
+        policy_handle.clone(),
     )));
 
     tracing::info!(
@@ -369,6 +446,62 @@ pub fn all_pc_control_skills_with_circuit_breaker(
     );
 
     skills
+}
+
+struct PcControlEnabledGuard {
+    inner: Box<dyn Skill>,
+    policy_handle: PcControlPolicyHandle,
+}
+
+impl PcControlEnabledGuard {
+    fn new(inner: Box<dyn Skill>, policy_handle: PcControlPolicyHandle) -> Self {
+        Self {
+            inner,
+            policy_handle,
+        }
+    }
+}
+
+impl Skill for PcControlEnabledGuard {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn removable(&self) -> bool {
+        self.inner.removable()
+    }
+
+    fn source(&self) -> ghost_skills::registry::SkillSource {
+        self.inner.source()
+    }
+
+    fn execute(&self, ctx: &SkillContext<'_>, input: &serde_json::Value) -> SkillResult {
+        if !self.policy_handle.is_enabled() {
+            let reason = "pc control disabled by runtime policy".to_string();
+            audit::log_blocked_action(
+                ctx.db,
+                ctx.agent_id,
+                ctx.session_id,
+                self.inner.name(),
+                input,
+                &reason,
+            );
+            return Err(SkillError::PcControlBlocked(reason));
+        }
+        self.inner.execute(ctx, input)
+    }
+
+    fn preview(&self, input: &serde_json::Value) -> Option<String> {
+        self.inner.preview(input)
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.inner.parameters_schema()
+    }
 }
 
 /// Build the window backend for the current platform.
@@ -423,6 +556,22 @@ mod tests {
         assert!(!config.enabled);
         let skills = all_pc_control_skills(&config);
         assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn runtime_registry_keeps_pc_control_skills_available_when_disabled() {
+        let config = PcControlConfig::default();
+        assert!(!config.enabled);
+
+        let skills = all_pc_control_skills_with_runtime(
+            &config,
+            PcControlPolicyHandle::new(PcControlPolicySnapshot::from_config(&config)),
+            config.circuit_breaker(),
+        );
+
+        // The runtime catalog must stay stable so enable/disable flips do not
+        // require a skill rebuild or process restart.
+        assert_eq!(skills.len(), 18);
     }
 
     #[test]

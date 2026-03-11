@@ -54,7 +54,20 @@ pub struct CompiledSkillCatalogSeed {
 }
 
 pub fn build_compiled_skill_definitions(config: &GhostConfig) -> CompiledSkillCatalogSeed {
-    let pc_control_circuit_breaker = config.pc_control.circuit_breaker();
+    build_compiled_skill_definitions_with_runtime(
+        config,
+        ghost_pc_control::safety::PcControlPolicyHandle::new(
+            ghost_pc_control::safety::PcControlPolicySnapshot::from_config(&config.pc_control),
+        ),
+        config.pc_control.circuit_breaker(),
+    )
+}
+
+pub fn build_compiled_skill_definitions_with_runtime(
+    config: &GhostConfig,
+    pc_control_policy: ghost_pc_control::safety::PcControlPolicyHandle,
+    pc_control_circuit_breaker: Arc<Mutex<PcControlCircuitBreaker>>,
+) -> CompiledSkillCatalogSeed {
     let mut definitions = Vec::new();
 
     extend_skill_definitions(
@@ -76,8 +89,9 @@ pub fn build_compiled_skill_definitions(config: &GhostConfig) -> CompiledSkillCa
     );
     extend_skill_definitions(
         &mut definitions,
-        ghost_pc_control::all_pc_control_skills_with_circuit_breaker(
+        ghost_pc_control::all_pc_control_skills_with_runtime(
             &config.pc_control,
+            pc_control_policy,
             Arc::clone(&pc_control_circuit_breaker),
         ),
     );
@@ -312,6 +326,27 @@ mod tests {
         assert!(note_take.default_enabled);
         assert!(convergence.native_containment.is_some());
         assert!(note_take.native_containment.is_some());
+    }
+
+    #[test]
+    fn runtime_seed_keeps_pc_control_skills_registered_when_disabled() {
+        let config = GhostConfig::default();
+        let seed = build_compiled_skill_definitions_with_runtime(
+            &config,
+            ghost_pc_control::safety::PcControlPolicyHandle::new(
+                ghost_pc_control::safety::PcControlPolicySnapshot::from_config(&config.pc_control),
+            ),
+            config.pc_control.circuit_breaker(),
+        );
+
+        assert!(seed
+            .definitions
+            .iter()
+            .any(|definition| definition.name == "mouse_move"));
+        assert!(seed
+            .definitions
+            .iter()
+            .any(|definition| definition.name == "launch_app"));
     }
 
     #[test]

@@ -21,6 +21,8 @@
     eventTypes?: string[];
     /** Show severity checkboxes */
     severity?: boolean;
+    /** Severity options */
+    severityLevels?: string[];
     /** Show free-text search */
     search?: boolean;
     /** Placeholder for search input */
@@ -38,9 +40,11 @@
 
   let {
     config = {} as FilterConfig,
+    initialState = undefined,
     onfilter,
   }: {
     config: FilterConfig;
+    initialState?: Partial<FilterState>;
     onfilter?: (state: FilterState) => void;
   } = $props();
 
@@ -50,8 +54,9 @@
   let eventType = $state('');
   let severities = $state<string[]>([]);
   let query = $state('');
+  let lastInitialStateKey = $state('');
 
-  const severityLevels = ['info', 'warning', 'error', 'critical'];
+  const severityLevels = $derived(config.severityLevels ?? ['info', 'warning', 'error', 'critical']);
 
   function emitFilter() {
     onfilter?.({
@@ -86,6 +91,18 @@
   let hasActiveFilters = $derived(
     from !== '' || to !== '' || agentId !== '' || eventType !== '' || severities.length > 0 || query !== ''
   );
+
+  $effect(() => {
+    const key = JSON.stringify(initialState ?? {});
+    if (key === lastInitialStateKey) return;
+    lastInitialStateKey = key;
+    from = initialState?.from ?? '';
+    to = initialState?.to ?? '';
+    agentId = initialState?.agentId ?? '';
+    eventType = initialState?.eventType ?? '';
+    severities = [...(initialState?.severities ?? [])];
+    query = initialState?.query ?? '';
+  });
 </script>
 
 <div class="filter-bar" role="search" aria-label="Filter controls">

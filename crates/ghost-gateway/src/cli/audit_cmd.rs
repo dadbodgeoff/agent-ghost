@@ -297,6 +297,7 @@ fn is_audit_event(text: &str) -> bool {
         "InterventionChange",
         "AgentStateChange",
         "ProposalDecision",
+        "ProposalUpdated",
     ];
     match serde_json::from_str::<WsEventEnvelope>(text) {
         Ok(ev) => AUDIT_TYPES.contains(&ev.event_type.as_str()),

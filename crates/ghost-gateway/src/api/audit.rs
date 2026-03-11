@@ -162,11 +162,11 @@ pub async fn audit_export(
         time_start: params.time_start.clone(),
         time_end: params.time_end.clone(),
         agent_id: params.agent_id.clone(),
-        event_type: None,
-        severity: None,
-        tool_name: None,
-        search: None,
-        operation_id: None,
+        event_type: params.event_type.clone(),
+        severity: params.severity.clone(),
+        tool_name: params.tool_name.clone(),
+        search: params.search.clone(),
+        operation_id: params.operation_id.clone(),
         page: 1,
         page_size: 10_000, // Export up to 10k entries
     };
@@ -205,4 +205,9 @@ pub struct AuditExportParams {
     pub agent_id: Option<String>,
     pub time_start: Option<String>,
     pub time_end: Option<String>,
+    pub event_type: Option<String>,
+    pub severity: Option<String>,
+    pub tool_name: Option<String>,
+    pub search: Option<String>,
+    pub operation_id: Option<String>,
 }

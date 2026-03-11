@@ -64,13 +64,19 @@
           agentId: (msg as any).agent_id as string,
         });
       }),
-      wsStore.on('ProposalDecision', (msg: WsMessage) => {
+      wsStore.on('ProposalUpdated', (msg: WsMessage) => {
+        const proposalId = (msg as any).proposal_id ?? '';
+        const change = (msg as any).change ?? 'updated';
+        const status = (msg as any).status ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
-          title: 'Proposal Decision',
-          message: `Proposal ${(msg as any).proposal_id ?? ''} was ${(msg as any).decision ?? 'decided'}`,
-          actionHref: '/approvals',
+          title: change === 'created' ? 'Proposal Created' : 'Proposal Updated',
+          message:
+            change === 'created'
+              ? `Proposal ${proposalId} entered review as ${status}.`
+              : `Proposal ${proposalId} moved to ${status}.`,
+          actionHref: proposalId ? `/goals/${proposalId}` : '/goals',
         });
       }),
     );

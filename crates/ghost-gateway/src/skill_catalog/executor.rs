@@ -141,6 +141,9 @@ impl SkillCatalogExecutor {
             let exec_ctx = ExecutionContext {
                 agent_id: agent.id,
                 session_id,
+                execution_id: None,
+                route_kind: Some("skill_catalog_execute".into()),
+                interactive: false,
                 intervention_level: 0,
                 session_duration: Duration::ZERO,
                 session_reflection_count: 0,

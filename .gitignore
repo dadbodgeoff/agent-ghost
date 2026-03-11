@@ -9,9 +9,6 @@ src-tauri/target/
 # Claude Code
 .claude/
 
-# Task/planning docs
-docs/
-
 # OS
 .DS_Store
 Thumbs.db
@@ -29,6 +26,18 @@ packages/sdk/dist/
 # SvelteKit
 .svelte-kit/
 build/
+
+# Turbo / generated caches
+.turbo/
+dashboard/.turbo/
+extension/.turbo/
+packages/sdk/.turbo/
+
+# Generated extension output
+extension/dist/
+
+# Local verification workspace
+target-verify/
 
 # Live audit artifacts
 /artifacts/live-audits/

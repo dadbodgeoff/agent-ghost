@@ -41,6 +41,7 @@ fn register_agent_with_allowlist(
             name: name.to_string(),
             state: AgentLifecycleState::Ready,
             channel_bindings: Vec::new(),
+            isolation: ghost_gateway::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: Vec::new(),
             baseline_capabilities: Vec::new(),

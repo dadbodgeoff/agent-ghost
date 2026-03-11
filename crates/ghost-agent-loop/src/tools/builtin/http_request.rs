@@ -286,40 +286,18 @@ pub async fn http_request(
     let body_bytes = resp
         .bytes()
         .await
-        .map_err(|e| HttpRequestError::RequestFailed(format!("Failed to read response: {}", e)))?;
+        .map_err(|e| HttpRequestError::RequestFailed(format!("Failed to read response: {}", e)))?
+        .to_vec();
 
-    if body_bytes.len() as u64 > config.max_response_bytes {
-        return Err(HttpRequestError::ResponseTooLarge {
-            size: body_bytes.len() as u64,
-            max: config.max_response_bytes,
-        });
-    }
-
-    let body_text = String::from_utf8_lossy(&body_bytes).to_string();
-
-    // Truncate if needed (character-level for display).
-    let max_chars = 32_000; // generous limit for API responses
-    let truncated = body_text.len() > max_chars;
-    let body_out = if truncated {
-        let mut s = safe_truncate(&body_text, max_chars);
-        s.push_str("\n\n[Response truncated]");
-        s
-    } else {
-        body_text
-    };
-
-    let body_length = body_out.len();
-
-    Ok(HttpRequestResult {
-        url: final_url,
-        method: method_upper,
+    finalize_http_request_result(
+        final_url,
+        method_upper,
         status,
-        headers: response_headers,
-        body: body_out,
+        response_headers,
+        body_bytes,
         content_type,
-        truncated,
-        body_length,
-    })
+        config,
+    )
 }
 
 // ── Internals ───────────────────────────────────────────────────────────
@@ -350,6 +328,46 @@ fn extract_safe_headers(resp: &reqwest::Response) -> HashMap<String, String> {
         }
     }
     out
+}
+
+pub(crate) fn finalize_http_request_result(
+    final_url: String,
+    method_upper: String,
+    status: u16,
+    response_headers: HashMap<String, String>,
+    body_bytes: Vec<u8>,
+    content_type: String,
+    config: &HttpRequestConfig,
+) -> Result<HttpRequestResult, HttpRequestError> {
+    if body_bytes.len() as u64 > config.max_response_bytes {
+        return Err(HttpRequestError::ResponseTooLarge {
+            size: body_bytes.len() as u64,
+            max: config.max_response_bytes,
+        });
+    }
+
+    let body_text = String::from_utf8_lossy(&body_bytes).to_string();
+    let max_chars = 32_000;
+    let truncated = body_text.len() > max_chars;
+    let body_out = if truncated {
+        let mut s = safe_truncate(&body_text, max_chars);
+        s.push_str("\n\n[Response truncated]");
+        s
+    } else {
+        body_text
+    };
+    let body_length = body_out.len();
+
+    Ok(HttpRequestResult {
+        url: final_url,
+        method: method_upper,
+        status,
+        headers: response_headers,
+        body: body_out,
+        content_type,
+        truncated,
+        body_length,
+    })
 }
 
 /// Extract host from a URL string.

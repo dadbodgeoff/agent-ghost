@@ -217,6 +217,11 @@ fn build_summary(event_type: &str, rest: &serde_json::Value) -> String {
             let decision = rest.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
             format!("decision={decision}")
         }
+        "ProposalUpdated" => {
+            let status = rest.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            let change = rest.get("change").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("status={status} change={change}")
+        }
         _ => String::new(),
     }
 }

@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::runtime_policy::{PcControlPolicyHandle, PcControlPolicySnapshot};
+
 /// Result of an input validation check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationResult {
@@ -17,7 +19,7 @@ pub enum ValidationResult {
 }
 
 /// A rectangular screen region for safe zone enforcement.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScreenRegion {
     pub x: i32,
     pub y: i32,
@@ -39,9 +41,12 @@ impl ScreenRegion {
 /// Thread-safe and immutable after construction. Shared across all input
 /// skills via `Arc<InputValidator>`.
 pub struct InputValidator {
-    app_allowlist: Vec<String>,
-    safe_zone: Option<ScreenRegion>,
-    blocked_hotkeys: Vec<String>,
+    source: InputValidatorSource,
+}
+
+enum InputValidatorSource {
+    Static(PcControlPolicySnapshot),
+    Dynamic(PcControlPolicyHandle),
 }
 
 impl InputValidator {
@@ -51,16 +56,26 @@ impl InputValidator {
         safe_zone: Option<ScreenRegion>,
         blocked_hotkeys: Vec<String>,
     ) -> Self {
-        // Normalize hotkey strings to lowercase for case-insensitive matching.
-        let blocked_hotkeys = blocked_hotkeys
-            .into_iter()
-            .map(|h| h.to_lowercase())
-            .collect();
-
         Self {
-            app_allowlist,
-            safe_zone,
-            blocked_hotkeys,
+            source: InputValidatorSource::Static(normalize_snapshot(PcControlPolicySnapshot {
+                enabled: true,
+                allowed_apps: app_allowlist,
+                safe_zone,
+                blocked_hotkeys,
+            })),
+        }
+    }
+
+    pub fn from_runtime_policy(policy: PcControlPolicyHandle) -> Self {
+        Self {
+            source: InputValidatorSource::Dynamic(policy),
+        }
+    }
+
+    fn snapshot(&self) -> PcControlPolicySnapshot {
+        match &self.source {
+            InputValidatorSource::Static(snapshot) => snapshot.clone(),
+            InputValidatorSource::Dynamic(policy) => normalize_snapshot(policy.snapshot()),
         }
     }
 
@@ -70,8 +85,9 @@ impl InputValidator {
     /// 1. Coordinates fall within the safe zone (if configured).
     /// 2. Target app is in the allowlist (if specified).
     pub fn validate_click(&self, x: i32, y: i32, target_app: Option<&str>) -> ValidationResult {
+        let snapshot = self.snapshot();
         // Check safe zone.
-        if let Some(ref zone) = self.safe_zone {
+        if let Some(ref zone) = snapshot.safe_zone {
             if !zone.contains(x, y) {
                 return ValidationResult::Denied(format!(
                     "coordinates ({x}, {y}) outside safe zone \
@@ -83,7 +99,8 @@ impl InputValidator {
 
         // Check app allowlist.
         if let Some(app) = target_app {
-            if let result @ ValidationResult::Denied(_) = self.validate_app(app) {
+            if let result @ ValidationResult::Denied(_) = self.validate_app_snapshot(&snapshot, app)
+            {
                 return result;
             }
         }
@@ -102,7 +119,8 @@ impl InputValidator {
         to_y: i32,
         target_app: Option<&str>,
     ) -> ValidationResult {
-        if let Some(ref zone) = self.safe_zone {
+        let snapshot = self.snapshot();
+        if let Some(ref zone) = snapshot.safe_zone {
             if !zone.contains(from_x, from_y) {
                 return ValidationResult::Denied(format!(
                     "drag start ({from_x}, {from_y}) outside safe zone"
@@ -116,7 +134,8 @@ impl InputValidator {
         }
 
         if let Some(app) = target_app {
-            if let result @ ValidationResult::Denied(_) = self.validate_app(app) {
+            if let result @ ValidationResult::Denied(_) = self.validate_app_snapshot(&snapshot, app)
+            {
                 return result;
             }
         }
@@ -128,8 +147,9 @@ impl InputValidator {
     ///
     /// Case-insensitive matching against the blocked hotkeys list.
     pub fn validate_hotkey(&self, keys: &str) -> ValidationResult {
+        let snapshot = self.snapshot();
         let normalized = keys.to_lowercase();
-        if self.blocked_hotkeys.contains(&normalized) {
+        if snapshot.blocked_hotkeys.contains(&normalized) {
             return ValidationResult::Denied(format!("hotkey '{keys}' blocked by safety policy"));
         }
         ValidationResult::Allowed
@@ -137,20 +157,38 @@ impl InputValidator {
 
     /// Validate that an application is in the allowlist.
     pub fn validate_app(&self, app_name: &str) -> ValidationResult {
-        if self.app_allowlist.is_empty() {
+        let snapshot = self.snapshot();
+        self.validate_app_snapshot(&snapshot, app_name)
+    }
+
+    fn validate_app_snapshot(
+        &self,
+        snapshot: &PcControlPolicySnapshot,
+        app_name: &str,
+    ) -> ValidationResult {
+        if snapshot.allowed_apps.is_empty() {
             // Empty allowlist means no apps are allowed.
             return ValidationResult::Denied(
                 "no apps in allowlist — configure pc_control.allowed_apps".into(),
             );
         }
-        if !self.app_allowlist.iter().any(|a| a == app_name) {
+        if !snapshot.allowed_apps.iter().any(|a| a == app_name) {
             return ValidationResult::Denied(format!(
                 "app '{app_name}' not in allowlist: {:?}",
-                self.app_allowlist,
+                snapshot.allowed_apps,
             ));
         }
         ValidationResult::Allowed
     }
+}
+
+fn normalize_snapshot(mut snapshot: PcControlPolicySnapshot) -> PcControlPolicySnapshot {
+    snapshot.blocked_hotkeys = snapshot
+        .blocked_hotkeys
+        .into_iter()
+        .map(|hotkey| hotkey.to_lowercase())
+        .collect();
+    snapshot
 }
 
 #[cfg(test)]

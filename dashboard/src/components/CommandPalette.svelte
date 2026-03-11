@@ -10,11 +10,14 @@
    *
    * Ref: T-3.13.2
    */
-  import { goto } from '$app/navigation';
-  import { getGhostClient } from '$lib/ghost-client';
-  import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
-  import { frecencyTracker } from '$lib/frecency';
-  import { shortcuts } from '$lib/shortcuts';
+    import { goto } from '$app/navigation';
+    import { getGhostClient } from '$lib/ghost-client';
+    import { hrefForSearchResult } from '$lib/search/navigation';
+    import { authSessionStore } from '$lib/stores/auth-session.svelte';
+    import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
+    import { frecencyTracker } from '$lib/frecency';
+    import { shortcuts } from '$lib/shortcuts';
+  import type { SearchResult } from '@ghost/sdk';
 
   type SearchPrefix = '>' | '@' | '#' | '/';
 
@@ -27,14 +30,6 @@
     frecencyScore: number;
   }
 
-  interface SearchResult {
-    result_type: string;
-    id: string;
-    title: string;
-    snippet: string;
-    score: number;
-  }
-
   let open = $state(false);
   let query = $state('');
   let results: SearchResult[] = $state([]);
@@ -45,23 +40,12 @@
   let mode = $state<'search' | 'commands'>('search');
   let inputEl = $state<HTMLInputElement | null>(null);
 
-  const TYPE_LINKS: Record<string, (id: string) => string> = {
-    agent: (id) => `/agents/${id}`,
-    session: (id) => `/sessions/${id}`,
-    memory: (_id) => `/memory`,
-    proposal: (id) => `/goals/${id}`,
-    audit: (_id) => `/security`,
-    skill: (_id) => `/skills`,
-    webhook: (_id) => `/settings/webhooks`,
-    notification: (_id) => `/settings/notifications`,
-  };
-
   // Static commands
   const STATIC_COMMANDS: PaletteCommand[] = [
     { id: 'nav-overview', label: 'Go to Overview', category: 'command', action: () => goto('/'), frecencyScore: 0 },
     { id: 'nav-convergence', label: 'Go to Convergence', category: 'command', action: () => goto('/convergence'), frecencyScore: 0 },
     { id: 'nav-memory', label: 'Go to Memory', category: 'command', action: () => goto('/memory'), frecencyScore: 0 },
-    { id: 'nav-goals', label: 'Go to Goals', category: 'command', action: () => goto('/goals'), frecencyScore: 0 },
+    { id: 'nav-goals', label: 'Go to Proposals', category: 'command', action: () => goto('/goals'), frecencyScore: 0 },
     { id: 'nav-sessions', label: 'Go to Sessions', category: 'command', action: () => goto('/sessions'), frecencyScore: 0 },
     { id: 'nav-agents', label: 'Go to Agents', category: 'command', action: () => goto('/agents'), frecencyScore: 0 },
     { id: 'nav-studio', label: 'Go to Studio', category: 'command', action: () => goto('/studio'), frecencyScore: 0 },
@@ -77,9 +61,8 @@
     }, frecencyScore: 0 },
     { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
     { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
-    { id: 'nav-approvals', label: 'Go to Proposals', category: 'command', action: () => goto('/approvals'), frecencyScore: 0 },
     { id: 'nav-providers', label: 'Go to Providers', category: 'setting', action: () => goto('/settings/providers'), frecencyScore: 0 },
-    { id: 'nav-channels', label: 'Go to Channels', category: 'setting', action: () => goto('/settings/channels'), frecencyScore: 0 },
+    { id: 'nav-channels', label: 'Go to Channels', category: 'setting', action: () => goto('/channels'), frecencyScore: 0 },
     { id: 'nav-webhooks', label: 'Go to Webhooks', category: 'setting', action: () => goto('/settings/webhooks'), frecencyScore: 0 },
     { id: 'nav-oauth', label: 'Go to OAuth Settings', category: 'setting', action: () => goto('/settings/oauth'), frecencyScore: 0 },
     { id: 'nav-backups', label: 'Go to Backups', category: 'setting', action: () => goto('/settings/backups'), frecencyScore: 0 },
@@ -118,19 +101,21 @@
         },
       );
     }
-    commands.push({
-      id: 'kill-all',
-      label: 'Kill All Agents',
-      category: 'command',
-      shortcut: shortcuts.getShortcutDisplay('killSwitch.activateAll'),
-      action: async () => {
-        if (confirm('Kill all agents? This cannot be undone.')) {
-          const client = await getGhostClient();
-          await client.safety.killAll('Manual kill via command palette', 'dashboard_command_palette');
-        }
-      },
-      frecencyScore: 0,
-    });
+    if (authSessionStore.canTriggerKillAll) {
+      commands.push({
+        id: 'kill-all',
+        label: 'Kill All Agents',
+        category: 'command',
+        shortcut: shortcuts.getShortcutDisplay('killSwitch.activateAll'),
+        action: async () => {
+          if (confirm('Kill all agents? This cannot be undone.')) {
+            const client = await getGhostClient();
+            await client.safety.killAll('Manual kill via command palette', 'dashboard_command_palette');
+          }
+        },
+        frecencyScore: 0,
+      });
+    }
     return commands;
   }
 
@@ -298,7 +283,7 @@
           open = false;
         } else {
           const r = item.item;
-          const link = TYPE_LINKS[r.result_type]?.(r.id) ?? `/search?q=${encodeURIComponent(query)}`;
+          const link = hrefForSearchResult(r, query.trim());
           goto(link);
           open = false;
         }
@@ -363,7 +348,7 @@
                     item.item.action();
                   } else {
                     const r = item.item;
-                    const link = TYPE_LINKS[r.result_type]?.(r.id) ?? '/search';
+                    const link = hrefForSearchResult(r, query.trim());
                     goto(link);
                   }
                   open = false;

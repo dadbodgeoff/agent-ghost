@@ -1,7 +1,4 @@
 <script lang="ts">
-  /**
-   * WorkflowNodeConfig — slide-in config panel for a selected workflow node (T-2.6.2).
-   */
   import type { WorkflowNode } from './WorkflowCanvas.svelte';
 
   let {
@@ -16,18 +13,26 @@
     onclose?: () => void;
   } = $props();
 
-  const NODE_TYPES = ['llm_call', 'tool_exec', 'gate_check', 'transform', 'condition', 'parallel_branch', 'sub_workflow', 'ab_test'] as const;
+  const NODE_TYPES = ['llm_call', 'tool_exec', 'gate_check', 'transform', 'condition', 'wait'] as const;
+
+  function updateNode(patch: Partial<WorkflowNode>) {
+    if (!node) return;
+    onupdate?.({ ...node, ...patch });
+  }
+
+  function updateConfig(key: string, value: unknown) {
+    if (!node) return;
+    onupdate?.({ ...node, config: { ...node.config, [key]: value } });
+  }
 
   function handleLabelChange(e: Event) {
-    if (!node) return;
     const target = e.target as HTMLInputElement;
-    onupdate?.({ ...node, label: target.value });
+    updateNode({ label: target.value });
   }
 
   function handleTypeChange(e: Event) {
-    if (!node) return;
     const target = e.target as HTMLSelectElement;
-    onupdate?.({ ...node, type: target.value });
+    updateNode({ type: target.value, config: {} });
   }
 
   function handleConfigChange(e: Event) {
@@ -37,7 +42,7 @@
       const config = JSON.parse(target.value);
       onupdate?.({ ...node, config });
     } catch {
-      // Invalid JSON — don't update
+      // Ignore invalid JSON until the user corrects it.
     }
   }
 
@@ -64,8 +69,8 @@
       <label class="field">
         <span class="field-label">Type</span>
         <select value={node.type} onchange={handleTypeChange} class="field-input">
-          {#each NODE_TYPES as t}
-            <option value={t}>{t}</option>
+          {#each NODE_TYPES as type}
+            <option value={type}>{type}</option>
           {/each}
         </select>
       </label>
@@ -80,80 +85,100 @@
         <span class="field-value">x: {Math.round(node.x)}, y: {Math.round(node.y)}</span>
       </div>
 
-      {#if node.type === 'sub_workflow'}
+      {#if node.type === 'llm_call'}
         <label class="field">
-          <span class="field-label">Sub-Workflow ID</span>
+          <span class="field-label">Agent ID</span>
           <input
             type="text"
-            value={node.config?.workflow_id ?? ''}
-            onchange={(e) => {
-              if (!node) return;
-              const target = e.target as HTMLInputElement;
-              onupdate?.({ ...node, config: { ...node.config, workflow_id: target.value } });
-            }}
+            value={String(node.config?.agent_id ?? '')}
+            onchange={(e) => updateConfig('agent_id', (e.target as HTMLInputElement).value)}
             class="field-input mono"
-            placeholder="Referenced workflow ID"
+            placeholder="Optional agent id"
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">System Prompt</span>
+          <textarea
+            class="field-textarea"
+            rows="4"
+            onchange={(e) => updateConfig('system_prompt', (e.target as HTMLTextAreaElement).value)}
+          >{String(node.config?.system_prompt ?? '')}</textarea>
+        </label>
+      {/if}
+
+      {#if node.type === 'tool_exec'}
+        <label class="field">
+          <span class="field-label">Skill Name</span>
+          <input
+            type="text"
+            value={String(node.config?.skill_name ?? node.config?.tool_name ?? '')}
+            onchange={(e) => updateConfig('skill_name', (e.target as HTMLInputElement).value)}
+            class="field-input mono"
+            placeholder="e.g. file_read"
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">Agent ID</span>
+          <input
+            type="text"
+            value={String(node.config?.agent_id ?? '')}
+            onchange={(e) => updateConfig('agent_id', (e.target as HTMLInputElement).value)}
+            class="field-input mono"
+            placeholder="Optional agent id"
           />
         </label>
       {/if}
 
-      {#if node.type === 'ab_test'}
-        <div class="field">
-          <span class="field-label">Variant A Ratio (%)</span>
+      {#if node.type === 'gate_check'}
+        <label class="field">
+          <span class="field-label">Gate Name</span>
           <input
-            type="range"
-            min="0"
-            max="100"
-            value={node.config?.variants?.[0]?.ratio ?? 50}
-            onchange={(e) => {
-              if (!node) return;
-              const target = e.target as HTMLInputElement;
-              const ratioA = parseInt(target.value);
-              const variants = [
-                { label: node.config?.variants?.[0]?.label ?? 'A', ratio: ratioA },
-                { label: node.config?.variants?.[1]?.label ?? 'B', ratio: 100 - ratioA },
-              ];
-              onupdate?.({ ...node, config: { ...node.config, variants } });
-            }}
+            type="text"
+            value={String(node.config?.gate_name ?? '')}
+            onchange={(e) => updateConfig('gate_name', (e.target as HTMLInputElement).value)}
+            class="field-input mono"
+            placeholder="Descriptive gate name"
           />
-          <span class="field-value">
-            A: {node.config?.variants?.[0]?.ratio ?? 50}% /
-            B: {node.config?.variants?.[1]?.ratio ?? 50}%
-          </span>
-        </div>
+        </label>
       {/if}
 
       {#if node.type === 'condition'}
         <label class="field">
-          <span class="field-label">Condition Expression</span>
+          <span class="field-label">Expression</span>
           <input
             type="text"
-            value={node.condition ?? ''}
-            onchange={(e) => {
-              if (!node) return;
-              const target = e.target as HTMLInputElement;
-              onupdate?.({ ...node, condition: target.value });
-            }}
+            value={String(node.config?.expression ?? node.condition ?? '')}
+            onchange={(e) => updateConfig('expression', (e.target as HTMLInputElement).value)}
             class="field-input mono"
-            placeholder="e.g. score > 0.8"
+            placeholder="true or a string to match"
+          />
+        </label>
+      {/if}
+
+      {#if node.type === 'wait'}
+        <label class="field">
+          <span class="field-label">Wait (ms)</span>
+          <input
+            type="number"
+            min="0"
+            max="30000"
+            value={String(node.config?.wait_ms ?? 1000)}
+            onchange={(e) => updateConfig('wait_ms', Number.parseInt((e.target as HTMLInputElement).value, 10) || 1000)}
+            class="field-input mono"
           />
         </label>
       {/if}
 
       <label class="field">
         <span class="field-label">Config (JSON)</span>
-        <textarea
-          class="field-textarea mono"
-          rows="6"
-          onchange={handleConfigChange}
-        >{JSON.stringify(node.config, null, 2)}</textarea>
+        <textarea class="field-textarea mono" rows="8" onchange={handleConfigChange}
+          >{JSON.stringify(node.config, null, 2)}</textarea
+        >
       </label>
     </div>
 
     <div class="panel-footer">
-      <button class="btn btn-danger" onclick={() => ondelete?.(node!.id)}>
-        Delete Node
-      </button>
+      <button class="btn btn-danger" onclick={() => ondelete?.(node.id)}>Delete Node</button>
     </div>
   </div>
 {/if}
@@ -196,7 +221,9 @@
     padding: var(--spacing-1);
   }
 
-  .close-btn:hover { color: var(--color-text-primary); }
+  .close-btn:hover {
+    color: var(--color-text-primary);
+  }
 
   .panel-body {
     flex: 1;
@@ -221,7 +248,8 @@
     letter-spacing: var(--letter-spacing-wide);
   }
 
-  .field-input, .field-textarea {
+  .field-input,
+  .field-textarea {
     background: var(--color-bg-elevated-2);
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-sm);
@@ -230,7 +258,8 @@
     color: var(--color-text-primary);
   }
 
-  .field-input:focus, .field-textarea:focus {
+  .field-input:focus,
+  .field-textarea:focus {
     outline: none;
     border-color: var(--color-interactive-primary);
   }
@@ -261,7 +290,6 @@
     border: none;
     border-radius: var(--radius-sm);
     font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-medium);
     cursor: pointer;
   }
 
@@ -269,6 +297,4 @@
     background: var(--color-severity-hard);
     color: var(--color-text-inverse);
   }
-
-  .btn-danger:hover { filter: brightness(1.1); }
 </style>

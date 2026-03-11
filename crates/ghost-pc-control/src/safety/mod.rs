@@ -14,7 +14,9 @@
 pub mod circuit_breaker;
 pub mod config;
 pub mod input_validator;
+pub mod runtime_policy;
 
 pub use circuit_breaker::PcControlCircuitBreaker;
 pub use config::PcControlConfig;
 pub use input_validator::{InputValidator, ScreenRegion, ValidationResult};
+pub use runtime_policy::{PcControlPolicyHandle, PcControlPolicySnapshot};

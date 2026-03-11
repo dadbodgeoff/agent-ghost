@@ -6,6 +6,7 @@
 
   let {
     entries = [],
+    focusedEntryId = '',
   }: {
     entries?: Array<{
       id: string;
@@ -15,13 +16,17 @@
       details: string;
       agent_id?: string;
     }>;
+    focusedEntryId?: string;
   } = $props();
 
   const SEVERITY_TOKENS: Record<string, string> = {
     critical: 'var(--color-severity-hard)',
+    error: 'var(--color-severity-hard)',
     high: 'var(--color-severity-active)',
     medium: 'var(--color-severity-soft)',
     low: 'var(--color-severity-normal)',
+    warn: 'var(--color-severity-active)',
+    warning: 'var(--color-severity-active)',
     info: 'var(--color-text-muted)',
   };
 
@@ -32,7 +37,7 @@
 
 <div class="audit-timeline" role="list" aria-label="Audit event timeline">
   {#each entries as entry (entry.id)}
-    <div class="timeline-entry" role="listitem">
+    <div class="timeline-entry" class:focused={entry.id === focusedEntryId} role="listitem" id={`audit-${entry.id}`}>
       <div class="dot" style="background: {severityColor(entry.severity)}" aria-hidden="true"></div>
       <div class="content">
         <div class="header">
@@ -64,6 +69,14 @@
     gap: var(--spacing-3);
     padding: var(--spacing-3) 0;
     border-bottom: 1px solid var(--color-border-subtle);
+  }
+
+  .timeline-entry.focused {
+    background: color-mix(in srgb, var(--color-interactive-primary) 7%, transparent);
+    box-shadow: inset 3px 0 0 var(--color-interactive-primary);
+    padding-left: var(--spacing-2);
+    padding-right: var(--spacing-2);
+    border-radius: var(--radius-sm);
   }
 
   .dot {

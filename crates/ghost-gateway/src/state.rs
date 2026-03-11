@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Instant;
 
 use cortex_core::safety::trigger::TriggerEvent;
 use tokio::sync::broadcast;
@@ -14,18 +15,63 @@ use uuid::Uuid;
 use crate::agents::registry::AgentRegistry;
 use crate::api::websocket::{EventReplayBuffer, WsEnvelope};
 use crate::autonomy::AutonomyService;
+use crate::channel_manager::ChannelManager;
 use crate::cost::tracker::CostTracker;
 use crate::db_pool::DbPool;
 use crate::gateway::GatewaySharedState;
+use crate::itp_router::ITPEventRouter;
 use crate::safety::kill_gate_bridge::KillGateBridge;
 use crate::safety::kill_switch::KillSwitch;
 use crate::safety::quarantine::QuarantineManager;
+use ghost_agent_loop::itp_emitter::ITPEmitter;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RuntimeSubsystemStatus {
+    Healthy,
+    Degraded,
+    Disabled,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BackupSchedulerRuntimeStatus {
+    pub enabled: bool,
+    pub last_success_at: Option<String>,
+    pub last_failure_at: Option<String>,
+    pub last_error: Option<String>,
+    pub status: RuntimeSubsystemStatus,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConfigWatcherRuntimeStatus {
+    pub enabled: bool,
+    pub mode: Option<String>,
+    pub watched_path: Option<String>,
+    pub last_reload_at: Option<String>,
+    pub last_error: Option<String>,
+    pub status: RuntimeSubsystemStatus,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MonitorRuntimeStatus {
+    pub sampled_at: Option<String>,
+    pub connected: bool,
+    pub uptime_seconds: Option<u64>,
+    pub agent_count: Option<usize>,
+    pub event_count: Option<u64>,
+    pub last_computation: Option<String>,
+    pub last_error: Option<String>,
+}
 
 /// Central application state shared across all API handlers.
 ///
 /// Constructed during bootstrap, wrapped in `Arc`, and injected into
 /// the axum router via `.with_state()`.
 pub struct AppState {
+    /// Gateway process start instant for uptime reporting.
+    pub started_at: Instant,
+
     /// Gateway FSM state (Initializing, Healthy, Degraded, etc.)
     pub gateway: Arc<GatewaySharedState>,
 
@@ -34,6 +80,9 @@ pub struct AppState {
 
     /// Live agent registry — populated during step 4 of bootstrap.
     pub agents: Arc<RwLock<AgentRegistry>>,
+
+    /// Canonical channel lifecycle and routing authority.
+    pub channel_manager: Arc<ChannelManager>,
 
     /// Kill switch — 3-level safety system (Pause, Quarantine, KillAll).
     pub kill_switch: Arc<KillSwitch>,
@@ -49,6 +98,18 @@ pub struct AppState {
 
     /// Shared trigger channel feeding automatic safety evaluation.
     pub trigger_sender: tokio::sync::mpsc::Sender<TriggerEvent>,
+
+    /// Interactive sandbox review queue + approval coordinator.
+    pub sandbox_reviews: Arc<crate::sandbox_reviews::SandboxReviewCoordinator>,
+
+    /// Shared ADE-side ITP emitter attached to live runners when tracking is enabled.
+    pub itp_emitter: Option<ITPEmitter>,
+
+    /// Shared router for monitor delivery, degraded buffering, and replay.
+    pub itp_router: Option<Arc<ITPEventRouter>>,
+
+    /// Gateway-owned active session tracker for ADE ITP lifecycle management.
+    pub itp_session_tracker: Option<Arc<crate::itp_bridge::ITPSessionTracker>>,
 
     /// Ring buffer for event replay on WebSocket reconnect (Task 1.6).
     pub replay_buffer: Arc<EventReplayBuffer>,
@@ -83,8 +144,14 @@ pub struct AppState {
     pub pc_control_circuit_breaker:
         Arc<std::sync::Mutex<ghost_pc_control::safety::PcControlCircuitBreaker>>,
 
+    /// Canonical live PC control runtime state and policy handle.
+    pub pc_control_runtime: Arc<crate::pc_control_runtime::PcControlRuntimeService>,
+
     /// Single-use WebSocket upgrade tickets keyed by a token hash.
     pub websocket_auth_tickets: Arc<dashmap::DashMap<String, crate::api::websocket::WsAuthTicket>>,
+
+    /// Shared WebSocket connection tracker used by the WS upgrade route and observability.
+    pub ws_connection_tracker: Arc<crate::api::websocket::WsConnectionTracker>,
 
     /// Require short-lived WebSocket tickets and reject legacy bearer upgrade auth.
     pub ws_ticket_auth_only: bool,
@@ -123,6 +190,9 @@ pub struct AppState {
     /// O(1) read, no lock, no disk I/O. Safe for high-frequency health probes.
     pub monitor_healthy: Arc<std::sync::atomic::AtomicBool>,
 
+    /// Cached monitor runtime snapshot refreshed periodically by the gateway.
+    pub monitor_runtime_status: Arc<RwLock<MonitorRuntimeStatus>>,
+
     /// Distributed kill remains feature-gated unless explicitly enabled.
     pub distributed_kill_enabled: bool,
 
@@ -138,6 +208,12 @@ pub struct AppState {
 
     /// WP9-D: Session TTL in days. Inactive sessions beyond this are soft-deleted.
     pub session_ttl_days: u32,
+
+    /// Backup scheduler runtime health and last-run bookkeeping.
+    pub backup_scheduler_status: Arc<RwLock<BackupSchedulerRuntimeStatus>>,
+
+    /// Config watcher runtime health and reload bookkeeping.
+    pub config_watcher_status: Arc<RwLock<ConfigWatcherRuntimeStatus>>,
 
     /// Canonical gateway-owned autonomy control plane.
     pub autonomy: Arc<AutonomyService>,

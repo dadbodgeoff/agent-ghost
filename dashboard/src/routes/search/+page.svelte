@@ -6,38 +6,68 @@
    * Ref: T-3.13.1
    */
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
+  import { hrefForSearchResult } from '$lib/search/navigation';
   import type { SearchResult } from '@ghost/sdk';
 
   let query = $state('');
   let results: SearchResult[] = $state([]);
   let total = $state(0);
+  let returnedCount = $state(0);
   let loading = $state(false);
   let error: string | null = $state(null);
   let searched = $state(false);
+  let degraded = $state(false);
+  let warnings: Array<{ result_type: string; message: string }> = $state([]);
+  let lastExecutedQuery = $state('');
 
   // Pick up query from URL params.
   $effect(() => {
-    const q = $page.url.searchParams.get('q');
-    if (q && q !== query) {
+    const q = ($page.url.searchParams.get('q') ?? '').trim();
+    if (!q) {
+      query = '';
+      results = [];
+      total = 0;
+      returnedCount = 0;
+      error = null;
+      warnings = [];
+      degraded = false;
+      searched = false;
+      lastExecutedQuery = '';
+      return;
+    }
+
+    if (q !== query) {
       query = q;
-      doSearch();
+    }
+    if (q !== lastExecutedQuery) {
+      doSearch(q);
     }
   });
 
-  async function doSearch() {
-    if (!query.trim()) return;
+  async function doSearch(nextQuery = query.trim()) {
+    if (!nextQuery.trim()) return;
     loading = true;
     error = null;
     searched = true;
     try {
       const client = await getGhostClient();
-      const res = await client.search.query({ q: query.trim() });
+      const trimmed = nextQuery.trim();
+      const res = await client.search.query({ q: trimmed });
       results = res.results ?? [];
       total = res.total ?? 0;
+      returnedCount = res.returned_count ?? res.results?.length ?? 0;
+      degraded = res.degraded ?? false;
+      warnings = res.warnings ?? [];
+      lastExecutedQuery = trimmed;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Search failed';
       results = [];
+      total = 0;
+      returnedCount = 0;
+      warnings = [];
+      degraded = false;
     } finally {
       loading = false;
     }
@@ -45,7 +75,17 @@
 
   function handleSubmit(e: Event) {
     e.preventDefault();
-    doSearch();
+    const trimmed = query.trim();
+    const currentUrlQuery = ($page.url.searchParams.get('q') ?? '').trim();
+    if (!trimmed) {
+      goto('/search');
+      return;
+    }
+    if (trimmed === currentUrlQuery) {
+      void doSearch(trimmed);
+      return;
+    }
+    goto(`/search?q=${encodeURIComponent(trimmed)}`);
   }
 
   const TYPE_LABELS: Record<string, string> = {
@@ -54,14 +94,6 @@
     memory: 'Memories',
     proposal: 'Proposals',
     audit: 'Audit Log',
-  };
-
-  const TYPE_LINKS: Record<string, (id: string) => string> = {
-    agent: (id) => `/agents/${id}`,
-    session: (id) => `/sessions/${id}`,
-    memory: (id) => `/memory`,
-    proposal: (id) => `/goals/${id}`,
-    audit: (id) => `/security`,
   };
 
   let groupedResults = $derived.by(() => {
@@ -100,8 +132,21 @@
     <p class="error-msg">{error}</p>
   {/if}
 
+  {#if degraded && warnings.length > 0}
+    <div class="warning-box" role="alert">
+      <p>Search is degraded. Some domains did not return results.</p>
+      <ul>
+        {#each warnings as warning}
+          <li><strong>{TYPE_LABELS[warning.result_type] ?? warning.result_type}:</strong> {warning.message}</li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
   {#if searched && !loading}
-    <p class="result-count">{total} result{total !== 1 ? 's' : ''} for "{query}"</p>
+    <p class="result-count">
+      Showing {returnedCount} of {total} result{total !== 1 ? 's' : ''} for "{query}"
+    </p>
 
     {#each Object.entries(groupedResults) as [type, items]}
       <section class="result-group">
@@ -109,7 +154,7 @@
         <ul class="result-list">
           {#each items as item}
             <li class="result-item">
-              <a href={TYPE_LINKS[type]?.(item.id) ?? '#'} class="result-link">
+              <a href={hrefForSearchResult(item, query)} class="result-link">
                 <span class="result-title">{item.title}</span>
                 <span class="result-id mono">{item.id.slice(0, 8)}…</span>
               </a>
@@ -157,6 +202,17 @@
   .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .result-count { font-size: var(--font-size-sm); color: var(--color-text-muted); margin-bottom: var(--spacing-4); }
+  .warning-box {
+    margin-bottom: var(--spacing-4);
+    padding: var(--spacing-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-severity-active);
+    background: color-mix(in srgb, var(--color-severity-active) 12%, var(--color-bg-elevated-1));
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+  }
+  .warning-box p { margin: 0 0 var(--spacing-2); }
+  .warning-box ul { margin: 0; padding-left: var(--spacing-4); }
 
   .result-group { margin-bottom: var(--spacing-4); }
   .result-group h2 { font-size: var(--font-size-sm); font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; margin-bottom: var(--spacing-2); letter-spacing: 0.05em; }

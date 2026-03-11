@@ -173,3 +173,47 @@ fn query_page_beyond_data_returns_empty() {
     assert!(result.items.is_empty());
     assert_eq!(result.total, 1); // total still reflects actual count
 }
+
+#[test]
+fn query_supports_comma_separated_event_type_filters() {
+    let conn = setup_db();
+    let engine = AuditQueryEngine::new(&conn);
+    engine
+        .insert(&make_entry("1", "kill_all", "critical", "a"))
+        .unwrap();
+    engine
+        .insert(&make_entry("2", "pause_agent", "warn", "a"))
+        .unwrap();
+    engine
+        .insert(&make_entry("3", "session", "info", "a"))
+        .unwrap();
+
+    let mut filter = AuditFilter::new();
+    filter.event_type = Some("kill_all, pause_agent".to_string());
+    let result = engine.query(&filter).unwrap();
+
+    assert_eq!(result.total, 2);
+    assert_eq!(result.items.len(), 2);
+}
+
+#[test]
+fn query_supports_comma_separated_severity_filters() {
+    let conn = setup_db();
+    let engine = AuditQueryEngine::new(&conn);
+    engine
+        .insert(&make_entry("1", "kill_all", "critical", "a"))
+        .unwrap();
+    engine
+        .insert(&make_entry("2", "pause_agent", "warn", "a"))
+        .unwrap();
+    engine
+        .insert(&make_entry("3", "session", "info", "a"))
+        .unwrap();
+
+    let mut filter = AuditFilter::new();
+    filter.severity = Some("critical, warn".to_string());
+    let result = engine.query(&filter).unwrap();
+
+    assert_eq!(result.total, 2);
+    assert_eq!(result.items.len(), 2);
+}

@@ -1,21 +1,13 @@
 <script lang="ts">
-  /**
-   * Observability page — trace visualization for agent sessions.
-   * Select a session, view OTel spans in waterfall format.
-   *
-   * Ref: T-3.8.2
-   */
   import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import type {
-    ListRuntimeSessionsCursorResult,
-    ListRuntimeSessionsPageResult,
     RuntimeSession,
     SessionTrace,
     TraceSpanRecord,
   } from '@ghost/sdk';
-  import TraceWaterfall from '../../components/TraceWaterfall.svelte';
+  import TraceWaterfall from '../../../components/TraceWaterfall.svelte';
 
   let sessions: RuntimeSession[] = $state([]);
   let selectedSession: string | null = $state(null);
@@ -25,15 +17,14 @@
   let error: string | null = $state(null);
 
   onMount(() => {
-    loadSessions();
+    void loadSessions();
 
-    // T-5.9.1: Wire TraceUpdate WS event to refresh traces if a session is selected.
     const unsub = wsStore.on('TraceUpdate', () => {
-      if (selectedSession) loadTraces(selectedSession);
+      if (selectedSession) void loadTraces(selectedSession);
     });
     const unsubResync = wsStore.onResync(() => {
-      loadSessions();
-      if (selectedSession) loadTraces(selectedSession);
+      void loadSessions();
+      if (selectedSession) void loadTraces(selectedSession);
     });
     return () => {
       unsub();
@@ -58,7 +49,7 @@
     try {
       const client = await getGhostClient();
       const res: SessionTrace = await client.traces.get(sessionId);
-      spans = res.traces.flatMap(t => t.spans);
+      spans = res.traces.flatMap((trace) => trace.spans);
       totalSpans = res.total_spans;
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load traces';
@@ -68,23 +59,16 @@
     }
   }
 
-  function getSessions(
-    data: ListRuntimeSessionsPageResult | ListRuntimeSessionsCursorResult,
-  ): RuntimeSession[] {
-    return 'sessions' in data ? data.sessions : data.data;
+  function getSessions(data: { data: RuntimeSession[] }): RuntimeSession[] {
+    return data.data;
   }
 </script>
 
 <svelte:head>
-  <title>Observability | ADE</title>
+  <title>Trace Observability | ADE</title>
 </svelte:head>
 
 <div class="observability-page">
-  <header class="page-header">
-    <h1>Observability</h1>
-    <p class="subtitle">OTel trace visualization for agent sessions</p>
-  </header>
-
   <div class="content-layout">
     <aside class="session-selector">
       <h2>Sessions</h2>
@@ -97,9 +81,9 @@
               <button
                 class="session-btn"
                 class:active={selectedSession === session.session_id}
-                onclick={() => loadTraces(session.session_id)}
+                onclick={() => void loadTraces(session.session_id)}
               >
-                <span class="session-id mono">{session.session_id.slice(0, 8)}…</span>
+                <span class="session-id mono">{session.session_id.slice(0, 8)}...</span>
                 <span class="session-meta">{session.event_count ?? 0} events</span>
               </button>
             </li>
@@ -114,7 +98,7 @@
       {/if}
 
       {#if loading}
-        <p class="loading">Loading traces…</p>
+        <p class="loading">Loading traces...</p>
       {:else if selectedSession}
         <div class="trace-header">
           <span class="mono">{selectedSession}</span>
@@ -130,24 +114,7 @@
 
 <style>
   .observability-page {
-    padding: var(--spacing-6);
     max-width: 1200px;
-  }
-
-  .page-header {
-    margin-bottom: var(--spacing-6);
-  }
-
-  .page-header h1 {
-    font-size: var(--font-size-2xl);
-    font-weight: 700;
-    color: var(--color-text-primary);
-  }
-
-  .subtitle {
-    color: var(--color-text-muted);
-    font-size: var(--font-size-sm);
-    margin-top: var(--spacing-1);
   }
 
   .content-layout {
@@ -193,7 +160,7 @@
     cursor: pointer;
     color: var(--color-text-primary);
     font-size: var(--font-size-sm);
-    transition: background 0.1s;
+    transition: background var(--duration-fast) var(--easing-default);
   }
 
   .session-btn:hover {
@@ -238,7 +205,9 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .placeholder, .loading, .empty-hint {
+  .placeholder,
+  .loading,
+  .empty-hint {
     color: var(--color-text-muted);
     font-size: var(--font-size-sm);
     text-align: center;
@@ -253,5 +222,11 @@
     border: 1px solid var(--color-severity-hard);
     border-radius: var(--radius-sm);
     margin-bottom: var(--spacing-3);
+  }
+
+  @media (max-width: 900px) {
+    .content-layout {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

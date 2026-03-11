@@ -198,6 +198,14 @@ impl GatewayRuntime {
         tracing::info!("shutdown step 4/8: persisting cost data");
         // Future: self.app_state.cost_tracker.persist(&self.app_state.db);
 
+        if let (Some(tracker), Some(router)) = (
+            self.app_state.itp_session_tracker.clone(),
+            self.app_state.itp_router.clone(),
+        ) {
+            tracing::info!("shutdown step 4.5/8: closing active ADE ITP sessions");
+            crate::itp_bridge::close_sessions(tracker, router, "gateway_shutdown").await;
+        }
+
         // Step 5: Notify convergence monitor of shutdown.
         if self.app_state.monitor_enabled {
             tracing::info!("shutdown step 5/8: notifying convergence monitor");

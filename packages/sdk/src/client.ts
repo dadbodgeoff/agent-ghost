@@ -7,6 +7,7 @@ import { GoalsAPI } from './goals.js';
 import { SkillsAPI } from './skills.js';
 import { SafetyAPI } from './safety.js';
 import { HealthAPI } from './health.js';
+import { ObservabilityAPI } from './observability.js';
 import { AuthAPI } from './auth.js';
 import { AuditAPI } from './audit.js';
 import { CostsAPI } from './costs.js';
@@ -262,6 +263,7 @@ export class GhostClient {
   readonly skills: SkillsAPI;
   readonly safety: SafetyAPI;
   readonly health: HealthAPI;
+  readonly observability: ObservabilityAPI;
   readonly auth: AuthAPI;
   readonly audit: AuditAPI;
   readonly costs: CostsAPI;
@@ -309,6 +311,7 @@ export class GhostClient {
     this.skills = new SkillsAPI(request);
     this.safety = new SafetyAPI(request);
     this.health = new HealthAPI(request);
+    this.observability = new ObservabilityAPI(request);
     this.auth = new AuthAPI(request);
     this.audit = new AuditAPI(request, this.options);
     this.costs = new CostsAPI(request);

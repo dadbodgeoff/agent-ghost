@@ -20,7 +20,7 @@ pub struct ConvergenceHistoryQueryParams {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConvergenceScoreResponse {
     pub agent_id: String,
     pub agent_name: String,
@@ -32,21 +32,21 @@ pub struct ConvergenceScoreResponse {
     pub computed_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConvergenceErrorResponse {
     pub agent_id: String,
     pub agent_name: String,
     pub error: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConvergenceScoresResponse {
     pub scores: Vec<ConvergenceScoreResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<ConvergenceErrorResponse>>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConvergenceHistoryEntryResponse {
     pub session_id: Option<String>,
     pub score: f64,
@@ -57,7 +57,7 @@ pub struct ConvergenceHistoryEntryResponse {
     pub computed_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConvergenceHistoryResponse {
     pub agent_id: String,
     pub entries: Vec<ConvergenceHistoryEntryResponse>,

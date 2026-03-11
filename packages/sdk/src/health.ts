@@ -11,13 +11,31 @@ export interface HealthStatus {
   convergence_monitor?: {
     connected: boolean;
   };
-  distributed_gate?: {
-    state: string;
-    node_id: string;
+  convergence_protection?: {
+    execution_mode: string;
+    stale_after_secs: number;
+    agents: {
+      healthy: number;
+      missing: number;
+      stale: number;
+      corrupted: number;
+    };
+  };
+  distributed_kill?: {
+    enabled: boolean;
+    status: string;
+    node_id?: string;
     closed_at?: string;
     close_reason?: string;
-    acked_nodes: number;
-    chain_length: number;
+    acked_nodes?: string[];
+    chain_length?: number;
+  };
+  speculative_context?: {
+    enabled: boolean;
+    mode: string;
+    shadow_mode: boolean;
+    outstanding_entries: number;
+    pending_tokens: number;
   };
 }
 

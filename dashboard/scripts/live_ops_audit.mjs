@@ -547,10 +547,6 @@ async function main() {
     await page.getByRole('button', { name: 'Add' }).nth(1).click({ timeout: options.timeoutMs });
     await page.getByText(hotkey).waitFor({ state: 'visible', timeout: options.timeoutMs });
 
-    const zoneLabel = `Ops Zone ${runLabel}`;
-    await page.getByPlaceholder('Zone label (optional)').fill(zoneLabel, {
-      timeout: options.timeoutMs,
-    });
     const canvas = page.locator('svg.zone-canvas');
     const box = await canvas.boundingBox();
     if (!box) {
@@ -576,16 +572,16 @@ async function main() {
 
     requireCheck(
       summary,
-      'ws_agent_config_change_received',
+      'ws_pc_control_runtime_change_received',
       await waitForWsFrame(
         browserEvents,
         (frame) =>
           typeof frame.payload === 'string' &&
-          frame.payload.includes('"type":"AgentConfigChange"') &&
+          frame.payload.includes('"type":"PcControlRuntimeChange"') &&
           frame.payload.includes('"pc_control"'),
         options.timeoutMs,
       ),
-      'Dashboard websocket did not receive AgentConfigChange after PC-control mutation',
+      'Dashboard websocket did not receive PcControlRuntimeChange after PC-control mutation',
     );
 
     const pcStatus = await fetchJson(`${gatewayUrl}/api/pc-control/status`, {

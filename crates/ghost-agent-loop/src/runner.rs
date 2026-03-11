@@ -327,6 +327,10 @@ pub struct AgentRunner {
     /// Multi-turn conversation history (injected between system prompt and user message).
     /// Set this before calling `run_turn` for multi-turn sessions.
     pub conversation_history: Vec<ghost_llm::provider::ChatMessage>,
+    /// Optional durable live execution id for replay-sensitive routes.
+    pub execution_id: Option<String>,
+    /// Current execution attempt number for durable step journaling.
+    pub execution_attempt: i64,
     /// Explicit per-execution cancellation token supplied by the gateway.
     pub cancel_token: Option<Arc<CancellationToken>>,
 }
@@ -358,8 +362,15 @@ impl AgentRunner {
             soul_identity: String::new(),
             environment: String::new(),
             conversation_history: Vec::new(),
+            execution_id: None,
+            execution_attempt: 0,
             cancel_token: None,
         }
+    }
+
+    pub fn set_execution_context(&mut self, execution_id: impl Into<String>, attempt: i64) {
+        self.execution_id = Some(execution_id.into());
+        self.execution_attempt = attempt.max(0);
     }
 
     pub fn set_cancel_token(&mut self, cancel_token: Arc<CancellationToken>) {
@@ -535,6 +546,7 @@ impl AgentRunner {
         RunContext {
             agent_id,
             session_id,
+            channel: "runtime".into(),
             session_started_at: Instant::now(),
             recursion_depth: 0,
             max_recursion_depth: self.max_recursion_depth,
@@ -604,7 +616,21 @@ impl AgentRunner {
         match cortex_storage::queries::goal_proposal_queries::insert_proposal_record_with_outcome(
             &conn, &record,
         ) {
-            Ok(outcome) => Some(outcome),
+            Ok(outcome) => {
+                if matches!(decision, "AutoApproved" | "ApprovedWithFlags" | "approved") {
+                    if let Err(error) = cortex_storage::queries::proposal_materialization_queries::materialize_memory_write_in_transaction(
+                        &conn,
+                        &id,
+                    ) {
+                        tracing::error!(
+                            error = %error,
+                            proposal_id = %id,
+                            "failed to materialize approved memory proposal"
+                        );
+                    }
+                }
+                Some(outcome)
+            }
             Err(e) => {
                 tracing::error!(error = %e, proposal_id = %id, "failed to persist proposal");
                 None
@@ -616,6 +642,148 @@ impl AgentRunner {
     fn record_cost(&self, agent_id: Uuid, session_id: Uuid, cost: f64, is_compaction: bool) {
         if let Some(ref recorder) = self.cost_recorder {
             recorder(agent_id, session_id, cost, is_compaction);
+        }
+    }
+
+    fn tool_reliability_class(call: &ghost_llm::provider::LLMToolCall) -> &'static str {
+        match call.name.as_str() {
+            "read_file" | "list_dir" | "read_memories" | "web_fetch" | "web_search" => {
+                "replay_safe"
+            }
+            "write_file" => "journaled_side_effecting",
+            "http_request" | "shell" => "unsupported_exact_once",
+            name if name.starts_with("skill_") => "unsupported_exact_once",
+            _ => "unsupported_exact_once",
+        }
+    }
+
+    fn execution_context_for_tool(
+        &self,
+        ctx: &RunContext,
+    ) -> crate::tools::skill_bridge::ExecutionContext {
+        crate::tools::skill_bridge::ExecutionContext {
+            agent_id: ctx.agent_id,
+            session_id: ctx.session_id,
+            execution_id: self.execution_id.clone(),
+            route_kind: Some(ctx.channel.clone()),
+            interactive: matches!(ctx.channel.as_str(), "api" | "studio" | "cli"),
+            intervention_level: ctx.intervention_level,
+            session_duration: ctx.session_duration(),
+            session_reflection_count: self
+                .proposal_router
+                .session_reflection_count(ctx.session_id),
+            is_compaction_flush: false,
+        }
+    }
+
+    fn reject_unsupported_exact_once_tool(
+        &self,
+        step_seq: i64,
+        call: &ghost_llm::provider::LLMToolCall,
+        partial_output: bool,
+    ) -> Result<(), RunError> {
+        if self.execution_id.is_none()
+            || self.execution_attempt <= 1
+            || Self::tool_reliability_class(call) != "unsupported_exact_once"
+        {
+            return Ok(());
+        }
+
+        let message = format!(
+            "Tool '{}' is unsupported for durable exactly-once execution",
+            call.name
+        );
+        let result_json = serde_json::json!({ "error": message }).to_string();
+        self.persist_execution_step_started(step_seq, call);
+        self.persist_execution_step_finished(step_seq, "failed", Some(&result_json));
+        Err(RunError::tool_loop_aborted(message, partial_output))
+    }
+
+    fn persist_execution_step_started(
+        &self,
+        step_seq: i64,
+        call: &ghost_llm::provider::LLMToolCall,
+    ) {
+        let Some(execution_id) = self.execution_id.as_deref() else {
+            return;
+        };
+        let db = match &self.db {
+            Some(db) => db,
+            None => return,
+        };
+        let conn = match db.lock() {
+            Ok(conn) => conn,
+            Err(error) => {
+                tracing::error!(error = %error, execution_id, "failed to lock DB for execution step start");
+                return;
+            }
+        };
+        let request_json = serde_json::to_string(&call.arguments).ok();
+        let fingerprint = Self::tool_call_signature(call);
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let step = cortex_storage::queries::execution_step_queries::NewExecutionStep {
+            execution_id,
+            attempt: self.execution_attempt,
+            step_seq,
+            step_kind: "tool_call",
+            step_fingerprint: &fingerprint,
+            tool_name: Some(call.name.as_str()),
+            reliability_class: Self::tool_reliability_class(call),
+            status: "started",
+            request_json: request_json.as_deref(),
+            started_at: &started_at,
+        };
+        if let Err(error) =
+            cortex_storage::queries::execution_step_queries::insert_started(&conn, &step)
+        {
+            tracing::warn!(
+                error = %error,
+                execution_id,
+                step_seq,
+                tool = %call.name,
+                "failed to persist execution step start"
+            );
+        }
+    }
+
+    fn persist_execution_step_finished(
+        &self,
+        step_seq: i64,
+        status: &str,
+        result_json: Option<&str>,
+    ) {
+        let Some(execution_id) = self.execution_id.as_deref() else {
+            return;
+        };
+        let db = match &self.db {
+            Some(db) => db,
+            None => return,
+        };
+        let conn = match db.lock() {
+            Ok(conn) => conn,
+            Err(error) => {
+                tracing::error!(error = %error, execution_id, "failed to lock DB for execution step finish");
+                return;
+            }
+        };
+        let ended_at = chrono::Utc::now().to_rfc3339();
+        if let Err(error) =
+            cortex_storage::queries::execution_step_queries::update_status_and_result(
+                &conn,
+                execution_id,
+                self.execution_attempt,
+                step_seq,
+                status,
+                result_json,
+                &ended_at,
+            )
+        {
+            tracing::warn!(
+                error = %error,
+                execution_id,
+                step_seq,
+                "failed to persist execution step completion"
+            );
         }
     }
 
@@ -922,6 +1090,7 @@ impl AgentRunner {
         let ctx = RunContext {
             agent_id,
             session_id,
+            channel: channel.to_string(),
             session_started_at: Instant::now(),
             recursion_depth: 0,
             max_recursion_depth: self.max_recursion_depth,
@@ -945,7 +1114,7 @@ impl AgentRunner {
         // the user message. Uses bounded channel (capacity 1000),
         // try_send drops on full (AC4).
         if let Some(ref emitter) = self.itp_emitter {
-            emitter.emit_session_start(agent_id, session_id);
+            emitter.emit_session_start(agent_id, session_id, &ctx.channel);
             emitter.emit_interaction_message(agent_id, session_id, user_message);
         }
         tracing::debug!("step 11: ITP events emitted");
@@ -1283,16 +1452,7 @@ impl AgentRunner {
                         tool_call_id: None,
                     });
 
-                    let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
-                        agent_id: ctx.agent_id,
-                        session_id: ctx.session_id,
-                        intervention_level: ctx.intervention_level,
-                        session_duration: ctx.session_duration(),
-                        session_reflection_count: self
-                            .proposal_router
-                            .session_reflection_count(ctx.session_id),
-                        is_compaction_flush: false,
-                    };
+                    let exec_ctx = self.execution_context_for_tool(ctx);
                     for call in &calls {
                         self.ensure_not_cancelled()?;
 
@@ -1301,6 +1461,7 @@ impl AgentRunner {
                             self.max_tool_call_count,
                             result.output.is_some(),
                         )?;
+                        let step_seq = i64::from(ctx.tool_call_count);
 
                         if let Some(output) = Self::maybe_suppress_duplicate_failed_tool_call(
                             &mut failed_tool_calls,
@@ -1321,6 +1482,13 @@ impl AgentRunner {
                             continue;
                         }
 
+                        self.reject_unsupported_exact_once_tool(
+                            step_seq,
+                            call,
+                            result.output.is_some(),
+                        )?;
+                        self.persist_execution_step_started(step_seq, call);
+
                         let tool_result = if let Some(cancel_token) = self.cancel_token.clone() {
                             tokio::select! {
                                 _ = cancel_token.cancelled() => return Err(RunError::Cancelled),
@@ -1335,6 +1503,12 @@ impl AgentRunner {
 
                         let output = match tool_result {
                             Ok(tr) => {
+                                let result_json = serde_json::json!({ "output": tr.output, "success": tr.success });
+                                self.persist_execution_step_finished(
+                                    step_seq,
+                                    "committed",
+                                    Some(&result_json.to_string()),
+                                );
                                 Self::reset_consecutive_tool_failures(
                                     &mut consecutive_tool_failures,
                                 );
@@ -1347,6 +1521,13 @@ impl AgentRunner {
                                 tr.output
                             }
                             Err(e) => {
+                                let result_json =
+                                    serde_json::json!({ "error": e.to_string() }).to_string();
+                                self.persist_execution_step_finished(
+                                    step_seq,
+                                    "failed",
+                                    Some(&result_json),
+                                );
                                 Self::record_failed_tool_call(&mut failed_tool_calls, call);
                                 format!("ERROR: {e}")
                             }
@@ -1492,16 +1673,7 @@ impl AgentRunner {
                         tool_call_id: None,
                     });
 
-                    let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
-                        agent_id: ctx.agent_id,
-                        session_id: ctx.session_id,
-                        intervention_level: ctx.intervention_level,
-                        session_duration: ctx.session_duration(),
-                        session_reflection_count: self
-                            .proposal_router
-                            .session_reflection_count(ctx.session_id),
-                        is_compaction_flush: false,
-                    };
+                    let exec_ctx = self.execution_context_for_tool(ctx);
                     for call in &tool_calls {
                         self.ensure_not_cancelled()?;
 
@@ -1530,6 +1702,14 @@ impl AgentRunner {
                             continue;
                         }
 
+                        let step_seq = i64::from(ctx.tool_call_count);
+                        self.reject_unsupported_exact_once_tool(
+                            step_seq,
+                            call,
+                            result.output.is_some(),
+                        )?;
+                        self.persist_execution_step_started(step_seq, call);
+
                         let tool_result = if let Some(cancel_token) = self.cancel_token.clone() {
                             tokio::select! {
                                 _ = cancel_token.cancelled() => return Err(RunError::Cancelled),
@@ -1544,6 +1724,12 @@ impl AgentRunner {
 
                         let output = match tool_result {
                             Ok(tr) => {
+                                let result_json = serde_json::json!({ "output": tr.output, "success": tr.success });
+                                self.persist_execution_step_finished(
+                                    step_seq,
+                                    "committed",
+                                    Some(&result_json.to_string()),
+                                );
                                 Self::reset_consecutive_tool_failures(
                                     &mut consecutive_tool_failures,
                                 );
@@ -1555,6 +1741,13 @@ impl AgentRunner {
                                 tr.output
                             }
                             Err(e) => {
+                                let result_json =
+                                    serde_json::json!({ "error": e.to_string() }).to_string();
+                                self.persist_execution_step_finished(
+                                    step_seq,
+                                    "failed",
+                                    Some(&result_json),
+                                );
                                 Self::record_failed_tool_call(&mut failed_tool_calls, call);
                                 format!("ERROR: {e}")
                             }
@@ -1948,16 +2141,7 @@ impl AgentRunner {
                         tool_call_id: None,
                     });
 
-                    let exec_ctx = crate::tools::skill_bridge::ExecutionContext {
-                        agent_id: ctx.agent_id,
-                        session_id: ctx.session_id,
-                        intervention_level: ctx.intervention_level,
-                        session_duration: ctx.session_duration(),
-                        session_reflection_count: self
-                            .proposal_router
-                            .session_reflection_count(ctx.session_id),
-                        is_compaction_flush: false,
-                    };
+                    let exec_ctx = self.execution_context_for_tool(ctx);
                     for call in &segment_tool_calls {
                         self.ensure_not_cancelled()?;
 
@@ -1966,6 +2150,7 @@ impl AgentRunner {
                             self.max_tool_call_count,
                             !accumulated_output.is_empty(),
                         )?;
+                        let step_seq = i64::from(ctx.tool_call_count);
 
                         if let Some(output) = Self::maybe_suppress_duplicate_failed_tool_call(
                             &mut failed_tool_calls,
@@ -2012,6 +2197,13 @@ impl AgentRunner {
                             )?;
                             continue;
                         }
+
+                        self.reject_unsupported_exact_once_tool(
+                            step_seq,
+                            call,
+                            !accumulated_output.is_empty(),
+                        )?;
+                        self.persist_execution_step_started(step_seq, call);
 
                         Self::send_stream_event(
                             &tx,
@@ -2091,6 +2283,12 @@ impl AgentRunner {
 
                         let (output, status) = match tool_result {
                             Ok(tr) => {
+                                let result_json = serde_json::json!({ "output": tr.output, "success": tr.success });
+                                self.persist_execution_step_finished(
+                                    step_seq,
+                                    "committed",
+                                    Some(&result_json.to_string()),
+                                );
                                 Self::reset_consecutive_tool_failures(
                                     &mut consecutive_tool_failures,
                                 );
@@ -2102,6 +2300,13 @@ impl AgentRunner {
                                 (tr.output, "done")
                             }
                             Err(e) => {
+                                let result_json =
+                                    serde_json::json!({ "error": e.to_string() }).to_string();
+                                self.persist_execution_step_finished(
+                                    step_seq,
+                                    "failed",
+                                    Some(&result_json),
+                                );
                                 Self::record_failed_tool_call(&mut failed_tool_calls, call);
                                 (format!("ERROR: {e}"), "error")
                             }
@@ -2458,10 +2663,60 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn replay_attempt_rejects_unsupported_exact_once_tools() {
+        let mut runner = AgentRunner::new(1024);
+        runner.set_execution_context("exec-1", 2);
+        let call = ghost_llm::provider::LLMToolCall {
+            id: "call-1".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"command":"echo hi"}),
+        };
+
+        let error = runner
+            .reject_unsupported_exact_once_tool(1, &call, true)
+            .expect_err("unsupported durable tool should be rejected");
+
+        assert!(matches!(
+            error,
+            RunError::ToolLoopAborted {
+                message,
+                partial_output: true
+            } if message.contains("unsupported for durable exactly-once execution")
+        ));
+    }
+
+    #[test]
+    fn first_attempt_allows_unsupported_exact_once_tools() {
+        let mut runner = AgentRunner::new(1024);
+        runner.set_execution_context("exec-1", 1);
+        let call = ghost_llm::provider::LLMToolCall {
+            id: "call-1".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"command":"echo hi"}),
+        };
+
+        runner
+            .reject_unsupported_exact_once_tool(1, &call, true)
+            .expect("first attempt should not reject unsupported tool");
+    }
+
+    #[test]
+    fn tool_execution_context_carries_live_execution_id() {
+        let mut runner = AgentRunner::new(1024);
+        runner.set_execution_context("exec-ctx", 2);
+        let ctx = cancelled_run_context();
+
+        let exec_ctx = runner.execution_context_for_tool(&ctx);
+
+        assert_eq!(exec_ctx.execution_id.as_deref(), Some("exec-ctx"));
+    }
+
     fn cancelled_run_context() -> crate::context::run_context::RunContext {
         crate::context::run_context::RunContext {
             agent_id: Uuid::now_v7(),
             session_id: Uuid::now_v7(),
+            channel: "test".into(),
             session_started_at: Instant::now(),
             recursion_depth: 0,
             max_recursion_depth: 10,

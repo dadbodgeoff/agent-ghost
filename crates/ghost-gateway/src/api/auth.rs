@@ -550,6 +550,8 @@ pub struct SessionResponse {
     pub authenticated: bool,
     pub subject: String,
     pub role: String,
+    pub capabilities: Vec<String>,
+    pub authz_v: Option<u16>,
     pub mode: &'static str,
 }
 
@@ -848,6 +850,8 @@ pub async fn session(
         authenticated: true,
         subject: claims.sub.clone(),
         role: claims.role.clone(),
+        capabilities: claims.capabilities.clone(),
+        authz_v: claims.authz_v,
         mode,
     })
 }
@@ -1178,6 +1182,8 @@ mod tests {
         assert_eq!(payload["authenticated"], true);
         assert_eq!(payload["subject"], "legacy-token-user");
         assert_eq!(payload["role"], "admin");
+        assert_eq!(payload["capabilities"], serde_json::json!([]));
+        assert_eq!(payload["authz_v"], serde_json::Value::Null);
         assert_eq!(payload["mode"], "legacy");
     }
 
@@ -1206,7 +1212,52 @@ mod tests {
         assert_eq!(payload["authenticated"], true);
         assert_eq!(payload["subject"], "jwt-user");
         assert_eq!(payload["role"], "operator");
+        assert_eq!(payload["capabilities"], serde_json::json!([]));
+        assert_eq!(payload["authz_v"], AUTHZ_CLAIMS_VERSION_V1);
         assert_eq!(payload["mode"], "jwt");
+    }
+
+    #[tokio::test]
+    async fn session_includes_typed_capabilities_from_jwt_claims() {
+        let (router, _revocation_set, secret) = jwt_auth_router();
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let access_token = encode_jwt(
+            &Claims {
+                sub: "reviewer".into(),
+                role: "operator".into(),
+                capabilities: vec!["safety_review".into()],
+                authz_v: Some(AUTHZ_CLAIMS_VERSION_V1),
+                exp: now + 3600,
+                iat: now,
+                jti: "jwt-capabilities-jti".into(),
+                iss: Some(INTERNAL_JWT_ISSUER.into()),
+            },
+            &secret,
+        )
+        .expect("jwt should encode");
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/session")
+                    .header("authorization", format!("Bearer {access_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            payload["capabilities"],
+            serde_json::json!(["safety_review"])
+        );
+        assert_eq!(payload["authz_v"], AUTHZ_CLAIMS_VERSION_V1);
     }
 
     #[tokio::test]

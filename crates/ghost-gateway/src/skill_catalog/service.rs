@@ -1349,6 +1349,8 @@ mod tests {
             capabilities: Vec::new(),
             skill_allowlist: None,
             spending_cap: 5.0,
+            isolation_mode: crate::config::IsolationMode::InProcess,
+            sandbox_config: crate::config::AgentSandboxConfig::default(),
         }
     }
 

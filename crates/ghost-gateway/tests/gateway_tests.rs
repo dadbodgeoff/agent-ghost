@@ -204,6 +204,7 @@ mod agent_registry {
             name: name.into(),
             state: AgentLifecycleState::Starting,
             channel_bindings: vec![format!("cli:{name}")],
+            isolation: ghost_gateway::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: vec!["memory_read".into()],
             skills: None,

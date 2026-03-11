@@ -1056,6 +1056,9 @@ async fn tool_executor_enforces_timeout() {
     let exec_ctx = ghost_agent_loop::tools::skill_bridge::ExecutionContext {
         agent_id: uuid::Uuid::nil(),
         session_id: uuid::Uuid::nil(),
+        execution_id: None,
+        route_kind: None,
+        interactive: false,
         intervention_level: 0,
         session_duration: std::time::Duration::from_secs(0),
         session_reflection_count: 0,
@@ -1091,6 +1094,9 @@ async fn tool_executor_not_found_returns_error() {
     let exec_ctx = ghost_agent_loop::tools::skill_bridge::ExecutionContext {
         agent_id: uuid::Uuid::nil(),
         session_id: uuid::Uuid::nil(),
+        execution_id: None,
+        route_kind: None,
+        interactive: false,
         intervention_level: 0,
         session_duration: std::time::Duration::from_secs(0),
         session_reflection_count: 0,

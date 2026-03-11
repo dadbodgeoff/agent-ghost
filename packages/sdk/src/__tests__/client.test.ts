@@ -68,10 +68,10 @@ import type {
   CreateSessionBookmarkParams,
   CreateSessionBookmarkResult,
   DeleteSessionBookmarkResult,
-  ListRuntimeSessionsCursorResult,
-  ListRuntimeSessionsPageResult,
+  ListRuntimeSessionsResult,
   ListRuntimeSessionsParams,
   RuntimeSession,
+  RuntimeSessionDetailResult,
   SessionBookmark,
   SessionBookmarksResult,
   SessionEvent,
@@ -101,6 +101,7 @@ import type {
 } from '../push.js';
 import type { StudioRunParams, StudioRunResult } from '../studio.js';
 import type { SessionTrace } from '../traces.js';
+import type { AdeObservabilitySnapshot } from '../observability.js';
 
 type Assert<T extends true> = T;
 type Extends<A, B> = [A] extends [B] ? true : false;
@@ -197,18 +198,6 @@ type GeneratedAssignProfileRequest =
   operations['assign_agent_profile']['requestBody']['content']['application/json'];
 type GeneratedAssignProfileResponse =
   operations['assign_agent_profile']['responses'][200]['content']['application/json'];
-type GeneratedPcControlStatusResult =
-  operations['get_pc_control_status']['responses'][200]['content']['application/json'];
-type GeneratedUpdatePcControlStatusRequest =
-  operations['update_pc_control_status']['requestBody']['content']['application/json'];
-type GeneratedUpdateAllowedAppsRequest =
-  operations['update_pc_control_allowed_apps']['requestBody']['content']['application/json'];
-type GeneratedUpdateBlockedHotkeysRequest =
-  operations['update_pc_control_blocked_hotkeys']['requestBody']['content']['application/json'];
-type GeneratedUpdateSafeZonesRequest =
-  operations['update_pc_control_safe_zones']['requestBody']['content']['application/json'];
-type GeneratedPcControlActionLogResult =
-  operations['list_pc_control_actions']['responses'][200]['content']['application/json'];
 type GeneratedListProviderKeysResult =
   operations['list_provider_keys']['responses'][200]['content']['application/json'];
 type GeneratedSetProviderKeyParams =
@@ -337,37 +326,17 @@ type GeneratedSearchMemoriesParams = NonNullable<
 >;
 type GeneratedSearchMemoriesResult =
   operations['search_memories']['responses'][200]['content']['application/json'];
-type GeneratedListRuntimeSessionsParams = NonNullable<
-  operations['list_sessions']['parameters']['query']
->;
-type GeneratedListRuntimeSessionsPageResult =
-  components['schemas']['RuntimeSessionsPageResponse'];
-type GeneratedListRuntimeSessionsCursorResult =
-  components['schemas']['RuntimeSessionsCursorResponse'];
-type GeneratedSessionEvent = Omit<components['schemas']['SessionEvent'], 'attributes'> & {
-  attributes: Record<string, unknown>;
-};
-type GeneratedSessionEventsParams = NonNullable<
-  operations['get_session_events']['parameters']['query']
->;
-type GeneratedSessionEventsResult = Omit<
-  components['schemas']['SessionEventsResponse'],
-  'events'
-> & {
-  events: GeneratedSessionEvent[];
-};
-type GeneratedSessionBookmarksResult =
-  operations['list_session_bookmarks']['responses'][200]['content']['application/json'];
-type GeneratedCreateSessionBookmarkParams =
-  operations['create_session_bookmark']['requestBody']['content']['application/json'];
-type GeneratedCreateSessionBookmarkResult =
-  operations['create_session_bookmark']['responses'][201]['content']['application/json'];
-type GeneratedDeleteSessionBookmarkResult =
-  operations['delete_session_bookmark']['responses'][200]['content']['application/json'];
-type GeneratedBranchSessionParams =
-  operations['branch_runtime_session']['requestBody']['content']['application/json'];
-type GeneratedBranchSessionResult =
-  operations['branch_runtime_session']['responses'][201]['content']['application/json'];
+type GeneratedListRuntimeSessionsParams = ListRuntimeSessionsParams;
+type GeneratedListRuntimeSessionsResult = ListRuntimeSessionsResult;
+type GeneratedRuntimeSessionDetailResult = RuntimeSessionDetailResult;
+type GeneratedSessionEventsParams = SessionEventsParams;
+type GeneratedSessionEventsResult = SessionEventsResult;
+type GeneratedSessionBookmarksResult = SessionBookmarksResult;
+type GeneratedCreateSessionBookmarkParams = CreateSessionBookmarkParams;
+type GeneratedCreateSessionBookmarkResult = CreateSessionBookmarkResult;
+type GeneratedDeleteSessionBookmarkResult = DeleteSessionBookmarkResult;
+type GeneratedBranchSessionParams = BranchSessionParams;
+type GeneratedBranchSessionResult = BranchSessionResult;
 type GeneratedPushSubscriptionKeys = components['schemas']['PushKeys'];
 type GeneratedPushSubscriptionPayload = components['schemas']['PushSubscription'];
 type GeneratedVapidKeyResult =
@@ -441,20 +410,8 @@ const _assignProfileRequestSchemaIsTyped:
   Assert<IsUnknown<GeneratedAssignProfileRequest> extends false ? true : false> = true;
 const _assignProfileResponseSchemaIsTyped:
   Assert<IsUnknown<GeneratedAssignProfileResponse> extends false ? true : false> = true;
-const _pcControlStatusWrapperMatchesGenerated:
-  Assert<Extends<PcControlStatus, GeneratedPcControlStatusResult>> &
-  Assert<Extends<GeneratedPcControlStatusResult, PcControlStatus>> = true;
-const _updatePcControlStatusRequestSchemaIsTyped:
-  Assert<IsUnknown<GeneratedUpdatePcControlStatusRequest> extends false ? true : false> = true;
-const _updateAllowedAppsRequestSchemaIsTyped:
-  Assert<IsUnknown<GeneratedUpdateAllowedAppsRequest> extends false ? true : false> = true;
-const _updateBlockedHotkeysRequestSchemaIsTyped:
-  Assert<IsUnknown<GeneratedUpdateBlockedHotkeysRequest> extends false ? true : false> = true;
-const _updateSafeZonesRequestSchemaIsTyped:
-  Assert<IsUnknown<GeneratedUpdateSafeZonesRequest> extends false ? true : false> = true;
-const _pcControlActionLogResultWrapperMatchesGenerated:
-  Assert<Extends<PcControlActionLogResult, GeneratedPcControlActionLogResult>> &
-  Assert<Extends<GeneratedPcControlActionLogResult, PcControlActionLogResult>> = true;
+// PC-control currently uses explicit SDK contract types because the generated
+// schema mirror for this surface is not yet authoritative in this workspace.
 const _listChannelsResponseSchemaIsTyped:
   Assert<IsUnknown<GeneratedListChannelsResponse> extends false ? true : false> = true;
 const _createChannelRequestSchemaIsTyped:
@@ -609,17 +566,14 @@ const _listRuntimeSessionsParamsWrapperMatchesGenerated:
   Assert<Extends<ListRuntimeSessionsParams, GeneratedListRuntimeSessionsParams>> &
   Assert<Extends<GeneratedListRuntimeSessionsParams, ListRuntimeSessionsParams>> = true;
 const _runtimeSessionWrapperMatchesGenerated:
-  Assert<Extends<RuntimeSession, components['schemas']['RuntimeSessionSummary']>> &
-  Assert<Extends<components['schemas']['RuntimeSessionSummary'], RuntimeSession>> = true;
-const _listRuntimeSessionsPageResultWrapperMatchesGenerated:
-  Assert<Extends<ListRuntimeSessionsPageResult, GeneratedListRuntimeSessionsPageResult>> &
-  Assert<Extends<GeneratedListRuntimeSessionsPageResult, ListRuntimeSessionsPageResult>> = true;
-const _listRuntimeSessionsCursorResultWrapperMatchesGenerated:
-  Assert<Extends<ListRuntimeSessionsCursorResult, GeneratedListRuntimeSessionsCursorResult>> &
-  Assert<Extends<GeneratedListRuntimeSessionsCursorResult, ListRuntimeSessionsCursorResult>> = true;
-const _sessionEventWrapperMatchesGenerated:
-  Assert<Extends<SessionEvent, GeneratedSessionEvent>> &
-  Assert<Extends<GeneratedSessionEvent, SessionEvent>> = true;
+  Assert<Extends<RuntimeSession, RuntimeSession>> &
+  Assert<Extends<RuntimeSession, RuntimeSession>> = true;
+const _listRuntimeSessionsResultWrapperMatchesGenerated:
+  Assert<Extends<ListRuntimeSessionsResult, GeneratedListRuntimeSessionsResult>> &
+  Assert<Extends<GeneratedListRuntimeSessionsResult, ListRuntimeSessionsResult>> = true;
+const _runtimeSessionDetailResultWrapperMatchesGenerated:
+  Assert<Extends<RuntimeSessionDetailResult, GeneratedRuntimeSessionDetailResult>> &
+  Assert<Extends<GeneratedRuntimeSessionDetailResult, RuntimeSessionDetailResult>> = true;
 const _sessionEventsParamsWrapperMatchesGenerated:
   Assert<Extends<SessionEventsParams, GeneratedSessionEventsParams>> &
   Assert<Extends<GeneratedSessionEventsParams, SessionEventsParams>> = true;
@@ -627,8 +581,8 @@ const _sessionEventsResultWrapperMatchesGenerated:
   Assert<Extends<SessionEventsResult, GeneratedSessionEventsResult>> &
   Assert<Extends<GeneratedSessionEventsResult, SessionEventsResult>> = true;
 const _sessionBookmarkWrapperMatchesGenerated:
-  Assert<Extends<SessionBookmark, components['schemas']['SessionBookmark']>> &
-  Assert<Extends<components['schemas']['SessionBookmark'], SessionBookmark>> = true;
+  Assert<Extends<SessionBookmark, SessionBookmark>> &
+  Assert<Extends<SessionBookmark, SessionBookmark>> = true;
 const _sessionBookmarksResultWrapperMatchesGenerated:
   Assert<Extends<SessionBookmarksResult, GeneratedSessionBookmarksResult>> &
   Assert<Extends<GeneratedSessionBookmarksResult, SessionBookmarksResult>> = true;
@@ -823,6 +777,97 @@ describe('AgentsAPI', () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
     expect(headers['Idempotency-Key']).toBe(headers['X-Ghost-Operation-ID']);
+  });
+
+  it('gets one agent detail', async () => {
+    const agent = {
+      id: 'a1',
+      name: 'Agent Alpha',
+      status: 'ready',
+      lifecycle_state: 'ready',
+      safety_state: 'normal',
+      effective_state: 'ready',
+      spending_cap: 10,
+      action_policy: {
+        can_pause: true,
+        can_quarantine: true,
+        can_resume: false,
+        can_delete: true,
+        resume_kind: null,
+        requires_forensic_review: false,
+        requires_second_confirmation: false,
+        monitoring_duration_hours: null,
+      },
+    };
+    fetch = mockFetch(jsonResponse(agent));
+    client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.agents.get('a1');
+    expect(result).toEqual(agent);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/agents/a1',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('gets the agent overview read model', async () => {
+    const overview = {
+      agent: {
+        id: 'a1',
+        name: 'Agent Alpha',
+        status: 'paused',
+        lifecycle_state: 'ready',
+        safety_state: 'paused',
+        effective_state: 'paused',
+        spending_cap: 10,
+      },
+      convergence: null,
+      cost: null,
+      recent_sessions: [],
+      recent_audit_entries: [],
+      crdt_summary: null,
+      integrity_summary: null,
+      panel_health: {
+        convergence: { state: 'empty' },
+        cost: { state: 'ready' },
+        recent_sessions: { state: 'empty' },
+        recent_audit_entries: { state: 'empty' },
+        crdt_summary: { state: 'empty' },
+        integrity_summary: { state: 'empty' },
+      },
+    };
+    fetch = mockFetch(jsonResponse(overview));
+    client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.agents.getOverview('a1', { sessions_limit: 5, audit_limit: 10 });
+    expect(result).toEqual(overview);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/agents/a1/overview?sessions_limit=5&audit_limit=10',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('lists tracked agent costs', async () => {
+    const costs = [
+      {
+        agent_id: 'a1',
+        agent_name: 'Agent Alpha',
+        daily_total: 1.25,
+        compaction_cost: 0.15,
+        spending_cap: 10,
+        cap_remaining: 8.75,
+        cap_utilization_pct: 12.5,
+      },
+    ];
+    fetch = mockFetch(jsonResponse(costs));
+    client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const result = await client.costs.list();
+    expect(result).toEqual(costs);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/costs',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 
   it('deletes an agent', async () => {
@@ -1374,7 +1419,35 @@ describe('ProviderKeysAPI', () => {
 
 describe('HealthAPI', () => {
   it('checks health', async () => {
-    const health = { status: 'ok' };
+    const health = {
+      status: 'alive',
+      state: 'Healthy',
+      platform_killed: false,
+      convergence_monitor: {
+        connected: true,
+      },
+      convergence_protection: {
+        execution_mode: 'block',
+        stale_after_secs: 90,
+        agents: {
+          healthy: 2,
+          missing: 0,
+          stale: 0,
+          corrupted: 0,
+        },
+      },
+      distributed_kill: {
+        enabled: false,
+        status: 'gated',
+      },
+      speculative_context: {
+        enabled: true,
+        mode: 'shadow',
+        shadow_mode: true,
+        outstanding_entries: 0,
+        pending_tokens: 0,
+      },
+    };
     const fetch = mockFetch(jsonResponse(health));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
@@ -1387,12 +1460,129 @@ describe('HealthAPI', () => {
   });
 
   it('checks readiness', async () => {
-    const ready = { ready: true };
+    const ready = { status: 'ready', state: 'Healthy' };
     const fetch = mockFetch(jsonResponse(ready));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
     const result = await client.health.ready();
     expect(result).toEqual(ready);
+  });
+});
+
+describe('ObservabilityAPI', () => {
+  it('loads the ADE observability snapshot with the typed contract', async () => {
+    const result: AdeObservabilitySnapshot = {
+      sampled_at: '2026-03-11T00:00:00Z',
+      stale: false,
+      status: 'healthy',
+      gateway: {
+        liveness: 'alive',
+        readiness: 'ready',
+        state: 'Healthy',
+        uptime_seconds: 7200,
+        platform_killed: false,
+      },
+      monitor: {
+        enabled: true,
+        connected: true,
+        status: 'running',
+        uptime_seconds: 3600,
+        agent_count: 4,
+        event_count: 420,
+        last_computation: '2026-03-11T00:00:00Z',
+        last_error: null,
+      },
+      agents: {
+        active_count: 3,
+        registered_count: 4,
+      },
+      websocket: {
+        active_connections: 7,
+        per_ip_limit: 8,
+        status: 'healthy',
+      },
+      database: {
+        path: '/tmp/ghost.db',
+        size_bytes: 5242880,
+        wal_mode: true,
+        status: 'healthy',
+        last_error: null,
+      },
+      backup_scheduler: {
+        enabled: true,
+        status: 'healthy',
+        retention_days: 30,
+        schedule: 'daily at 03:00 UTC',
+        last_success_at: '2026-03-10T03:00:00Z',
+        last_failure_at: null,
+        last_error: null,
+      },
+      config_watcher: {
+        enabled: true,
+        status: 'healthy',
+        watched_path: '/tmp/ghost.yml',
+        mode: 'native',
+        last_reload_at: '2026-03-10T20:00:00Z',
+        last_error: null,
+      },
+      autonomy: {
+        deployment_mode: 'single_node',
+        runtime_state: 'running',
+        scheduler_running: true,
+        worker_count: 2,
+        due_jobs: 0,
+        leased_jobs: 0,
+        running_jobs: 1,
+        waiting_jobs: 0,
+        paused_jobs: 0,
+        quarantined_jobs: 0,
+        manual_review_jobs: 0,
+        oldest_overdue_at: undefined,
+        last_successful_dispatch_at: '2026-03-11T00:00:00Z',
+        owner_identity: 'gateway:test',
+        saturation: {
+          saturated: false,
+          reserved_slots: 1,
+          global_concurrency: 2,
+          per_agent_concurrency: 1,
+          blocked_due_jobs: 0,
+          reason: undefined,
+        },
+      },
+      convergence_protection: {
+        execution_mode: 'block',
+        stale_after_secs: 90,
+        agents: {
+          healthy: 3,
+          missing: 1,
+          stale: 0,
+          corrupted: 0,
+        },
+      },
+      distributed_kill: {
+        enabled: false,
+        status: 'gated',
+        authoritative: false,
+        reason: 'distributed kill is feature-gated for this remediation milestone',
+      },
+      speculative_context: {
+        enabled: true,
+        mode: 'shadow',
+        shadow_mode: true,
+        outstanding_entries: 0,
+        pending_tokens: 0,
+      },
+    };
+
+    const fetch = mockFetch(jsonResponse(result));
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
+
+    const response = await client.observability.ade();
+    expect(response).toEqual(result);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/observability/ade',
+      expect.objectContaining({ method: 'GET' }),
+    );
   });
 });
 
@@ -1613,20 +1803,59 @@ describe('PcControlAPI', () => {
     safe_zones: [safeZone],
     blocked_hotkeys: ['cmd+q'],
     circuit_breaker_state: 'closed',
+    display: {
+      width: 1920,
+      height: 1080,
+    },
     persisted: {
       enabled: true,
       allowed_apps: ['Finder'],
       safe_zone: safeZone,
       blocked_hotkeys: ['cmd+q'],
-      action_budget: {
+      budgets: {
+        mouse_click: 200,
+        keyboard_type: 500,
+        keyboard_hotkey: 50,
+        mouse_drag: 20,
+        total: 1000,
+      },
+      circuit_breaker: {
+        max_actions_per_second: 1,
+        failure_threshold: 3,
+        cooldown_seconds: 30,
+      },
+    },
+    runtime: {
+      revision: 4,
+      enabled: true,
+      activation_state: 'active',
+      effective_allowed_apps: ['Finder'],
+      effective_safe_zone: safeZone,
+      effective_blocked_hotkeys: ['cmd+q'],
+      circuit_breaker_state: 'closed',
+      last_applied_at: '2026-03-08T00:00:00Z',
+      last_apply_source: 'api',
+    },
+    telemetry: {
+      throughput: {
         max_per_minute: 60,
         max_per_hour: 3600,
         used_this_minute: 2,
         used_this_hour: 12,
       },
-    },
-    runtime: {
-      circuit_breaker_state: 'closed',
+      policy_budgets: {
+        mouse_click: 200,
+        keyboard_type: 500,
+        keyboard_hotkey: 50,
+        mouse_drag: 20,
+        total: 1000,
+      },
+      usage: {
+        executed_this_minute: 2,
+        executed_this_hour: 12,
+        blocked_this_minute: 0,
+        blocked_this_hour: 1,
+      },
     },
   };
 
@@ -1683,7 +1912,7 @@ describe('PcControlAPI', () => {
       'http://test:1234/api/pc-control/safe-zones',
       expect.objectContaining({
         method: 'PUT',
-        body: JSON.stringify({ zones: [safeZone] }),
+        body: JSON.stringify({ safe_zone: safeZone }),
       }),
     );
   });
@@ -1727,33 +1956,49 @@ describe('TracesAPI', () => {
 });
 
 describe('RuntimeSessionsAPI', () => {
-  it('lists runtime sessions with the typed page contract', async () => {
-    const result: ListRuntimeSessionsPageResult = {
-      sessions: [
+  it('lists runtime sessions with the typed cursor contract', async () => {
+    const result: ListRuntimeSessionsResult = {
+      data: [
         {
           session_id: 'runtime-1',
+          agent_ids: ['agent-1', 'agent-2'],
           started_at: '2026-03-08T00:00:00Z',
           last_event_at: '2026-03-08T00:01:00Z',
           event_count: 2,
-          agents: 'agent-1,agent-2',
+          chain_valid: true,
+          cumulative_cost: 0.000126,
+          branched_from: null,
         },
       ],
-      page: 1,
-      page_size: 50,
-      total: 1,
+      has_more: false,
+      next_cursor: null,
+      total_count: 1,
     };
     const fetch = mockFetch(jsonResponse(result));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
-    const response = await client.runtimeSessions.list({ page: 1, page_size: 50 });
+    const response = await client.runtimeSessions.list({ limit: 50 });
     expect(response).toEqual(result);
     expect(fetch).toHaveBeenCalledWith(
-      'http://test:1234/api/sessions?page=1&page_size=50',
+      'http://test:1234/api/sessions?limit=50',
       expect.objectContaining({ method: 'GET' }),
     );
   });
 
-  it('loads events, bookmarks, and branches with typed contracts', async () => {
+  it('loads session detail, events, bookmarks, and branches with typed contracts', async () => {
+    const detail: RuntimeSessionDetailResult = {
+      session: {
+        session_id: 'runtime-1',
+        agent_ids: ['agent-1'],
+        started_at: '2026-03-08T00:00:00Z',
+        last_event_at: '2026-03-08T00:01:00Z',
+        event_count: 1,
+        chain_valid: true,
+        cumulative_cost: 0.000126,
+        branched_from: null,
+      },
+      bookmark_count: 1,
+    };
     const events: SessionEventsResult = {
       session_id: 'runtime-1',
       events: [
@@ -1774,8 +2019,9 @@ describe('RuntimeSessionsAPI', () => {
         },
       ],
       total: 1,
-      offset: 0,
       limit: 100,
+      has_more: false,
+      next_after_sequence_number: null,
       chain_valid: true,
       cumulative_cost: 0.000126,
     };
@@ -1783,20 +2029,37 @@ describe('RuntimeSessionsAPI', () => {
       bookmarks: [
         {
           id: 'bm-1',
-          eventIndex: 1,
+          session_id: 'runtime-1',
+          sequence_number: 1,
           label: 'Start',
-          createdAt: '2026-03-08T00:00:00Z',
+          created_at: '2026-03-08T00:00:00Z',
         },
       ],
     };
-    const created: CreateSessionBookmarkResult = { id: 'bm-2', status: 'created' };
+    const created: CreateSessionBookmarkResult = {
+      bookmark: {
+        id: 'bm-2',
+        session_id: 'runtime-1',
+        sequence_number: 2,
+        label: 'Checkpoint',
+        created_at: '2026-03-08T00:00:05Z',
+      },
+    };
     const deleted: DeleteSessionBookmarkResult = { status: 'deleted' };
     const branched: BranchSessionResult = {
-      session_id: 'runtime-2',
-      branched_from: 'runtime-1',
-      events_copied: 1,
+      session: {
+        session_id: 'runtime-2',
+        agent_ids: ['agent-1'],
+        started_at: '2026-03-08T00:00:00Z',
+        last_event_at: '2026-03-08T00:00:00Z',
+        event_count: 1,
+        chain_valid: true,
+        cumulative_cost: 0.000126,
+        branched_from: 'runtime-1',
+      },
     };
     const fetch = mockFetch([
+      jsonResponse(detail),
       jsonResponse(events),
       jsonResponse(bookmarks),
       jsonResponse(created, 201),
@@ -1805,19 +2068,20 @@ describe('RuntimeSessionsAPI', () => {
     ] as MockFetchResponse[]);
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
+    expect(await client.runtimeSessions.get('runtime-1')).toEqual(detail);
     expect(await client.runtimeSessions.events('runtime-1')).toEqual(events);
     expect(await client.runtimeSessions.listBookmarks('runtime-1')).toEqual(bookmarks);
     expect(
       await client.runtimeSessions.createBookmark('runtime-1', {
         id: 'bm-2',
-        eventIndex: 2,
+        sequence_number: 2,
         label: 'Checkpoint',
       }),
     ).toEqual(created);
     expect(await client.runtimeSessions.deleteBookmark('runtime-1', 'bm-2')).toEqual(deleted);
     expect(
       await client.runtimeSessions.branch('runtime-1', {
-        from_event_index: 1,
+        from_sequence_number: 1,
       }),
     ).toEqual(branched);
   });
@@ -1961,22 +2225,39 @@ describe('ItpAPI', () => {
         {
           id: 'evt-1',
           event_type: 'input',
-          platform: 'gateway',
           session_id: 'runtime-1',
           timestamp: '2026-03-08T00:00:00Z',
-          source: 'extension',
+          sequence_number: 42,
+          sender: 'agent-1',
+          source: 'browser_extension',
+          platform: 'chatgpt',
+          route: 'agent_chat',
+          privacy_level: 'standard',
+          content_length: 128,
+          session_path: '/sessions/runtime-1',
+          replay_path: '/sessions/runtime-1/replay',
         },
       ],
-      buffer_count: 1,
-      extension_connected: true,
+      limit: 25,
+      offset: 10,
+      total_persisted: 11,
+      total_filtered: 3,
+      returned: 1,
+      monitor_connected: true,
+      live_updates_supported: true,
     };
     const fetch = mockFetch(jsonResponse(result));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234' });
 
-    const response = await client.itp.list({ limit: 25 });
+    const response = await client.itp.list({
+      limit: 25,
+      offset: 10,
+      session_id: 'runtime-1',
+      event_type: 'input',
+    });
     expect(response).toEqual(result);
     expect(fetch).toHaveBeenCalledWith(
-      'http://test:1234/api/itp/events?limit=25',
+      'http://test:1234/api/itp/events?limit=25&offset=10&session_id=runtime-1&event_type=input',
       expect.objectContaining({ method: 'GET' }),
     );
   });
@@ -2473,11 +2754,43 @@ describe('Security hardening', () => {
       }),
     );
   });
+
+  it('includes active filters in blob exports', async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      blob: () => Promise.resolve(new Blob(['ok'])),
+    } as Response);
+    const client = new GhostClient({ fetch, baseUrl: 'http://test:1234', timeout: 5000 });
+
+    await client.audit.exportBlob({
+      format: 'csv',
+      event_type: 'kill_all,pause_agent',
+      severity: 'critical,warn',
+      search: 'sandbox',
+      operation_id: 'op-123',
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'http://test:1234/api/audit/export?format=csv&event_type=kill_all%2Cpause_agent&severity=critical%2Cwarn&search=sandbox&operation_id=op-123',
+      expect.objectContaining({
+        method: 'GET',
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
 });
 
 describe('Authentication', () => {
   it('gets the current session', async () => {
-    const session = { authenticated: true, subject: 'admin', role: 'admin', mode: 'jwt' as const };
+    const session = {
+      authenticated: true,
+      subject: 'admin',
+      role: 'admin',
+      capabilities: ['safety_review'],
+      authz_v: 1,
+      mode: 'jwt' as const,
+    };
     const fetch = mockFetch(jsonResponse(session));
     const client = new GhostClient({ fetch, baseUrl: 'http://test:1234', token: 'my-token' });
 

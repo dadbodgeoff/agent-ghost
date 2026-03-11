@@ -6,6 +6,7 @@ use itp_protocol::events::ITPEvent;
 use tokio::sync::mpsc;
 
 /// Non-blocking ITP event emitter.
+#[derive(Clone)]
 pub struct ITPEmitter {
     sender: mpsc::Sender<ITPEvent>,
 }
@@ -36,12 +37,12 @@ impl ITPEmitter {
     }
 
     /// Emit a SessionStart event (pre-loop step 11).
-    pub fn emit_session_start(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid) {
+    pub fn emit_session_start(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid, channel: &str) {
         self.emit(ITPEvent::SessionStart(
             itp_protocol::events::SessionStartEvent {
                 session_id,
                 agent_id,
-                channel: String::new(),
+                channel: channel.to_string(),
                 privacy_level: itp_protocol::privacy::PrivacyLevel::Standard,
                 timestamp: chrono::Utc::now(),
             },

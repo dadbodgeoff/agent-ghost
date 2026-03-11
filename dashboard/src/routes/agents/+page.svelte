@@ -11,10 +11,13 @@
   let error = $state('');
 
   const STATUS_LABELS: Record<string, string> = {
-    Starting: 'Starting',
-    Running: 'Running',
-    Stopping: 'Stopping',
-    Stopped: 'Stopped',
+    starting: 'Starting',
+    ready: 'Ready',
+    paused: 'Paused',
+    quarantined: 'Quarantined',
+    kill_all_blocked: 'Kill-All Blocked',
+    stopping: 'Stopping',
+    stopped: 'Stopped',
   };
 
   async function loadAgents() {
@@ -36,11 +39,13 @@
   onMount(() => {
     loadAgents();
 
-    // T-5.9.1: Wire AgentStateChange to refresh agent list.
+    // Canonical agent operational-state updates keep the grid truthful without reload.
     const unsub = wsStore.on('AgentStateChange', () => { loadAgents(); });
+    const unsubOperational = wsStore.on('AgentOperationalStatusChanged', () => { loadAgents(); });
     const unsubResync = wsStore.onResync(() => { loadAgents(); });
     return () => {
       unsub();
+      unsubOperational();
       unsubResync();
     };
   });
@@ -49,12 +54,19 @@
     return scoreMap.get(agentId);
   }
 
+  function effectiveState(agent: Agent): string {
+    return agent.effective_state ?? agent.status;
+  }
+
   function statusColor(status: string): string {
     switch (status) {
-      case 'Running': return 'var(--color-severity-normal)';
-      case 'Starting': return 'var(--color-severity-soft)';
-      case 'Stopping': return 'var(--color-severity-active)';
-      case 'Stopped': return 'var(--color-text-disabled)';
+      case 'ready': return 'var(--color-severity-normal)';
+      case 'starting': return 'var(--color-severity-soft)';
+      case 'paused': return 'var(--color-severity-soft)';
+      case 'quarantined': return 'var(--color-severity-hard)';
+      case 'kill_all_blocked': return 'var(--color-severity-active)';
+      case 'stopping': return 'var(--color-severity-active)';
+      case 'stopped': return 'var(--color-text-disabled)';
       default: return 'var(--color-text-muted)';
     }
   }
@@ -81,11 +93,11 @@
   <div class="grid">
     {#each agents as agent (agent.id)}
       {@const agentScore = getScore(agent.id)}
-      <a href={`/agents/${agent.id}`} class="agent-card" class:inactive={agent.status === 'Stopped'}>
+      <a href={`/agents/${agent.id}`} class="agent-card" class:inactive={effectiveState(agent) === 'stopped'}>
         <div class="agent-header">
           <span class="agent-name">{agent.name}</span>
-          <span class="status-badge" style="color: {statusColor(agent.status)}">
-            {STATUS_LABELS[agent.status] ?? agent.status}
+          <span class="status-badge" style="color: {statusColor(effectiveState(agent))}">
+            {STATUS_LABELS[effectiveState(agent)] ?? effectiveState(agent)}
           </span>
         </div>
 

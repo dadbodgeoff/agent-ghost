@@ -11,6 +11,8 @@ export type SearchMemoriesParams = NonNullable<
 export type MemorySearchResultEntry = components['schemas']['MemorySearchResultEntry'];
 export type SearchMemoriesResult =
   operations['search_memories']['responses'][200]['content']['application/json'];
+export type ArchiveMemoryParams = components['schemas']['ArchiveMemoryRequest'];
+export type MemoryArchiveStatus = components['schemas']['MemoryArchiveStatusResponse'];
 export type MemoryGraphNode = components['schemas']['MemoryGraphNode'];
 export type MemoryGraphEdge = Omit<components['schemas']['MemoryGraphEdge'], 'source' | 'target'> & {
   source: string | MemoryGraphNode;
@@ -64,5 +66,20 @@ export class MemoryAPI {
 
     const qs = query.toString();
     return this.request<SearchMemoriesResult>('GET', `/api/memory/search${qs ? `?${qs}` : ''}`);
+  }
+
+  async archive(id: string, body: ArchiveMemoryParams): Promise<MemoryArchiveStatus> {
+    return this.request<MemoryArchiveStatus>(
+      'POST',
+      `/api/memory/${encodeURIComponent(id)}/archive`,
+      body,
+    );
+  }
+
+  async unarchive(id: string): Promise<MemoryArchiveStatus> {
+    return this.request<MemoryArchiveStatus>(
+      'POST',
+      `/api/memory/${encodeURIComponent(id)}/unarchive`,
+    );
   }
 }

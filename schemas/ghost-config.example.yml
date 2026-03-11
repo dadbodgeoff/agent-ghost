@@ -18,6 +18,14 @@ agents:
       - "memory_write"
     isolation: inprocess
     template: "personal"
+    sandbox:
+      enabled: true
+      mode: "workspace_write"
+      on_violation: "pause"
+      network_access: false
+      allowed_shell_prefixes:
+        - "npm test"
+        - "cargo test"
     # Network egress control (Phase 11)
     # Defaults to 'unrestricted' if not specified (backward compatible).
     # network:

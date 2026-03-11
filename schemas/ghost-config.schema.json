@@ -30,6 +30,29 @@
           "capabilities": { "type": "array", "items": { "type": "string" } },
           "isolation": { "type": "string", "enum": ["inprocess", "process", "container"], "default": "inprocess" },
           "template": { "type": "string" },
+          "sandbox": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean", "default": true },
+              "mode": {
+                "type": "string",
+                "enum": ["off", "read_only", "workspace_write", "strict"],
+                "default": "workspace_write"
+              },
+              "on_violation": {
+                "type": "string",
+                "enum": ["warn", "pause", "quarantine", "kill_all"],
+                "default": "pause"
+              },
+              "network_access": { "type": "boolean", "default": false },
+              "allowed_shell_prefixes": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": []
+              }
+            },
+            "additionalProperties": false
+          },
           "network": {
             "type": "object",
             "description": "Per-agent network egress control (Phase 11)",

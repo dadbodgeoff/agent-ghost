@@ -12,12 +12,39 @@ export interface SearchResult {
   title: string;
   snippet: string;
   score: number;
+  navigation: SearchNavigation;
+  match_context: SearchMatchContext;
+}
+
+export interface SearchNavigation {
+  href: string;
+  route_kind: string;
+  focus_id?: string;
+  query?: string;
+}
+
+export interface SearchMatchContext {
+  matched_fields: string[];
+}
+
+export interface SearchTypeCount {
+  result_type: string;
+  total: number;
+}
+
+export interface SearchDomainWarning {
+  result_type: string;
+  message: string;
 }
 
 export interface SearchResponse {
   query: string;
   results: SearchResult[];
   total: number;
+  returned_count: number;
+  totals_by_type: SearchTypeCount[];
+  degraded: boolean;
+  warnings: SearchDomainWarning[];
 }
 
 export class SearchAPI {

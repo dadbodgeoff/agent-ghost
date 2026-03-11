@@ -11,10 +11,12 @@
     memory_id = '',
     snapshot = '{}',
     created_at = '',
+    focused = false,
   }: {
     memory_id?: string;
     snapshot?: string;
     created_at?: string;
+    focused?: boolean;
   } = $props();
 
   function parseSnapshot(raw: string): Record<string, any> {
@@ -30,6 +32,7 @@
   const IMPORTANCE_COLORS: Record<string, string> = {
     critical: 'var(--color-severity-hard)',
     high: 'var(--color-severity-active)',
+    normal: 'var(--color-severity-soft)',
     medium: 'var(--color-severity-soft)',
     low: 'var(--color-severity-normal)',
   };
@@ -37,16 +40,30 @@
   let importanceColor = $derived(
     IMPORTANCE_COLORS[(data.importance ?? '').toLowerCase()] ?? 'var(--color-text-muted)'
   );
+
+  function previewContent(data: Record<string, any>): string {
+    if (typeof data.summary === 'string' && data.summary.trim()) return data.summary;
+    if (typeof data.content === 'string' && data.content.trim()) return data.content;
+    if (data.content && typeof data.content === 'object') {
+      for (const key of ['goal_text', 'text', 'message', 'description', 'fact']) {
+        const value = data.content[key];
+        if (typeof value === 'string' && value.trim()) return value;
+      }
+      return JSON.stringify(data.content).slice(0, 200);
+    }
+    if (typeof data.text === 'string' && data.text.trim()) return data.text;
+    return JSON.stringify(data).slice(0, 200);
+  }
 </script>
 
-<div class="memory-card">
+<div class="memory-card" class:focused id={`memory-${memory_id}`}>
   <div class="header">
     <span class="type">{data.memory_type ?? 'unknown'}</span>
     {#if data.importance}
       <span class="importance" style="color: {importanceColor}">{data.importance}</span>
     {/if}
   </div>
-  <p class="content">{data.content ?? data.text ?? JSON.stringify(data).slice(0, 200)}</p>
+  <p class="content">{previewContent(data)}</p>
   <div class="footer">
     <span class="id" title={memory_id}>{memory_id.slice(0, 8)}</span>
     {#if created_at}
@@ -61,6 +78,12 @@
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     padding: var(--spacing-3);
+  }
+
+  .memory-card.focused {
+    border-color: var(--color-interactive-primary);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-interactive-primary) 45%, transparent);
+    background: color-mix(in srgb, var(--color-interactive-primary) 7%, var(--color-bg-elevated-1));
   }
 
   .header {

@@ -13,6 +13,7 @@ use cortex_core::memory::BaseMemory;
 use serde::{Deserialize, Serialize};
 
 use crate::api::error::ApiError;
+use crate::api::goals::parse_goal_content;
 use crate::config::ProviderConfig;
 use crate::provider_runtime;
 use crate::runtime_safety::{
@@ -435,6 +436,27 @@ fn hydrate_runtime_context_from_state(
         }
     }
 
+    match cortex_storage::queries::goal_state_queries::list_active_goals(
+        &db,
+        Some(&actor_id),
+        HYDRATED_DURABLE_MEMORY_LIMIT,
+        0,
+    ) {
+        Ok(rows) => {
+            let active_goals = rows
+                .into_iter()
+                .filter_map(|row| serde_json::from_str::<serde_json::Value>(&row.content).ok())
+                .filter_map(|content| parse_goal_content(&content))
+                .collect::<Vec<_>>();
+            if !active_goals.is_empty() {
+                hydrated.snapshot_input.goals = active_goals;
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, actor_id = %actor_id, "runtime hydration: active goal lookup failed");
+        }
+    }
+
     if hydrated.snapshot_input.reflections.is_empty() {
         match cortex_storage::queries::reflection_queries::query_by_session(&db, &session_id) {
             Ok(rows) => {
@@ -638,9 +660,7 @@ fn hydrate_goal_and_reflection_layers_from_memories(input: &mut HydratedSnapshot
         .durable_memories
         .iter()
         .filter(|memory| memory.memory_type == MemoryType::AgentGoal)
-        .filter_map(|memory| {
-            serde_json::from_value::<AgentGoalContent>(memory.content.clone()).ok()
-        })
+        .filter_map(|memory| parse_goal_content(&memory.content))
         .collect();
 
     if input.reflections.is_empty() {

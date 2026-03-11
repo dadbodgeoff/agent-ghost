@@ -933,6 +933,19 @@ impl ConvergenceMonitor {
         // ── Step 5: Session lifecycle ────────────────────────────────
         match event.event_type {
             EventType::SessionStart => {
+                let duplicate_session_start = self
+                    .sessions
+                    .get_session(&event.session_id)
+                    .is_some_and(|session| session.agent_id == event.agent_id && session.is_active);
+                if duplicate_session_start {
+                    tracing::debug!(
+                        session_id = %event.session_id,
+                        agent_id = %event.agent_id,
+                        "duplicate SessionStart ignored for already-active session"
+                    );
+                    return;
+                }
+
                 // AC13: synthetic SessionEnd for prior active sessions
                 let closed =
                     self.sessions
@@ -1854,5 +1867,46 @@ mod tests {
             !monitor.db_write_healthy,
             "monitor health should degrade on profile lookup failure"
         );
+    }
+
+    #[test]
+    fn duplicate_session_start_does_not_increment_calibration_or_restart_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("monitor.sqlite");
+        let state_dir = temp.path().join("state");
+        let mut monitor = ConvergenceMonitor::new(test_config(db_path, state_dir)).unwrap();
+        let agent_id = Uuid::now_v7();
+        let session_id = Uuid::now_v7();
+        let timestamp = chrono::Utc::now();
+
+        let event = IngestEvent {
+            session_id,
+            agent_id,
+            event_type: EventType::SessionStart,
+            payload: serde_json::json!({"session_id": session_id, "agent_id": agent_id}),
+            timestamp,
+            source: EventSource::AgentLoop,
+        };
+
+        monitor.handle_event(event.clone());
+        let first_count = monitor.calibration_counts.get(&agent_id).copied();
+        let started_at = monitor
+            .sessions
+            .get_session(&session_id)
+            .expect("session should exist after first start")
+            .started_at;
+
+        monitor.handle_event(event);
+
+        assert_eq!(
+            monitor.calibration_counts.get(&agent_id).copied(),
+            first_count
+        );
+        let session = monitor
+            .sessions
+            .get_session(&session_id)
+            .expect("session should remain tracked");
+        assert!(session.is_active);
+        assert_eq!(session.started_at, started_at);
     }
 }

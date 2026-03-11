@@ -60,6 +60,13 @@ const STUDIO_MESSAGE_ROUTE_KIND: &str = "studio_send_message";
 const STUDIO_MESSAGE_STREAM_ROUTE_KIND: &str = "studio_send_message_stream";
 const STUDIO_MESSAGE_EXECUTION_STATE_VERSION: u32 = 1;
 const STUDIO_STREAM_EXECUTION_STATE_VERSION: u32 = 1;
+const EXECUTION_ACTIVE_STATUSES: &[&str] = &[
+    "accepted",
+    "preparing",
+    "running",
+    "recovery_required",
+    "cancel_requested",
+];
 
 // ── Request / Response types ───────────────────────────────────────
 
@@ -743,6 +750,7 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_id,
+                        0,
                         execution_state,
                         StatusCode::UNPROCESSABLE_ENTITY,
                         response_body,
@@ -761,6 +769,7 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_id,
+                        0,
                         execution_state,
                         StatusCode::UNPROCESSABLE_ENTITY,
                         response_body,
@@ -776,6 +785,7 @@ pub async fn send_message(
                         route_kind: STUDIO_MESSAGE_ROUTE_KIND.to_string(),
                         actor_key: actor.to_string(),
                         state_version: STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
+                        attempt: 0,
                         status: "accepted".to_string(),
                         state_json: serde_json::to_string(&execution_state)
                             .unwrap_or_else(|_| "{}".to_string()),
@@ -807,6 +817,7 @@ pub async fn send_message(
                             &session_id,
                             actor,
                             &execution_record.id,
+                            execution_record.attempt,
                             execution_state,
                             status,
                             body,
@@ -823,13 +834,14 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_record.id,
+                        execution_record.attempt,
                         execution_state,
                         StatusCode::ACCEPTED,
                         response_body,
                     )
                     .await;
                 }
-                "cancelled" => {
+                "cancelled" | "cancel_requested" => {
                     let cancelled_body = studio_message_cancelled_body(&execution_state);
                     return finalize_studio_message_cancelled_response(
                         &state,
@@ -838,6 +850,7 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_record.id,
+                        execution_record.attempt,
                         execution_state,
                         cancelled_body,
                     )
@@ -854,6 +867,7 @@ pub async fn send_message(
                             &session_id,
                             actor,
                             &execution_record.id,
+                            execution_record.attempt,
                             execution_state,
                             status,
                             body,
@@ -869,6 +883,7 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_record.id,
+                        execution_record.attempt,
                         execution_state,
                         response_body,
                     )
@@ -906,6 +921,7 @@ pub async fn send_message(
                             &session_id,
                             actor,
                             &execution_record.id,
+                            execution_record.attempt,
                             execution_state,
                             response_body,
                         )
@@ -977,6 +993,29 @@ pub async fn send_message(
 
             let (cancel_token, _execution_control_guard) =
                 state.acquire_live_execution_control(execution_record.id.clone());
+            let execution_attempt = {
+                let state_json = match serde_json::to_string(&execution_state) {
+                    Ok(json) => json,
+                    Err(error) => {
+                        return error_response_with_idempotency(ApiError::internal(
+                            error.to_string(),
+                        ))
+                    }
+                };
+                let db = state.db.write().await;
+                match begin_execution_attempt(
+                    &db,
+                    &execution_record.id,
+                    STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
+                    &state_json,
+                    Some(lease.owner_token.as_str()),
+                    Some(lease.lease_epoch),
+                ) {
+                    Ok(attempt) => attempt,
+                    Err(error) => return error_response_with_idempotency(error),
+                }
+            };
+            runner.set_execution_context(execution_record.id.clone(), execution_attempt);
             runner.set_cancel_token(Arc::clone(&cancel_token));
 
             if providers.is_empty() {
@@ -990,6 +1029,7 @@ pub async fn send_message(
                     &session_id,
                     actor,
                     &execution_record.id,
+                    execution_attempt,
                     execution_state,
                     StatusCode::UNPROCESSABLE_ENTITY,
                     response_body,
@@ -1025,22 +1065,11 @@ pub async fn send_message(
                     &session_id,
                     actor,
                     &execution_record.id,
+                    execution_attempt,
                     execution_state,
                     cancelled_body,
                 )
                 .await;
-            }
-
-            {
-                let db = state.db.write().await;
-                if let Err(error) = update_live_execution_state(
-                    &db,
-                    &execution_record.id,
-                    "running",
-                    &execution_state,
-                ) {
-                    return error_response_with_idempotency(error);
-                }
             }
 
             let result = match execute_blocking_turn(
@@ -1070,6 +1099,7 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_record.id,
+                        execution_attempt,
                         execution_state,
                         cancelled_body,
                     )
@@ -1088,6 +1118,7 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_record.id,
+                        execution_attempt,
                         execution_state,
                         response_body,
                     )
@@ -1122,6 +1153,7 @@ pub async fn send_message(
                         &session_id,
                         actor,
                         &execution_record.id,
+                        execution_attempt,
                         execution_state,
                         response_body,
                     )
@@ -1192,6 +1224,7 @@ pub async fn send_message(
                 &session_id,
                 actor,
                 &execution_record.id,
+                execution_attempt,
                 execution_state,
                 StatusCode::OK,
                 final_body,
@@ -1273,6 +1306,102 @@ fn studio_message_cancelled_body(state: &StudioMessageExecutionState) -> serde_j
     })
 }
 
+fn ensure_execution_attempt_started(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    attempt: i64,
+    owner_token: Option<&str>,
+    lease_epoch: Option<i64>,
+    status: &str,
+) -> Result<(), ApiError> {
+    cortex_storage::queries::execution_attempt_queries::insert_or_ignore(
+        conn,
+        &cortex_storage::queries::execution_attempt_queries::NewExecutionAttempt {
+            execution_id,
+            attempt,
+            owner_token,
+            lease_epoch,
+            status,
+            started_at: &chrono::Utc::now().to_rfc3339(),
+        },
+    )
+    .map_err(|error| ApiError::db_error("insert_execution_attempt", error))
+}
+
+fn finish_execution_attempt(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    attempt: i64,
+    status: &str,
+    failure_class: Option<&str>,
+    failure_detail: Option<&str>,
+) -> Result<(), ApiError> {
+    let updated = cortex_storage::queries::execution_attempt_queries::update_status(
+        conn,
+        execution_id,
+        attempt,
+        status,
+        Some(&chrono::Utc::now().to_rfc3339()),
+        failure_class,
+        failure_detail,
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .map_err(|error| ApiError::db_error("update_execution_attempt", error))?;
+    if !updated {
+        tracing::debug!(
+            execution_id,
+            attempt,
+            status,
+            "execution attempt missing during finish"
+        );
+    }
+    Ok(())
+}
+
+fn begin_execution_attempt(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    state_version: i64,
+    state_json: &str,
+    owner_token: Option<&str>,
+    lease_epoch: Option<i64>,
+) -> Result<i64, ApiError> {
+    let attempt = if let Some(attempt) = cortex_storage::queries::live_execution_queries::
+        advance_attempt_and_update_status_if_in_statuses(
+            conn,
+            execution_id,
+            state_version,
+            &["accepted", "preparing"],
+            "running",
+            state_json,
+        )
+        .map_err(|error| ApiError::db_error("advance_live_execution_attempt", error))?
+    {
+        attempt
+    } else {
+        let record = cortex_storage::queries::live_execution_queries::get_by_id(conn, execution_id)
+            .map_err(|error| ApiError::db_error("get_live_execution_record", error))?
+            .ok_or_else(|| ApiError::not_found(format!("live execution {execution_id} not found")))?;
+        if record.status != "running" {
+            return Err(ApiError::custom(
+                StatusCode::CONFLICT,
+                "LIVE_EXECUTION_STATE_CONFLICT",
+                format!("live execution {execution_id} could not transition to running"),
+            ));
+        }
+        record.attempt
+    };
+    ensure_execution_attempt_started(
+        conn,
+        execution_id,
+        attempt,
+        owner_token,
+        lease_epoch,
+        "running",
+    )?;
+    Ok(attempt)
+}
+
 fn persist_live_execution_record(
     conn: &rusqlite::Connection,
     execution_id: &str,
@@ -1294,6 +1423,7 @@ fn persist_live_execution_record(
             route_kind,
             actor_key: actor,
             state_version: STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
+            attempt: 0,
             status,
             state_json: &state_json,
         },
@@ -1301,22 +1431,33 @@ fn persist_live_execution_record(
     .map_err(|error| ApiError::db_error("insert_live_execution_record", error))
 }
 
-fn update_live_execution_state(
+fn transition_live_execution_state(
     conn: &rusqlite::Connection,
     execution_id: &str,
+    expected_statuses: &[&str],
     status: &str,
     state: &StudioMessageExecutionState,
 ) -> Result<(), ApiError> {
     let state_json =
         serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
-    cortex_storage::queries::live_execution_queries::update_status_and_state(
-        conn,
-        execution_id,
-        STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
-        status,
-        &state_json,
-    )
-    .map_err(|error| ApiError::db_error("update_live_execution_record", error))
+    let updated =
+        cortex_storage::queries::live_execution_queries::update_status_and_state_if_in_statuses(
+            conn,
+            execution_id,
+            STUDIO_MESSAGE_EXECUTION_STATE_VERSION as i64,
+            expected_statuses,
+            status,
+            &state_json,
+        )
+        .map_err(|error| ApiError::db_error("update_live_execution_record", error))?;
+    if !updated {
+        return Err(ApiError::custom(
+            StatusCode::CONFLICT,
+            "LIVE_EXECUTION_STATE_CONFLICT",
+            format!("live execution {execution_id} could not transition to {status}"),
+        ));
+    }
+    Ok(())
 }
 
 fn stored_studio_message_terminal_response(
@@ -1387,6 +1528,7 @@ async fn finalize_studio_message_terminal_response(
     session_id: &str,
     actor: &str,
     execution_id: &str,
+    execution_attempt: i64,
     mut execution_state: StudioMessageExecutionState,
     status: StatusCode,
     body: serde_json::Value,
@@ -1395,11 +1537,29 @@ async fn finalize_studio_message_terminal_response(
     execution_state.final_response = Some(body.clone());
 
     let db = state.db.write().await;
-    if let Err(error) =
-        update_live_execution_state(&db, execution_id, "completed", &execution_state)
-    {
+    if let Err(error) = transition_live_execution_state(
+        &db,
+        execution_id,
+        &[
+            "accepted",
+            "preparing",
+            "running",
+            "recovery_required",
+            "cancel_requested",
+        ],
+        "completed",
+        &execution_state,
+    ) {
         return error_response_with_idempotency(error);
     }
+    let _ = finish_execution_attempt(
+        &db,
+        execution_id,
+        execution_attempt,
+        "completed",
+        None,
+        None,
+    );
 
     match commit_prepared_json_operation(&db, operation_context, lease, status, &body) {
         Ok(outcome) => {
@@ -1463,6 +1623,7 @@ async fn finalize_studio_message_cancelled_response(
     session_id: &str,
     actor: &str,
     execution_id: &str,
+    execution_attempt: i64,
     mut execution_state: StudioMessageExecutionState,
     body: serde_json::Value,
 ) -> Response {
@@ -1470,11 +1631,29 @@ async fn finalize_studio_message_cancelled_response(
     execution_state.final_response = Some(body.clone());
 
     let db = state.db.write().await;
-    if let Err(error) =
-        update_live_execution_state(&db, execution_id, "cancelled", &execution_state)
-    {
+    if let Err(error) = transition_live_execution_state(
+        &db,
+        execution_id,
+        &[
+            "accepted",
+            "preparing",
+            "running",
+            "recovery_required",
+            "cancel_requested",
+        ],
+        "cancelled",
+        &execution_state,
+    ) {
         return error_response_with_idempotency(error);
     }
+    let _ = finish_execution_attempt(
+        &db,
+        execution_id,
+        execution_attempt,
+        "cancelled",
+        None,
+        None,
+    );
 
     match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::CONFLICT, &body)
     {
@@ -1509,15 +1688,34 @@ async fn finalize_studio_message_recovery_response(
     session_id: &str,
     actor: &str,
     execution_id: &str,
+    execution_attempt: i64,
     execution_state: StudioMessageExecutionState,
     body: serde_json::Value,
 ) -> Response {
     let db = state.db.write().await;
-    if let Err(error) =
-        update_live_execution_state(&db, execution_id, "recovery_required", &execution_state)
-    {
+    if let Err(error) = transition_live_execution_state(
+        &db,
+        execution_id,
+        &[
+            "accepted",
+            "preparing",
+            "running",
+            "recovery_required",
+            "cancel_requested",
+        ],
+        "recovery_required",
+        &execution_state,
+    ) {
         return error_response_with_idempotency(error);
     }
+    let _ = finish_execution_attempt(
+        &db,
+        execution_id,
+        execution_attempt,
+        "recovery_required",
+        Some("route_recovery"),
+        None,
+    );
 
     match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::ACCEPTED, &body)
     {
@@ -1751,9 +1949,38 @@ pub async fn send_message_stream(
                     );
                 }
             };
+            let execution_attempt = {
+                let state_json = match serde_json::to_string(&execution_state) {
+                    Ok(json) => json,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            ApiError::internal(error.to_string()).into_response(),
+                            IdempotencyStatus::Executed,
+                        );
+                    }
+                };
+                let db = state.db.write().await;
+                match begin_execution_attempt(
+                    &db,
+                    &execution_record.id,
+                    STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+                    &state_json,
+                    None,
+                    None,
+                ) {
+                    Ok(attempt) => attempt,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            error.into_response(),
+                            IdempotencyStatus::Executed,
+                        );
+                    }
+                }
+            };
             let (stream_rx, task_handle) = spawn_studio_stream_execution(
                 Arc::clone(&state),
                 execution_record.id.clone(),
+                execution_attempt,
                 acceptance.session_id.clone(),
                 acceptance.user_message_id.clone(),
                 acceptance.assistant_message_id.clone(),
@@ -1764,6 +1991,7 @@ pub async fn send_message_stream(
                 Arc::clone(&state),
                 acceptance,
                 execution_record.id,
+                execution_attempt,
                 execution_state,
                 stream_rx,
                 IdempotencyStatus::Executed,
@@ -2009,6 +2237,7 @@ fn persist_studio_stream_execution_record(
             route_kind: STUDIO_MESSAGE_STREAM_ROUTE_KIND,
             actor_key: actor,
             state_version: STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+            attempt: 0,
             status: "accepted",
             state_json: &state_json,
         },
@@ -2022,16 +2251,42 @@ fn update_studio_stream_execution_state(
     status: &str,
     state: &StudioStreamExecutionState,
 ) -> Result<(), ApiError> {
-    let state_json =
-        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
-    cortex_storage::queries::live_execution_queries::update_status_and_state(
+    transition_studio_stream_execution_state(
         conn,
         execution_id,
-        STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+        EXECUTION_ACTIVE_STATUSES,
         status,
-        &state_json,
+        state,
     )
-    .map_err(|error| ApiError::db_error("update_studio_stream_execution_record", error))
+}
+
+fn transition_studio_stream_execution_state(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    expected_statuses: &[&str],
+    status: &str,
+    state: &StudioStreamExecutionState,
+) -> Result<(), ApiError> {
+    let state_json =
+        serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
+    let updated =
+        cortex_storage::queries::live_execution_queries::update_status_and_state_if_in_statuses(
+            conn,
+            execution_id,
+            STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+            expected_statuses,
+            status,
+            &state_json,
+        )
+        .map_err(|error| ApiError::db_error("update_studio_stream_execution_record", error))?;
+    if !updated {
+        return Err(ApiError::custom(
+            StatusCode::CONFLICT,
+            "LIVE_EXECUTION_STATE_CONFLICT",
+            format!("live execution {execution_id} could not transition to {status}"),
+        ));
+    }
+    Ok(())
 }
 
 fn studio_stream_keep_alive() -> axum::response::sse::KeepAlive {
@@ -2236,6 +2491,7 @@ async fn ensure_studio_stream_execution_record(
             route_kind: STUDIO_MESSAGE_STREAM_ROUTE_KIND.to_string(),
             actor_key: actor.to_string(),
             state_version: STUDIO_STREAM_EXECUTION_STATE_VERSION as i64,
+            attempt: 0,
             status: "accepted".to_string(),
             state_json: serde_json::to_string(&execution_state)
                 .unwrap_or_else(|_| "{}".to_string()),
@@ -2270,17 +2526,27 @@ async fn find_studio_stream_execution_record(
 async fn persist_studio_stream_terminal_state(
     db: &Arc<crate::db_pool::DbPool>,
     execution_id: &str,
+    attempt: i64,
     status: &str,
     execution_state: &StudioStreamExecutionState,
 ) {
     let conn = db.write().await;
     let _ = update_studio_stream_execution_state(&conn, execution_id, status, execution_state);
+    let _ = finish_execution_attempt(
+        &conn,
+        execution_id,
+        attempt,
+        status,
+        (status == "recovery_required").then_some("stream_recovery"),
+        None,
+    );
 }
 
 fn studio_live_stream_response(
     state: Arc<AppState>,
     acceptance: StudioStreamAcceptance,
     execution_id: String,
+    execution_attempt: i64,
     mut execution_state: StudioStreamExecutionState,
     mut rx: tokio::sync::mpsc::Receiver<AgentStreamEvent>,
     idempotency_status: IdempotencyStatus,
@@ -2294,9 +2560,10 @@ fn studio_live_stream_response(
     let sse_stream = async_stream::stream! {
         {
             let conn = db_for_stream.write().await;
-            if let Err(error) = update_studio_stream_execution_state(
+            if let Err(error) = transition_studio_stream_execution_state(
                 &conn,
                 &execution_id,
+                &["accepted", "preparing", "running"],
                 "running",
                 &execution_state,
             ) {
@@ -2310,6 +2577,7 @@ fn studio_live_stream_response(
                 persist_studio_stream_terminal_state(
                     &db_for_stream,
                     &execution_id,
+                    execution_attempt,
                     "recovery_required",
                     &execution_state,
                 )
@@ -2323,8 +2591,6 @@ fn studio_live_stream_response(
 
         let mut text_buffer = String::new();
         const TEXT_FLUSH_THRESHOLD: usize = 2048;
-        let mut consecutive_persist_failures: u32 = 0;
-        const PERSIST_FAILURE_WARN_THRESHOLD: u32 = 3;
 
         yield Ok::<Event, std::convert::Infallible>(start_event);
 
@@ -2364,20 +2630,25 @@ fn studio_live_stream_response(
                         )
                         .await
                         {
-                            Ok(seq) => {
-                                if seq.is_some() {
-                                    consecutive_persist_failures = 0;
-                                }
-                                seq
-                            }
+                            Ok(seq) => seq,
                             Err(error) => {
-                                consecutive_persist_failures += 1;
-                                tracing::warn!(
-                                    error = %error,
-                                    consecutive_failures = consecutive_persist_failures,
-                                    "failed to persist text_chunk"
-                                );
-                                None
+                                let payload = studio_stream_recovery_payload(format!(
+                                    "Failed to persist text chunk: {error}"
+                                ));
+                                execution_state.recovery_required = true;
+                                execution_state.terminal_event_type = Some("error".to_string());
+                                execution_state.terminal_payload = Some(payload.clone());
+                                persist_studio_stream_terminal_state(
+                                    &db_for_stream,
+                                    &execution_id,
+                                    execution_attempt,
+                                    "recovery_required",
+                                    &execution_state,
+                                )
+                                .await;
+                                yield Ok(Event::default().event("error").data(payload.to_string()));
+                                stream_ended = true;
+                                break;
                             }
                         };
                     }
@@ -2399,15 +2670,26 @@ fn studio_live_stream_response(
                     )
                     .await
                     {
-                        Ok(Some(_)) => consecutive_persist_failures = 0,
+                        Ok(Some(_)) => {}
                         Ok(None) => {}
                         Err(error) => {
-                            consecutive_persist_failures += 1;
-                            tracing::warn!(
-                                error = %error,
-                                consecutive_failures = consecutive_persist_failures,
-                                "failed to persist text_chunk"
-                            );
+                            let payload = studio_stream_recovery_payload(format!(
+                                "Failed to persist text chunk: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(payload.clone());
+                            persist_studio_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                execution_attempt,
+                                "recovery_required",
+                                &execution_state,
+                            )
+                            .await;
+                            yield Ok(Event::default().event("error").data(payload.to_string()));
+                            stream_ended = true;
+                            break;
                         }
                     }
 
@@ -2425,30 +2707,27 @@ fn studio_live_stream_response(
                     )
                     .await
                     {
-                        Ok(seq) => {
-                            consecutive_persist_failures = 0;
-                            Some(seq)
-                        }
+                        Ok(seq) => Some(seq),
                         Err(error) => {
-                            consecutive_persist_failures += 1;
-                            tracing::warn!(
-                                error = %error,
-                                event_type = "tool_use",
-                                consecutive_failures = consecutive_persist_failures,
-                                "failed to persist stream event"
-                            );
-                            None
+                            let payload = studio_stream_recovery_payload(format!(
+                                "Failed to persist tool_use event: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(payload.clone());
+                            persist_studio_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                execution_attempt,
+                                "recovery_required",
+                                &execution_state,
+                            )
+                            .await;
+                            yield Ok(Event::default().event("error").data(payload.to_string()));
+                            stream_ended = true;
+                            break;
                         }
                     };
-                    if consecutive_persist_failures == PERSIST_FAILURE_WARN_THRESHOLD {
-                        yield Ok(Event::default()
-                            .event("warning")
-                            .data(serde_json::json!({
-                                "warning_type": "persistence_degraded",
-                                "code": "db_persistence_degraded",
-                                "message": format!("{} consecutive DB persistence failures — stream events may not be recoverable on reconnect", consecutive_persist_failures),
-                            }).to_string()));
-                    }
 
                     crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
                         session_id: session_id_sse.clone(),
@@ -2482,30 +2761,27 @@ fn studio_live_stream_response(
                     )
                     .await
                     {
-                        Ok(seq) => {
-                            consecutive_persist_failures = 0;
-                            Some(seq)
-                        }
+                        Ok(seq) => Some(seq),
                         Err(error) => {
-                            consecutive_persist_failures += 1;
-                            tracing::warn!(
-                                error = %error,
-                                event_type = "tool_result",
-                                consecutive_failures = consecutive_persist_failures,
-                                "failed to persist stream event"
-                            );
-                            None
+                            let payload = studio_stream_recovery_payload(format!(
+                                "Failed to persist tool_result event: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(payload.clone());
+                            persist_studio_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                execution_attempt,
+                                "recovery_required",
+                                &execution_state,
+                            )
+                            .await;
+                            yield Ok(Event::default().event("error").data(payload.to_string()));
+                            stream_ended = true;
+                            break;
                         }
                     };
-                    if consecutive_persist_failures == PERSIST_FAILURE_WARN_THRESHOLD {
-                        yield Ok(Event::default()
-                            .event("warning")
-                            .data(serde_json::json!({
-                                "warning_type": "persistence_degraded",
-                                "code": "db_persistence_degraded",
-                                "message": format!("{} consecutive DB persistence failures — stream events may not be recoverable on reconnect", consecutive_persist_failures),
-                            }).to_string()));
-                    }
 
                     crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
                         session_id: session_id_sse.clone(),
@@ -2537,15 +2813,26 @@ fn studio_live_stream_response(
                     )
                     .await
                     {
-                        Ok(Some(_)) => consecutive_persist_failures = 0,
+                        Ok(Some(_)) => {}
                         Ok(None) => {}
                         Err(error) => {
-                            consecutive_persist_failures += 1;
-                            tracing::warn!(
-                                error = %error,
-                                consecutive_failures = consecutive_persist_failures,
-                                "failed to persist text_chunk"
-                            );
+                            let payload = studio_stream_recovery_payload(format!(
+                                "Failed to persist text chunk: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(payload.clone());
+                            persist_studio_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                execution_attempt,
+                                "recovery_required",
+                                &execution_state,
+                            )
+                            .await;
+                            yield Ok(Event::default().event("error").data(payload.to_string()));
+                            stream_ended = true;
+                            break;
                         }
                     }
 
@@ -2563,22 +2850,37 @@ fn studio_live_stream_response(
                     )
                     .await
                     {
-                        Ok(seq) => {
-                            consecutive_persist_failures = 0;
-                            Some(seq)
-                        }
+                        Ok(seq) => Some(seq),
                         Err(error) => {
-                            consecutive_persist_failures += 1;
-                            tracing::warn!(
-                                error = %error,
-                                event_type = "turn_complete",
-                                consecutive_failures = consecutive_persist_failures,
-                                "failed to persist stream event"
-                            );
-                            None
+                            let payload = studio_stream_recovery_payload(format!(
+                                "Failed to persist terminal stream event: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(payload.clone());
+                            persist_studio_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                execution_attempt,
+                                "recovery_required",
+                                &execution_state,
+                            )
+                            .await;
+                            yield Ok(Event::default().event("error").data(payload.to_string()));
+                            stream_ended = true;
+                            break;
                         }
                     };
 
+                    if let Some(s) = seq {
+                        crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
+                            session_id: session_id_sse.clone(),
+                            event_id: assistant_msg_id_sse.clone(),
+                            event_type: "turn_complete".to_string(),
+                            sender: None,
+                            sequence_number: s,
+                        });
+                    }
                     let mut ev = Event::default()
                         .event("stream_end")
                         .data(payload.to_string());
@@ -2591,6 +2893,7 @@ fn studio_live_stream_response(
                     persist_studio_stream_terminal_state(
                         &db_for_stream,
                         &execution_id,
+                        execution_attempt,
                         "completed",
                         &execution_state,
                     )
@@ -2631,15 +2934,26 @@ fn studio_live_stream_response(
                     )
                     .await
                     {
-                        Ok(Some(_)) => consecutive_persist_failures = 0,
+                        Ok(Some(_)) => {}
                         Ok(None) => {}
                         Err(error) => {
-                            consecutive_persist_failures += 1;
-                            tracing::warn!(
-                                error = %error,
-                                consecutive_failures = consecutive_persist_failures,
-                                "failed to persist text_chunk"
-                            );
+                            let recovery_payload = studio_stream_recovery_payload(format!(
+                                "Failed to persist text chunk: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(recovery_payload.clone());
+                            persist_studio_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                execution_attempt,
+                                "recovery_required",
+                                &execution_state,
+                            )
+                            .await;
+                            yield Ok(Event::default().event("error").data(recovery_payload.to_string()));
+                            stream_ended = true;
+                            break;
                         }
                     }
 
@@ -2652,22 +2966,37 @@ fn studio_live_stream_response(
                     )
                     .await
                     {
-                        Ok(seq) => {
-                            consecutive_persist_failures = 0;
-                            Some(seq)
-                        }
+                        Ok(seq) => Some(seq),
                         Err(error) => {
-                            consecutive_persist_failures += 1;
-                            tracing::warn!(
-                                error = %error,
-                                event_type = "error",
-                                consecutive_failures = consecutive_persist_failures,
-                                "failed to persist stream event"
-                            );
-                            None
+                            let recovery_payload = studio_stream_recovery_payload(format!(
+                                "Failed to persist terminal error event: {error}"
+                            ));
+                            execution_state.recovery_required = true;
+                            execution_state.terminal_event_type = Some("error".to_string());
+                            execution_state.terminal_payload = Some(recovery_payload.clone());
+                            persist_studio_stream_terminal_state(
+                                &db_for_stream,
+                                &execution_id,
+                                execution_attempt,
+                                "recovery_required",
+                                &execution_state,
+                            )
+                            .await;
+                            yield Ok(Event::default().event("error").data(recovery_payload.to_string()));
+                            stream_ended = true;
+                            break;
                         }
                     };
 
+                    if let Some(s) = seq {
+                        crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
+                            session_id: session_id_sse.clone(),
+                            event_id: assistant_msg_id_sse.clone(),
+                            event_type: "error".to_string(),
+                            sender: None,
+                            sequence_number: s,
+                        });
+                    }
                     let mut ev = Event::default()
                         .event("error")
                         .data(payload.to_string());
@@ -2680,6 +3009,7 @@ fn studio_live_stream_response(
                     persist_studio_stream_terminal_state(
                         &db_for_stream,
                         &execution_id,
+                        execution_attempt,
                         if cancelled { "cancelled" } else { "recovery_required" },
                         &execution_state,
                     )
@@ -2703,22 +3033,41 @@ fn studio_live_stream_response(
                 Ok(Some(_)) => {}
                 Ok(None) => {}
                 Err(error) => {
-                    consecutive_persist_failures += 1;
-                    tracing::warn!(
-                        error = %error,
-                        consecutive_failures = consecutive_persist_failures,
-                        "failed to persist text_chunk"
-                    );
+                    let payload = studio_stream_recovery_payload(format!(
+                        "Failed to persist trailing text chunk: {error}"
+                    ));
+                    execution_state.recovery_required = true;
+                    execution_state.terminal_event_type = Some("error".to_string());
+                    execution_state.terminal_payload = Some(payload.clone());
+                    persist_studio_stream_terminal_state(
+                        &db_for_stream,
+                        &execution_id,
+                        execution_attempt,
+                        "recovery_required",
+                        &execution_state,
+                    )
+                    .await;
+                    yield Ok(Event::default().event("error").data(payload.to_string()));
+                    state_for_stream.client_heartbeats.remove(&session_id_sse);
+                    return;
                 }
             }
 
-            yield Ok(Event::default()
-                .event("stream_end")
-                .data(serde_json::json!({
-                    "message_id": assistant_msg_id_sse,
-                    "token_count": 0,
-                    "safety_status": "unknown",
-                }).to_string()));
+            let payload = studio_stream_recovery_payload(
+                "Stream ended before a durable terminal event was persisted",
+            );
+            execution_state.recovery_required = true;
+            execution_state.terminal_event_type = Some("error".to_string());
+            execution_state.terminal_payload = Some(payload.clone());
+            persist_studio_stream_terminal_state(
+                &db_for_stream,
+                &execution_id,
+                execution_attempt,
+                "recovery_required",
+                &execution_state,
+            )
+            .await;
+            yield Ok(Event::default().event("error").data(payload.to_string()));
         }
 
         state_for_stream.client_heartbeats.remove(&session_id_sse);
@@ -2763,15 +3112,15 @@ async fn flush_studio_stream_text_durable(
     let payload = serde_json::json!({ "content": buffer.as_str() });
     let result =
         persist_studio_stream_event_durable(db, session_id, message_id, "text_chunk", &payload)
-            .await
-            .map(Some);
+            .await?;
     buffer.clear();
-    result
+    Ok(Some(result))
 }
 
 fn spawn_studio_stream_execution(
     state: Arc<AppState>,
     execution_id: String,
+    execution_attempt: i64,
     session_id: String,
     user_msg_id: String,
     assistant_msg_id: String,
@@ -2783,6 +3132,8 @@ fn spawn_studio_stream_execution(
     let (tx, rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(256);
     let state_for_task = Arc::clone(&state);
     let handle = tokio::spawn(async move {
+        let (cancel_token, _execution_control_guard) =
+            state_for_task.acquire_live_execution_control(execution_id.clone());
         let session = {
             let db = match state_for_task.db.read() {
                 Ok(db) => db,
@@ -2879,51 +3230,15 @@ fn spawn_studio_stream_execution(
             providers: all_providers,
             ..
         } = prepared_runtime;
-        let cancel_token = Arc::new(tokio_util::sync::CancellationToken::new());
+        runner.set_execution_context(execution_id.clone(), execution_attempt);
         runner.set_cancel_token(Arc::clone(&cancel_token));
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<AgentStreamEvent>(256);
         let tx_forward = tx.clone();
-        let state_for_forward = Arc::clone(&state_for_task);
-        let execution_id_for_forward = execution_id.clone();
-        let cancel_token_for_forward = Arc::clone(&cancel_token);
         let forward_handle = tokio::spawn(async move {
-            let mut control_registered = false;
-
             while let Some(event) = event_rx.recv().await {
-                let substantive_event = matches!(
-                    event,
-                    AgentStreamEvent::TextDelta { .. }
-                        | AgentStreamEvent::ToolUse { .. }
-                        | AgentStreamEvent::ToolResult { .. }
-                        | AgentStreamEvent::TurnComplete { .. }
-                        | AgentStreamEvent::Error { .. }
-                );
-                if substantive_event && !control_registered {
-                    state_for_forward.live_execution_controls.insert(
-                        execution_id_for_forward.clone(),
-                        Arc::clone(&cancel_token_for_forward),
-                    );
-                    control_registered = true;
-                }
-
                 if tx_forward.send(event).await.is_err() {
                     break;
-                }
-            }
-
-            if control_registered {
-                if let Some(entry) = state_for_forward
-                    .live_execution_controls
-                    .get(&execution_id_for_forward)
-                {
-                    let should_remove = Arc::ptr_eq(entry.value(), &cancel_token_for_forward);
-                    drop(entry);
-                    if should_remove {
-                        state_for_forward
-                            .live_execution_controls
-                            .remove(&execution_id_for_forward);
-                    }
                 }
             }
         });
@@ -2953,7 +3268,7 @@ fn spawn_studio_stream_execution(
 
             {
                 let db = db_clone.write().await;
-                let _ = cortex_storage::queries::studio_chat_queries::insert_message(
+                if let Err(error) = cortex_storage::queries::studio_chat_queries::insert_message(
                     &db,
                     &assistant_msg_id_clone,
                     &session_id_clone,
@@ -2961,7 +3276,17 @@ fn spawn_studio_stream_execution(
                     &response_content,
                     token_count,
                     output_safety_status,
-                );
+                ) {
+                    let _ = event_tx
+                        .send(AgentStreamEvent::terminal_error(format!(
+                            "failed to persist assistant message: {}",
+                            ApiError::db_error("insert_assistant_message", error)
+                        )))
+                        .await;
+                    drop(event_tx);
+                    let _ = forward_handle.await;
+                    return;
+                }
 
                 let audit_id = Uuid::now_v7().to_string();
                 let detail = match &output_inspection {
@@ -3302,6 +3627,7 @@ mod tests {
             route_kind: STUDIO_MESSAGE_ROUTE_KIND.to_string(),
             actor_key: "actor-1".to_string(),
             state_version,
+            attempt: 0,
             status: "accepted".to_string(),
             state_json: state_json.to_string(),
             created_at: "now".to_string(),

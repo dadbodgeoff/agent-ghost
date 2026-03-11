@@ -548,6 +548,8 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
             "status",
             "status_message",
             "agent_id",
+            "routing_key",
+            "source",
             "config",
             "last_message_at",
             "message_count",
@@ -557,7 +559,16 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
     },
     TableRequirement {
         name: "session_bookmarks",
-        required_columns: &[],
+        required_columns: &["id", "session_id", "sequence_number", "label", "created_at"],
+    },
+    TableRequirement {
+        name: "session_branches",
+        required_columns: &[
+            "session_id",
+            "source_session_id",
+            "source_sequence_number",
+            "created_at",
+        ],
     },
     TableRequirement {
         name: "cost_snapshots",
@@ -600,6 +611,7 @@ const REQUIRED_TABLES: &[TableRequirement] = &[
             "route_kind",
             "actor_key",
             "state_version",
+            "attempt",
             "status",
             "state_json",
             "created_at",
@@ -940,7 +952,10 @@ const REQUIRED_INDEXES: &[&str] = &[
     "idx_live_execution_actor_operation",
     "idx_channels_agent",
     "idx_channels_type",
+    "idx_channels_routing_key",
     "idx_session_bookmarks_session",
+    "idx_session_bookmarks_session_sequence",
+    "idx_session_branches_source",
     "idx_cost_snapshots_scope_date",
     "idx_revoked_tokens_expires",
     "idx_operation_journal_actor_key_idempotency",
@@ -1032,7 +1047,7 @@ const REQUIRED_TABLE_SQL_PATTERNS: &[TableSqlRequirement] = &[
     TableSqlRequirement {
         table: "live_execution_records",
         description: "recovery-required execution status",
-        pattern: "CHECK(status IN ('accepted', 'running', 'completed', 'recovery_required', 'cancelled'))",
+        pattern: "CHECK(status IN ('accepted', 'preparing', 'running', 'cancel_requested', 'cancelled', 'completed', 'recovery_required', 'needs_review', 'failed'))",
     },
     TableSqlRequirement {
         table: "live_execution_records",

@@ -509,6 +509,9 @@ mod tests {
             let exec_ctx = ExecutionContext {
                 agent_id: uuid::Uuid::now_v7(),
                 session_id: uuid::Uuid::now_v7(),
+                execution_id: None,
+                route_kind: Some("external_runtime_test".into()),
+                interactive: false,
                 intervention_level: 0,
                 session_duration: Duration::ZERO,
                 session_reflection_count: 0,

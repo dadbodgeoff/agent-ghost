@@ -4,6 +4,7 @@
 //! These endpoints return trust graphs, consensus state, and delegation chains
 //! for visualization in the orchestration dashboard.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -43,10 +44,7 @@ pub async fn trust_graph(State(state): State<Arc<AppState>>) -> ApiResult<TrustG
         .agents
         .read()
         .map_err(|_| ApiError::lock_poisoned("agents"))?;
-    let db = state
-        .db
-        .read()
-        .map_err(|e| ApiError::internal(format!("db pool: {e}")))?;
+    let db = state.db.read()?;
 
     let all = agents.all_agents();
     let mut nodes = Vec::with_capacity(all.len());
@@ -69,31 +67,41 @@ pub async fn trust_graph(State(state): State<Arc<AppState>>) -> ApiResult<TrustG
         });
     }
 
-    // T-5.7.3: Query actual trust edges from delegation_state table
-    // (EigenTrust computation deferred to P3). Only emit edges where
-    // actual interaction data exists, not synthetic heuristics.
-    {
-        let mut edge_stmt = db
-            .prepare(
-                "SELECT sender_id, recipient_id, \
-                 CAST(COALESCE(json_extract(metadata, '$.trust_score'), 0.5) AS REAL) as trust \
-                 FROM delegation_state \
-                 WHERE state = 'active' \
-                 LIMIT 500",
-            )
-            .ok();
-        if let Some(ref mut stmt) = edge_stmt {
-            if let Ok(rows) = stmt.query_map([], |row| {
-                Ok(TrustEdge {
-                    source: row.get(0)?,
-                    target: row.get(1)?,
-                    trust_score: row.get::<_, f64>(2).unwrap_or(0.5),
-                })
-            }) {
-                for row in rows.flatten() {
-                    edges.push(row);
-                }
-            }
+    // Trust graph edges are derived from actual delegation relationships.
+    // The weight is an explicit delegation-confidence proxy based on the
+    // current persisted state of each delegation row.
+    let mut stmt = db.prepare(
+        "SELECT sender_id, recipient_id, state
+         FROM delegation_state
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT 500",
+    )?;
+
+    let mut edge_support: HashMap<(String, String), Vec<String>> = HashMap::new();
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (sender_id, recipient_id, delegation_state) = row?;
+        edge_support
+            .entry((sender_id, recipient_id))
+            .or_default()
+            .push(delegation_state);
+    }
+
+    for ((source, target), states) in edge_support {
+        let trust_score = compute_edge_trust_score(&states);
+        if trust_score > 0.0 {
+            edges.push(TrustEdge {
+                source,
+                target,
+                trust_score,
+            });
         }
     }
 
@@ -118,42 +126,39 @@ pub struct ConsensusRound {
 
 /// GET /api/mesh/consensus — return N-of-M consensus state.
 pub async fn consensus_state(State(state): State<Arc<AppState>>) -> ApiResult<ConsensusResponse> {
-    let db = state
-        .db
-        .read()
-        .map_err(|e| ApiError::internal(format!("db pool: {e}")))?;
+    let db = state.db.read()?;
 
-    // Query recent proposals with vote counts from dimension_scores.
-    // dimension_scores is JSON; non-null indicates a proposal that went through consensus.
+    // ADE currently persists proposal lifecycle transitions rather than
+    // N-of-M peer vote rows. This endpoint therefore reports the canonical
+    // lifecycle state for recent proposals, with approval/rejection counts
+    // modeled as terminal decision signals instead of fabricated vote totals.
     let mut stmt = db
         .prepare(
-            "SELECT p.id, COALESCE(p.decision, 'pending'), \
-                    (SELECT COUNT(*) FROM goal_proposals p2 WHERE p2.id = p.id AND p2.decision = 'approved') as approvals, \
-                    (SELECT COUNT(*) FROM goal_proposals p3 WHERE p3.id = p.id AND p3.decision = 'rejected') as rejections \
-             FROM goal_proposals p \
-             WHERE p.dimension_scores IS NOT NULL \
-             ORDER BY p.created_at DESC LIMIT 50",
+            "SELECT p.id, COALESCE(t.to_state, 'pending_review') AS current_state
+             FROM goal_proposals_v2 p
+             LEFT JOIN goal_proposal_transitions t
+               ON t.rowid = (
+                   SELECT rowid
+                   FROM goal_proposal_transitions latest
+                   WHERE latest.proposal_id = p.id
+                   ORDER BY latest.rowid DESC
+                   LIMIT 1
+               )
+             ORDER BY p.created_at DESC
+             LIMIT 50",
         )
         .map_err(|e| ApiError::db_error("prepare consensus", e))?;
 
-    // Count total agents for N-of-M threshold.
-    let agent_count: u32 = {
-        let agents = state
-            .agents
-            .read()
-            .map_err(|_| ApiError::lock_poisoned("agents"))?;
-        agents.all_agents().len() as u32
-    };
-    let threshold = (agent_count / 2) + 1; // Simple majority
-
     let rounds: Vec<ConsensusRound> = stmt
         .query_map([], |row| {
+            let state = row.get::<_, String>(1)?;
+            let (status, approvals, rejections) = map_consensus_round(&state);
             Ok(ConsensusRound {
                 proposal_id: row.get(0)?,
-                status: row.get(1)?,
-                approvals: row.get::<_, u32>(2).unwrap_or(0),
-                rejections: row.get::<_, u32>(3).unwrap_or(0),
-                threshold,
+                status,
+                approvals,
+                rejections,
+                threshold: 1,
             })
         })
         .map_err(|e| ApiError::db_error("query consensus", e))?
@@ -189,15 +194,14 @@ pub struct SybilMetrics {
 
 /// GET /api/mesh/delegations — return delegation chains and sybil metrics.
 pub async fn delegations(State(state): State<Arc<AppState>>) -> ApiResult<DelegationsResponse> {
-    let db = state
-        .db
-        .read()
-        .map_err(|e| ApiError::internal(format!("db pool: {e}")))?;
+    let db = state.db.read()?;
 
     let mut stmt = db
         .prepare(
-            "SELECT sender_id, recipient_id, task, state, created_at \
-             FROM delegation_state ORDER BY created_at DESC LIMIT 100",
+            "SELECT sender_id, recipient_id, task, state, created_at
+             FROM delegation_state
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT 100",
         )
         .map_err(|e| ApiError::db_error("prepare delegations", e))?;
 
@@ -215,18 +219,106 @@ pub async fn delegations(State(state): State<Arc<AppState>>) -> ApiResult<Delega
         .filter_map(|r| r.ok())
         .collect();
 
-    let total = delegations.len();
-    let mut delegator_set = std::collections::HashSet::new();
-    for d in &delegations {
-        delegator_set.insert(d.delegator_id.clone());
-    }
+    let active_delegations: Vec<&Delegation> = delegations
+        .iter()
+        .filter(|delegation| is_active_delegation_state(&delegation.state))
+        .collect();
+    let total = active_delegations.len();
+    let delegator_set: HashSet<String> = active_delegations
+        .iter()
+        .map(|delegation| delegation.delegator_id.clone())
+        .collect();
+    let max_chain_depth = compute_max_chain_depth(&active_delegations);
 
     Ok(Json(DelegationsResponse {
         sybil_metrics: SybilMetrics {
             total_delegations: total,
-            max_chain_depth: 1, // Single-level for P3
+            max_chain_depth,
             unique_delegators: delegator_set.len(),
         },
         delegations,
     }))
+}
+
+fn compute_edge_trust_score(states: &[String]) -> f64 {
+    if states.is_empty() {
+        return 0.0;
+    }
+
+    let total_weight: f64 = states
+        .iter()
+        .map(|state| delegation_state_weight(state))
+        .sum();
+    (total_weight / states.len() as f64).clamp(0.0, 1.0)
+}
+
+fn delegation_state_weight(state: &str) -> f64 {
+    match state {
+        "Completed" => 1.0,
+        "Accepted" => 0.75,
+        "Offered" => 0.5,
+        "Rejected" => 0.15,
+        "Disputed" => 0.0,
+        _ => 0.0,
+    }
+}
+
+fn map_consensus_round(state: &str) -> (String, u32, u32) {
+    match state {
+        "approved" | "auto_applied" => ("approved".to_string(), 1, 0),
+        "rejected" | "auto_rejected" | "timed_out" => ("rejected".to_string(), 0, 1),
+        "superseded" => ("superseded".to_string(), 0, 0),
+        other => (other.to_string(), 0, 0),
+    }
+}
+
+fn is_active_delegation_state(state: &str) -> bool {
+    matches!(state, "Offered" | "Accepted")
+}
+
+fn compute_max_chain_depth(delegations: &[&Delegation]) -> u32 {
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    for delegation in delegations {
+        adjacency
+            .entry(delegation.delegator_id.as_str())
+            .or_default()
+            .push(delegation.delegate_id.as_str());
+    }
+
+    let mut memo = HashMap::new();
+    let mut max_depth = 0;
+    for node in adjacency.keys().copied() {
+        let mut visiting = HashSet::new();
+        max_depth = max_depth.max(depth_from(node, &adjacency, &mut memo, &mut visiting));
+    }
+    max_depth
+}
+
+fn depth_from<'a>(
+    node: &'a str,
+    adjacency: &HashMap<&'a str, Vec<&'a str>>,
+    memo: &mut HashMap<&'a str, u32>,
+    visiting: &mut HashSet<&'a str>,
+) -> u32 {
+    if let Some(depth) = memo.get(node) {
+        return *depth;
+    }
+    if !visiting.insert(node) {
+        return 0;
+    }
+
+    let depth = adjacency
+        .get(node)
+        .map(|neighbors| {
+            neighbors
+                .iter()
+                .map(|neighbor| 1 + depth_from(neighbor, adjacency, memo, visiting))
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+
+    visiting.remove(node);
+    memo.insert(node, depth);
+    depth
 }

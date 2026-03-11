@@ -1,22 +1,13 @@
 <script lang="ts">
   import type { A2ATask } from '@ghost/sdk';
-  import { getGhostClient } from '$lib/ghost-client';
-  import { onMount } from 'svelte';
 
-  let tasks = $state<A2ATask[]>([]);
-  let loading = $state(true);
+  interface Props {
+    tasks?: A2ATask[];
+    loading?: boolean;
+    error?: string;
+  }
 
-  onMount(async () => {
-    try {
-      const client = await getGhostClient();
-      const data = await client.a2a.listTasks();
-      tasks = data.tasks ?? [];
-    } catch {
-      // Silently fail — table shows empty.
-    } finally {
-      loading = false;
-    }
-  });
+  let { tasks = [], loading = false, error = '' }: Props = $props();
 
   function statusColor(status: string): string {
     switch (status) {
@@ -29,12 +20,14 @@
 </script>
 
 <div class="tracker">
-  <h3>A2A Tasks</h3>
+  <h3>Tracked A2A Tasks</h3>
 
-  {#if loading}
+  {#if error}
+    <p class="error">{error}</p>
+  {:else if loading}
     <p class="empty">Loading tasks...</p>
   {:else if tasks.length === 0}
-    <p class="empty">No A2A tasks yet. Send a task to an external agent to get started.</p>
+    <p class="empty">No tracked A2A tasks yet. Send a task to an external agent to get started.</p>
   {:else}
     <table>
       <thead>
@@ -79,10 +72,18 @@
     margin: 0;
   }
 
-  .empty {
-    color: var(--color-text-muted);
+  .empty,
+  .error {
     font-size: var(--font-size-sm);
     margin: 0;
+  }
+
+  .empty {
+    color: var(--color-text-muted);
+  }
+
+  .error {
+    color: var(--color-severity-hard);
   }
 
   table {

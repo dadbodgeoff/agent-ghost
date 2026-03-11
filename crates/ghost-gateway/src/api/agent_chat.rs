@@ -44,6 +44,13 @@ const AGENT_CHAT_ROUTE_KIND: &str = "agent_chat";
 const AGENT_CHAT_STREAM_ROUTE_KIND: &str = "agent_chat_stream";
 const AGENT_CHAT_EXECUTION_STATE_VERSION: u32 = 1;
 const AGENT_STREAM_EXECUTION_STATE_VERSION: u32 = 1;
+const EXECUTION_ACTIVE_STATUSES: &[&str] = &[
+    "accepted",
+    "preparing",
+    "running",
+    "recovery_required",
+    "cancel_requested",
+];
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct AgentChatRequest {
@@ -219,6 +226,7 @@ pub async fn agent_chat(
                                 route_kind: AGENT_CHAT_ROUTE_KIND.to_string(),
                                 actor_key: actor.to_string(),
                                 state_version: AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
+                                attempt: 0,
                                 status: "accepted".to_string(),
                                 state_json: serde_json::to_string(&execution_state)
                                     .unwrap_or_else(|_| "{}".to_string()),
@@ -267,6 +275,7 @@ pub async fn agent_chat(
                             &agent_audit_id,
                             actor,
                             &execution_id,
+                            execution_record.attempt,
                             execution_state,
                             status,
                             body,
@@ -282,6 +291,7 @@ pub async fn agent_chat(
                         &agent_audit_id,
                         actor,
                         &execution_id,
+                        execution_record.attempt,
                         execution_state,
                         recovery_body,
                     )
@@ -296,6 +306,7 @@ pub async fn agent_chat(
                         &agent_audit_id,
                         actor,
                         &execution_id,
+                        execution_record.attempt,
                         execution_state,
                         recovery_body,
                     )
@@ -310,6 +321,22 @@ pub async fn agent_chat(
                         &agent_audit_id,
                         actor,
                         &execution_id,
+                        execution_record.attempt,
+                        execution_state,
+                        cancelled_body,
+                    )
+                    .await;
+                }
+                "cancel_requested" => {
+                    let cancelled_body = agent_chat_cancelled_body(&execution_state);
+                    return finalize_agent_chat_cancelled_response(
+                        &state,
+                        &lease,
+                        &operation_context,
+                        &agent_audit_id,
+                        actor,
+                        &execution_id,
+                        execution_record.attempt,
                         execution_state,
                         cancelled_body,
                     )
@@ -341,6 +368,7 @@ pub async fn agent_chat(
                         &agent_audit_id,
                         actor,
                         &execution_id,
+                        execution_record.attempt,
                         execution_state,
                         status,
                         body,
@@ -358,6 +386,29 @@ pub async fn agent_chat(
 
             let (cancel_token, _execution_control_guard) =
                 state.acquire_live_execution_control(execution_id.clone());
+            let execution_attempt = {
+                let state_json = match serde_json::to_string(&execution_state) {
+                    Ok(json) => json,
+                    Err(error) => {
+                        return error_response_with_idempotency(ApiError::internal(
+                            error.to_string(),
+                        ))
+                    }
+                };
+                let db = state.db.write().await;
+                match begin_execution_attempt(
+                    &db,
+                    &execution_id,
+                    AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
+                    &state_json,
+                    Some(lease.owner_token.as_str()),
+                    Some(lease.lease_epoch),
+                ) {
+                    Ok(attempt) => attempt,
+                    Err(error) => return error_response_with_idempotency(error),
+                }
+            };
+            runner.set_execution_context(execution_id.clone(), execution_attempt);
             runner.set_cancel_token(Arc::clone(&cancel_token));
 
             if providers.is_empty() {
@@ -371,6 +422,7 @@ pub async fn agent_chat(
                     &agent_id,
                     actor,
                     &execution_id,
+                    execution_attempt,
                     execution_state,
                     status,
                     body,
@@ -401,6 +453,7 @@ pub async fn agent_chat(
                         &agent_id,
                         actor,
                         &execution_id,
+                        execution_attempt,
                         execution_state,
                         status,
                         body,
@@ -422,17 +475,11 @@ pub async fn agent_chat(
                     &agent_id,
                     actor,
                     &execution_id,
+                    execution_attempt,
                     execution_state,
                     cancelled_body,
                 )
                 .await;
-            }
-
-            if let Err(error) = {
-                let db = state.db.write().await;
-                update_agent_execution_state(&db, &execution_id, "running", &execution_state)
-            } {
-                return error_response_with_idempotency(error);
             }
 
             let result = match execute_blocking_turn(
@@ -462,6 +509,7 @@ pub async fn agent_chat(
                         &agent_id,
                         actor,
                         &execution_id,
+                        execution_attempt,
                         execution_state,
                         cancelled_body,
                     )
@@ -486,6 +534,7 @@ pub async fn agent_chat(
                         &agent_id,
                         actor,
                         &execution_id,
+                        execution_attempt,
                         execution_state,
                         recovery_body,
                     )
@@ -541,6 +590,7 @@ pub async fn agent_chat(
                 &agent_id,
                 actor,
                 &execution_id,
+                execution_attempt,
                 execution_state,
                 StatusCode::OK,
                 body,
@@ -890,19 +940,50 @@ pub async fn agent_chat_stream(
                 );
             }
 
+            let execution_attempt = {
+                let state_json = match serde_json::to_string(&execution_state) {
+                    Ok(json) => json,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            ApiError::internal(error.to_string()).into_response(),
+                            IdempotencyStatus::Executed,
+                        );
+                    }
+                };
+                let db = state.db.write().await;
+                match begin_execution_attempt(
+                    &db,
+                    &execution_id,
+                    AGENT_STREAM_EXECUTION_STATE_VERSION as i64,
+                    &state_json,
+                    None,
+                    None,
+                ) {
+                    Ok(attempt) => attempt,
+                    Err(error) => {
+                        return response_with_idempotency(
+                            error.into_response(),
+                            IdempotencyStatus::Executed,
+                        );
+                    }
+                }
+            };
             let (stream_rx, task_handle) = spawn_agent_chat_stream_execution(
                 Arc::clone(&state),
                 execution_id.clone(),
+                execution_attempt,
                 requested_agent_id,
                 acceptance.session_id.clone(),
                 acceptance.message_id.clone(),
                 user_message,
-            );
+            )
+            .await;
             state.background_tasks.lock().await.push(task_handle);
             agent_live_stream_response(
                 Arc::clone(&state),
                 acceptance,
                 execution_id,
+                execution_attempt,
                 execution_state,
                 stream_rx,
                 IdempotencyStatus::Executed,
@@ -999,6 +1080,105 @@ fn parse_agent_chat_execution_state(
 
 fn parse_execution_session_id(state: &AgentChatExecutionState) -> Uuid {
     Uuid::parse_str(&state.session_id).unwrap_or_else(|_| Uuid::now_v7())
+}
+
+fn ensure_execution_attempt_started(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    attempt: i64,
+    owner_token: Option<&str>,
+    lease_epoch: Option<i64>,
+    status: &str,
+) -> Result<(), ApiError> {
+    cortex_storage::queries::execution_attempt_queries::insert_or_ignore(
+        conn,
+        &cortex_storage::queries::execution_attempt_queries::NewExecutionAttempt {
+            execution_id,
+            attempt,
+            owner_token,
+            lease_epoch,
+            status,
+            started_at: &chrono::Utc::now().to_rfc3339(),
+        },
+    )
+    .map_err(|error| ApiError::db_error("insert_execution_attempt", error))
+}
+
+fn finish_execution_attempt(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    attempt: i64,
+    status: &str,
+    failure_class: Option<&str>,
+    failure_detail: Option<&str>,
+) -> Result<(), ApiError> {
+    let updated = cortex_storage::queries::execution_attempt_queries::update_status(
+        conn,
+        execution_id,
+        attempt,
+        status,
+        Some(&chrono::Utc::now().to_rfc3339()),
+        failure_class,
+        failure_detail,
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .map_err(|error| ApiError::db_error("update_execution_attempt", error))?;
+    if !updated {
+        tracing::debug!(
+            execution_id,
+            attempt,
+            status,
+            "execution attempt missing during finish"
+        );
+    }
+    Ok(())
+}
+
+fn begin_execution_attempt(
+    conn: &rusqlite::Connection,
+    execution_id: &str,
+    state_version: i64,
+    state_json: &str,
+    owner_token: Option<&str>,
+    lease_epoch: Option<i64>,
+) -> Result<i64, ApiError> {
+    let attempt = if let Some(attempt) = cortex_storage::queries::live_execution_queries::
+        advance_attempt_and_update_status_if_in_statuses(
+            conn,
+            execution_id,
+            state_version,
+            &["accepted", "preparing"],
+            "running",
+            state_json,
+        )
+        .map_err(|error| ApiError::db_error("advance_live_execution_attempt", error))?
+    {
+        attempt
+    } else {
+        let record = cortex_storage::queries::live_execution_queries::get_by_id(conn, execution_id)
+            .map_err(|error| ApiError::db_error("get_live_execution_record", error))?
+            .ok_or_else(|| ApiError::not_found(format!("live execution {execution_id} not found")))?;
+        if record.status != "running" {
+            return Err(ApiError::custom(
+                StatusCode::CONFLICT,
+                "LIVE_EXECUTION_STATE_CONFLICT",
+                format!(
+                    "live execution {execution_id} could not transition to running from status {}",
+                    record.status
+                ),
+            ));
+        }
+        record.attempt
+    };
+    ensure_execution_attempt_started(
+        conn,
+        execution_id,
+        attempt,
+        owner_token,
+        lease_epoch,
+        "running",
+    )?;
+    Ok(attempt)
 }
 
 fn api_error_status_and_body(error: ApiError) -> (StatusCode, serde_json::Value) {
@@ -1107,6 +1287,7 @@ fn persist_agent_execution_record(
             route_kind: AGENT_CHAT_ROUTE_KIND,
             actor_key: actor,
             state_version: AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
+            attempt: 0,
             status: "accepted",
             state_json: &state_json,
         },
@@ -1114,22 +1295,33 @@ fn persist_agent_execution_record(
     .map_err(|error| ApiError::db_error("insert_live_execution_record", error))
 }
 
-fn update_agent_execution_state(
+fn transition_agent_execution_state(
     conn: &rusqlite::Connection,
     execution_id: &str,
+    expected_statuses: &[&str],
     status: &str,
     state: &AgentChatExecutionState,
 ) -> Result<(), ApiError> {
     let state_json =
         serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
-    cortex_storage::queries::live_execution_queries::update_status_and_state(
-        conn,
-        execution_id,
-        AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
-        status,
-        &state_json,
-    )
-    .map_err(|error| ApiError::db_error("update_live_execution_record", error))
+    let updated =
+        cortex_storage::queries::live_execution_queries::update_status_and_state_if_in_statuses(
+            conn,
+            execution_id,
+            AGENT_CHAT_EXECUTION_STATE_VERSION as i64,
+            expected_statuses,
+            status,
+            &state_json,
+        )
+        .map_err(|error| ApiError::db_error("update_live_execution_record", error))?;
+    if !updated {
+        return Err(ApiError::custom(
+            StatusCode::CONFLICT,
+            "LIVE_EXECUTION_STATE_CONFLICT",
+            format!("live execution {execution_id} could not transition to {status}"),
+        ));
+    }
+    Ok(())
 }
 
 fn stored_agent_chat_terminal_response(
@@ -1147,6 +1339,7 @@ async fn finalize_agent_chat_terminal_response(
     agent_id: &str,
     actor: &str,
     execution_id: &str,
+    execution_attempt: i64,
     mut execution_state: AgentChatExecutionState,
     status: StatusCode,
     body: serde_json::Value,
@@ -1155,11 +1348,29 @@ async fn finalize_agent_chat_terminal_response(
     execution_state.final_response = Some(body.clone());
 
     let db = state.db.write().await;
-    if let Err(error) =
-        update_agent_execution_state(&db, execution_id, "completed", &execution_state)
-    {
+    if let Err(error) = transition_agent_execution_state(
+        &db,
+        execution_id,
+        &[
+            "accepted",
+            "preparing",
+            "running",
+            "recovery_required",
+            "cancel_requested",
+        ],
+        "completed",
+        &execution_state,
+    ) {
         return error_response_with_idempotency(error);
     }
+    let _ = finish_execution_attempt(
+        &db,
+        execution_id,
+        execution_attempt,
+        "completed",
+        None,
+        None,
+    );
 
     match commit_prepared_json_operation(&db, operation_context, lease, status, &body) {
         Ok(outcome) => {
@@ -1192,15 +1403,34 @@ async fn finalize_agent_chat_recovery_response(
     agent_id: &str,
     actor: &str,
     execution_id: &str,
+    execution_attempt: i64,
     execution_state: AgentChatExecutionState,
     body: serde_json::Value,
 ) -> Response {
     let db = state.db.write().await;
-    if let Err(error) =
-        update_agent_execution_state(&db, execution_id, "recovery_required", &execution_state)
-    {
+    if let Err(error) = transition_agent_execution_state(
+        &db,
+        execution_id,
+        &[
+            "accepted",
+            "preparing",
+            "running",
+            "recovery_required",
+            "cancel_requested",
+        ],
+        "recovery_required",
+        &execution_state,
+    ) {
         return error_response_with_idempotency(error);
     }
+    let _ = finish_execution_attempt(
+        &db,
+        execution_id,
+        execution_attempt,
+        "recovery_required",
+        Some("route_recovery"),
+        None,
+    );
 
     match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::ACCEPTED, &body)
     {
@@ -1310,6 +1540,7 @@ fn persist_agent_stream_execution_record(
             route_kind: AGENT_CHAT_STREAM_ROUTE_KIND,
             actor_key: actor,
             state_version: AGENT_STREAM_EXECUTION_STATE_VERSION as i64,
+            attempt: 0,
             status: "accepted",
             state_json: &state_json,
         },
@@ -1325,14 +1556,24 @@ fn update_agent_stream_execution_state(
 ) -> Result<(), ApiError> {
     let state_json =
         serde_json::to_string(state).map_err(|error| ApiError::internal(error.to_string()))?;
-    cortex_storage::queries::live_execution_queries::update_status_and_state(
-        conn,
-        execution_id,
-        AGENT_STREAM_EXECUTION_STATE_VERSION as i64,
-        status,
-        &state_json,
-    )
-    .map_err(|error| ApiError::db_error("update_agent_stream_execution_record", error))
+    let updated =
+        cortex_storage::queries::live_execution_queries::update_status_and_state_if_in_statuses(
+            conn,
+            execution_id,
+            AGENT_STREAM_EXECUTION_STATE_VERSION as i64,
+            EXECUTION_ACTIVE_STATUSES,
+            status,
+            &state_json,
+        )
+        .map_err(|error| ApiError::db_error("update_agent_stream_execution_record", error))?;
+    if !updated {
+        return Err(ApiError::custom(
+            StatusCode::CONFLICT,
+            "LIVE_EXECUTION_STATE_CONFLICT",
+            format!("live execution {execution_id} could not transition to {status}"),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_agent_stream_acceptance(
@@ -1608,11 +1849,13 @@ async fn persist_stream_event_durable(
 async fn persist_agent_stream_terminal_state(
     db: &Arc<crate::db_pool::DbPool>,
     execution_id: &str,
+    attempt: i64,
     status: &str,
     execution_state: &AgentStreamExecutionState,
 ) {
     let conn = db.write().await;
     let _ = update_agent_stream_execution_state(&conn, execution_id, status, execution_state);
+    let _ = finish_execution_attempt(&conn, execution_id, attempt, status, None, None);
 }
 
 fn agent_replay_stream_response(
@@ -1673,6 +1916,7 @@ async fn finalize_agent_chat_cancelled_response(
     agent_id: &str,
     actor: &str,
     execution_id: &str,
+    execution_attempt: i64,
     mut execution_state: AgentChatExecutionState,
     body: serde_json::Value,
 ) -> Response {
@@ -1680,11 +1924,29 @@ async fn finalize_agent_chat_cancelled_response(
     execution_state.final_response = Some(body.clone());
 
     let db = state.db.write().await;
-    if let Err(error) =
-        update_agent_execution_state(&db, execution_id, "cancelled", &execution_state)
-    {
+    if let Err(error) = transition_agent_execution_state(
+        &db,
+        execution_id,
+        &[
+            "accepted",
+            "preparing",
+            "running",
+            "recovery_required",
+            "cancel_requested",
+        ],
+        "cancelled",
+        &execution_state,
+    ) {
         return error_response_with_idempotency(error);
     }
+    let _ = finish_execution_attempt(
+        &db,
+        execution_id,
+        execution_attempt,
+        "cancelled",
+        None,
+        None,
+    );
 
     match commit_prepared_json_operation(&db, operation_context, lease, StatusCode::CONFLICT, &body)
     {
@@ -1710,6 +1972,7 @@ fn agent_live_stream_response(
     state: Arc<AppState>,
     acceptance: AgentStreamAcceptance,
     execution_id: String,
+    execution_attempt: i64,
     mut execution_state: AgentStreamExecutionState,
     mut rx: tokio::sync::mpsc::Receiver<AgentStreamEvent>,
     idempotency_status: IdempotencyStatus,
@@ -1734,6 +1997,7 @@ fn agent_live_stream_response(
                 persist_agent_stream_terminal_state(
                     &db_for_stream,
                     &execution_id,
+                    execution_attempt,
                     "recovery_required",
                     &execution_state,
                 ).await;
@@ -1769,6 +2033,7 @@ fn agent_live_stream_response(
                             persist_agent_stream_terminal_state(
                                 &db_for_stream,
                                 &execution_id,
+                                execution_attempt,
                                 "recovery_required",
                                 &execution_state,
                             ).await;
@@ -1808,6 +2073,7 @@ fn agent_live_stream_response(
                             persist_agent_stream_terminal_state(
                                 &db_for_stream,
                                 &execution_id,
+                                execution_attempt,
                                 "recovery_required",
                                 &execution_state,
                             ).await;
@@ -1854,6 +2120,7 @@ fn agent_live_stream_response(
                             persist_agent_stream_terminal_state(
                                 &db_for_stream,
                                 &execution_id,
+                                execution_attempt,
                                 "recovery_required",
                                 &execution_state,
                             ).await;
@@ -1905,6 +2172,7 @@ fn agent_live_stream_response(
                             persist_agent_stream_terminal_state(
                                 &db_for_stream,
                                 &execution_id,
+                                execution_attempt,
                                 "recovery_required",
                                 &execution_state,
                             ).await;
@@ -1919,9 +2187,17 @@ fn agent_live_stream_response(
                     persist_agent_stream_terminal_state(
                         &db_for_stream,
                         &execution_id,
+                        execution_attempt,
                         "completed",
                         &execution_state,
                     ).await;
+                    crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
+                        session_id: session_id_sse.clone(),
+                        event_id: message_id_sse.clone(),
+                        event_type: "turn_complete".to_string(),
+                        sender: Some(execution_state.agent_id.clone()),
+                        sequence_number: seq,
+                    });
                     let ev = Event::default().event("stream_end").id(seq.to_string()).data(payload.to_string());
                     yield Ok(ev);
                     stream_ended = true;
@@ -1965,9 +2241,19 @@ fn agent_live_stream_response(
                     persist_agent_stream_terminal_state(
                         &db_for_stream,
                         &execution_id,
+                        execution_attempt,
                         if cancelled { "cancelled" } else { "recovery_required" },
                         &execution_state,
                     ).await;
+                    if let Some(seq) = seq {
+                        crate::api::websocket::broadcast_event(&state_for_stream, WsEvent::SessionEvent {
+                            session_id: session_id_sse.clone(),
+                            event_id: message_id_sse.clone(),
+                            event_type: "error".to_string(),
+                            sender: Some(execution_state.agent_id.clone()),
+                            sequence_number: seq,
+                        });
+                    }
                     let mut ev = Event::default().event("error").data(payload.to_string());
                     if let Some(seq) = seq {
                         ev = ev.id(seq.to_string());
@@ -1989,6 +2275,7 @@ fn agent_live_stream_response(
             persist_agent_stream_terminal_state(
                 &db_for_stream,
                 &execution_id,
+                execution_attempt,
                 "recovery_required",
                 &execution_state,
             ).await;
@@ -2004,9 +2291,10 @@ fn agent_live_stream_response(
     )
 }
 
-fn spawn_agent_chat_stream_execution(
+async fn spawn_agent_chat_stream_execution(
     state: Arc<AppState>,
     execution_id: String,
+    execution_attempt: i64,
     requested_agent_id: Option<String>,
     session_id: String,
     message_id: String,
@@ -2019,7 +2307,7 @@ fn spawn_agent_chat_stream_execution(
     let state_for_task = Arc::clone(&state);
     let handle = tokio::spawn(async move {
         let (cancel_token, _execution_control_guard) =
-            state_for_task.acquire_live_execution_control(execution_id);
+            state_for_task.acquire_live_execution_control(execution_id.clone());
         let runtime_session_id = Uuid::parse_str(&session_id).unwrap_or_else(|_| Uuid::now_v7());
         let prepared_runtime = match prepare_requested_runtime_execution(
             &state_for_task,
@@ -2043,6 +2331,7 @@ fn spawn_agent_chat_stream_execution(
             providers,
             ..
         } = prepared_runtime;
+        runner.set_execution_context(execution_id.clone(), execution_attempt);
         runner.set_cancel_token(Arc::clone(&cancel_token));
 
         if let Some(run_result) = execute_streaming_turn(

@@ -1,21 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getGhostClient } from '$lib/ghost-client';
+  import { costsStore } from '$lib/stores/costs.svelte';
   import type { AgentCostInfo } from '@ghost/sdk';
 
-  let costs: AgentCostInfo[] = $state([]);
-  let loading = $state(true);
-  let error = $state('');
-
-  onMount(async () => {
-    try {
-      const client = await getGhostClient();
-      costs = await client.costs.list();
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to load cost data';
-    }
-    loading = false;
+  onMount(() => {
+    void costsStore.init();
   });
+
+  let costs = $derived(costsStore.costs);
+  let loading = $derived(costsStore.loading);
+  let error = $derived(costsStore.error);
 
   function remaining(c: AgentCostInfo): number {
     return Math.max(0, c.cap_remaining ?? c.spending_cap - c.daily_total);
@@ -45,7 +39,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={() => void costsStore.refresh(true)}>Retry</button>
   </div>
 {:else if costs.length === 0}
   <div class="empty-state">

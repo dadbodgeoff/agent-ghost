@@ -16,6 +16,15 @@ export class ItpAPI {
     if (params.limit !== undefined) {
       searchParams.set('limit', String(params.limit));
     }
+    if (params.offset !== undefined) {
+      searchParams.set('offset', String(params.offset));
+    }
+    if (params.session_id) {
+      searchParams.set('session_id', params.session_id);
+    }
+    if (params.event_type) {
+      searchParams.set('event_type', params.event_type);
+    }
     const suffix = searchParams.size > 0 ? `?${searchParams.toString()}` : '';
     return this.request<ListItpEventsResult>('GET', `/api/itp/events${suffix}`);
   }

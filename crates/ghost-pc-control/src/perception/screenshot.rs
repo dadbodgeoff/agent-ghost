@@ -77,6 +77,11 @@ impl ScreenCaptureBackend for XcapScreenCapture {
     }
 }
 
+pub fn primary_screen_dimensions() -> Result<(u32, u32), String> {
+    let captured = XcapScreenCapture::try_new()?.capture_full_screen()?;
+    Ok((captured.width, captured.height))
+}
+
 /// Mock screen capture for tests.
 pub struct MockScreenCapture {
     width: u32,

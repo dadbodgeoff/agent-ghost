@@ -236,8 +236,15 @@ impl GatewayBootstrap {
         let kill_switch = Arc::new(KillSwitch::new());
         let cost_tracker = Arc::new(crate::cost::tracker::CostTracker::new());
 
-        // WP4-A: Restore cost state from previous run (same day only).
-        if let Ok(conn) = db.read() {
+        // WP4-A: Restore cost state from previous run.
+        // Daily and compaction totals are day-scoped; session totals restore from the latest snapshot.
+        {
+            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let conn = db.write().await;
+            if let Err(e) = crate::cost::tracker::CostTracker::prune_stale_snapshots(&conn, &today)
+            {
+                tracing::warn!(error = %e, retain_date = %today, "failed to prune stale cost snapshots");
+            }
             if let Err(e) = cost_tracker.restore(&conn) {
                 tracing::warn!(error = %e, "failed to restore cost tracker state — starting fresh");
             }
@@ -307,8 +314,16 @@ impl GatewayBootstrap {
             "Embedding engine initialized"
         );
 
+        let pc_control_runtime = Arc::new(crate::pc_control_runtime::PcControlRuntimeService::new(
+            &config.pc_control,
+            "bootstrap",
+        ));
         let compiled_skills =
-            crate::skill_catalog::definitions::build_compiled_skill_definitions(&config);
+            crate::skill_catalog::definitions::build_compiled_skill_definitions_with_runtime(
+                &config,
+                pc_control_runtime.policy_handle(),
+                pc_control_runtime.circuit_breaker(),
+            );
         let pc_control_circuit_breaker = Arc::clone(&compiled_skills.pc_control_circuit_breaker);
         let skill_catalog = Arc::new(
             crate::skill_catalog::service::SkillCatalogService::new(
@@ -341,16 +356,50 @@ impl GatewayBootstrap {
         let (trigger_sender, trigger_receiver) = tokio::sync::mpsc::channel::<TriggerEvent>(128);
 
         let autonomy = Arc::new(AutonomyService::default());
+        let sandbox_reviews = crate::sandbox_reviews::SandboxReviewCoordinator::new(
+            Arc::clone(&db),
+            Arc::clone(&replay_buffer),
+            event_tx.clone(),
+        );
+        let (itp_emitter, itp_receiver, itp_router, itp_session_tracker) =
+            if config.convergence.monitor.enabled {
+                let (emitter, receiver) = crate::itp_bridge::channel();
+                let router = Arc::new(crate::itp_router::ITPEventRouter::new(
+                    shared_state.state_arc(),
+                    config.convergence.monitor.address.clone(),
+                ));
+                let tracker = Arc::new(crate::itp_bridge::ITPSessionTracker::new(
+                    std::time::Duration::from_secs(30 * 60),
+                ));
+                (Some(emitter), Some(receiver), Some(router), Some(tracker))
+            } else {
+                (None, None, None, None)
+            };
+        let ws_tracker = Arc::new(crate::api::websocket::WsConnectionTracker::new());
+
+        let agents = Arc::new(RwLock::new(agent_registry));
+        let channel_manager = Arc::new(crate::channel_manager::ChannelManager::new(
+            Arc::clone(&db),
+            Arc::clone(&agents),
+            event_tx.clone(),
+            Arc::clone(&replay_buffer),
+        ));
 
         let app_state = Arc::new(AppState {
+            started_at: std::time::Instant::now(),
             gateway: Arc::clone(&shared_state),
             config_path: crate::config::GhostConfig::default_path(config_path),
-            agents: Arc::new(RwLock::new(agent_registry)),
+            agents,
+            channel_manager: Arc::clone(&channel_manager),
             kill_switch,
             quarantine: Arc::new(RwLock::new(QuarantineManager::new())),
             db,
             event_tx,
             trigger_sender,
+            sandbox_reviews,
+            itp_emitter,
+            itp_router: itp_router.clone(),
+            itp_session_tracker: itp_session_tracker.clone(),
             replay_buffer,
             cost_tracker,
             kill_gate,
@@ -362,7 +411,9 @@ impl GatewayBootstrap {
             model_providers: config.models.providers.clone(),
             default_model_provider: config.models.default_provider.clone(),
             pc_control_circuit_breaker,
+            pc_control_runtime,
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_connection_tracker: Arc::clone(&ws_tracker),
             ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
             tools_config: config.tools.clone(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
@@ -377,13 +428,33 @@ impl GatewayBootstrap {
                 config.convergence.monitor.stale_after_secs,
             ),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            monitor_runtime_status: Arc::new(RwLock::new(
+                crate::state::MonitorRuntimeStatus::default(),
+            )),
             distributed_kill_enabled: config.mesh.distributed_kill_enabled,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             skill_catalog,
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: config.gateway.session_ttl_days,
+            backup_scheduler_status: Arc::new(RwLock::new(
+                crate::state::BackupSchedulerRuntimeStatus::default(),
+            )),
+            config_watcher_status: Arc::new(RwLock::new(
+                crate::state::ConfigWatcherRuntimeStatus::default(),
+            )),
             autonomy: Arc::clone(&autonomy),
         });
+
+        app_state
+            .channel_manager
+            .reconcile_config_channels(&config)
+            .await
+            .map_err(BootstrapError::AgentInit)?;
+        app_state
+            .channel_manager
+            .activate_all()
+            .await
+            .map_err(BootstrapError::AgentInit)?;
 
         autonomy
             .reconcile_bootstrap_jobs(&app_state)
@@ -412,6 +483,27 @@ impl GatewayBootstrap {
         let mut runtime = GatewayRuntime::new(Arc::clone(&shared_state), Arc::clone(&app_state));
         runtime.mesh_router = mesh_router;
 
+        if let (Some(receiver), Some(router), Some(tracker)) = (
+            itp_receiver,
+            itp_router.clone(),
+            itp_session_tracker.clone(),
+        ) {
+            runtime.spawn_tracked(
+                "itp_bridge",
+                crate::itp_bridge::run_bridge(receiver, Arc::clone(&router), Arc::clone(&tracker)),
+            );
+            tracing::info!("Step 5b: ITP bridge started (tracked)");
+            runtime.spawn_tracked(
+                "itp_session_reaper",
+                crate::itp_bridge::reap_idle_sessions_task(
+                    tracker,
+                    router,
+                    std::time::Duration::from_secs(60),
+                ),
+            );
+            tracing::info!("Step 5b: ITP session reaper started (tracked)");
+        }
+
         // Step 5b: Spawn background tasks through the runtime's TaskTracker.
         // Every task goes through spawn_tracked() — guaranteed cancellation + await.
         runtime.spawn_tracked(
@@ -425,6 +517,12 @@ impl GatewayBootstrap {
             crate::convergence_watcher::convergence_watcher_task(Arc::clone(&app_state)),
         );
         tracing::info!("Step 5b: Convergence score watcher started (tracked)");
+
+        runtime.spawn_tracked(
+            "proposal_watcher",
+            crate::proposal_watcher::proposal_watcher_task(Arc::clone(&app_state)),
+        );
+        tracing::info!("Step 5b: Proposal watcher started (tracked)");
 
         runtime.spawn_tracked(
             "config_watcher",
@@ -484,6 +582,47 @@ impl GatewayBootstrap {
                 }
             });
             tracing::info!("Step 5e: Cost persistence task started (every 5 min, tracked)");
+        }
+
+        {
+            let state_for_cost_reset = Arc::clone(&app_state);
+            runtime.spawn_tracked("cost_daily_reset", async move {
+                loop {
+                    let now = chrono::Utc::now();
+                    let next_midnight = now
+                        .date_naive()
+                        .succ_opt()
+                        .and_then(|day| day.and_hms_opt(0, 0, 0))
+                        .map(|naive| naive.and_utc())
+                        .unwrap_or_else(|| now + chrono::Duration::days(1));
+                    let sleep_for = (next_midnight - now)
+                        .to_std()
+                        .unwrap_or_else(|_| std::time::Duration::from_secs(1));
+                    tokio::time::sleep(sleep_for).await;
+
+                    let current_day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                    state_for_cost_reset.cost_tracker.reset_daily();
+                    let conn = state_for_cost_reset.db.write().await;
+                    if let Err(error) = crate::cost::tracker::CostTracker::prune_stale_snapshots(
+                        &conn,
+                        &current_day,
+                    ) {
+                        tracing::warn!(
+                            error = %error,
+                            retain_date = %current_day,
+                            "failed to prune stale cost snapshots after daily reset"
+                        );
+                    }
+                    drop(conn);
+                    crate::api::websocket::broadcast_event(
+                        &state_for_cost_reset,
+                        crate::api::websocket::WsEvent::CostDailyReset {
+                            reset_date_utc: current_day.clone(),
+                        },
+                    );
+                }
+            });
+            tracing::info!("Step 5f: Cost daily reset task started (UTC boundary, tracked)");
         }
 
         // WP9-F: Pre-flight LLM provider health checks.
@@ -661,6 +800,7 @@ impl GatewayBootstrap {
             let monitor_flag = Arc::clone(&app_state.monitor_healthy);
             let gateway_shared = Arc::clone(&shared_state);
             let monitor_addr = config.convergence.monitor.address.clone();
+            let recovery_router = app_state.itp_router.clone();
 
             runtime.spawn_tracked("monitor_health_checker", async move {
                 let mut interval = tokio::time::interval(checker.config.check_interval);
@@ -679,6 +819,7 @@ impl GatewayBootstrap {
                         let coord = RecoveryCoordinator {
                             shared_state: Arc::clone(&gateway_shared),
                             monitor_address: monitor_addr.clone(),
+                            itp_router: recovery_router.clone(),
                         };
                         tokio::spawn(async move {
                             let _ = coord.attempt_recovery().await;
@@ -692,6 +833,12 @@ impl GatewayBootstrap {
                 failure_threshold = 3,
                 "MonitorHealthChecker background task spawned (tracked)"
             );
+
+            let monitor_status_state = Arc::clone(&app_state);
+            runtime.spawn_tracked("monitor_status_snapshot", async move {
+                crate::api::observability::monitor_status_snapshot_task(monitor_status_state).await;
+            });
+            tracing::info!("Monitor status snapshot task spawned (tracked)");
         } else {
             tracing::debug!("Monitor health checker skipped (convergence.monitor.enabled = false)");
         }
@@ -783,11 +930,13 @@ impl GatewayBootstrap {
 
             let capabilities = effective_agent_capabilities(agent);
             let skills = effective_agent_skills(agent);
+            let sandbox = crate::config::resolve_agent_sandbox_config(agent);
             let registered = crate::agents::registry::RegisteredAgent {
                 id: crate::agents::registry::durable_agent_id(&agent.name),
                 name: agent.name.clone(),
                 state: crate::agents::registry::AgentLifecycleState::Starting,
                 channel_bindings: Vec::new(),
+                isolation: agent.isolation,
                 full_access: agent.full_access,
                 capabilities: capabilities.clone(),
                 skills: skills.clone(),
@@ -797,27 +946,7 @@ impl GatewayBootstrap {
                 spending_cap: agent.spending_cap,
                 template: agent.template.clone(),
             };
-            registry.register(registered);
-        }
-        for channel in &config.channels {
-            tracing::info!(
-                channel_type = %channel.channel_type,
-                agent = %channel.agent,
-                "Initializing channel"
-            );
-            // Wire channel→agent binding into the registry.
-            if let Some(agent) = registry.lookup_by_name(&channel.agent) {
-                let agent_id = agent.id;
-                if let Some(a) = registry.lookup_by_id_mut(agent_id) {
-                    a.channel_bindings.push(channel.channel_type.clone());
-                }
-            } else {
-                tracing::warn!(
-                    channel_type = %channel.channel_type,
-                    agent = %channel.agent,
-                    "Channel references unknown agent — binding skipped"
-                );
-            }
+            registry.register_with_sandbox(registered, sandbox);
         }
         Ok(registry)
     }
@@ -885,8 +1014,6 @@ impl GatewayBootstrap {
             config.gateway.rate_limit_scope,
         ));
 
-        let ws_tracker = Arc::new(crate::api::websocket::WsConnectionTracker::new());
-
         let app = app
             // Middleware stack: last .layer() = outermost = runs first on request.
             //
@@ -926,7 +1053,9 @@ impl GatewayBootstrap {
             .layer(axum::Extension(rate_limit_state))
             .layer(axum::Extension(auth_config.clone()))
             .layer(axum::Extension(revocation_set.clone()))
-            .layer(axum::Extension(ws_tracker))
+            .layer(axum::Extension(Arc::clone(
+                &app_state.ws_connection_tracker,
+            )))
             .layer(cors);
 
         tracing::info!(
@@ -1641,6 +1770,7 @@ mod tests {
                 isolation: crate::config::IsolationMode::InProcess,
                 template: None,
                 skills: Some(vec!["note_take".into()]),
+                sandbox: None,
                 network: None,
             }],
             ..GhostConfig::default()
@@ -1658,5 +1788,9 @@ mod tests {
         assert_eq!(agent.skills, None);
         assert_eq!(agent.baseline_capabilities, agent.capabilities);
         assert_eq!(agent.baseline_skills, agent.skills);
+        assert_eq!(
+            registry.sandbox_for(agent.id),
+            crate::config::AgentSandboxConfig::off()
+        );
     }
 }

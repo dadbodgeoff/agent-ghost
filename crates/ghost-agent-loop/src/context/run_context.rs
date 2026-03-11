@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub struct RunContext {
     pub agent_id: Uuid,
     pub session_id: Uuid,
+    pub channel: String,
     pub session_started_at: Instant,
     pub recursion_depth: u32,
     pub max_recursion_depth: u32,

@@ -196,6 +196,7 @@ fn persist_oauth_execute_record(
             route_kind: OAUTH_EXECUTE_ROUTE_KIND,
             actor_key: actor,
             state_version: OAUTH_EXECUTE_STATE_VERSION as i64,
+            attempt: 0,
             status: "accepted",
             state_json: &state_json,
         },
@@ -706,6 +707,7 @@ pub async fn execute_api_call(
                                 route_kind: OAUTH_EXECUTE_ROUTE_KIND.to_string(),
                                 actor_key: actor.to_string(),
                                 state_version: OAUTH_EXECUTE_STATE_VERSION as i64,
+                                attempt: 0,
                                 status: "accepted".to_string(),
                                 state_json: serde_json::to_string(&execution_state)
                                     .unwrap_or_else(|_| "{}".to_string()),

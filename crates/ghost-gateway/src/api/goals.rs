@@ -12,6 +12,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
+use cortex_core::memory::types::convergence::{AgentGoalContent, GoalOrigin, GoalScope};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -27,6 +28,14 @@ use crate::state::AppState;
 
 const APPROVE_ROUTE_TEMPLATE: &str = "/api/goals/:id/approve";
 const REJECT_ROUTE_TEMPLATE: &str = "/api/goals/:id/reject";
+
+pub(crate) const PROPOSAL_STATUS_PENDING_REVIEW: &str = "pending_review";
+pub(crate) const PROPOSAL_STATUS_APPROVED: &str = "approved";
+pub(crate) const PROPOSAL_STATUS_REJECTED: &str = "rejected";
+pub(crate) const PROPOSAL_STATUS_SUPERSEDED: &str = "superseded";
+pub(crate) const PROPOSAL_STATUS_TIMED_OUT: &str = "timed_out";
+pub(crate) const PROPOSAL_STATUS_AUTO_APPLIED: &str = "auto_applied";
+pub(crate) const PROPOSAL_STATUS_AUTO_REJECTED: &str = "auto_rejected";
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct GoalDecisionRequestBody {
@@ -51,6 +60,7 @@ pub struct GoalProposalSummary {
     pub proposer_type: String,
     pub operation: String,
     pub target_type: String,
+    pub status: String,
     pub decision: Option<String>,
     #[schema(value_type = std::collections::BTreeMap<String, f64>)]
     pub dimension_scores: BTreeMap<String, f64>,
@@ -101,6 +111,31 @@ pub struct GoalListResponse {
     pub total: u32,
 }
 
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ActiveGoalSummary {
+    pub id: String,
+    pub proposal_id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub state: String,
+    pub subject_type: String,
+    pub subject_key: String,
+    pub reviewed_revision: String,
+    pub goal_text: String,
+    pub scope: String,
+    pub origin: String,
+    pub parent_goal_id: Option<String>,
+    pub content: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ActiveGoalListResponse {
+    pub goals: Vec<ActiveGoalSummary>,
+    pub total: u32,
+}
+
 fn parse_decision_request(
     payload: Result<Json<GoalDecisionRequestBody>, JsonRejection>,
 ) -> Result<GoalDecisionRequestBody, ApiError> {
@@ -148,6 +183,57 @@ fn parse_score_map(raw: Option<&str>) -> BTreeMap<String, f64> {
         .unwrap_or_default()
 }
 
+pub(crate) fn canonical_status_from_parts(
+    current_state: Option<&str>,
+    decision: Option<&str>,
+    _resolved_at: Option<&str>,
+) -> String {
+    if let Some(current_state) = current_state.filter(|value| !value.is_empty()) {
+        return current_state.to_string();
+    }
+
+    match decision {
+        Some("approved") => PROPOSAL_STATUS_APPROVED.to_string(),
+        Some("rejected") => PROPOSAL_STATUS_REJECTED.to_string(),
+        Some("Superseded") => PROPOSAL_STATUS_SUPERSEDED.to_string(),
+        Some("TimedOut") => PROPOSAL_STATUS_TIMED_OUT.to_string(),
+        Some("AutoApproved") | Some("ApprovedWithFlags") => {
+            PROPOSAL_STATUS_AUTO_APPLIED.to_string()
+        }
+        Some("AutoRejected") => PROPOSAL_STATUS_AUTO_REJECTED.to_string(),
+        Some("HumanReviewRequired") | None => PROPOSAL_STATUS_PENDING_REVIEW.to_string(),
+        Some(_) => PROPOSAL_STATUS_PENDING_REVIEW.to_string(),
+    }
+}
+
+fn canonical_status_sql_expr(table_alias: &str) -> String {
+    format!(
+        "COALESCE(
+            (SELECT to_state
+             FROM goal_proposal_transitions t
+             WHERE t.proposal_id = {table_alias}.id
+             ORDER BY rowid DESC
+             LIMIT 1),
+            CASE
+                WHEN {table_alias}.decision = 'approved' THEN '{approved}'
+                WHEN {table_alias}.decision = 'rejected' THEN '{rejected}'
+                WHEN {table_alias}.decision = 'Superseded' THEN '{superseded}'
+                WHEN {table_alias}.decision = 'TimedOut' THEN '{timed_out}'
+                WHEN {table_alias}.decision IN ('AutoApproved', 'ApprovedWithFlags') THEN '{auto_applied}'
+                WHEN {table_alias}.decision = 'AutoRejected' THEN '{auto_rejected}'
+                ELSE '{pending_review}'
+            END
+        )",
+        approved = PROPOSAL_STATUS_APPROVED,
+        rejected = PROPOSAL_STATUS_REJECTED,
+        superseded = PROPOSAL_STATUS_SUPERSEDED,
+        timed_out = PROPOSAL_STATUS_TIMED_OUT,
+        auto_applied = PROPOSAL_STATUS_AUTO_APPLIED,
+        auto_rejected = PROPOSAL_STATUS_AUTO_REJECTED,
+        pending_review = PROPOSAL_STATUS_PENDING_REVIEW,
+    )
+}
+
 fn fetch_transition_history(
     conn: &rusqlite::Connection,
     goal_id: &str,
@@ -191,6 +277,76 @@ fn actor_key(claims: Option<&Claims>) -> &str {
     claims
         .map(|claims| claims.sub.as_str())
         .unwrap_or("anonymous")
+}
+
+pub(crate) fn parse_goal_content(value: &serde_json::Value) -> Option<AgentGoalContent> {
+    serde_json::from_value::<AgentGoalContent>(value.clone())
+        .ok()
+        .or_else(|| {
+            let object = value.as_object()?;
+            let goal_text = object
+                .get("goal_text")
+                .or_else(|| object.get("goal"))
+                .or_else(|| object.get("summary"))
+                .and_then(|candidate| candidate.as_str())
+                .map(str::trim)
+                .filter(|candidate| !candidate.is_empty())?
+                .to_string();
+            let scope = match object
+                .get("scope")
+                .and_then(|candidate| candidate.as_str())
+                .unwrap_or("Session")
+            {
+                "ShortTerm" => GoalScope::ShortTerm,
+                "LongTerm" => GoalScope::LongTerm,
+                _ => GoalScope::Session,
+            };
+            let origin = match object
+                .get("origin")
+                .and_then(|candidate| candidate.as_str())
+                .unwrap_or("AgentProposed")
+            {
+                "UserDefined" => GoalOrigin::UserDefined,
+                "SystemDefault" => GoalOrigin::SystemDefault,
+                _ => GoalOrigin::AgentProposed,
+            };
+            let parent_goal_id = object
+                .get("parent_goal_id")
+                .and_then(|candidate| candidate.as_str())
+                .and_then(|candidate| uuid::Uuid::parse_str(candidate).ok());
+
+            Some(AgentGoalContent {
+                goal_text,
+                scope,
+                origin,
+                parent_goal_id,
+            })
+        })
+}
+
+fn active_goal_from_row(
+    row: cortex_storage::queries::goal_state_queries::ActiveGoalRow,
+) -> Option<ActiveGoalSummary> {
+    let content = serde_json::from_str::<serde_json::Value>(&row.content).ok()?;
+    let goal = parse_goal_content(&content)?;
+
+    Some(ActiveGoalSummary {
+        id: row.goal_id,
+        proposal_id: row.source_proposal_id,
+        agent_id: row.agent_id,
+        session_id: row.session_id,
+        state: row.state,
+        subject_type: row.subject_type,
+        subject_key: row.subject_key,
+        reviewed_revision: row.reviewed_revision,
+        goal_text: goal.goal_text,
+        scope: format!("{:?}", goal.scope),
+        origin: format!("{:?}", goal.origin),
+        parent_goal_id: goal.parent_goal_id.map(|value| value.to_string()),
+        content,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
 }
 
 fn fetch_goal_agent_id(
@@ -277,14 +433,28 @@ async fn resolve_goal_decision(
                 &preconditions,
                 &resolved_at,
             ) {
-                Ok(()) => Ok((
-                    StatusCode::OK,
-                    serde_json::to_value(GoalDecisionResponse {
-                        status: decision.to_string(),
-                        id: goal_id.clone(),
-                    })
-                    .unwrap_or_else(|_| serde_json::json!({"status": decision, "id": goal_id})),
-                )),
+                Ok(()) => {
+                    if decision == "approved" {
+                        cortex_storage::queries::proposal_materialization_queries::materialize_memory_write_in_transaction(
+                            conn,
+                            &goal_id,
+                        )
+                        .map_err(|error| {
+                            ApiError::internal(format!(
+                                "memory proposal materialization failed: {error}"
+                            ))
+                        })?;
+                    }
+
+                    Ok((
+                        StatusCode::OK,
+                        serde_json::to_value(GoalDecisionResponse {
+                            status: decision.to_string(),
+                            id: goal_id.clone(),
+                        })
+                        .unwrap_or_else(|_| serde_json::json!({"status": decision, "id": goal_id})),
+                    ))
+                }
                 Err(cortex_storage::queries::goal_proposal_queries::HumanDecisionError::NotFound) => {
                     Ok((
                         StatusCode::NOT_FOUND,
@@ -401,7 +571,17 @@ async fn resolve_goal_decision(
                         WsEvent::ProposalDecision {
                             proposal_id: goal_id.clone(),
                             decision: decision.into(),
+                            agent_id: agent_id.clone().unwrap_or_default(),
+                        },
+                    );
+                    crate::api::websocket::broadcast_event(
+                        &state,
+                        WsEvent::ProposalUpdated {
+                            proposal_id: goal_id.clone(),
                             agent_id: agent_id.unwrap_or_default(),
+                            status: decision.into(),
+                            change: "state_changed".into(),
+                            supersedes_proposal_id: None,
                         },
                     );
                 }
@@ -416,7 +596,7 @@ async fn resolve_goal_decision(
 /// Query parameters for goal/proposal listing (T-2.1.5).
 #[derive(Debug, Deserialize)]
 pub struct GoalQueryParams {
-    /// Filter by status: "pending", "approved", "rejected", or omit for all.
+    /// Filter by status: "pending", "approved", "rejected", "history", or omit for all.
     pub status: Option<String>,
     /// Filter by agent_id.
     pub agent_id: Option<String>,
@@ -449,19 +629,29 @@ pub async fn list_goals(
     let mut conditions = Vec::new();
     let mut bind_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut idx = 1u32;
+    let status_expr = canonical_status_sql_expr("goal_proposals");
 
     match params.status.as_deref() {
         Some("pending") => {
-            conditions.push("resolved_at IS NULL".to_string());
-        }
-        Some("approved") => {
-            conditions.push(format!("decision = ?{idx}"));
-            bind_params.push(Box::new("approved".to_string()));
+            conditions.push(format!("{status_expr} = ?{idx}"));
+            bind_params.push(Box::new(PROPOSAL_STATUS_PENDING_REVIEW.to_string()));
             idx += 1;
         }
+        Some("approved") => {
+            conditions.push(format!("{status_expr} IN (?{idx}, ?{})", idx + 1));
+            bind_params.push(Box::new(PROPOSAL_STATUS_APPROVED.to_string()));
+            bind_params.push(Box::new(PROPOSAL_STATUS_AUTO_APPLIED.to_string()));
+            idx += 2;
+        }
         Some("rejected") => {
-            conditions.push(format!("decision = ?{idx}"));
-            bind_params.push(Box::new("rejected".to_string()));
+            conditions.push(format!("{status_expr} IN (?{idx}, ?{})", idx + 1));
+            bind_params.push(Box::new(PROPOSAL_STATUS_REJECTED.to_string()));
+            bind_params.push(Box::new(PROPOSAL_STATUS_AUTO_REJECTED.to_string()));
+            idx += 2;
+        }
+        Some("history") => {
+            conditions.push(format!("{status_expr} != ?{idx}"));
+            bind_params.push(Box::new(PROPOSAL_STATUS_PENDING_REVIEW.to_string()));
             idx += 1;
         }
         _ => {} // No filter — return all.
@@ -498,11 +688,12 @@ pub async fn list_goals(
     let query = format!(
         "SELECT id, agent_id, session_id, proposer_type, operation, target_type, \
                 decision, dimension_scores, flags, created_at, resolved_at, \
-                (SELECT to_state FROM goal_proposal_transitions t WHERE t.proposal_id = goal_proposals.id ORDER BY rowid DESC LIMIT 1) \
+                {status_expr} \
          FROM goal_proposals {where_clause} \
          ORDER BY created_at DESC \
          LIMIT ?{idx} OFFSET ?{}",
-        idx + 1
+        idx + 1,
+        status_expr = status_expr,
     );
     bind_params.push(Box::new(page_size));
     bind_params.push(Box::new(offset));
@@ -525,6 +716,7 @@ pub async fn list_goals(
     match stmt.query_map(all_refs.as_slice(), |row| {
         let dim_scores_str: Option<String> = row.get(7)?;
         let flags_str: Option<String> = row.get(8)?;
+        let status: String = row.get(11)?;
         Ok(GoalProposalSummary {
             id: row.get::<_, String>(0)?,
             agent_id: row.get::<_, String>(1)?,
@@ -532,12 +724,13 @@ pub async fn list_goals(
             proposer_type: row.get::<_, String>(3)?,
             operation: row.get::<_, String>(4)?,
             target_type: row.get::<_, String>(5)?,
+            status: status.clone(),
             decision: row.get::<_, Option<String>>(6)?,
             dimension_scores: parse_score_map(dim_scores_str.as_deref()),
             flags: parse_string_vec(flags_str.as_deref()),
             created_at: row.get::<_, String>(9)?,
             resolved_at: row.get::<_, Option<String>>(10)?,
-            current_state: row.get::<_, Option<String>>(11)?,
+            current_state: Some(status),
         })
     }) {
         Ok(rows) => {
@@ -565,6 +758,63 @@ pub async fn list_goals(
             page_size,
             total,
         }),
+    )
+        .into_response()
+}
+
+pub async fn list_active_goals(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<GoalQueryParams>,
+) -> impl IntoResponse {
+    let db = match state.db.read() {
+        Ok(db) => db,
+        Err(error) => {
+            tracing::error!(error = %error, "Failed to acquire DB read connection");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "database connection error"})),
+            )
+                .into_response();
+        }
+    };
+
+    let total = match cortex_storage::queries::goal_state_queries::count_active_goals(
+        &db,
+        params.agent_id.as_deref(),
+    ) {
+        Ok(total) => total,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("active goal count failed: {error}")})),
+            )
+                .into_response();
+        }
+    };
+
+    let limit = params.page_size.unwrap_or(200).min(500);
+    let offset = (params.page.unwrap_or(1).saturating_sub(1)) * limit;
+    let rows = match cortex_storage::queries::goal_state_queries::list_active_goals(
+        &db,
+        params.agent_id.as_deref(),
+        limit,
+        offset,
+    ) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("active goal query failed: {error}")})),
+            )
+                .into_response();
+        }
+    };
+
+    let goals = rows.into_iter().filter_map(active_goal_from_row).collect();
+
+    (
+        StatusCode::OK,
+        Json(ActiveGoalListResponse { goals, total }),
     )
         .into_response()
 }
@@ -652,6 +902,14 @@ pub async fn get_goal(
                 let cited_str: String = row.get(7)?;
                 let flags_str: Option<String> = row.get(11)?;
                 let dim_str: Option<String> = row.get(12)?;
+                let decision = row.get::<_, Option<String>>(8)?;
+                let resolved_at = row.get::<_, Option<String>>(9)?;
+                let current_state = row.get::<_, Option<String>>(21)?;
+                let status = canonical_status_from_parts(
+                    current_state.as_deref(),
+                    decision.as_deref(),
+                    resolved_at.as_deref(),
+                );
 
                 Ok(GoalProposalDetail {
                     proposal: GoalProposalSummary {
@@ -661,12 +919,13 @@ pub async fn get_goal(
                         proposer_type: row.get::<_, String>(3)?,
                         operation: row.get::<_, String>(4)?,
                         target_type: row.get::<_, String>(5)?,
-                        decision: row.get::<_, Option<String>>(8)?,
+                        status: status.clone(),
+                        decision,
                         dimension_scores: parse_score_map(dim_str.as_deref()),
                         flags: parse_string_vec(flags_str.as_deref()),
                         created_at: row.get::<_, String>(14)?,
-                        resolved_at: row.get::<_, Option<String>>(9)?,
-                        current_state: row.get::<_, Option<String>>(21)?,
+                        resolved_at,
+                        current_state: Some(status),
                     },
                     content: serde_json::from_str::<serde_json::Value>(&content_str)
                         .unwrap_or(serde_json::Value::String(content_str)),
@@ -691,4 +950,34 @@ pub async fn get_goal(
         })?;
 
     Ok(Json(proposal))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_goal_content_accepts_legacy_goal_text_only_shape() {
+        let parsed = parse_goal_content(&serde_json::json!({
+            "goal_text": "Ship the durable goal contract"
+        }))
+        .expect("legacy goal content should parse");
+
+        assert_eq!(parsed.goal_text, "Ship the durable goal contract");
+        assert_eq!(parsed.scope, GoalScope::Session);
+        assert_eq!(parsed.origin, GoalOrigin::AgentProposed);
+        assert_eq!(parsed.parent_goal_id, None);
+    }
+
+    #[test]
+    fn canonical_status_prefers_auto_states() {
+        assert_eq!(
+            canonical_status_from_parts(None, Some("AutoApproved"), None),
+            PROPOSAL_STATUS_AUTO_APPLIED
+        );
+        assert_eq!(
+            canonical_status_from_parts(Some("approved"), Some("HumanReviewRequired"), None),
+            PROPOSAL_STATUS_APPROVED
+        );
+    }
 }

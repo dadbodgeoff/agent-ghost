@@ -10,7 +10,7 @@ export interface WorkflowNode<TData extends Record<string, unknown> = Record<str
   data?: TData;
   branch_group?: string;
   condition?: string;
-  execution_status?: 'pending' | 'running' | 'completed' | 'failed';
+  execution_status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'passed';
 }
 
 export interface WorkflowEdge<TData extends Record<string, unknown> = Record<string, unknown>> {
@@ -100,6 +100,29 @@ export interface ExecuteWorkflowResult {
   input?: unknown;
   started_at?: string;
   completed_at?: string;
+  current_step_index?: number | null;
+  current_node_id?: string | null;
+  recovery_required?: boolean;
+  recovery_action?: string | null;
+  reason?: string | null;
+}
+
+export interface WorkflowExecutionSummary {
+  execution_id: string;
+  status: string;
+  started_at: string;
+  completed_at?: string | null;
+  updated_at: string;
+  state_version: number;
+  current_step_index?: number | null;
+  current_node_id?: string | null;
+  recovery_action?: string | null;
+  recovery_required: boolean;
+}
+
+export interface ListWorkflowExecutionsResult {
+  workflow_id: string;
+  executions: WorkflowExecutionSummary[];
 }
 
 export class WorkflowsAPI {
@@ -151,6 +174,33 @@ export class WorkflowsAPI {
       'POST',
       `/api/workflows/${encodeURIComponent(id)}/execute`,
       params ?? {},
+      options,
+    );
+  }
+
+  async listExecutions(id: string): Promise<ListWorkflowExecutionsResult> {
+    return this.request<ListWorkflowExecutionsResult>(
+      'GET',
+      `/api/workflows/${encodeURIComponent(id)}/executions`,
+    );
+  }
+
+  async getExecution(id: string, executionId: string): Promise<ExecuteWorkflowResult> {
+    return this.request<ExecuteWorkflowResult>(
+      'GET',
+      `/api/workflows/${encodeURIComponent(id)}/executions/${encodeURIComponent(executionId)}`,
+    );
+  }
+
+  async resume(
+    id: string,
+    executionId: string,
+    options?: GhostRequestOptions,
+  ): Promise<ExecuteWorkflowResult> {
+    return this.request<ExecuteWorkflowResult>(
+      'POST',
+      `/api/workflows/${encodeURIComponent(id)}/resume/${encodeURIComponent(executionId)}`,
+      {},
       options,
     );
   }

@@ -249,6 +249,52 @@ describe('GhostWebSocket', () => {
     socket.disconnect();
   });
 
+  it('dispatches cost update events with the typed payload', async () => {
+    const handler = vi.fn();
+    const socket = new GhostWebSocket({ baseUrl: 'http://test:39780' });
+    socket.on('CostUpdate', handler);
+    socket.connect();
+    await flushAsyncWork();
+
+    const transport = MockWebSocket.instances[0];
+    transport.open();
+    transport.emitMessage(
+      JSON.stringify({
+        seq: 22,
+        timestamp: '2026-03-08T12:05:00Z',
+        event: {
+          type: 'CostUpdate',
+          agent_id: 'agent-1',
+          agent_name: 'Agent One',
+          session_id: 'session-1',
+          daily_total: 1.25,
+          session_total: 1.75,
+          compaction_cost: 0.1,
+          spending_cap: 10,
+          cap_remaining: 8.75,
+          cap_utilization_pct: 12.5,
+          is_compaction: false,
+        },
+      }),
+    );
+
+    expect(handler).toHaveBeenCalledWith({
+      type: 'CostUpdate',
+      agent_id: 'agent-1',
+      agent_name: 'Agent One',
+      session_id: 'session-1',
+      daily_total: 1.25,
+      session_total: 1.75,
+      compaction_cost: 0.1,
+      spending_cap: 10,
+      cap_remaining: 8.75,
+      cap_utilization_pct: 12.5,
+      is_compaction: false,
+    });
+
+    socket.disconnect();
+  });
+
   it('does not retry when websocket ticket minting is unauthorized', async () => {
     vi.useFakeTimers();
     const errors: string[] = [];

@@ -30,14 +30,92 @@ export type KnownWsEvent =
       agent_id: string;
     }
   | {
+      type: 'ProposalUpdated';
+      proposal_id: string;
+      agent_id: string;
+      status: string;
+      change: string;
+      supersedes_proposal_id?: string | null;
+    }
+  | {
       type: 'AgentStateChange';
       agent_id: string;
       new_state: string;
     }
   | {
+      type: 'ChannelCreated';
+      channel_id: string;
+      channel_type: string;
+      agent_id: string;
+      routing_key: string;
+      status: string;
+      status_message?: string | null;
+      updated_at: string;
+    }
+  | {
+      type: 'ChannelUpdated';
+      channel_id: string;
+      channel_type: string;
+      agent_id: string;
+      routing_key: string;
+      status: string;
+      status_message?: string | null;
+      updated_at: string;
+    }
+  | {
+      type: 'ChannelStatusChanged';
+      channel_id: string;
+      channel_type: string;
+      agent_id: string;
+      routing_key: string;
+      status: string;
+      status_message?: string | null;
+      updated_at: string;
+    }
+  | {
+      type: 'ChannelDeleted';
+      channel_id: string;
+      channel_type: string;
+      agent_id: string;
+      routing_key: string;
+      updated_at: string;
+    }
+  | {
+      type: 'AgentOperationalStatusChanged';
+      agent_id: string;
+      lifecycle_state: string;
+      safety_state: string;
+      effective_state: string;
+      reason: string;
+      changed_at: string;
+    }
+  | {
       type: 'AgentConfigChange';
       agent_id: string;
       changed_fields: string[];
+    }
+  | {
+      type: 'PcControlRuntimeChange';
+      revision: number;
+      enabled: boolean;
+      activation_state: string;
+      change_source: string;
+      changed_fields: string[];
+    }
+  | {
+      type: 'SandboxReviewRequested';
+      review_id: string;
+      agent_id: string;
+      tool_name: string;
+      status: string;
+    }
+  | {
+      type: 'SandboxReviewResolved';
+      review_id: string;
+      agent_id: string;
+      tool_name: string;
+      decision: string;
+      resolved_by: string;
     }
   | {
       type: 'TraceUpdate';
@@ -75,6 +153,78 @@ export type KnownWsEvent =
       event_type: string;
       sender?: string;
       sequence_number: number;
+    }
+  | {
+      type: 'CostUpdate';
+      agent_id: string;
+      agent_name: string;
+      session_id: string;
+      daily_total: number;
+      session_total: number;
+      compaction_cost: number;
+      spending_cap: number;
+      cap_remaining: number;
+      cap_utilization_pct: number;
+      is_compaction: boolean;
+    }
+  | {
+      type: 'CostDailyReset';
+      reset_date_utc: string;
+    }
+  | {
+      type: 'WorkflowExecutionStarted';
+      workflow_id: string;
+      execution_id: string;
+      started_at: string;
+    }
+  | {
+      type: 'WorkflowExecutionResumed';
+      workflow_id: string;
+      execution_id: string;
+      resumed_at: string;
+    }
+  | {
+      type: 'WorkflowNodeStarted';
+      workflow_id: string;
+      execution_id: string;
+      node_id: string;
+      node_type: string;
+      started_at: string;
+    }
+  | {
+      type: 'WorkflowNodeCompleted';
+      workflow_id: string;
+      execution_id: string;
+      node_id: string;
+      node_type: string;
+      completed_at: string;
+      status: string;
+    }
+  | {
+      type: 'WorkflowNodeFailed';
+      workflow_id: string;
+      execution_id: string;
+      node_id: string;
+      node_type: string;
+      completed_at: string;
+      error_code: string;
+      message: string;
+      retry_safe: boolean;
+    }
+  | {
+      type: 'WorkflowExecutionCompleted';
+      workflow_id: string;
+      execution_id: string;
+      completed_at: string;
+      status: string;
+    }
+  | {
+      type: 'WorkflowExecutionRecoveryRequired';
+      workflow_id: string;
+      execution_id: string;
+      recovery_action: string;
+      reason: string;
+      occurred_at: string;
     }
   | {
       type: 'ChatMessage';

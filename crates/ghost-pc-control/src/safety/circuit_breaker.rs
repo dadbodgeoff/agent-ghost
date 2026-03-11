@@ -25,6 +25,13 @@ pub enum CircuitState {
     HalfOpen,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CircuitBreakerSettings {
+    pub rate_limit: u32,
+    pub failure_threshold: u32,
+    pub cooldown: Duration,
+}
+
 /// PC control circuit breaker.
 ///
 /// Protected by `Mutex` in the skill layer — all access is serialized.
@@ -68,6 +75,14 @@ impl PcControlCircuitBreaker {
     /// Current state.
     pub fn state(&self) -> CircuitState {
         self.state
+    }
+
+    pub fn settings(&self) -> CircuitBreakerSettings {
+        CircuitBreakerSettings {
+            rate_limit: self.rate_limit,
+            failure_threshold: self.failure_threshold,
+            cooldown: self.cooldown,
+        }
     }
 
     /// Check whether an action is allowed. Returns `Ok(())` if allowed,
@@ -170,6 +185,14 @@ impl PcControlCircuitBreaker {
         self.failure_count = 0;
         self.tripped_at = None;
         self.recent_actions.clear();
+    }
+
+    pub fn reconfigure(&mut self, rate_limit: u32, failure_threshold: u32, cooldown: Duration) {
+        self.rate_limit = rate_limit;
+        self.failure_threshold = failure_threshold;
+        self.cooldown = cooldown;
+        self.recent_actions
+            .truncate(rate_limit.saturating_add(1) as usize);
     }
 
     fn trip(&mut self, reason: &str) {

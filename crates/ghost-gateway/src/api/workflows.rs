@@ -28,6 +28,7 @@ use crate::api::mutation::{
 use crate::api::operation_context::{IdempotencyStatus, OperationContext};
 use crate::provider_runtime;
 use crate::runtime_safety::{RuntimeSafetyBuilder, RuntimeSafetyContext, API_SYNTHETIC_AGENT_NAME};
+use crate::skill_catalog::SkillCatalogExecutor;
 use crate::state::AppState;
 
 const CREATE_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows";
@@ -35,6 +36,14 @@ const UPDATE_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows/:id";
 const EXECUTE_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows/:id/execute";
 const RESUME_WORKFLOW_ROUTE_TEMPLATE: &str = "/api/workflows/:id/resume/:execution_id";
 const WORKFLOW_EXECUTION_STATE_VERSION: u32 = 2;
+const SUPPORTED_WORKFLOW_NODE_TYPES: &[&str] = &[
+    "llm_call",
+    "tool_exec",
+    "gate_check",
+    "transform",
+    "condition",
+    "wait",
+];
 
 /// Query parameters for workflow listing.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -291,6 +300,46 @@ fn validate_workflow_graph(
     Ok(())
 }
 
+fn validate_workflow_supported_node_types(nodes: &[serde_json::Value]) -> Result<(), ApiError> {
+    for node in nodes {
+        let node_id = node
+            .get("id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ApiError::internal("workflow node missing id after validation"))?;
+        let node_type = node
+            .get("type")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ApiError::internal("workflow node missing type after validation"))?;
+        if !SUPPORTED_WORKFLOW_NODE_TYPES.contains(&node_type) {
+            return Err(ApiError::bad_request(format!(
+                "workflow node '{node_id}' uses unsupported type '{node_type}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn workflow_node_config_value<'a>(
+    node: &'a serde_json::Value,
+    key: &str,
+) -> Option<&'a serde_json::Value> {
+    node.get("config")
+        .and_then(|value| value.as_object())
+        .and_then(|config| config.get(key))
+        .or_else(|| node.get(key))
+}
+
+fn workflow_node_config_string(node: &serde_json::Value, key: &str) -> Option<String> {
+    workflow_node_config_value(node, key)
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn workflow_node_config_u64(node: &serde_json::Value, key: &str) -> Option<u64> {
+    workflow_node_config_value(node, key).and_then(|value| value.as_u64())
+}
+
 fn stored_workflow_to_response(row: StoredWorkflowRow) -> Result<WorkflowResponse, ApiError> {
     let nodes = parse_workflow_graph_array(&row.nodes_json, "nodes")?;
     let edges = parse_workflow_graph_array(&row.edges_json, "edges")?;
@@ -470,6 +519,7 @@ fn workflow_execution_steps(state: &WorkflowExecutionState) -> Vec<serde_json::V
 }
 
 fn workflow_response_body(state: &WorkflowExecutionState) -> serde_json::Value {
+    let (current_step_index, current_node_id) = workflow_execution_current_step(state);
     serde_json::json!({
         "execution_id": state.execution_id.clone(),
         "workflow_id": state.workflow_id.clone(),
@@ -486,6 +536,8 @@ fn workflow_response_body(state: &WorkflowExecutionState) -> serde_json::Value {
         "input": state.input.clone(),
         "started_at": state.started_at.clone(),
         "completed_at": state.completed_at.clone(),
+        "current_step_index": current_step_index,
+        "current_node_id": current_node_id,
         "recovery_required": state.recovery_required,
         "recovery_action": state.recovery_action.clone(),
         "reason": state.recovery_reason.clone(),
@@ -505,6 +557,13 @@ fn workflow_recovery_body(
         "workflow_id": workflow_id,
         "workflow_name": workflow_name.unwrap_or(workflow_id),
         "status": "recovery_required",
+        "mode": "dag",
+        "steps": [],
+        "input": serde_json::Value::Null,
+        "started_at": serde_json::Value::Null,
+        "completed_at": serde_json::Value::Null,
+        "current_step_index": serde_json::Value::Null,
+        "current_node_id": serde_json::Value::Null,
         "recovery_required": true,
         "recovery_action": recovery_action,
         "reason": reason,
@@ -580,6 +639,7 @@ pub async fn create_workflow(
     let graph = match parse_workflow_graph_input(body.nodes.as_ref(), "nodes").and_then(|nodes| {
         let edges = parse_workflow_graph_input(body.edges.as_ref(), "edges")?;
         validate_workflow_graph(&nodes, &edges)?;
+        validate_workflow_supported_node_types(&nodes)?;
         Ok((nodes, edges))
     }) {
         Ok(graph) => graph,
@@ -748,6 +808,7 @@ pub async fn update_workflow(
                         }
                     };
                     validate_workflow_graph(&nodes, &edges)
+                        .and_then(|_| validate_workflow_supported_node_types(&nodes))
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     Err(ApiError::not_found(format!("Workflow {id} not found")))
@@ -1057,7 +1118,7 @@ async fn execute_workflow_step(
             if let Err(error) = workflow_agent_runtime_allowed(
                 state,
                 execution_id,
-                node.get("agent_id").and_then(|value| value.as_str()),
+                workflow_node_config_string(node, "agent_id").as_deref(),
             ) {
                 return WorkflowStepOutcome {
                     status: "failed".to_string(),
@@ -1081,10 +1142,9 @@ async fn execute_workflow_step(
                 };
             }
 
-            let prompt = node
-                .get("prompt")
-                .and_then(|value| value.as_str())
-                .unwrap_or("Process the input.");
+            let prompt = workflow_node_config_string(node, "system_prompt")
+                .or_else(|| workflow_node_config_string(node, "prompt"))
+                .unwrap_or_else(|| "Process the input.".to_string());
             let input_str = input_val
                 .as_ref()
                 .map(|value| value.to_string())
@@ -1092,7 +1152,7 @@ async fn execute_workflow_step(
             let messages = vec![
                 ghost_llm::provider::ChatMessage {
                     role: ghost_llm::provider::MessageRole::System,
-                    content: prompt.to_string(),
+                    content: prompt,
                     tool_calls: None,
                     tool_call_id: None,
                 },
@@ -1131,12 +1191,73 @@ async fn execute_workflow_step(
                 },
             }
         }
+        "tool_exec" => {
+            let Some(skill_name) = workflow_node_config_string(node, "skill_name")
+                .or_else(|| workflow_node_config_string(node, "tool_name"))
+            else {
+                return WorkflowStepOutcome {
+                    status: "failed".to_string(),
+                    result: serde_json::json!({
+                        "status": "failed",
+                        "error": "tool_exec node is missing config.skill_name",
+                    }),
+                    output: None,
+                };
+            };
+            let agent = match RuntimeSafetyBuilder::new(state).resolve_agent(
+                workflow_node_config_string(node, "agent_id").as_deref(),
+                API_SYNTHETIC_AGENT_NAME,
+            ) {
+                Ok(agent) => agent,
+                Err(error) => {
+                    return WorkflowStepOutcome {
+                        status: "failed".to_string(),
+                        result: serde_json::json!({
+                            "status": "failed",
+                            "error": format!("tool runtime agent resolution failed: {error}"),
+                        }),
+                        output: None,
+                    }
+                }
+            };
+            let session_id =
+                uuid::Uuid::parse_str(execution_id).unwrap_or_else(|_| uuid::Uuid::now_v7());
+            let executor = SkillCatalogExecutor::new(
+                Arc::clone(&state.skill_catalog),
+                Arc::clone(&state.db),
+                state.convergence_profile.clone(),
+            );
+            let tool_input = input_val.unwrap_or(serde_json::Value::Null);
+            match executor.execute(&skill_name, &agent, session_id, &tool_input) {
+                Ok(result) => WorkflowStepOutcome {
+                    status: "completed".to_string(),
+                    result: serde_json::json!({
+                        "status": "completed",
+                        "skill": skill_name,
+                    }),
+                    output: Some(result.result),
+                },
+                Err(error) => WorkflowStepOutcome {
+                    status: "failed".to_string(),
+                    result: serde_json::json!({
+                        "status": "failed",
+                        "skill": skill_name,
+                        "error": error.to_string(),
+                    }),
+                    output: None,
+                },
+            }
+        }
         "condition" => {
-            let condition_expr = node
-                .get("condition")
-                .and_then(|value| value.as_str())
-                .unwrap_or("true");
+            let condition_expr = workflow_node_config_string(node, "expression")
+                .or_else(|| workflow_node_config_string(node, "condition"))
+                .unwrap_or_else(|| "true".to_string());
+            let input_str = input_val
+                .as_ref()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_string());
             let passed = condition_expr == "true"
+                || condition_expr == input_str
                 || input_val
                     .as_ref()
                     .map(|value| !value.is_null())
@@ -1165,9 +1286,7 @@ async fn execute_workflow_step(
             output: input_val,
         },
         "wait" => {
-            let wait_ms = node
-                .get("wait_ms")
-                .and_then(|value| value.as_u64())
+            let wait_ms = workflow_node_config_u64(node, "wait_ms")
                 .unwrap_or(1000)
                 .min(30_000);
             tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
@@ -1268,7 +1387,43 @@ fn load_workflow_snapshot(
     let nodes = parse_workflow_graph_array(&nodes_json, "nodes")?;
     let edges = parse_workflow_graph_array(&edges_json, "edges")?;
     validate_workflow_graph(&nodes, &edges)?;
+    validate_workflow_supported_node_types(&nodes)?;
     Ok((nodes, edges, name))
+}
+
+fn workflow_detail_response_from_row(
+    workflow_id: &str,
+    row: &cortex_storage::queries::workflow_execution_queries::WorkflowExecutionRow,
+) -> Result<serde_json::Value, ApiError> {
+    if row.workflow_id.as_deref() != Some(workflow_id) {
+        return Err(ApiError::not_found(format!(
+            "Workflow execution {} not found for workflow {workflow_id}",
+            row.id
+        )));
+    }
+    if let Some((_, body)) = stored_workflow_execution_response(
+        row.final_response_status,
+        row.final_response_body.as_deref(),
+        "workflow_executions",
+    )? {
+        return Ok(body);
+    }
+    if row.state_version != WORKFLOW_EXECUTION_STATE_VERSION as i64 {
+        return Ok(workflow_recovery_body(
+            &row.id,
+            workflow_id,
+            row.workflow_name.as_deref(),
+            row.recovery_action
+                .as_deref()
+                .unwrap_or("state_upgrade_required"),
+            format!(
+                "workflow execution row uses unsupported typed state version {}",
+                row.state_version
+            ),
+        ));
+    }
+    let parsed = parse_workflow_execution_state(&row.state)?;
+    Ok(workflow_response_body(&parsed))
 }
 
 async fn bootstrap_workflow_execution_for_execute(
@@ -1561,6 +1716,37 @@ async fn finalize_workflow_execution_failure(
     execution_state.final_response_status = Some(status.as_u16());
     execution_state.final_response_body = Some(body.clone());
     persist_workflow_execution_state(&state.db, binding, execution_state).await?;
+    crate::api::websocket::broadcast_event(
+        state,
+        if execution_state.recovery_required {
+            crate::api::websocket::WsEvent::WorkflowExecutionRecoveryRequired {
+                workflow_id: execution_state.workflow_id.clone(),
+                execution_id: execution_state.execution_id.clone(),
+                recovery_action: execution_state
+                    .recovery_action
+                    .clone()
+                    .unwrap_or_else(|| "manual_recovery_required".to_string()),
+                reason: execution_state
+                    .recovery_reason
+                    .clone()
+                    .unwrap_or_else(|| "workflow execution requires manual recovery".to_string()),
+                occurred_at: execution_state
+                    .completed_at
+                    .clone()
+                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            }
+        } else {
+            crate::api::websocket::WsEvent::WorkflowExecutionCompleted {
+                workflow_id: execution_state.workflow_id.clone(),
+                execution_id: execution_state.execution_id.clone(),
+                completed_at: execution_state
+                    .completed_at
+                    .clone()
+                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                status: "failed".to_string(),
+            }
+        },
+    );
     Ok((status, body))
 }
 
@@ -1684,12 +1870,12 @@ async fn drive_workflow_execution(
 
         crate::api::websocket::broadcast_event(
             &state,
-            crate::api::websocket::WsEvent::SessionEvent {
-                session_id: execution_state.execution_id.clone(),
-                event_id: uuid::Uuid::new_v4().to_string(),
-                event_type: "node_started".into(),
-                sender: None,
-                sequence_number: 0,
+            crate::api::websocket::WsEvent::WorkflowNodeStarted {
+                workflow_id: execution_state.workflow_id.clone(),
+                execution_id: execution_state.execution_id.clone(),
+                node_id: node_id.clone(),
+                node_type: node_type.to_string(),
+                started_at: started_at.clone(),
             },
         );
 
@@ -1707,7 +1893,7 @@ async fn drive_workflow_execution(
                 status: step_outcome.status.clone(),
                 result: step_outcome.result,
                 started_at: Some(started_at),
-                completed_at: Some(completed_at),
+                completed_at: Some(completed_at.clone()),
             },
         );
         execution_state.active_step = None;
@@ -1716,12 +1902,30 @@ async fn drive_workflow_execution(
 
         crate::api::websocket::broadcast_event(
             &state,
-            crate::api::websocket::WsEvent::SessionEvent {
-                session_id: execution_state.execution_id.clone(),
-                event_id: uuid::Uuid::new_v4().to_string(),
-                event_type: "node_completed".into(),
-                sender: None,
-                sequence_number: 0,
+            if step_outcome.status == "failed" {
+                crate::api::websocket::WsEvent::WorkflowNodeFailed {
+                    workflow_id: execution_state.workflow_id.clone(),
+                    execution_id: execution_state.execution_id.clone(),
+                    node_id: node_id.clone(),
+                    node_type: node_type.to_string(),
+                    completed_at: completed_at.clone(),
+                    error_code: "WORKFLOW_NODE_FAILED".to_string(),
+                    message: execution_state
+                        .node_states
+                        .get(&node_id)
+                        .map(|node_state| node_state.result.to_string())
+                        .unwrap_or_else(|| "workflow node failed".to_string()),
+                    retry_safe: workflow_step_retry_safe(node_type),
+                }
+            } else {
+                crate::api::websocket::WsEvent::WorkflowNodeCompleted {
+                    workflow_id: execution_state.workflow_id.clone(),
+                    execution_id: execution_state.execution_id.clone(),
+                    node_id: node_id.clone(),
+                    node_type: node_type.to_string(),
+                    completed_at: completed_at.clone(),
+                    status: step_outcome.status.clone(),
+                }
             },
         );
     }
@@ -1747,6 +1951,21 @@ async fn drive_workflow_execution(
     execution_state.final_response_status = Some(StatusCode::OK.as_u16());
     execution_state.final_response_body = Some(body.clone());
     persist_workflow_execution_state(&state.db, &binding, &execution_state).await?;
+    crate::api::websocket::broadcast_event(
+        &state,
+        crate::api::websocket::WsEvent::WorkflowExecutionCompleted {
+            workflow_id: execution_state.workflow_id.clone(),
+            execution_id: execution_state.execution_id.clone(),
+            completed_at: execution_state
+                .completed_at
+                .clone()
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            status: execution_state
+                .final_status
+                .clone()
+                .unwrap_or_else(|| "failed".to_string()),
+        },
+    );
     Ok((StatusCode::OK, body))
 }
 
@@ -1769,7 +1988,17 @@ pub(crate) async fn execute_workflow_inner(
         WorkflowExecutionBootstrap::Drive {
             binding,
             state: execution_state,
-        } => drive_workflow_execution(state, binding, *execution_state).await,
+        } => {
+            crate::api::websocket::broadcast_event(
+                &state,
+                crate::api::websocket::WsEvent::WorkflowExecutionStarted {
+                    workflow_id: workflow_id.clone(),
+                    execution_id: binding.execution_id.clone(),
+                    started_at: execution_state.started_at.clone(),
+                },
+            );
+            drive_workflow_execution(state, binding, *execution_state).await
+        }
         WorkflowExecutionBootstrap::Ready {
             binding: _binding,
             status,
@@ -1797,7 +2026,17 @@ async fn resume_workflow_execution_inner(
         WorkflowExecutionBootstrap::Drive {
             binding,
             state: execution_state,
-        } => drive_workflow_execution(state, binding, *execution_state).await,
+        } => {
+            crate::api::websocket::broadcast_event(
+                &state,
+                crate::api::websocket::WsEvent::WorkflowExecutionResumed {
+                    workflow_id: workflow_id.clone(),
+                    execution_id: binding.execution_id.clone(),
+                    resumed_at: chrono::Utc::now().to_rfc3339(),
+                },
+            );
+            drive_workflow_execution(state, binding, *execution_state).await
+        }
         WorkflowExecutionBootstrap::Ready {
             binding: _binding,
             status,
@@ -1966,6 +2205,23 @@ pub async fn list_executions(
     }))
 }
 
+/// GET /api/workflows/:id/executions/:execution_id — get execution detail for a workflow.
+pub async fn get_execution(
+    State(state): State<Arc<AppState>>,
+    Path((workflow_id, execution_id)): Path<(String, String)>,
+) -> ApiResult<serde_json::Value> {
+    let db = state
+        .db
+        .read()
+        .map_err(|e| ApiError::db_error("get_execution", e))?;
+    let row = cortex_storage::queries::workflow_execution_queries::get_by_id(&db, &execution_id)
+        .map_err(|error| ApiError::db_error("get_execution_query", error))?
+        .ok_or_else(|| {
+            ApiError::not_found(format!("Workflow execution {execution_id} not found"))
+        })?;
+    Ok(Json(workflow_detail_response_from_row(&workflow_id, &row)?))
+}
+
 /// POST /api/workflows/:id/resume/:execution_id — resume a failed execution.
 pub async fn resume_execution(
     State(state): State<Arc<AppState>>,
@@ -2094,5 +2350,129 @@ pub async fn resume_execution(
             }
         }
         Err(error) => error_response_with_idempotency(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: &str, node_type: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "type": node_type,
+            "config": {},
+        })
+    }
+
+    #[test]
+    fn validate_workflow_supported_node_types_rejects_unknown_types() {
+        let nodes = vec![node("n1", "llm_call"), node("n2", "parallel_branch")];
+
+        let error = validate_workflow_supported_node_types(&nodes).expect_err("unsupported node");
+
+        match error {
+            ApiError::Validation(message) => {
+                assert!(
+                    message.contains("unsupported type 'parallel_branch'"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workflow_recovery_body_is_shape_stable_for_the_dashboard() {
+        let body = workflow_recovery_body(
+            "exec-1",
+            "wf-1",
+            Some("Workflow One"),
+            "manual_recovery_required",
+            "test reason",
+        );
+
+        assert_eq!(
+            body.get("status").and_then(|value| value.as_str()),
+            Some("recovery_required")
+        );
+        assert_eq!(
+            body.get("mode").and_then(|value| value.as_str()),
+            Some("dag")
+        );
+        assert_eq!(
+            body.get("steps")
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body.get("recovery_action").and_then(|value| value.as_str()),
+            Some("manual_recovery_required")
+        );
+        assert_eq!(
+            body.get("reason").and_then(|value| value.as_str()),
+            Some("test reason")
+        );
+    }
+
+    #[test]
+    fn workflow_detail_response_enforces_workflow_ownership() {
+        let row = cortex_storage::queries::workflow_execution_queries::WorkflowExecutionRow {
+            id: "exec-1".to_string(),
+            workflow_id: Some("wf-actual".to_string()),
+            workflow_name: Some("Workflow Actual".to_string()),
+            journal_id: None,
+            operation_id: None,
+            owner_token: None,
+            lease_epoch: None,
+            state_version: WORKFLOW_EXECUTION_STATE_VERSION as i64,
+            status: "running".to_string(),
+            current_step_index: Some(0),
+            current_node_id: Some("n1".to_string()),
+            recovery_action: None,
+            state: serde_json::json!({
+                "version": WORKFLOW_EXECUTION_STATE_VERSION,
+                "execution_id": "exec-1",
+                "workflow_id": "wf-actual",
+                "workflow_name": "Workflow Actual",
+                "input": null,
+                "nodes": [node("n1", "transform")],
+                "edges": [],
+                "order": ["n1"],
+                "node_states": {},
+                "node_outputs": {},
+                "next_step_index": 0,
+                "active_step": null,
+                "started_at": "2026-03-11T00:00:00Z",
+                "completed_at": null,
+                "final_status": null,
+                "final_response_status": null,
+                "final_response_body": null,
+                "recovery_required": false,
+                "recovery_action": null,
+                "recovery_reason": null,
+            })
+            .to_string(),
+            final_response_status: None,
+            final_response_body: None,
+            started_at: "2026-03-11T00:00:00Z".to_string(),
+            completed_at: None,
+            updated_at: "2026-03-11T00:00:00Z".to_string(),
+        };
+
+        let error =
+            workflow_detail_response_from_row("wf-requested", &row).expect_err("ownership guard");
+
+        match error {
+            ApiError::NotFound { entity, id } => {
+                assert_eq!(entity, "resource");
+                assert!(
+                    id.contains("not found for workflow wf-requested"),
+                    "unexpected not-found id/message payload: {id}"
+                );
+            }
+            other => panic!("expected not found error, got {other:?}"),
+        }
     }
 }

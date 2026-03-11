@@ -545,11 +545,27 @@ mod tests {
         ));
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
+        let replay_buffer = Arc::new(crate::api::websocket::EventReplayBuffer::new(16));
+        let sandbox_reviews = crate::sandbox_reviews::SandboxReviewCoordinator::new(
+            Arc::clone(&db),
+            Arc::clone(&replay_buffer),
+            event_tx.clone(),
+        );
+
+        let agents = Arc::new(RwLock::new(crate::agents::registry::AgentRegistry::new()));
+        let channel_manager = Arc::new(crate::channel_manager::ChannelManager::new(
+            Arc::clone(&db),
+            Arc::clone(&agents),
+            event_tx.clone(),
+            Arc::clone(&replay_buffer),
+        ));
 
         Arc::new(AppState {
+            started_at: std::time::Instant::now(),
             gateway: Arc::new(crate::gateway::GatewaySharedState::new()),
             config_path: std::path::PathBuf::from("ghost.yml"),
-            agents: Arc::new(RwLock::new(crate::agents::registry::AgentRegistry::new())),
+            agents,
+            channel_manager,
             kill_switch: Arc::new(crate::safety::kill_switch::KillSwitch::new()),
             quarantine: Arc::new(RwLock::new(
                 crate::safety::quarantine::QuarantineManager::new(),
@@ -558,7 +574,11 @@ mod tests {
             event_tx,
             trigger_sender:
                 tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
-            replay_buffer: Arc::new(crate::api::websocket::EventReplayBuffer::new(16)),
+            sandbox_reviews,
+            itp_emitter: None,
+            itp_router: None,
+            itp_session_tracker: None,
+            replay_buffer,
             cost_tracker: Arc::new(crate::cost::tracker::CostTracker::new()),
             kill_gate: None,
             secret_provider: Arc::new(ghost_secrets::EnvProvider),
@@ -570,7 +590,12 @@ mod tests {
             default_model_provider: None,
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
+            pc_control_runtime: Arc::new(crate::pc_control_runtime::PcControlRuntimeService::new(
+                &ghost_pc_control::safety::PcControlConfig::default(),
+                "tests",
+            )),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_connection_tracker: Arc::new(crate::api::websocket::WsConnectionTracker::new()),
             ws_ticket_auth_only: false,
             tools_config: crate::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
@@ -583,6 +608,9 @@ mod tests {
             monitor_block_on_degraded: false,
             convergence_state_stale_after: std::time::Duration::from_secs(300),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            monitor_runtime_status: Arc::new(RwLock::new(
+                crate::state::MonitorRuntimeStatus::default(),
+            )),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             skill_catalog: Arc::new(crate::skill_catalog::SkillCatalogService::empty_for_tests(
@@ -590,6 +618,12 @@ mod tests {
             )),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            backup_scheduler_status: Arc::new(RwLock::new(
+                crate::state::BackupSchedulerRuntimeStatus::default(),
+            )),
+            config_watcher_status: Arc::new(RwLock::new(
+                crate::state::ConfigWatcherRuntimeStatus::default(),
+            )),
             autonomy: Arc::new(crate::autonomy::AutonomyService::default()),
         })
     }

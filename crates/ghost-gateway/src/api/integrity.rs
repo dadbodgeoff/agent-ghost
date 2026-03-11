@@ -22,14 +22,14 @@ pub struct IntegrityQueryParams {
     pub chain: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum IntegrityEventId {
     Text(String),
     Numeric(i64),
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct IntegrityBreak {
     pub session_id: Option<String>,
     pub memory_id: Option<String>,
@@ -39,7 +39,7 @@ pub struct IntegrityBreak {
     pub actual_prev: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ItpEventsIntegrity {
     pub sessions_checked: usize,
     pub total_events: usize,
@@ -48,7 +48,7 @@ pub struct ItpEventsIntegrity {
     pub breaks: Vec<IntegrityBreak>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct MemoryEventsIntegrity {
     pub memory_chains_checked: usize,
     pub total_events: usize,
@@ -57,13 +57,13 @@ pub struct MemoryEventsIntegrity {
     pub breaks: Vec<IntegrityBreak>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct IntegrityChains {
     pub itp_events: Option<ItpEventsIntegrity>,
     pub memory_events: Option<MemoryEventsIntegrity>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct VerifyChainResponse {
     pub agent_id: String,
     pub chain_type: String,

@@ -336,6 +336,10 @@ async fn run_interactive_chat_inner() {
                 .as_ref()
                 .map(|agent| agent.name.clone())
                 .unwrap_or_else(|| CLI_SYNTHETIC_AGENT_NAME.to_string()),
+            isolation_mode: cli_agent
+                .as_ref()
+                .map(|agent| agent.isolation)
+                .unwrap_or(crate::config::IsolationMode::InProcess),
             full_access: cli_agent
                 .as_ref()
                 .map(|agent| agent.full_access)
@@ -349,6 +353,10 @@ async fn run_interactive_chat_inner() {
                 .as_ref()
                 .map(|agent| agent.spending_cap)
                 .unwrap_or(10.0),
+            sandbox_config: cli_agent
+                .as_ref()
+                .map(crate::config::resolve_agent_sandbox_config)
+                .unwrap_or_default(),
         },
         session_id,
         run_id: Uuid::now_v7(),
@@ -394,7 +402,11 @@ async fn run_interactive_chat_inner() {
                 .as_ref()
                 .map(|cfg| cfg.tools.clone())
                 .unwrap_or_default(),
+            event_tx: None,
+            replay_buffer: None,
             trigger_sender: None,
+            sandbox_review_sender: None,
+            itp_emitter: None,
             convergence_profile: runtime_ctx.convergence_profile.clone(),
             monitor_enabled: ghost_config
                 .as_ref()

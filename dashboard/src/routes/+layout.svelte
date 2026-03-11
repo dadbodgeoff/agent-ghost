@@ -11,6 +11,7 @@
   import PanelLayout from '$lib/components/PanelLayout.svelte';
   import TabBar from '$lib/components/TabBar.svelte';
   import Terminal from '$lib/components/Terminal.svelte';
+  import { authSessionStore } from '$lib/stores/auth-session.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { tabStore } from '$lib/stores/tabs.svelte';
   import { shortcuts } from '$lib/shortcuts';
@@ -30,8 +31,16 @@
   let showInstallPrompt = $state(false);
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
+  let unsubscribeTokenChange: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
+
+  async function handleKillAllShortcut() {
+    if (confirm('Kill all agents? This cannot be undone.')) {
+      const client = await getGhostClient();
+      await client.safety.killAll('Kill switch via keyboard shortcut', 'dashboard_shortcut');
+    }
+  }
 
   function pushSubscriptionToPayload(subscription: PushSubscriptionJSON) {
     if (!subscription.endpoint) return null;
@@ -79,6 +88,13 @@
     applyTheme();
 
     runtime = await getRuntime();
+    unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
+      if (!token) {
+        authSessionStore.clear();
+        return;
+      }
+      void authSessionStore.refresh().catch(() => {});
+    });
     const currentPath = $page.url.pathname;
 
     try {
@@ -95,10 +111,12 @@
     if (currentPath !== '/login') {
       try {
         const client = await getGhostClient();
-        await client.auth.session();
+        const session = await client.auth.session();
+        authSessionStore.hydrate(session);
         await notifyAuthBoundary('ghost-auth-session');
       } catch (error) {
         if (isAuthResetError(error)) {
+          authSessionStore.clear();
           await rotateAuthBoundarySession();
           await runtime.clearToken();
           invalidateAuthClientState();
@@ -118,12 +136,6 @@
       document.documentElement.classList.toggle('light');
       const isLight = document.documentElement.classList.contains('light');
       localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
-    });
-    shortcuts.registerCommand('killSwitch.activateAll', async () => {
-      if (confirm('Kill all agents? This cannot be undone.')) {
-        const client = await getGhostClient();
-        await client.safety.killAll('Kill switch via keyboard shortcut', 'dashboard_shortcut');
-      }
     });
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
@@ -149,8 +161,18 @@
   });
 
   onDestroy(() => {
+    unsubscribeTokenChange?.();
+    unsubscribeTokenChange = null;
     wsStore.disconnect();
     shortcuts.destroy();
+  });
+
+  $effect(() => {
+    if (authSessionStore.canTriggerKillAll) {
+      shortcuts.registerCommand('killSwitch.activateAll', handleKillAllShortcut);
+      return;
+    }
+    shortcuts.unregisterCommand('killSwitch.activateAll');
   });
 
   async function installPWA() {
@@ -236,8 +258,8 @@
         <a href="/" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
         <a href="/convergence" class:active={$page.url.pathname === '/convergence'} aria-current={$page.url.pathname === '/convergence' ? 'page' : undefined}>Convergence</a>
         <a href="/memory" class:active={$page.url.pathname.startsWith('/memory')} aria-current={$page.url.pathname.startsWith('/memory') ? 'page' : undefined}>Memory</a>
-        <a href="/goals" class:active={$page.url.pathname === '/goals'} aria-current={$page.url.pathname === '/goals' ? 'page' : undefined}>Goals</a>
-        <a href="/sessions" class:active={$page.url.pathname === '/sessions'} aria-current={$page.url.pathname === '/sessions' ? 'page' : undefined}>Sessions</a>
+        <a href="/goals" class:active={$page.url.pathname.startsWith('/goals')} aria-current={$page.url.pathname.startsWith('/goals') ? 'page' : undefined}>Proposals</a>
+        <a href="/sessions" class:active={$page.url.pathname.startsWith('/sessions')} aria-current={$page.url.pathname.startsWith('/sessions') ? 'page' : undefined}>Sessions</a>
         <a href="/agents" class:active={$page.url.pathname === '/agents'} aria-current={$page.url.pathname === '/agents' ? 'page' : undefined}>Agents</a>
         <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')} aria-current={$page.url.pathname.startsWith('/workflows') ? 'page' : undefined}>Workflows</a>
         <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')} aria-current={$page.url.pathname.startsWith('/skills') ? 'page' : undefined}>Skills</a>
@@ -247,7 +269,6 @@
         <a href="/orchestration" class:active={$page.url.pathname.startsWith('/orchestration')} aria-current={$page.url.pathname.startsWith('/orchestration') ? 'page' : undefined}>Orchestration</a>
         <a href="/pc-control" class:active={$page.url.pathname === '/pc-control'} aria-current={$page.url.pathname === '/pc-control' ? 'page' : undefined}>PC Control</a>
         <a href="/itp" class:active={$page.url.pathname === '/itp'} aria-current={$page.url.pathname === '/itp' ? 'page' : undefined}>ITP Events</a>
-        <a href="/approvals" class:active={$page.url.pathname === '/approvals'} aria-current={$page.url.pathname === '/approvals' ? 'page' : undefined}>Proposals</a>
         <a href="/security" class:active={$page.url.pathname === '/security'} aria-current={$page.url.pathname === '/security' ? 'page' : undefined}>Security</a>
         <a href="/costs" class:active={$page.url.pathname === '/costs'} aria-current={$page.url.pathname === '/costs' ? 'page' : undefined}>Costs</a>
         <a href="/search" class:active={$page.url.pathname === '/search'} aria-current={$page.url.pathname === '/search' ? 'page' : undefined}>Search</a>
@@ -257,7 +278,7 @@
             <a href="/settings/profiles" class:active={$page.url.pathname === '/settings/profiles'}>Profiles</a>
             <a href="/settings/policies" class:active={$page.url.pathname === '/settings/policies'}>Policies</a>
             <a href="/settings/providers" class:active={$page.url.pathname === '/settings/providers'}>Providers</a>
-            <a href="/settings/channels" class:active={$page.url.pathname === '/settings/channels'}>Channels</a>
+            <a href="/channels" class:active={$page.url.pathname === '/channels' || $page.url.pathname === '/settings/channels'}>Channels</a>
             <a href="/settings/backups" class:active={$page.url.pathname === '/settings/backups'}>Backups</a>
             <a href="/settings/webhooks" class:active={$page.url.pathname === '/settings/webhooks'}>Webhooks</a>
             <a href="/settings/notifications" class:active={$page.url.pathname === '/settings/notifications'}>Notifications</a>

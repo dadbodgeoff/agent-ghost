@@ -173,8 +173,78 @@ pub enum WsEvent {
         decision: String,
         agent_id: String,
     },
+    /// Canonical proposal lifecycle update for operator/ADE consumers.
+    ProposalUpdated {
+        proposal_id: String,
+        agent_id: String,
+        status: String,
+        change: String,
+        supersedes_proposal_id: Option<String>,
+    },
     /// Agent state changed (created, deleted, lifecycle transition).
     AgentStateChange { agent_id: String, new_state: String },
+    /// Channel created and activated.
+    ChannelCreated {
+        channel_id: String,
+        channel_type: String,
+        agent_id: String,
+        routing_key: String,
+        status: String,
+        status_message: Option<String>,
+        updated_at: String,
+    },
+    /// Channel metadata changed.
+    ChannelUpdated {
+        channel_id: String,
+        channel_type: String,
+        agent_id: String,
+        routing_key: String,
+        status: String,
+        status_message: Option<String>,
+        updated_at: String,
+    },
+    /// Channel runtime status changed.
+    ChannelStatusChanged {
+        channel_id: String,
+        channel_type: String,
+        agent_id: String,
+        routing_key: String,
+        status: String,
+        status_message: Option<String>,
+        updated_at: String,
+    },
+    /// Channel deleted.
+    ChannelDeleted {
+        channel_id: String,
+        channel_type: String,
+        agent_id: String,
+        routing_key: String,
+        updated_at: String,
+    },
+    /// Canonical operational-state change for ADE agent surfaces.
+    AgentOperationalStatusChanged {
+        agent_id: String,
+        lifecycle_state: String,
+        safety_state: String,
+        effective_state: String,
+        reason: String,
+        changed_at: String,
+    },
+    /// Interactive sandbox review created for a flagged tool action.
+    SandboxReviewRequested {
+        review_id: String,
+        agent_id: String,
+        tool_name: String,
+        status: String,
+    },
+    /// Interactive sandbox review resolved.
+    SandboxReviewResolved {
+        review_id: String,
+        agent_id: String,
+        tool_name: String,
+        decision: String,
+        resolved_by: String,
+    },
     /// Session event for live DAG updates and replay (T-2.1.8).
     SessionEvent {
         session_id: String,
@@ -183,9 +253,87 @@ pub enum WsEvent {
         sender: Option<String>,
         sequence_number: i64,
     },
+    /// Workflow execution started.
+    WorkflowExecutionStarted {
+        workflow_id: String,
+        execution_id: String,
+        started_at: String,
+    },
+    /// Workflow execution resumed.
+    WorkflowExecutionResumed {
+        workflow_id: String,
+        execution_id: String,
+        resumed_at: String,
+    },
+    /// Workflow node entered running state.
+    WorkflowNodeStarted {
+        workflow_id: String,
+        execution_id: String,
+        node_id: String,
+        node_type: String,
+        started_at: String,
+    },
+    /// Workflow node completed successfully or in a non-failed terminal status.
+    WorkflowNodeCompleted {
+        workflow_id: String,
+        execution_id: String,
+        node_id: String,
+        node_type: String,
+        completed_at: String,
+        status: String,
+    },
+    /// Workflow node failed.
+    WorkflowNodeFailed {
+        workflow_id: String,
+        execution_id: String,
+        node_id: String,
+        node_type: String,
+        completed_at: String,
+        error_code: String,
+        message: String,
+        retry_safe: bool,
+    },
+    /// Workflow execution completed in a terminal state.
+    WorkflowExecutionCompleted {
+        workflow_id: String,
+        execution_id: String,
+        completed_at: String,
+        status: String,
+    },
+    /// Workflow execution requires manual or assisted recovery.
+    WorkflowExecutionRecoveryRequired {
+        workflow_id: String,
+        execution_id: String,
+        recovery_action: String,
+        reason: String,
+        occurred_at: String,
+    },
+    /// Cost ledger updated for an agent/session.
+    CostUpdate {
+        agent_id: String,
+        agent_name: String,
+        session_id: String,
+        daily_total: f64,
+        session_total: f64,
+        compaction_cost: f64,
+        spending_cap: f64,
+        cap_remaining: f64,
+        cap_utilization_pct: f64,
+        is_compaction: bool,
+    },
+    /// Daily cost totals reset at the UTC boundary.
+    CostDailyReset { reset_date_utc: String },
     /// Agent configuration changed (T-3.6.2).
     AgentConfigChange {
         agent_id: String,
+        changed_fields: Vec<String>,
+    },
+    /// Effective PC control runtime changed.
+    PcControlRuntimeChange {
+        revision: u64,
+        enabled: bool,
+        activation_state: String,
+        change_source: String,
         changed_fields: Vec<String>,
     },
     /// OTel trace updated for a session (T-3.8).
@@ -278,12 +426,49 @@ impl WsEvent {
                 }
                 keys
             }
-            WsEvent::ProposalDecision { agent_id, .. } => {
+            WsEvent::ProposalDecision { agent_id, .. }
+            | WsEvent::ProposalUpdated { agent_id, .. } => {
                 vec!["proposals".to_string(), format!("agent:{agent_id}")]
             }
             WsEvent::AgentStateChange { agent_id, .. } => vec![format!("agent:{agent_id}")],
+            WsEvent::ChannelCreated { agent_id, .. }
+            | WsEvent::ChannelUpdated { agent_id, .. }
+            | WsEvent::ChannelStatusChanged { agent_id, .. }
+            | WsEvent::ChannelDeleted { agent_id, .. } => {
+                vec!["system:channels".to_string(), format!("agent:{agent_id}")]
+            }
+            WsEvent::AgentOperationalStatusChanged { agent_id, .. } => {
+                vec!["system:agents".to_string(), format!("agent:{agent_id}")]
+            }
+            WsEvent::SandboxReviewRequested { agent_id, .. }
+            | WsEvent::SandboxReviewResolved { agent_id, .. } => {
+                vec![
+                    "system:sandbox_reviews".to_string(),
+                    format!("agent:{agent_id}"),
+                ]
+            }
             WsEvent::SessionEvent { session_id, .. } => vec![format!("session:{session_id}")],
+            WsEvent::WorkflowExecutionStarted { workflow_id, .. }
+            | WsEvent::WorkflowExecutionResumed { workflow_id, .. }
+            | WsEvent::WorkflowNodeStarted { workflow_id, .. }
+            | WsEvent::WorkflowNodeCompleted { workflow_id, .. }
+            | WsEvent::WorkflowNodeFailed { workflow_id, .. }
+            | WsEvent::WorkflowExecutionCompleted { workflow_id, .. }
+            | WsEvent::WorkflowExecutionRecoveryRequired { workflow_id, .. } => {
+                vec![format!("workflow:{workflow_id}")]
+            }
+            WsEvent::CostUpdate {
+                agent_id,
+                session_id,
+                ..
+            } => vec![
+                "system:costs".to_string(),
+                format!("agent:{agent_id}"),
+                format!("session:{session_id}"),
+            ],
+            WsEvent::CostDailyReset { .. } => vec!["system:costs".to_string()],
             WsEvent::AgentConfigChange { agent_id, .. } => vec![format!("agent:{agent_id}")],
+            WsEvent::PcControlRuntimeChange { .. } => vec!["system:pc_control".to_string()],
             WsEvent::TraceUpdate { session_id, .. } => vec![format!("session:{session_id}")],
             WsEvent::BackupComplete { .. } => vec!["system:backup".to_string()],
             WsEvent::WebhookFired { .. } => vec!["system:webhooks".to_string()],
@@ -334,6 +519,16 @@ impl WsConnectionTracker {
                 self.connections.remove(&ip);
             }
         }
+    }
+
+    /// Total active WebSocket connections across all client IPs.
+    pub fn total_connections(&self) -> u32 {
+        self.connections.iter().map(|entry| *entry.value()).sum()
+    }
+
+    /// Maximum concurrent WebSocket connections permitted per IP.
+    pub fn per_ip_limit(&self) -> u32 {
+        MAX_WS_PER_IP
     }
 }
 

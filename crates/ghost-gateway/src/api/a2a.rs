@@ -4,6 +4,7 @@
 //! to external A2A agents, checking task status, and discovering agents
 //! on the mesh. The raw A2A protocol endpoint lives at `/a2a`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -73,6 +74,7 @@ pub struct DiscoveredAgent {
     pub trust_score: f64,
     pub version: String,
     pub reachable: bool,
+    pub verified: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,11 +263,7 @@ pub async fn send_task(
                 .await
                 .unwrap_or_else(|_| serde_json::json!({"error": "failed to parse response"}));
 
-            let task_status = if status_code.is_success() {
-                "submitted"
-            } else {
-                "failed"
-            };
+            let task_status = derive_task_status(status_code, &body);
 
             let task = A2ATask {
                 task_id: task_id.clone(),
@@ -474,22 +472,10 @@ pub async fn stream_task(
 /// `/.well-known/agent.json` agent card, upserts results back into the
 /// `discovered_agents` table, and returns the updated list.
 pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<DiscoverResponse> {
-    // 1. Collect known peer endpoint URLs from the DB.
-    let peer_urls: Vec<String> = {
-        let db = state
-            .db
-            .read()
-            .map_err(|e| ApiError::db_error("discover_agents_read_peers", e))?;
-        let mut urls = Vec::new();
-        let stmt_result =
-            db.prepare("SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL");
-        if let Ok(mut stmt) = stmt_result {
-            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
-                urls.extend(rows.filter_map(|r| r.ok()));
-            }
-        }
-        urls
-    };
+    // 1. Collect peer endpoints from authoritative sources:
+    //    - mesh.known_agents in the live gateway config
+    //    - previously discovered peer records in the DB
+    let peer_urls = collect_discovery_peer_urls(&state)?;
 
     // 2. Probe each peer's /.well-known/agent.json with bounded concurrency (T-5.3.2).
     // Uses stream::iter + buffer_unordered(16) instead of unbounded tokio::spawn.
@@ -534,6 +520,7 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
                     trust_score: 0.0,
                     version: String::new(),
                     reachable: false,
+                    verified: false,
                 });
                 continue;
             }
@@ -579,6 +566,7 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
             trust_score,
             version,
             reachable: true,
+            verified: sig_verified,
         });
     }
 
@@ -593,54 +581,88 @@ pub async fn discover_agents(State(state): State<Arc<AppState>>) -> ApiResult<Di
                  (endpoint_url, name, description, capabilities, trust_score, version) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
-                    agent.endpoint_url,
-                    agent.name,
-                    agent.description,
+                    &agent.endpoint_url,
+                    &agent.name,
+                    &agent.description,
                     caps_json,
                     agent.trust_score,
-                    agent.version,
+                    &agent.version,
                 ],
             );
         }
     }
 
-    // 5. Re-read the full table so we return any agents not in our probe list too.
+    let db = state.db.read()?;
+    let agents = read_discovered_agents(&db, Some(&probed_agents))?;
+
+    Ok(Json(DiscoverResponse { agents }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct MeshDiscoveryConfig {
+    #[serde(default)]
+    mesh: crate::config::MeshConfig,
+}
+
+fn collect_discovery_peer_urls(state: &AppState) -> Result<Vec<String>, ApiError> {
+    let mut urls: HashSet<String> = load_configured_peer_urls(&state.config_path)
+        .into_iter()
+        .collect();
+
     let db = state
         .db
         .read()
-        .map_err(|e| ApiError::db_error("discover_agents_reread", e))?;
-    let mut agents: Vec<DiscoveredAgent> = Vec::new();
-
-    let stmt_result = db.prepare(
-        "SELECT name, description, endpoint_url, capabilities, trust_score, version \
-         FROM discovered_agents ORDER BY trust_score DESC",
-    );
-
+        .map_err(|e| ApiError::db_error("discover_agents_read_peers", e))?;
+    let stmt_result =
+        db.prepare("SELECT endpoint_url FROM discovered_agents WHERE endpoint_url IS NOT NULL");
     if let Ok(mut stmt) = stmt_result {
-        let rows = stmt.query_map([], |row| {
-            let caps_json: String = row.get::<_, String>(3).unwrap_or_else(|_| "[]".into());
-            let endpoint: String = row.get(2)?;
-            // Mark reachable based on probe results.
-            let reachable = probed_agents
-                .iter()
-                .any(|a| a.endpoint_url == endpoint && a.reachable);
-            Ok(DiscoveredAgent {
-                name: row.get(0)?,
-                description: row.get(1)?,
-                endpoint_url: endpoint,
-                capabilities: serde_json::from_str(&caps_json).unwrap_or_default(),
-                trust_score: row.get(4)?,
-                version: row.get(5)?,
-                reachable,
-            })
-        });
-
-        if let Ok(rows) = rows {
-            agents.extend(rows.filter_map(|r| r.ok()));
+        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+            for row in rows.filter_map(|row| row.ok()) {
+                let normalized = normalize_a2a_endpoint_url(&row);
+                if !normalized.is_empty() {
+                    urls.insert(normalized);
+                }
+            }
         }
     }
 
-    Ok(Json(DiscoverResponse { agents }))
+    let mut peer_urls: Vec<String> = urls.into_iter().collect();
+    peer_urls.sort();
+    Ok(peer_urls)
+}
+
+fn load_configured_peer_urls(config_path: &std::path::Path) -> Vec<String> {
+    let raw = match std::fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            tracing::debug!(
+                path = %config_path.display(),
+                error = %error,
+                "A2A discovery could not read gateway config; falling back to DB peer cache"
+            );
+            return Vec::new();
+        }
+    };
+
+    let config: MeshDiscoveryConfig = match serde_yaml::from_str(&raw) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                error = %error,
+                "A2A discovery could not parse mesh config; falling back to DB peer cache"
+            );
+            return Vec::new();
+        }
+    };
+
+    config
+        .mesh
+        .known_agents
+        .into_iter()
+        .map(|agent| normalize_a2a_endpoint_url(&agent.endpoint))
+        .filter(|endpoint| !endpoint.is_empty())
+        .collect()
 }
 
 fn verify_agent_card_signature(card: &serde_json::Value) -> bool {
@@ -737,9 +759,83 @@ fn sign_a2a_request(state: &AppState, body: &[u8]) -> Result<String, ApiError> {
     Ok(base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()))
 }
 
+fn derive_task_status(status_code: StatusCode, body: &serde_json::Value) -> &'static str {
+    if !status_code.is_success() {
+        return "failed";
+    }
+
+    body.get("result")
+        .and_then(|result| result.get("status"))
+        .and_then(|status| status.as_str())
+        .map(normalize_remote_task_status)
+        .unwrap_or("submitted")
+}
+
+fn normalize_remote_task_status(status: &str) -> &'static str {
+    if status.eq_ignore_ascii_case("submitted") {
+        "submitted"
+    } else if status.eq_ignore_ascii_case("working") {
+        "working"
+    } else if status.eq_ignore_ascii_case("completed") {
+        "completed"
+    } else if status.eq_ignore_ascii_case("canceled") {
+        "canceled"
+    } else if status.starts_with("failed") {
+        "failed"
+    } else if status.starts_with("input-required") {
+        "working"
+    } else {
+        "submitted"
+    }
+}
+
+fn read_discovered_agents(
+    db: &rusqlite::Connection,
+    probed_agents: Option<&[DiscoveredAgent]>,
+) -> Result<Vec<DiscoveredAgent>, ApiError> {
+    let mut agents = Vec::new();
+    let probe_status: std::collections::HashMap<&str, bool> = probed_agents
+        .unwrap_or(&[])
+        .iter()
+        .map(|agent| (agent.endpoint_url.as_str(), agent.reachable))
+        .collect();
+
+    let mut stmt = db.prepare(
+        "SELECT name, description, endpoint_url, capabilities, trust_score, version
+         FROM discovered_agents
+         ORDER BY trust_score DESC, name ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        let caps_json: String = row.get::<_, String>(3).unwrap_or_else(|_| "[]".into());
+        let endpoint: String = row.get(2)?;
+        let trust_score: f64 = row.get(4)?;
+        Ok(DiscoveredAgent {
+            name: row.get(0)?,
+            description: row.get(1)?,
+            endpoint_url: endpoint.clone(),
+            capabilities: serde_json::from_str(&caps_json).unwrap_or_default(),
+            trust_score,
+            version: row.get(5)?,
+            reachable: probe_status
+                .get(endpoint.as_str())
+                .copied()
+                .unwrap_or(false),
+            verified: trust_score > 0.0,
+        })
+    })?;
+
+    for row in rows {
+        agents.push(row?);
+    }
+
+    Ok(agents)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::verify_agent_card_signature;
+    use super::{derive_task_status, verify_agent_card_signature};
+    use axum::http::StatusCode;
 
     #[test]
     fn signed_mesh_card_json_verifies() {
@@ -786,5 +882,35 @@ mod tests {
             super::normalize_a2a_endpoint_url("http://127.0.0.1:39780/"),
             "http://127.0.0.1:39780"
         );
+    }
+
+    #[test]
+    fn derive_task_status_uses_remote_mesh_task_status_when_present() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "status": "working"
+            }
+        });
+        assert_eq!(derive_task_status(StatusCode::OK, &body), "working");
+    }
+
+    #[test]
+    fn derive_task_status_defaults_to_submitted_for_success_without_status() {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "id": "task-1"
+            }
+        });
+        assert_eq!(derive_task_status(StatusCode::OK, &body), "submitted");
+    }
+
+    #[test]
+    fn derive_task_status_fails_closed_for_error_status_codes() {
+        let body = serde_json::json!({
+            "error": "boom"
+        });
+        assert_eq!(derive_task_status(StatusCode::BAD_GATEWAY, &body), "failed");
     }
 }

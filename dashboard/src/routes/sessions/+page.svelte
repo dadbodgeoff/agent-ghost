@@ -1,77 +1,90 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getGhostClient } from '$lib/ghost-client';
-  import type {
-    ListRuntimeSessionsCursorResult,
-    ListRuntimeSessionsPageResult,
-    RuntimeSession,
-  } from '@ghost/sdk';
+  import { sessionsStore } from '$lib/stores/sessions.svelte';
 
-  let sessions: RuntimeSession[] = $state([]);
-  let loading = $state(true);
-  let error = $state('');
-
-  onMount(async () => {
-    try {
-      const client = await getGhostClient();
-      const data = await client.runtimeSessions.list();
-      sessions = getSessions(data);
-    } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to load sessions';
-    }
-    loading = false;
+  onMount(() => {
+    void sessionsStore.init();
+    return () => {
+      sessionsStore.destroy();
+    };
   });
 
-  function getSessions(
-    data: ListRuntimeSessionsPageResult | ListRuntimeSessionsCursorResult,
-  ): RuntimeSession[] {
-    return 'sessions' in data ? data.sessions : data.data;
+  function agentLabel(agentIds: string[]) {
+    return agentIds.length > 0 ? agentIds.join(', ') : 'Unknown';
   }
 </script>
 
 <h1 class="page-title">Sessions</h1>
 
-{#if loading}
-  <div class="skeleton-table">&nbsp;</div>
-{:else if error}
+{#if sessionsStore.loading}
+  <div class="skeleton-table" aria-hidden="true">&nbsp;</div>
+{:else if sessionsStore.error}
   <div class="error-state">
-    <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <p>{sessionsStore.error}</p>
+    <button onclick={() => sessionsStore.refresh()}>Retry</button>
   </div>
-{:else if sessions.length === 0}
+{:else if sessionsStore.list.length === 0}
   <div class="empty-state">
     <p>No sessions yet. Sessions appear when agents start working.</p>
   </div>
 {:else}
+  <div class="summary-bar">
+    <span>{sessionsStore.list.length} of {sessionsStore.totalCount} sessions loaded</span>
+  </div>
+
   <table>
     <thead>
       <tr>
         <th>Session ID</th>
         <th>Agents</th>
         <th>Events</th>
+        <th>Chain</th>
         <th>Started</th>
         <th>Last Event</th>
       </tr>
     </thead>
     <tbody>
-      {#each sessions as session}
+      {#each sessionsStore.list as session}
         <tr>
-          <td class="mono"><a href={`/sessions/${session.session_id}`} class="session-link">{session.session_id.slice(0, 8)}…</a></td>
-          <td>{Array.isArray(session.agents) ? session.agents.join(', ') : session.agents}</td>
+          <td class="mono">
+            <a href={`/sessions/${session.session_id}`} class="session-link">
+              {session.session_id.slice(0, 8)}…
+            </a>
+          </td>
+          <td>{agentLabel(session.agent_ids ?? [])}</td>
           <td>{session.event_count}</td>
+          <td>
+            <span class:chain-valid={session.chain_valid} class:chain-broken={!session.chain_valid}>
+              {session.chain_valid ? 'Valid' : 'Broken'}
+            </span>
+          </td>
           <td class="timestamp">{new Date(session.started_at).toLocaleString()}</td>
           <td class="timestamp">{new Date(session.last_event_at).toLocaleString()}</td>
         </tr>
       {/each}
     </tbody>
   </table>
+
+  {#if sessionsStore.hasMore}
+    <div class="load-more">
+      <button onclick={() => sessionsStore.loadMore()} disabled={sessionsStore.loadingMore}>
+        {sessionsStore.loadingMore ? 'Loading…' : 'Load More'}
+      </button>
+    </div>
+  {/if}
 {/if}
 
 <style>
   .page-title {
     font-size: var(--font-size-lg);
     font-weight: var(--font-weight-bold);
-    margin-bottom: var(--spacing-6);
+    margin-bottom: var(--spacing-4);
+  }
+
+  .summary-bar {
+    margin-bottom: var(--spacing-3);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
   }
 
   table {
@@ -115,6 +128,14 @@
     text-decoration: underline;
   }
 
+  .chain-valid {
+    color: var(--color-severity-normal);
+  }
+
+  .chain-broken {
+    color: var(--color-severity-hard);
+  }
+
   .skeleton-table {
     height: 200px;
     background: var(--color-bg-elevated-2);
@@ -123,18 +144,26 @@
   }
 
   @keyframes pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 0.7; }
+    0%, 100% {
+      opacity: 0.4;
+    }
+
+    50% {
+      opacity: 0.7;
+    }
   }
 
-  .empty-state, .error-state {
+  .empty-state,
+  .error-state,
+  .load-more {
     text-align: center;
-    padding: var(--spacing-12);
+    padding: var(--spacing-8);
     color: var(--color-text-muted);
   }
 
-  .error-state button {
-    margin-top: var(--spacing-4);
+  .error-state button,
+  .load-more button {
+    margin-top: var(--spacing-3);
     padding: var(--spacing-2) var(--spacing-4);
     background: var(--color-interactive-primary);
     color: var(--color-interactive-primary-text);

@@ -9,8 +9,11 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
+
 use crate::api::websocket::WsEvent;
 use crate::state::AppState;
+use crate::state::{ConfigWatcherRuntimeStatus, RuntimeSubsystemStatus};
 
 /// Start the config file watcher background task.
 ///
@@ -27,17 +30,30 @@ pub fn spawn_config_watcher(state: Arc<AppState>) {
 /// Designed to be wrapped by `GatewayRuntime::spawn_tracked()` which
 /// adds cancellation handling.
 pub async fn config_watcher_task(state: Arc<AppState>) {
-    let config_path = std::env::var("GHOST_CONFIG_PATH").unwrap_or_else(|_| "ghost.yml".into());
+    let config_path = state.config_path.display().to_string();
 
-    let path = std::path::PathBuf::from(&config_path);
+    update_config_status(&state, |status| {
+        status.watched_path = Some(config_path.clone());
+        status.enabled = true;
+        status.status = RuntimeSubsystemStatus::Unavailable;
+        status.last_error = None;
+    });
+
+    let path = state.config_path.clone();
     if !path.exists() {
         tracing::debug!(path = %config_path, "Config file not found — watcher inactive");
+        update_config_status(&state, |status| {
+            status.enabled = false;
+            status.status = RuntimeSubsystemStatus::Disabled;
+            status.last_error = Some(format!("Config file not found: {config_path}"));
+        });
         return;
     }
 
     // Try notify-based watcher first, fall back to polling.
     if let Err(e) = run_notify_watcher(&path, &state).await {
         tracing::warn!(error = %e, "notify watcher failed — falling back to polling");
+        record_config_error(&state, format!("notify watcher failed: {e}"));
         run_polling_watcher(&path, &state).await;
     }
 }
@@ -66,6 +82,12 @@ async fn run_notify_watcher(
     let watch_path = path.parent().unwrap_or(path);
     watcher.watch(watch_path, RecursiveMode::NonRecursive)?;
     tracing::info!(path = %path.display(), "Config watcher started (notify + SIGHUP)");
+    update_config_status(state, |status| {
+        status.enabled = true;
+        status.mode = Some("notify".into());
+        status.status = RuntimeSubsystemStatus::Healthy;
+        status.last_error = None;
+    });
 
     // SIGHUP handler for manual reload.
     let tx_sighup = tx.clone();
@@ -106,6 +128,12 @@ async fn run_notify_watcher(
 
 /// Polling fallback: check modification time every 5 seconds.
 async fn run_polling_watcher(path: &std::path::Path, state: &Arc<AppState>) {
+    update_config_status(state, |status| {
+        status.enabled = true;
+        status.mode = Some("polling".into());
+        status.status = RuntimeSubsystemStatus::Healthy;
+        status.last_error = None;
+    });
     let mut last_modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -132,6 +160,7 @@ fn handle_config_change(path: &std::path::Path, state: &Arc<AppState>) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(path = %config_path, error = %e, "Failed to read changed config file — skipping reload");
+            record_config_error(state, format!("Failed to read changed config file: {e}"));
             return;
         }
     };
@@ -143,11 +172,27 @@ fn handle_config_change(path: &std::path::Path, state: &Arc<AppState>) {
 
             // WP9-K: Rotate provider API keys without restart.
             rotate_provider_keys(&new_config.models.providers);
+            let runtime_apply = state
+                .pc_control_runtime
+                .apply_config(&new_config.pc_control, "watcher");
+            if runtime_apply.changed {
+                crate::api::websocket::broadcast_event(
+                    state,
+                    WsEvent::PcControlRuntimeChange {
+                        revision: runtime_apply.snapshot.revision,
+                        enabled: runtime_apply.snapshot.enabled,
+                        activation_state: runtime_apply.snapshot.activation_state.clone(),
+                        change_source: runtime_apply.snapshot.last_apply_source.clone(),
+                        changed_fields: vec!["pc_control".into()],
+                    },
+                );
+            }
         }
         Err(_) => {
             // Fall back to basic YAML validation.
             if serde_yaml::from_str::<serde_json::Value>(&contents).is_err() {
                 tracing::warn!(path = %config_path, "Config file changed but is not valid YAML — skipping reload");
+                record_config_error(state, "Config file changed but is not valid YAML".into());
                 return;
             }
             tracing::info!(path = %config_path, "Config file validated (partial parse) — broadcasting change");
@@ -162,6 +207,12 @@ fn handle_config_change(path: &std::path::Path, state: &Arc<AppState>) {
             changed_fields: vec!["config_reloaded".into()],
         },
     );
+    update_config_status(state, |status| {
+        status.enabled = true;
+        status.status = RuntimeSubsystemStatus::Healthy;
+        status.last_reload_at = Some(Utc::now().to_rfc3339());
+        status.last_error = None;
+    });
 }
 
 /// WP9-K: Re-read provider API keys from environment and atomically swap them
@@ -193,5 +244,22 @@ fn rotate_provider_keys(providers: &[crate::config::ProviderConfig]) {
                 }
             }
         }
+    }
+}
+
+fn record_config_error(state: &Arc<AppState>, error: String) {
+    update_config_status(state, |status| {
+        status.enabled = true;
+        status.status = RuntimeSubsystemStatus::Degraded;
+        status.last_error = Some(error);
+    });
+}
+
+fn update_config_status(
+    state: &Arc<AppState>,
+    update: impl FnOnce(&mut ConfigWatcherRuntimeStatus),
+) {
+    if let Ok(mut status) = state.config_watcher_status.write() {
+        update(&mut status);
     }
 }

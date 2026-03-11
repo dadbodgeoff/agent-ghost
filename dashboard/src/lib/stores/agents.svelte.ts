@@ -14,8 +14,18 @@ export interface Agent {
   id: string;
   name: string;
   status: string;
+  lifecycle_state?: 'starting' | 'ready' | 'stopping' | 'stopped';
+  safety_state?: 'normal' | 'paused' | 'quarantined' | 'kill_all_blocked';
+  effective_state?: 'starting' | 'ready' | 'paused' | 'quarantined' | 'kill_all_blocked' | 'stopping' | 'stopped';
   spending_cap?: number;
   capabilities?: string[];
+  sandbox?: {
+    enabled: boolean;
+    mode: 'off' | 'read_only' | 'workspace_write' | 'strict';
+    on_violation: 'warn' | 'pause' | 'quarantine' | 'kill_all';
+    network_access: boolean;
+    allowed_shell_prefixes: string[];
+  };
   created_at?: string;
 }
 
@@ -31,7 +41,7 @@ class AgentsStore {
   }
 
   get active(): Agent[] {
-    return this.list.filter(a => a.status === 'active');
+    return this.list.filter(a => (a.effective_state ?? a.status) === 'ready');
   }
 
   /** Fetch agents from REST API and subscribe to WS events. */
@@ -61,6 +71,20 @@ class AgentsStore {
         if (idx >= 0 && status) {
           this.list[idx] = { ...this.list[idx], status };
           // Trigger reactivity by reassigning.
+          this.list = [...this.list];
+        }
+      }),
+      wsStore.on('AgentOperationalStatusChanged', (msg: WsMessage) => {
+        const agentId = msg.agent_id as string;
+        const idx = this.list.findIndex(a => a.id === agentId);
+        if (idx >= 0) {
+          this.list[idx] = {
+            ...this.list[idx],
+            status: (msg.effective_state as string | undefined) ?? this.list[idx].status,
+            lifecycle_state: msg.lifecycle_state as Agent['lifecycle_state'],
+            safety_state: msg.safety_state as Agent['safety_state'],
+            effective_state: msg.effective_state as Agent['effective_state'],
+          };
           this.list = [...this.list];
         }
       }),

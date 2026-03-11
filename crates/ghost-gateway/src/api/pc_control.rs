@@ -43,16 +43,31 @@ pub struct ActionBudget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DisplayGeometry {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PcControlStatus {
+    /// Compatibility mirror of `runtime.enabled`.
     pub enabled: bool,
+    /// Compatibility mirror of `telemetry.throughput`.
     pub action_budget: ActionBudget,
+    /// Compatibility mirror of `runtime.effective_allowed_apps`.
     pub allowed_apps: Vec<String>,
+    /// Compatibility mirror of `runtime.effective_safe_zone`.
     pub safe_zone: Option<SafeZone>,
+    /// Compatibility mirror of the singular safe-zone model.
     pub safe_zones: Vec<SafeZone>,
+    /// Compatibility mirror of `runtime.effective_blocked_hotkeys`.
     pub blocked_hotkeys: Vec<String>,
+    /// Compatibility mirror of `runtime.circuit_breaker_state`.
     pub circuit_breaker_state: String,
+    pub display: DisplayGeometry,
     pub persisted: PcControlPersistedState,
     pub runtime: PcControlRuntimeState,
+    pub telemetry: PcControlTelemetry,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -61,12 +76,52 @@ pub struct PcControlPersistedState {
     pub allowed_apps: Vec<String>,
     pub safe_zone: Option<SafeZone>,
     pub blocked_hotkeys: Vec<String>,
-    pub action_budget: ActionBudget,
+    pub budgets: PolicyBudgetConfig,
+    pub circuit_breaker: CircuitBreakerConfigState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PcControlRuntimeState {
+    pub revision: u64,
+    pub enabled: bool,
+    pub activation_state: String,
+    pub effective_allowed_apps: Vec<String>,
+    pub effective_safe_zone: Option<SafeZone>,
+    pub effective_blocked_hotkeys: Vec<String>,
     pub circuit_breaker_state: String,
+    pub last_applied_at: String,
+    pub last_apply_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PolicyBudgetConfig {
+    pub mouse_click: u32,
+    pub keyboard_type: u32,
+    pub keyboard_hotkey: u32,
+    pub mouse_drag: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CircuitBreakerConfigState {
+    pub max_actions_per_second: u32,
+    pub failure_threshold: u32,
+    pub cooldown_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PcControlUsageTelemetry {
+    pub executed_this_minute: u32,
+    pub executed_this_hour: u32,
+    pub blocked_this_minute: u32,
+    pub blocked_this_hour: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PcControlTelemetry {
+    pub throughput: ActionBudget,
+    pub policy_budgets: PolicyBudgetConfig,
+    pub usage: PcControlUsageTelemetry,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -232,32 +287,113 @@ fn action_budget(
     })
 }
 
+fn usage_telemetry(db: &rusqlite::Connection) -> Result<PcControlUsageTelemetry, ApiError> {
+    let minute_window = (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+    let hour_window = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+
+    let executed_this_minute: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM pc_control_actions WHERE created_at >= ?1 AND blocked = 0",
+            [&minute_window],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApiError::db_error("pc_control.executed_this_minute", e))?;
+    let executed_this_hour: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM pc_control_actions WHERE created_at >= ?1 AND blocked = 0",
+            [&hour_window],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApiError::db_error("pc_control.executed_this_hour", e))?;
+    let blocked_this_minute: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM pc_control_actions WHERE created_at >= ?1 AND blocked = 1",
+            [&minute_window],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApiError::db_error("pc_control.blocked_this_minute", e))?;
+    let blocked_this_hour: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM pc_control_actions WHERE created_at >= ?1 AND blocked = 1",
+            [&hour_window],
+            |row| row.get(0),
+        )
+        .map_err(|e| ApiError::db_error("pc_control.blocked_this_hour", e))?;
+
+    Ok(PcControlUsageTelemetry {
+        executed_this_minute,
+        executed_this_hour,
+        blocked_this_minute,
+        blocked_this_hour,
+    })
+}
+
 fn status_from_config(
     db: &rusqlite::Connection,
     state: &AppState,
     config: &ghost_pc_control::safety::PcControlConfig,
 ) -> Result<PcControlStatus, ApiError> {
-    let budget = action_budget(db, config)?;
-    let safe_zone = config.safe_zone.as_ref().map(to_safe_zone);
+    let throughput = action_budget(db, config)?;
+    let usage = usage_telemetry(db)?;
+    let persisted_safe_zone = config.safe_zone.as_ref().map(to_safe_zone);
+    let runtime_snapshot = state.pc_control_runtime.snapshot();
+    let runtime_safe_zone = runtime_snapshot
+        .effective_safe_zone
+        .as_ref()
+        .map(to_safe_zone);
     let runtime_state = runtime_circuit_breaker_state(state)?;
+    let policy_budgets = PolicyBudgetConfig {
+        mouse_click: config.budgets.mouse_click,
+        keyboard_type: config.budgets.keyboard_type,
+        keyboard_hotkey: config.budgets.keyboard_hotkey,
+        mouse_drag: config.budgets.mouse_drag,
+        total: config.budgets.total,
+    };
+    let circuit_breaker = CircuitBreakerConfigState {
+        max_actions_per_second: config.circuit_breaker.max_actions_per_second,
+        failure_threshold: config.circuit_breaker.failure_threshold,
+        cooldown_seconds: config.circuit_breaker.cooldown_seconds,
+    };
+    let display = match ghost_pc_control::perception::screenshot::primary_screen_dimensions() {
+        Ok((width, height)) => DisplayGeometry { width, height },
+        Err(_) => DisplayGeometry {
+            width: 1920,
+            height: 1080,
+        },
+    };
 
     Ok(PcControlStatus {
-        enabled: config.enabled,
-        action_budget: budget.clone(),
-        allowed_apps: config.allowed_apps.clone(),
-        safe_zone: safe_zone.clone(),
-        safe_zones: safe_zone.iter().cloned().collect(),
-        blocked_hotkeys: config.blocked_hotkeys.clone(),
+        enabled: runtime_snapshot.enabled,
+        action_budget: throughput.clone(),
+        allowed_apps: runtime_snapshot.effective_allowed_apps.clone(),
+        safe_zone: runtime_safe_zone.clone(),
+        safe_zones: runtime_safe_zone.iter().cloned().collect(),
+        blocked_hotkeys: runtime_snapshot.effective_blocked_hotkeys.clone(),
         circuit_breaker_state: runtime_state.clone(),
+        display,
         persisted: PcControlPersistedState {
             enabled: config.enabled,
             allowed_apps: config.allowed_apps.clone(),
-            safe_zone,
+            safe_zone: persisted_safe_zone,
             blocked_hotkeys: config.blocked_hotkeys.clone(),
-            action_budget: budget,
+            budgets: policy_budgets.clone(),
+            circuit_breaker,
         },
         runtime: PcControlRuntimeState {
+            revision: runtime_snapshot.revision,
+            enabled: runtime_snapshot.enabled,
+            activation_state: runtime_snapshot.activation_state,
+            effective_allowed_apps: runtime_snapshot.effective_allowed_apps,
+            effective_safe_zone: runtime_safe_zone,
+            effective_blocked_hotkeys: runtime_snapshot.effective_blocked_hotkeys,
             circuit_breaker_state: runtime_state,
+            last_applied_at: runtime_snapshot.last_applied_at,
+            last_apply_source: runtime_snapshot.last_apply_source,
+        },
+        telemetry: PcControlTelemetry {
+            throughput,
+            policy_budgets,
+            usage,
         },
     })
 }
@@ -344,6 +480,9 @@ fn persist_pc_control_config(
         .map_err(|e| ApiError::internal(format!("load config: {e}")))?;
     mutate(&mut full_config.pc_control);
     write_pc_control_config(&state.config_path, &full_config.pc_control)?;
+    let runtime_apply = state
+        .pc_control_runtime
+        .apply_config(&full_config.pc_control, "api");
 
     crate::api::websocket::broadcast_event(
         state,
@@ -352,6 +491,18 @@ fn persist_pc_control_config(
             changed_fields: vec!["pc_control".to_string()],
         },
     );
+    if runtime_apply.changed {
+        crate::api::websocket::broadcast_event(
+            state,
+            WsEvent::PcControlRuntimeChange {
+                revision: runtime_apply.snapshot.revision,
+                enabled: runtime_apply.snapshot.enabled,
+                activation_state: runtime_apply.snapshot.activation_state.clone(),
+                change_source: runtime_apply.snapshot.last_apply_source.clone(),
+                changed_fields: vec!["pc_control".to_string()],
+            },
+        );
+    }
 
     let db = state
         .db
@@ -703,11 +854,27 @@ mod tests {
         ));
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
+        let replay_buffer = Arc::new(crate::api::websocket::EventReplayBuffer::new(16));
+        let sandbox_reviews = crate::sandbox_reviews::SandboxReviewCoordinator::new(
+            Arc::clone(&db),
+            Arc::clone(&replay_buffer),
+            event_tx.clone(),
+        );
+
+        let agents = Arc::new(RwLock::new(crate::agents::registry::AgentRegistry::new()));
+        let channel_manager = Arc::new(crate::channel_manager::ChannelManager::new(
+            Arc::clone(&db),
+            Arc::clone(&agents),
+            event_tx.clone(),
+            Arc::clone(&replay_buffer),
+        ));
 
         let state = Arc::new(AppState {
+            started_at: std::time::Instant::now(),
             gateway: shared_state,
             config_path: config_path.clone(),
-            agents: Arc::new(RwLock::new(crate::agents::registry::AgentRegistry::new())),
+            agents,
+            channel_manager,
             kill_switch: Arc::new(crate::safety::kill_switch::KillSwitch::new()),
             quarantine: Arc::new(RwLock::new(
                 crate::safety::quarantine::QuarantineManager::new(),
@@ -716,7 +883,11 @@ mod tests {
             event_tx,
             trigger_sender:
                 tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
-            replay_buffer: Arc::new(crate::api::websocket::EventReplayBuffer::new(16)),
+            sandbox_reviews,
+            itp_emitter: None,
+            itp_router: None,
+            itp_session_tracker: None,
+            replay_buffer,
             cost_tracker: Arc::new(crate::cost::tracker::CostTracker::new()),
             kill_gate: None,
             secret_provider: Arc::new(ghost_secrets::EnvProvider),
@@ -728,7 +899,12 @@ mod tests {
             default_model_provider: None,
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
+            pc_control_runtime: Arc::new(crate::pc_control_runtime::PcControlRuntimeService::new(
+                &ghost_pc_control::safety::PcControlConfig::default(),
+                "tests",
+            )),
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_connection_tracker: Arc::new(crate::api::websocket::WsConnectionTracker::new()),
             ws_ticket_auth_only: false,
             tools_config: crate::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
@@ -741,6 +917,9 @@ mod tests {
             monitor_block_on_degraded: false,
             convergence_state_stale_after: std::time::Duration::from_secs(300),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            monitor_runtime_status: Arc::new(RwLock::new(
+                crate::state::MonitorRuntimeStatus::default(),
+            )),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             skill_catalog: Arc::new(crate::skill_catalog::SkillCatalogService::empty_for_tests(
@@ -748,6 +927,12 @@ mod tests {
             )),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            backup_scheduler_status: Arc::new(RwLock::new(
+                crate::state::BackupSchedulerRuntimeStatus::default(),
+            )),
+            config_watcher_status: Arc::new(RwLock::new(
+                crate::state::ConfigWatcherRuntimeStatus::default(),
+            )),
             autonomy: Arc::new(crate::autonomy::AutonomyService::default()),
         });
 

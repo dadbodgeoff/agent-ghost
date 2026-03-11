@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::http::Method;
 use axum::middleware::{from_fn, from_fn_with_state};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 
 use crate::api::authz::RouteId;
 use crate::api::authz_policy::{route_spec_for, RouteAuthorizationSpec};
@@ -100,6 +100,18 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         spec(RouteId::Agents, Method::GET),
     ))
     .merge(action_route(
+        "/api/agents/:id",
+        Method::GET,
+        get(crate::api::agents::get_agent),
+        spec(RouteId::AgentById, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/agents/:id/overview",
+        Method::GET,
+        get(crate::api::agents::get_agent_overview),
+        spec(RouteId::AgentOverviewById, Method::GET),
+    ))
+    .merge(action_route(
         "/api/audit",
         Method::GET,
         get(crate::api::audit::query_audit),
@@ -136,6 +148,12 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         spec(RouteId::Goals, Method::GET),
     ))
     .merge(action_route(
+        "/api/goals/active",
+        Method::GET,
+        get(crate::api::goals::list_active_goals),
+        spec(RouteId::GoalsActive, Method::GET),
+    ))
+    .merge(action_route(
         "/api/goals/:id",
         Method::GET,
         get(crate::api::goals::get_goal),
@@ -146,6 +164,12 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         Method::GET,
         get(crate::api::sessions::list_sessions),
         spec(RouteId::Sessions, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/sessions/:id",
+        Method::GET,
+        get(crate::api::sessions::get_session),
+        spec(RouteId::SessionById, Method::GET),
     ))
     .merge(action_route(
         "/api/sessions/:id/events",
@@ -255,6 +279,12 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         spec(RouteId::WorkflowExecutionsById, Method::GET),
     ))
     .merge(action_route(
+        "/api/workflows/:id/executions/:execution_id",
+        Method::GET,
+        get(crate::api::workflows::get_execution),
+        spec(RouteId::WorkflowExecutionById, Method::GET),
+    ))
+    .merge(action_route(
         "/api/studio/sessions",
         Method::GET,
         get(crate::api::studio_sessions::list_sessions),
@@ -277,6 +307,12 @@ pub fn read_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> {
         Method::GET,
         get(crate::api::traces::get_traces),
         spec(RouteId::TracesBySessionId, Method::GET),
+    ))
+    .merge(action_route(
+        "/api/observability/ade",
+        Method::GET,
+        get(crate::api::observability::ade_handler),
+        spec(RouteId::ObservabilityAde, Method::GET),
     ))
     .merge(action_route(
         "/api/mesh/trust-graph",
@@ -438,6 +474,12 @@ pub fn operator_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> 
         spec(RouteId::SafetyStatus, Method::GET),
     )
     .merge(action_route(
+        "/api/safety/sandbox-reviews",
+        Method::GET,
+        get(crate::api::sandbox_reviews::list_sandbox_reviews),
+        spec(RouteId::SandboxReviews, Method::GET),
+    ))
+    .merge(action_route(
         "/api/autonomy/policies/global",
         Method::PUT,
         put(crate::api::autonomy::put_global_policy),
@@ -466,6 +508,12 @@ pub fn operator_routes(app_state: Arc<AppState>) -> axum::Router<Arc<AppState>> 
         Method::POST,
         post(crate::api::agents::create_agent),
         spec(RouteId::Agents, Method::POST),
+    ))
+    .merge(action_route(
+        "/api/agents/:id",
+        Method::PATCH,
+        patch(crate::api::agents::update_agent),
+        spec(RouteId::AgentById, Method::PATCH),
     ))
     .merge(action_route(
         "/api/agents/:id",
@@ -852,6 +900,18 @@ pub fn admin_routes() -> axum::Router<Arc<AppState>> {
         Method::POST,
         post(crate::api::safety::resume_agent),
         spec(RouteId::SafetyResumeAgent, Method::POST),
+    ))
+    .merge(action_route(
+        "/api/safety/sandbox-reviews/:id/approve",
+        Method::POST,
+        post(crate::api::sandbox_reviews::approve_sandbox_review),
+        spec(RouteId::SandboxReviewApproveById, Method::POST),
+    ))
+    .merge(action_route(
+        "/api/safety/sandbox-reviews/:id/reject",
+        Method::POST,
+        post(crate::api::sandbox_reviews::reject_sandbox_review),
+        spec(RouteId::SandboxReviewRejectById, Method::POST),
     ))
     .merge(action_route(
         "/api/safety/quarantine/:agent_id",

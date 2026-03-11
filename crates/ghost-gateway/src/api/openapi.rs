@@ -44,9 +44,13 @@ use utoipa::OpenApi;
         autonomy_run_approve,
         list_agents,
         create_agent,
+        get_agent,
+        get_agent_overview,
+        update_agent,
         delete_agent,
         get_auth_session,
         list_sessions,
+        get_runtime_session,
         get_session_events,
         list_session_bookmarks,
         create_session_bookmark,
@@ -56,6 +60,7 @@ use utoipa::OpenApi;
         get_convergence_scores,
         get_convergence_history,
         list_goals,
+        list_active_goals,
         get_goal,
         approve_goal,
         reject_goal,
@@ -72,6 +77,7 @@ use utoipa::OpenApi;
         list_workflows,
         get_workflow,
         list_workflow_executions,
+        get_workflow_execution,
         create_workflow,
         update_workflow,
         execute_workflow,
@@ -85,11 +91,15 @@ use utoipa::OpenApi;
         recover_studio_stream,
         studio_run,
         get_traces,
+        get_ade_observability,
         safety_status,
         kill_all,
         pause_agent,
         resume_agent,
         quarantine_agent,
+        list_sandbox_reviews,
+        approve_sandbox_review,
+        reject_sandbox_review,
         query_audit,
         audit_aggregation,
         audit_export,
@@ -190,8 +200,30 @@ use utoipa::OpenApi;
     components(
         schemas(
             ErrorResponseSchema,
+            AgentSandboxSchema,
+            AgentSandboxMetricsSchema,
             AgentInfoSchema,
             CreateAgentRequestSchema,
+            UpdateAgentRequestSchema,
+            crate::api::agents::AgentLifecycleStateValue,
+            crate::api::agents::AgentSafetyStateValue,
+            crate::api::agents::AgentEffectiveStateValue,
+            crate::api::agents::AgentResumeKind,
+            crate::api::agents::AgentActionPolicy,
+            crate::api::agents::AgentInfo,
+            crate::api::agents::AgentAuditEntrySummary,
+            crate::api::agents::AgentCostSummary,
+            crate::api::agents::OverviewPanelState,
+            crate::api::agents::OverviewPanelStatus,
+            crate::api::agents::AgentOverviewPanelHealth,
+            crate::api::agents::AgentOverviewResponse,
+            crate::api::agents::AgentOverviewQuery,
+            crate::api::agents::CreateAgentRequest,
+            crate::api::agents::UpdateAgentRequest,
+            SandboxReviewSchema,
+            SandboxReviewListResponseSchema,
+            SandboxReviewDecisionRequestSchema,
+            SandboxReviewDecisionResponseSchema,
             SessionResponseSchema,
             AgentCostSchema,
             WorkflowSchema,
@@ -232,6 +264,8 @@ use utoipa::OpenApi;
             crate::api::goals::GoalDecisionRequestBody,
             crate::api::goals::GoalDecisionResponse,
             crate::api::goals::GoalListResponse,
+            crate::api::goals::ActiveGoalListResponse,
+            crate::api::goals::ActiveGoalSummary,
             crate::api::goals::GoalProposalDetail,
             crate::api::goals::GoalProposalSummary,
             crate::api::goals::GoalProposalTransition,
@@ -329,10 +363,15 @@ use utoipa::OpenApi;
             crate::api::pc_control::ActionLogEntry,
             crate::api::pc_control::AllowedAppsRequest,
             crate::api::pc_control::BlockedHotkeysRequest,
+            crate::api::pc_control::CircuitBreakerConfigState,
+            crate::api::pc_control::DisplayGeometry,
             crate::api::pc_control::PcControlActionsResponse,
             crate::api::pc_control::PcControlPersistedState,
             crate::api::pc_control::PcControlRuntimeState,
             crate::api::pc_control::PcControlStatus,
+            crate::api::pc_control::PcControlTelemetry,
+            crate::api::pc_control::PcControlUsageTelemetry,
+            crate::api::pc_control::PolicyBudgetConfig,
             crate::api::pc_control::SafeZone,
             crate::api::pc_control::SafeZonesRequest,
             crate::api::pc_control::UpdatePcControlStatusRequest,
@@ -360,14 +399,13 @@ use utoipa::OpenApi;
             crate::api::sessions::CreateBookmarkRequest,
             crate::api::sessions::CreateBookmarkResponse,
             crate::api::sessions::DeleteBookmarkResponse,
+            crate::api::sessions::RuntimeSessionDetailResponse,
             crate::api::sessions::RuntimeSessionSummary,
-            crate::api::sessions::RuntimeSessionsCursorResponse,
-            crate::api::sessions::RuntimeSessionsPageResponse,
+            crate::api::sessions::RuntimeSessionsResponse,
             crate::api::sessions::SessionBookmark,
             crate::api::sessions::SessionBookmarksResponse,
             crate::api::sessions::SessionEvent,
             crate::api::sessions::SessionEventsResponse,
-            crate::api::sessions::SessionListResponse,
             crate::api::state::CrdtDelta,
             crate::api::state::CrdtStateResponse,
             crate::api::studio::StudioMessage,
@@ -376,6 +414,20 @@ use utoipa::OpenApi;
             crate::api::traces::SpanRecord,
             crate::api::traces::TraceGroup,
             crate::api::traces::TraceResponse,
+            crate::api::observability::AdeAgentSnapshot,
+            crate::api::observability::AdeBackupSchedulerSnapshot,
+            crate::api::observability::AdeConfigWatcherSnapshot,
+            crate::api::observability::AdeConvergenceProtectionAgents,
+            crate::api::observability::AdeConvergenceProtectionSnapshot,
+            crate::api::observability::AdeDatabaseSnapshot,
+            crate::api::observability::AdeDistributedKillSnapshot,
+            crate::api::observability::AdeGatewaySnapshot,
+            crate::api::observability::AdeMonitorSnapshot,
+            crate::api::observability::AdeObservabilitySnapshot,
+            crate::api::observability::AdeWebSocketSnapshot,
+            crate::api::health::HealthMonitorStatus,
+            crate::api::health::HealthResponse,
+            crate::api::health::ReadyResponse,
             crate::api::workflows::CreateWorkflowRequest,
             crate::api::workflows::ExecuteWorkflowRequest,
             crate::api::workflows::UpdateWorkflowRequest,
@@ -460,12 +512,34 @@ pub struct ErrorBodySchema {
     pub details: Option<serde_json::Value>,
 }
 
+#[derive(utoipa::ToSchema, serde::Serialize, serde::Deserialize)]
+pub struct AgentSandboxSchema {
+    pub enabled: bool,
+    pub mode: String,
+    pub on_violation: String,
+    pub network_access: bool,
+    pub allowed_shell_prefixes: Vec<String>,
+}
+
 #[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct AgentInfoSchema {
     pub id: String,
     pub name: String,
     pub status: String,
     pub spending_cap: f64,
+    pub isolation: String,
+    pub sandbox: AgentSandboxSchema,
+    pub sandbox_metrics: AgentSandboxMetricsSchema,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct AgentSandboxMetricsSchema {
+    pub pending_reviews: u32,
+    pub total_reviews: u32,
+    pub approved_reviews: u32,
+    pub rejected_reviews: u32,
+    pub expired_reviews: u32,
+    pub last_requested_at: Option<String>,
 }
 
 #[derive(utoipa::ToSchema, serde::Deserialize)]
@@ -474,7 +548,48 @@ pub struct CreateAgentRequestSchema {
     pub spending_cap: Option<f64>,
     pub capabilities: Option<Vec<String>>,
     pub skills: Option<Vec<String>>,
+    pub sandbox: Option<AgentSandboxSchema>,
     pub generate_keypair: Option<bool>,
+}
+
+#[derive(utoipa::ToSchema, serde::Deserialize)]
+pub struct UpdateAgentRequestSchema {
+    pub spending_cap: Option<f64>,
+    pub capabilities: Option<Vec<String>>,
+    pub sandbox: Option<AgentSandboxSchema>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SandboxReviewSchema {
+    pub id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub execution_id: Option<String>,
+    pub route_kind: Option<String>,
+    pub tool_name: String,
+    pub violation_reason: String,
+    pub sandbox_mode: String,
+    pub status: String,
+    pub resolution_note: Option<String>,
+    pub resolved_by: Option<String>,
+    pub requested_at: String,
+    pub resolved_at: Option<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SandboxReviewListResponseSchema {
+    pub reviews: Vec<SandboxReviewSchema>,
+}
+
+#[derive(utoipa::ToSchema, serde::Deserialize)]
+pub struct SandboxReviewDecisionRequestSchema {
+    pub note: Option<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SandboxReviewDecisionResponseSchema {
+    pub review_id: String,
+    pub status: String,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -502,6 +617,8 @@ pub struct SessionResponseSchema {
     pub authenticated: bool,
     pub subject: String,
     pub role: String,
+    pub capabilities: Vec<String>,
+    pub authz_v: Option<u16>,
     pub mode: String,
 }
 
@@ -554,6 +671,11 @@ pub struct WorkflowExecutionSchema {
     pub input: Option<serde_json::Value>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    pub current_step_index: Option<i64>,
+    pub current_node_id: Option<String>,
+    pub recovery_required: bool,
+    pub recovery_action: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -582,10 +704,17 @@ pub struct LiveExecutionCancelResponseSchema {
 pub struct ItpEventSchema {
     pub id: String,
     pub event_type: String,
-    pub platform: String,
     pub session_id: String,
     pub timestamp: String,
-    pub source: String,
+    pub sequence_number: i64,
+    pub sender: Option<String>,
+    pub source: Option<String>,
+    pub platform: Option<String>,
+    pub route: Option<String>,
+    pub privacy_level: String,
+    pub content_length: Option<i64>,
+    pub session_path: String,
+    pub replay_path: String,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -703,12 +832,39 @@ pub struct OAuthConnectionSchema {
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SearchNavigationSchema {
+    pub href: String,
+    pub route_kind: String,
+    pub focus_id: Option<String>,
+    pub query: Option<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SearchMatchContextSchema {
+    pub matched_fields: Vec<String>,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
 pub struct SearchResultSchema {
     pub result_type: String,
     pub id: String,
     pub title: String,
     pub snippet: String,
     pub score: f64,
+    pub navigation: SearchNavigationSchema,
+    pub match_context: SearchMatchContextSchema,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SearchTypeCountSchema {
+    pub result_type: String,
+    pub total: i64,
+}
+
+#[derive(utoipa::ToSchema, serde::Serialize)]
+pub struct SearchDomainWarningSchema {
+    pub result_type: String,
+    pub message: String,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -716,6 +872,10 @@ pub struct SearchResponseSchema {
     pub query: String,
     pub results: Vec<SearchResultSchema>,
     pub total: i64,
+    pub returned_count: i64,
+    pub totals_by_type: Vec<SearchTypeCountSchema>,
+    pub degraded: bool,
+    pub warnings: Vec<SearchDomainWarningSchema>,
 }
 
 #[derive(utoipa::ToSchema, serde::Serialize)]
@@ -764,8 +924,8 @@ pub struct PushSubscriptionSchema {
     get, path = "/api/health",
     tag = "health",
     responses(
-        (status = 200, description = "Gateway is alive"),
-        (status = 503, description = "Gateway unavailable"),
+        (status = 200, description = "Gateway is alive", body = crate::api::health::HealthResponse),
+        (status = 503, description = "Gateway unavailable", body = crate::api::health::HealthResponse),
     )
 )]
 async fn health() {}
@@ -774,8 +934,8 @@ async fn health() {}
     get, path = "/api/ready",
     tag = "health",
     responses(
-        (status = 200, description = "Gateway is ready"),
-        (status = 503, description = "Gateway not ready"),
+        (status = 200, description = "Gateway is ready", body = crate::api::health::ReadyResponse),
+        (status = 503, description = "Gateway not ready", body = crate::api::health::ReadyResponse),
     )
 )]
 async fn ready() {}
@@ -883,7 +1043,7 @@ async fn autonomy_run_approve() {}
     get, path = "/api/agents",
     tag = "agents",
     responses(
-        (status = 200, description = "List of registered agents", body = Vec<AgentInfoSchema>),
+        (status = 200, description = "List of registered agents", body = Vec<crate::api::agents::AgentInfo>),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
@@ -893,15 +1053,60 @@ async fn list_agents() {}
 #[utoipa::path(
     post, path = "/api/agents",
     tag = "agents",
-    request_body = CreateAgentRequestSchema,
+    request_body = crate::api::agents::CreateAgentRequest,
     responses(
-        (status = 201, description = "Agent created"),
+        (status = 201, description = "Agent created", body = crate::api::agents::AgentInfo),
         (status = 409, description = "Agent name conflict"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = []))
 )]
 async fn create_agent() {}
+
+#[utoipa::path(
+    get, path = "/api/agents/{id}",
+    tag = "agents",
+    params(("id" = String, Path, description = "Agent UUID or name")),
+    responses(
+        (status = 200, description = "Agent detail", body = crate::api::agents::AgentInfo),
+        (status = 404, description = "Agent not found"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_agent() {}
+
+#[utoipa::path(
+    get, path = "/api/agents/{id}/overview",
+    tag = "agents",
+    params(
+        ("id" = String, Path, description = "Agent UUID or name"),
+        ("sessions_limit" = Option<u32>, Query, description = "Maximum recent sessions to include"),
+        ("audit_limit" = Option<u32>, Query, description = "Maximum recent audit entries to include"),
+        ("crdt_limit" = Option<u32>, Query, description = "Maximum CRDT deltas to include"),
+    ),
+    responses(
+        (status = 200, description = "Cohesive agent overview", body = crate::api::agents::AgentOverviewResponse),
+        (status = 404, description = "Agent not found"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_agent_overview() {}
+
+#[utoipa::path(
+    patch, path = "/api/agents/{id}",
+    tag = "agents",
+    params(("id" = String, Path, description = "Agent UUID or name")),
+    request_body = crate::api::agents::UpdateAgentRequest,
+    responses(
+        (status = 200, description = "Agent updated", body = crate::api::agents::AgentInfo),
+        (status = 404, description = "Agent not found"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn update_agent() {}
 
 #[utoipa::path(
     delete, path = "/api/agents/{id}",
@@ -920,18 +1125,29 @@ async fn delete_agent() {}
     get, path = "/api/sessions",
     tag = "sessions",
     params(
-        ("page" = Option<u32>, Query, description = "Page number (1-based)"),
-        ("page_size" = Option<u32>, Query, description = "Items per page (max 200)"),
+        ("agent_id" = Option<String>, Query, description = "Only include sessions involving the specified agent"),
         ("cursor" = Option<String>, Query, description = "Cursor for runtime session pagination"),
-        ("limit" = Option<u32>, Query, description = "Items per page in cursor mode (default 50, max 200)"),
+        ("limit" = Option<u32>, Query, description = "Items per page (default 50, max 200)"),
     ),
     responses(
-        (status = 200, description = "Runtime session list", body = crate::api::sessions::SessionListResponse),
+        (status = 200, description = "Runtime session list", body = crate::api::sessions::RuntimeSessionsResponse),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = []))
 )]
 async fn list_sessions() {}
+
+#[utoipa::path(
+    get, path = "/api/sessions/{id}",
+    tag = "sessions",
+    params(("id" = String, Path, description = "Runtime session ID")),
+    responses(
+        (status = 200, description = "Runtime session detail", body = crate::api::sessions::RuntimeSessionDetailResponse),
+        (status = 404, description = "Session not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_runtime_session() {}
 
 #[utoipa::path(
     get, path = "/api/convergence/scores",
@@ -964,7 +1180,7 @@ async fn get_convergence_history() {}
     get, path = "/api/goals",
     tag = "goals",
     params(
-        ("status" = Option<String>, Query, description = "Goal status filter: pending, approved, or rejected"),
+        ("status" = Option<String>, Query, description = "Goal status filter: pending, approved, rejected, history, or omit for all"),
         ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
         ("page" = Option<u32>, Query, description = "Page number (1-based)"),
         ("page_size" = Option<u32>, Query, description = "Items per page (max 200)"),
@@ -976,6 +1192,22 @@ async fn get_convergence_history() {}
     security(("bearer_auth" = []))
 )]
 async fn list_goals() {}
+
+#[utoipa::path(
+    get, path = "/api/goals/active",
+    tag = "goals",
+    params(
+        ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
+        ("page" = Option<u32>, Query, description = "Page number (1-based)"),
+        ("page_size" = Option<u32>, Query, description = "Items per page (max 500)"),
+    ),
+    responses(
+        (status = 200, description = "Canonical active goal set", body = crate::api::goals::ActiveGoalListResponse),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_active_goals() {}
 
 #[utoipa::path(
     post, path = "/api/goals/{id}/approve",
@@ -1127,6 +1359,50 @@ async fn resume_agent() {}
     security(("bearer_auth" = []))
 )]
 async fn quarantine_agent() {}
+
+#[utoipa::path(
+    get, path = "/api/safety/sandbox-reviews",
+    tag = "safety",
+    params(
+        ("status" = Option<String>, Query, description = "Review status filter"),
+        ("agent_id" = Option<String>, Query, description = "Agent ID filter"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of reviews to return"),
+    ),
+    responses(
+        (status = 200, description = "Sandbox review queue and history", body = SandboxReviewListResponseSchema),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn list_sandbox_reviews() {}
+
+#[utoipa::path(
+    post, path = "/api/safety/sandbox-reviews/{id}/approve",
+    tag = "safety",
+    params(("id" = String, Path, description = "Sandbox review ID")),
+    request_body = SandboxReviewDecisionRequestSchema,
+    responses(
+        (status = 200, description = "Sandbox review approved", body = SandboxReviewDecisionResponseSchema),
+        (status = 404, description = "Sandbox review not found", body = ErrorResponseSchema),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn approve_sandbox_review() {}
+
+#[utoipa::path(
+    post, path = "/api/safety/sandbox-reviews/{id}/reject",
+    tag = "safety",
+    params(("id" = String, Path, description = "Sandbox review ID")),
+    request_body = SandboxReviewDecisionRequestSchema,
+    responses(
+        (status = 200, description = "Sandbox review rejected", body = SandboxReviewDecisionResponseSchema),
+        (status = 404, description = "Sandbox review not found", body = ErrorResponseSchema),
+        (status = 500, description = "Internal error", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn reject_sandbox_review() {}
 
 #[utoipa::path(
     get, path = "/api/audit",
@@ -1316,7 +1592,7 @@ async fn list_archived_memories() {}
     tag = "sessions",
     params(
         ("id" = String, Path, description = "Runtime session ID"),
-        ("offset" = Option<u32>, Query, description = "Pagination offset"),
+        ("after_sequence_number" = Option<i64>, Query, description = "Return events strictly after this sequence number"),
         ("limit" = Option<u32>, Query, description = "Maximum number of events to return"),
     ),
     responses(
@@ -1347,6 +1623,7 @@ async fn list_session_bookmarks() {}
     responses(
         (status = 201, description = "Bookmark created", body = crate::api::sessions::CreateBookmarkResponse),
         (status = 404, description = "Session not found", body = ErrorResponseSchema),
+        (status = 422, description = "Invalid bookmark checkpoint", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1375,6 +1652,7 @@ async fn delete_session_bookmark() {}
     responses(
         (status = 201, description = "Session branched", body = crate::api::sessions::BranchSessionResponse),
         (status = 404, description = "Session not found", body = ErrorResponseSchema),
+        (status = 422, description = "Invalid branch checkpoint", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))
 )]
@@ -1454,6 +1732,21 @@ async fn get_workflow() {}
     security(("bearer_auth" = []))
 )]
 async fn list_workflow_executions() {}
+
+#[utoipa::path(
+    get, path = "/api/workflows/{id}/executions/{execution_id}",
+    tag = "workflows",
+    params(
+        ("id" = String, Path, description = "Workflow ID"),
+        ("execution_id" = String, Path, description = "Workflow execution ID"),
+    ),
+    responses(
+        (status = 200, description = "Workflow execution detail", body = WorkflowExecutionSchema),
+        (status = 404, description = "Workflow or execution not found", body = ErrorResponseSchema),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_workflow_execution() {}
 
 #[utoipa::path(
     post, path = "/api/workflows",
@@ -1654,6 +1947,16 @@ async fn studio_run() {}
 async fn get_traces() {}
 
 #[utoipa::path(
+    get, path = "/api/observability/ade",
+    tag = "observability",
+    responses(
+        (status = 200, description = "ADE observability snapshot", body = crate::api::observability::AdeObservabilitySnapshot),
+    ),
+    security(("bearer_auth" = []))
+)]
+async fn get_ade_observability() {}
+
+#[utoipa::path(
     get, path = "/api/state/crdt/{agent_id}",
     tag = "state",
     params(
@@ -1844,9 +2147,14 @@ async fn inject_channel_message() {}
 #[utoipa::path(
     get, path = "/api/itp/events",
     tag = "itp",
-    params(("limit" = Option<u32>, Query, description = "Maximum number of recent events to return (default 200, max 500)")),
+    params(
+        ("limit" = Option<u32>, Query, description = "Maximum number of rows to return (default 100, max 500)"),
+        ("offset" = Option<u32>, Query, description = "Row offset for snapshot pagination"),
+        ("session_id" = Option<String>, Query, description = "Filter to a specific runtime session"),
+        ("event_type" = Option<String>, Query, description = "Filter to a specific event type"),
+    ),
     responses(
-        (status = 200, description = "Recent ITP event snapshot", body = crate::api::itp::ItpEventsResponse),
+        (status = 200, description = "Filtered ITP event snapshot with truthful counters and live-update capability flags", body = crate::api::itp::ItpEventsResponse),
         (status = 500, description = "Internal error", body = ErrorResponseSchema),
     ),
     security(("bearer_auth" = []))

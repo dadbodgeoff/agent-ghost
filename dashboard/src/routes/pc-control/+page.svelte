@@ -27,9 +27,14 @@
   let drawing = $state(false);
   let drawStart = $state({ x: 0, y: 0 });
   let drawCurrent = $state({ x: 0, y: 0 });
-  let newZoneLabel = $state('');
   const SCREEN_W = 640;
   const SCREEN_H = 400;
+  let canvasHeight = $derived.by(() => {
+    if (!status || status.display.width <= 0) {
+      return SCREEN_H;
+    }
+    return Math.max(1, Math.round((SCREEN_W * status.display.height) / status.display.width));
+  });
 
   async function loadStatus() {
     try {
@@ -108,22 +113,20 @@
   async function addSafeZone(zone: SafeZone) {
     if (!status) return;
     try {
-      const zones = [...status.safe_zones, zone];
       const client = await getGhostClient();
-      status = await client.pcControl.setSafeZones(zones);
+      status = await client.pcControl.setSafeZone(zone);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to add safe zone';
     }
   }
 
-  async function removeSafeZone(idx: number) {
+  async function clearSafeZone() {
     if (!status) return;
     try {
-      const zones = status.safe_zones.filter((_, i) => i !== idx);
       const client = await getGhostClient();
-      status = await client.pcControl.setSafeZones(zones);
+      status = await client.pcControl.setSafeZone(null);
     } catch (e: unknown) {
-      error = e instanceof Error ? e.message : 'Failed to remove safe zone';
+      error = e instanceof Error ? e.message : 'Failed to clear safe zone';
     }
   }
 
@@ -149,10 +152,57 @@
     const w = Math.abs(drawCurrent.x - drawStart.x);
     const h = Math.abs(drawCurrent.y - drawStart.y);
     if (w > 10 && h > 10) {
-      const label = newZoneLabel.trim() || `Zone ${(status?.safe_zones.length ?? 0) + 1}`;
-      addSafeZone({ x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h), label });
-      newZoneLabel = '';
+      const label = 'Primary Safe Zone';
+      addSafeZone({
+        x: toHostX(x),
+        y: toHostY(y),
+        width: toHostWidth(w),
+        height: toHostHeight(h),
+        label
+      });
     }
+  }
+
+  function toHostX(canvasX: number): number {
+    if (!status || status.display.width <= 0) return Math.round(canvasX);
+    return Math.round((canvasX / SCREEN_W) * status.display.width);
+  }
+
+  function toHostY(canvasY: number): number {
+    if (!status || status.display.height <= 0 || canvasHeight <= 0) return Math.round(canvasY);
+    return Math.round((canvasY / canvasHeight) * status.display.height);
+  }
+
+  function toHostWidth(canvasWidth: number): number {
+    if (!status || status.display.width <= 0) return Math.max(1, Math.round(canvasWidth));
+    return Math.max(1, Math.round((canvasWidth / SCREEN_W) * status.display.width));
+  }
+
+  function toHostHeight(canvasHeightValue: number): number {
+    if (!status || status.display.height <= 0 || canvasHeight <= 0) {
+      return Math.max(1, Math.round(canvasHeightValue));
+    }
+    return Math.max(1, Math.round((canvasHeightValue / canvasHeight) * status.display.height));
+  }
+
+  function toCanvasX(hostX: number): number {
+    if (!status || status.display.width <= 0) return hostX;
+    return (hostX / status.display.width) * SCREEN_W;
+  }
+
+  function toCanvasY(hostY: number): number {
+    if (!status || status.display.height <= 0) return hostY;
+    return (hostY / status.display.height) * canvasHeight;
+  }
+
+  function toCanvasWidth(hostWidth: number): number {
+    if (!status || status.display.width <= 0) return hostWidth;
+    return (hostWidth / status.display.width) * SCREEN_W;
+  }
+
+  function toCanvasHeight(hostHeight: number): number {
+    if (!status || status.display.height <= 0) return hostHeight;
+    return (hostHeight / status.display.height) * canvasHeight;
   }
 
   function budgetPercent(used: number, max: number): number {
@@ -187,7 +237,10 @@
   onMount(() => {
     loadStatus();
     loadActionLog();
-    const unsub = wsStore.on('AgentStateChange', () => { loadStatus(); });
+    const unsub = wsStore.on('PcControlRuntimeChange', () => {
+      loadStatus();
+      loadActionLog();
+    });
     const unsubResync = wsStore.onResync(() => {
       loadStatus();
       loadActionLog();
@@ -231,39 +284,91 @@
     </div>
     <div class="status-row">
       <div class="status-item">
+        <span class="status-label">Runtime</span>
+        <span class="status-value">{status.runtime.activation_state}</span>
+      </div>
+      <div class="status-item">
         <span class="status-label">Circuit Breaker</span>
         <span class="status-value" style="color: {cbStateColor(status.circuit_breaker_state)}">
           {cbStateLabel(status.circuit_breaker_state)}
         </span>
       </div>
+      <div class="status-item">
+        <span class="status-label">Revision</span>
+        <span class="status-value">{status.runtime.revision}</span>
+      </div>
     </div>
   </section>
 
-  <!-- Action Budget -->
+  <!-- Throughput -->
   <section class="card">
-    <h2>Action Budget</h2>
+    <h2>Throughput</h2>
     <div class="budget-grid">
       <div class="budget-item">
         <span class="budget-label">Per Minute</span>
         <div class="budget-bar-track">
           <div
             class="budget-bar-fill"
-            class:budget-warning={budgetPercent(status.action_budget.used_this_minute, status.action_budget.max_per_minute) > 80}
-            style="width: {budgetPercent(status.action_budget.used_this_minute, status.action_budget.max_per_minute)}%"
+            class:budget-warning={budgetPercent(status.telemetry.throughput.used_this_minute, status.telemetry.throughput.max_per_minute) > 80}
+            style="width: {budgetPercent(status.telemetry.throughput.used_this_minute, status.telemetry.throughput.max_per_minute)}%"
           ></div>
         </div>
-        <span class="budget-count">{status.action_budget.used_this_minute} / {status.action_budget.max_per_minute}</span>
+        <span class="budget-count">{status.telemetry.throughput.used_this_minute} / {status.telemetry.throughput.max_per_minute}</span>
       </div>
       <div class="budget-item">
         <span class="budget-label">Per Hour</span>
         <div class="budget-bar-track">
           <div
             class="budget-bar-fill"
-            class:budget-warning={budgetPercent(status.action_budget.used_this_hour, status.action_budget.max_per_hour) > 80}
-            style="width: {budgetPercent(status.action_budget.used_this_hour, status.action_budget.max_per_hour)}%"
+            class:budget-warning={budgetPercent(status.telemetry.throughput.used_this_hour, status.telemetry.throughput.max_per_hour) > 80}
+            style="width: {budgetPercent(status.telemetry.throughput.used_this_hour, status.telemetry.throughput.max_per_hour)}%"
           ></div>
         </div>
-        <span class="budget-count">{status.action_budget.used_this_hour} / {status.action_budget.max_per_hour}</span>
+        <span class="budget-count">{status.telemetry.throughput.used_this_hour} / {status.telemetry.throughput.max_per_hour}</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Policy Budgets</h2>
+    <div class="budget-grid">
+      <div class="budget-item">
+        <span class="budget-label">Mouse Click</span>
+        <span class="budget-count">{status.telemetry.policy_budgets.mouse_click}</span>
+      </div>
+      <div class="budget-item">
+        <span class="budget-label">Keyboard Type</span>
+        <span class="budget-count">{status.telemetry.policy_budgets.keyboard_type}</span>
+      </div>
+      <div class="budget-item">
+        <span class="budget-label">Keyboard Hotkey</span>
+        <span class="budget-count">{status.telemetry.policy_budgets.keyboard_hotkey}</span>
+      </div>
+      <div class="budget-item">
+        <span class="budget-label">Mouse Drag</span>
+        <span class="budget-count">{status.telemetry.policy_budgets.mouse_drag}</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Observed Usage</h2>
+    <div class="budget-grid">
+      <div class="budget-item">
+        <span class="budget-label">Executed / Minute</span>
+        <span class="budget-count">{status.telemetry.usage.executed_this_minute}</span>
+      </div>
+      <div class="budget-item">
+        <span class="budget-label">Executed / Hour</span>
+        <span class="budget-count">{status.telemetry.usage.executed_this_hour}</span>
+      </div>
+      <div class="budget-item">
+        <span class="budget-label">Blocked / Minute</span>
+        <span class="budget-count">{status.telemetry.usage.blocked_this_minute}</span>
+      </div>
+      <div class="budget-item">
+        <span class="budget-label">Blocked / Hour</span>
+        <span class="budget-count">{status.telemetry.usage.blocked_this_hour}</span>
       </div>
     </div>
   </section>
@@ -288,40 +393,38 @@
   <!-- Safe Zone Editor -->
   <section class="card">
     <h2>Safe Zones</h2>
-    <p class="hint">Click and drag to draw a safe zone on the screen preview.</p>
+    <p class="hint">Click and drag to define the single effective safe zone on a scaled {status.display.width}x{status.display.height} display preview.</p>
     <div class="zone-editor">
-      <div class="zone-label-row">
-        <input type="text" bind:value={newZoneLabel} placeholder="Zone label (optional)" />
-      </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
         bind:this={svgEl}
         class="zone-canvas"
         width={SCREEN_W}
-        height={SCREEN_H}
-        viewBox="0 0 {SCREEN_W} {SCREEN_H}"
+        height={canvasHeight}
+        viewBox="0 0 {SCREEN_W} {canvasHeight}"
         onmousedown={handleMouseDown}
         onmousemove={handleMouseMove}
         onmouseup={handleMouseUp}
       >
-        <rect x="0" y="0" width={SCREEN_W} height={SCREEN_H} fill="var(--color-bg-elevated-2)" stroke="var(--color-border-default)" rx="4" />
-        {#each status.safe_zones as zone, i}
+        <rect x="0" y="0" width={SCREEN_W} height={canvasHeight} fill="var(--color-bg-elevated-2)" stroke="var(--color-border-default)" rx="4" />
+        {#if status.runtime.effective_safe_zone}
+          {@const zone = status.runtime.effective_safe_zone}
           <g>
             <rect
-              x={zone.x} y={zone.y} width={zone.width} height={zone.height}
+              x={toCanvasX(zone.x)} y={toCanvasY(zone.y)} width={toCanvasWidth(zone.width)} height={toCanvasHeight(zone.height)}
               fill="var(--color-interactive-primary)" fill-opacity="0.15"
               stroke="var(--color-interactive-primary)" stroke-width="2" rx="2"
             />
-            <text x={zone.x + 4} y={zone.y + 14} fill="var(--color-interactive-primary)" font-size="11">{zone.label}</text>
+            <text x={toCanvasX(zone.x) + 4} y={toCanvasY(zone.y) + 14} fill="var(--color-interactive-primary)" font-size="11">{zone.label}</text>
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
             <text
-              x={zone.x + zone.width - 12} y={zone.y + 14}
+              x={toCanvasX(zone.x) + toCanvasWidth(zone.width) - 12} y={toCanvasY(zone.y) + 14}
               fill="var(--color-severity-hard)" font-size="11" cursor="pointer"
-              onclick={(e: MouseEvent) => { e.stopPropagation(); removeSafeZone(i); }}
+              onclick={(e: MouseEvent) => { e.stopPropagation(); clearSafeZone(); }}
             >x</text>
           </g>
-        {/each}
+        {/if}
         {#if drawing}
           <rect
             x={Math.min(drawStart.x, drawCurrent.x)}
@@ -379,7 +482,7 @@
             <span class="log-time">{new Date(entry.timestamp).toLocaleTimeString()}</span>
             <span>{entry.action_type}</span>
             <span class="log-target">{entry.target}</span>
-            <span class="log-result" class:log-fail={entry.result === 'blocked'}>{entry.result}</span>
+            <span class="log-result" class:log-fail={entry.blocked}>{entry.result}</span>
           </div>
         {/each}
       </div>
@@ -559,20 +662,6 @@
   }
 
   .zone-editor { margin-top: var(--spacing-2); }
-
-  .zone-label-row {
-    margin-bottom: var(--spacing-2);
-  }
-
-  .zone-label-row input {
-    padding: var(--spacing-1) var(--spacing-2);
-    background: var(--color-bg-elevated-1);
-    border: 1px solid var(--color-border-default);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-primary);
-    font-size: var(--font-size-sm);
-    width: 200px;
-  }
 
   .zone-canvas {
     border: 1px solid var(--color-border-default);

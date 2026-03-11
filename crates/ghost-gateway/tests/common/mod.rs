@@ -74,6 +74,12 @@ impl TestGateway {
             config.external_skills.managed_storage_path =
                 tmp_dir.path().join("managed").display().to_string();
         }
+        let config_path = tmp_dir.path().join("ghost.yml");
+        std::fs::write(
+            &config_path,
+            serde_yaml::to_string(&config).expect("failed to serialize test config"),
+        )
+        .expect("failed to write test config");
 
         // Create database pool and run migrations.
         let db =
@@ -135,13 +141,35 @@ impl TestGateway {
                 ghost_gateway::skill_catalog::SkillCatalogService::empty_for_tests(Arc::clone(&db)),
             )
         };
+        let sandbox_reviews = ghost_gateway::sandbox_reviews::SandboxReviewCoordinator::new(
+            Arc::clone(&db),
+            Arc::clone(&replay_buffer),
+            event_tx.clone(),
+        );
+        let ws_connection_tracker =
+            Arc::new(ghost_gateway::api::websocket::WsConnectionTracker::new());
+        let pc_control_runtime = Arc::new(
+            ghost_gateway::pc_control_runtime::PcControlRuntimeService::new(
+                &ghost_pc_control::safety::PcControlConfig::default(),
+                "tests",
+            ),
+        );
+        let agents = Arc::new(RwLock::new(
+            ghost_gateway::agents::registry::AgentRegistry::new(),
+        ));
+        let channel_manager = Arc::new(ghost_gateway::channel_manager::ChannelManager::new(
+            Arc::clone(&db),
+            Arc::clone(&agents),
+            event_tx.clone(),
+            Arc::clone(&replay_buffer),
+        ));
 
         let app_state = Arc::new(ghost_gateway::state::AppState {
+            started_at: std::time::Instant::now(),
             gateway: Arc::clone(&shared_state),
-            config_path: std::path::PathBuf::from("ghost.yml"),
-            agents: Arc::new(RwLock::new(
-                ghost_gateway::agents::registry::AgentRegistry::new(),
-            )),
+            config_path: config_path.clone(),
+            agents,
+            channel_manager,
             kill_switch,
             quarantine: Arc::new(RwLock::new(
                 ghost_gateway::safety::quarantine::QuarantineManager::new(),
@@ -150,6 +178,12 @@ impl TestGateway {
             event_tx,
             trigger_sender:
                 tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
+            sandbox_reviews,
+            itp_emitter: None,
+            itp_router: None,
+            itp_session_tracker: Some(Arc::new(ghost_gateway::itp_bridge::ITPSessionTracker::new(
+                std::time::Duration::from_secs(30 * 60),
+            ))),
             replay_buffer,
             cost_tracker,
             kill_gate: None,
@@ -162,7 +196,9 @@ impl TestGateway {
             default_model_provider: None,
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
+            pc_control_runtime,
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_connection_tracker,
             ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
             tools_config: ghost_gateway::config::ToolsConfig::default(),
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
@@ -175,11 +211,20 @@ impl TestGateway {
             monitor_block_on_degraded: false,
             convergence_state_stale_after: std::time::Duration::from_secs(300),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            monitor_runtime_status: Arc::new(RwLock::new(
+                ghost_gateway::state::MonitorRuntimeStatus::default(),
+            )),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             skill_catalog,
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            backup_scheduler_status: Arc::new(RwLock::new(
+                ghost_gateway::state::BackupSchedulerRuntimeStatus::default(),
+            )),
+            config_watcher_status: Arc::new(RwLock::new(
+                ghost_gateway::state::ConfigWatcherRuntimeStatus::default(),
+            )),
             autonomy: Arc::new(ghost_gateway::autonomy::AutonomyService::default()),
         });
 

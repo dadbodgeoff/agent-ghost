@@ -5,8 +5,9 @@ mod external_runtime;
 pub mod service;
 
 pub use definitions::{
-    build_compiled_skill_definitions, CompiledSkillCatalogSeed, SkillDefinition,
-    SkillExecutionMode, SkillMutationKind, SkillSourceKind,
+    build_compiled_skill_definitions, build_compiled_skill_definitions_with_runtime,
+    CompiledSkillCatalogSeed, SkillDefinition, SkillExecutionMode, SkillMutationKind,
+    SkillSourceKind,
 };
 pub use dto::{
     ExecuteSkillRequestDto, ExecuteSkillResponseDto, SkillInstallStateDto, SkillListResponseDto,

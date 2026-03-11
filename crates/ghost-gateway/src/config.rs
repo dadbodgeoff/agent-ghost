@@ -227,6 +227,13 @@ pub struct AgentConfig {
     /// When Some, acts as an allowlist (safety skills are always included).
     #[serde(default)]
     pub skills: Option<Vec<String>>,
+    /// Unified sandbox controls for builtin runtime tools.
+    ///
+    /// When omitted, legacy agents with `full_access = true` resolve to
+    /// sandbox-off for backward compatibility. All other agents resolve to the
+    /// secure default.
+    #[serde(default)]
+    pub sandbox: Option<AgentSandboxConfig>,
     /// Per-agent network egress control (Phase 11).
     #[serde(default)]
     pub network: Option<NetworkEgressGatewayConfig>,
@@ -234,6 +241,88 @@ pub struct AgentConfig {
 
 fn default_spending_cap() -> f64 {
     5.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSandboxMode {
+    Off,
+    ReadOnly,
+    WorkspaceWrite,
+    Strict,
+}
+
+impl Default for AgentSandboxMode {
+    fn default() -> Self {
+        Self::WorkspaceWrite
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSandboxViolationAction {
+    Warn,
+    Pause,
+    Quarantine,
+    KillAll,
+}
+
+impl Default for AgentSandboxViolationAction {
+    fn default() -> Self {
+        Self::Pause
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct AgentSandboxConfig {
+    #[serde(default = "default_true_config")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: AgentSandboxMode,
+    #[serde(default)]
+    pub on_violation: AgentSandboxViolationAction,
+    #[serde(default)]
+    pub network_access: bool,
+    #[serde(default)]
+    pub allowed_shell_prefixes: Vec<String>,
+}
+
+impl AgentSandboxConfig {
+    pub fn off() -> Self {
+        Self {
+            enabled: false,
+            mode: AgentSandboxMode::Off,
+            on_violation: AgentSandboxViolationAction::Warn,
+            network_access: true,
+            allowed_shell_prefixes: Vec::new(),
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.enabled && self.mode != AgentSandboxMode::Off
+    }
+}
+
+impl Default for AgentSandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: AgentSandboxMode::WorkspaceWrite,
+            on_violation: AgentSandboxViolationAction::Pause,
+            network_access: false,
+            allowed_shell_prefixes: Vec::new(),
+        }
+    }
+}
+
+pub fn resolve_agent_sandbox_config(agent: &AgentConfig) -> AgentSandboxConfig {
+    agent.sandbox.clone().unwrap_or_else(|| {
+        if agent.full_access {
+            AgentSandboxConfig::off()
+        } else {
+            AgentSandboxConfig::default()
+        }
+    })
 }
 
 /// Per-agent network egress configuration in ghost.yml (Phase 11).
@@ -322,7 +411,7 @@ pub fn build_egress_config(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum IsolationMode {
     #[default]

@@ -32,6 +32,10 @@ LIVE_EXECUTION_ROUTE_RE = re.compile(
     r'live_execution_route\(\s*[^,]+,\s*"([^"]+)"',
     re.MULTILINE | re.DOTALL,
 )
+LIVE_EXECUTION_CANCEL_ROUTE_RE = re.compile(
+    r'live_execution_cancel_route\(\s*[^,]+,\s*"([^"]+)"',
+    re.MULTILINE | re.DOTALL,
+)
 OPENAPI_HELPER_RE = re.compile(
     r"#\[utoipa::path\((?P<body>.*?)\)\]\s*async fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.MULTILINE | re.DOTALL,
@@ -57,7 +61,12 @@ def read_router_paths() -> set[str]:
     paths: set[str] = set()
     for route_source in ROUTE_SOURCES:
         text = route_source.read_text()
-        for route_re in (DIRECT_ROUTE_RE, ACTION_ROUTE_RE, LIVE_EXECUTION_ROUTE_RE):
+        for route_re in (
+            DIRECT_ROUTE_RE,
+            ACTION_ROUTE_RE,
+            LIVE_EXECUTION_ROUTE_RE,
+            LIVE_EXECUTION_CANCEL_ROUTE_RE,
+        ):
             paths.update(
                 normalize_router_path(match.group(1))
                 for match in route_re.finditer(text)

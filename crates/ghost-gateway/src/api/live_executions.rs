@@ -140,6 +140,16 @@ pub async fn cancel_live_execution(
             "cancel_requested": record.status == "cancelled",
         })));
     }
+    if record.status == "cancel_requested" {
+        let cancel_signal_sent = state.cancel_live_execution(&record.id);
+        return Ok(Json(serde_json::json!({
+            "execution_id": record.id,
+            "route_kind": record.route_kind,
+            "status": "cancel_requested",
+            "cancel_requested": true,
+            "cancel_signal_sent": cancel_signal_sent,
+        })));
+    }
 
     let state_json = apply_cancelled_state(actor, parse_live_execution_state(&record)?);
     let state_json = serde_json::to_string(&state_json)
@@ -147,14 +157,26 @@ pub async fn cancel_live_execution(
 
     {
         let db = state.db.write().await;
-        cortex_storage::queries::live_execution_queries::update_status_and_state(
+        let updated =
+            cortex_storage::queries::live_execution_queries::update_status_and_state_if_in_statuses(
             &db,
             &record.id,
             record.state_version,
-            "cancelled",
+            &["accepted", "preparing", "running", "recovery_required", "needs_review"],
+            "cancel_requested",
             &state_json,
         )
         .map_err(|error| ApiError::db_error("cancel_live_execution", error))?;
+        if !updated {
+            return Err(ApiError::custom(
+                axum::http::StatusCode::CONFLICT,
+                "LIVE_EXECUTION_STATE_CONFLICT",
+                format!(
+                    "live execution {} could not transition to cancel_requested",
+                    record.id
+                ),
+            ));
+        }
     }
 
     let cancel_signal_sent = state.cancel_live_execution(&record.id);
@@ -162,7 +184,8 @@ pub async fn cancel_live_execution(
     Ok(Json(serde_json::json!({
         "execution_id": record.id,
         "route_kind": record.route_kind,
-        "status": "cancelled",
+        "status": "cancel_requested",
+        "cancel_requested": true,
         "cancel_signal_sent": cancel_signal_sent,
     })))
 }

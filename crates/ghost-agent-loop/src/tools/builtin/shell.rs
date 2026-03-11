@@ -26,6 +26,8 @@ pub struct ShellToolConfig {
     pub working_dir: String,
     /// Default timeout.
     pub timeout: Duration,
+    /// Execution backend used to run the shell command.
+    pub execution_backend: ShellExecutionBackend,
 }
 
 impl Default for ShellToolConfig {
@@ -34,8 +36,23 @@ impl Default for ShellToolConfig {
             allowed_prefixes: vec![],
             working_dir: ".".into(),
             timeout: Duration::from_secs(30),
+            execution_backend: ShellExecutionBackend::InProcess,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum ShellExecutionBackend {
+    InProcess,
+    ProcessHelper {
+        helper_executable: String,
+    },
+    Container {
+        image: String,
+        workspace_dir: String,
+        read_only_workspace: bool,
+        network_access: bool,
+    },
 }
 
 /// Execute a shell command within sandbox constraints.
@@ -63,15 +80,62 @@ pub async fn execute_shell(
 
     // Execute with timeout
     let result = tokio::time::timeout(config.timeout, async {
-        let mut process = tokio::process::Command::new("sh");
-        process.kill_on_drop(true);
-        process
-            .arg("-c")
-            .arg(command)
-            .current_dir(&config.working_dir)
-            .output()
-            .await
-            .map_err(|e| ShellError::ExecutionFailed(e.to_string()))
+        match &config.execution_backend {
+            ShellExecutionBackend::InProcess => {
+                let mut process = tokio::process::Command::new("sh");
+                process.kill_on_drop(true);
+                process
+                    .arg("-c")
+                    .arg(command)
+                    .current_dir(&config.working_dir)
+                    .output()
+                    .await
+                    .map_err(|e| ShellError::ExecutionFailed(e.to_string()))
+            }
+            ShellExecutionBackend::ProcessHelper { helper_executable } => {
+                let mut process = tokio::process::Command::new(helper_executable);
+                process.kill_on_drop(true);
+                process
+                    .arg("sandbox-shell")
+                    .arg("--cwd")
+                    .arg(&config.working_dir)
+                    .arg("--timeout-secs")
+                    .arg(config.timeout.as_secs().to_string())
+                    .arg("--command")
+                    .arg(command)
+                    .output()
+                    .await
+                    .map_err(|e| ShellError::ExecutionFailed(e.to_string()))
+            }
+            ShellExecutionBackend::Container {
+                image,
+                workspace_dir,
+                read_only_workspace,
+                network_access,
+            } => {
+                let mount_mode = if *read_only_workspace { "ro" } else { "rw" };
+                let mut process = tokio::process::Command::new("docker");
+                process.kill_on_drop(true);
+                process
+                    .arg("run")
+                    .arg("--rm")
+                    .arg("--workdir")
+                    .arg("/workspace")
+                    .arg("--volume")
+                    .arg(format!("{workspace_dir}:/workspace:{mount_mode}"));
+                if !network_access {
+                    process.arg("--network").arg("none");
+                }
+                process
+                    .arg(image)
+                    .arg("sh")
+                    .arg("-lc")
+                    .arg(command)
+                    .output()
+                    .await
+                    .map_err(|e| ShellError::ExecutionFailed(e.to_string()))
+            }
+        }
     })
     .await;
 

@@ -1,5 +1,7 @@
 //! ghost-gateway binary entry point (Task 6.6 — CLI subcommands).
 
+use std::time::Duration;
+
 use clap::Parser;
 use ghost_gateway::bootstrap::GatewayBootstrap;
 use ghost_gateway::cli;
@@ -195,6 +197,68 @@ enum Commands {
     /// Dump the OpenAPI specification as JSON to stdout (for SDK type generation).
     #[command(name = "openapi-dump")]
     OpenapiDump,
+    /// Internal helper used for process-isolated shell execution.
+    #[command(name = "sandbox-shell", hide = true)]
+    SandboxShell {
+        #[arg(long)]
+        cwd: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long, default_value = "30")]
+        timeout_secs: u64,
+    },
+    /// Internal helper used for process-isolated filesystem reads.
+    #[command(name = "sandbox-fs-read", hide = true)]
+    SandboxFsRead {
+        #[arg(long)]
+        cwd: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long, default_value_t = false)]
+        allow_absolute_paths: bool,
+    },
+    /// Internal helper used for process-isolated filesystem writes.
+    #[command(name = "sandbox-fs-write", hide = true)]
+    SandboxFsWrite {
+        #[arg(long)]
+        cwd: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long, default_value_t = false)]
+        allow_absolute_paths: bool,
+    },
+    /// Internal helper used for process-isolated directory listing.
+    #[command(name = "sandbox-fs-list", hide = true)]
+    SandboxFsList {
+        #[arg(long)]
+        cwd: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long, default_value_t = false)]
+        allow_absolute_paths: bool,
+    },
+    /// Internal helper used for process-isolated web search.
+    #[command(name = "sandbox-web-search", hide = true)]
+    SandboxWebSearch {
+        #[arg(long)]
+        query: String,
+        #[arg(long)]
+        config_json: String,
+    },
+    /// Internal helper used for process-isolated web fetch.
+    #[command(name = "sandbox-web-fetch", hide = true)]
+    SandboxWebFetch {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        config_json: String,
+    },
+    /// Internal helper used for process-isolated HTTP requests.
+    #[command(name = "sandbox-http-request", hide = true)]
+    SandboxHttpRequest {
+        #[arg(long)]
+        config_json: String,
+    },
 }
 
 // ─── Subcommand enums ─────────────────────────────────────────────────────────
@@ -621,6 +685,35 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
         }
         Commands::Export { path } => cli::commands::run_export(&path),
         Commands::Migrate { source } => cli::commands::run_migrate(&source),
+        Commands::SandboxShell {
+            cwd,
+            command,
+            timeout_secs,
+        } => run_sandbox_shell(&cwd, &command, timeout_secs).await,
+        Commands::SandboxFsRead {
+            cwd,
+            path,
+            allow_absolute_paths,
+        } => run_sandbox_fs_read(&cwd, &path, allow_absolute_paths),
+        Commands::SandboxFsWrite {
+            cwd,
+            path,
+            allow_absolute_paths,
+        } => run_sandbox_fs_write(&cwd, &path, allow_absolute_paths),
+        Commands::SandboxFsList {
+            cwd,
+            path,
+            allow_absolute_paths,
+        } => run_sandbox_fs_list(&cwd, &path, allow_absolute_paths),
+        Commands::SandboxWebSearch { query, config_json } => {
+            run_sandbox_web_search(&query, &config_json).await
+        }
+        Commands::SandboxWebFetch { url, config_json } => {
+            run_sandbox_web_fetch(&url, &config_json).await
+        }
+        Commands::SandboxHttpRequest { config_json } => {
+            run_sandbox_http_request(&config_json).await
+        }
 
         Commands::Completions { shell } => {
             use clap::CommandFactory;
@@ -1221,4 +1314,169 @@ async fn run_command(cli_args: Cli) -> Result<(), CliError> {
             Ok(())
         }
     }
+}
+
+async fn run_sandbox_shell(cwd: &str, command: &str, timeout_secs: u64) -> Result<(), CliError> {
+    use std::process::Stdio;
+
+    let mut process = tokio::process::Command::new("sh");
+    process.kill_on_drop(true);
+    process
+        .env_clear()
+        .arg("-c")
+        .arg(command)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Ok(path) = std::env::var("PATH") {
+        process.env("PATH", path);
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        process.env("HOME", home);
+    }
+    if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        process.env("TMPDIR", tmpdir);
+    }
+
+    let output = tokio::time::timeout(Duration::from_secs(timeout_secs), process.output())
+        .await
+        .map_err(|_| CliError::Internal(format!("sandbox shell timed out after {timeout_secs}s")))?
+        .map_err(|error| CliError::Internal(format!("sandbox shell failed: {error}")))?;
+
+    use std::io::Write;
+    std::io::stdout()
+        .write_all(&output.stdout)
+        .map_err(|error| CliError::Internal(format!("write sandbox stdout: {error}")))?;
+    std::io::stderr()
+        .write_all(&output.stderr)
+        .map_err(|error| CliError::Internal(format!("write sandbox stderr: {error}")))?;
+    Ok(())
+}
+
+fn sandbox_filesystem_tool(
+    cwd: &str,
+    allow_absolute_paths: bool,
+) -> ghost_agent_loop::tools::builtin::filesystem::FilesystemTool {
+    if allow_absolute_paths {
+        ghost_agent_loop::tools::builtin::filesystem::FilesystemTool::new_unrestricted(
+            std::path::PathBuf::from(cwd),
+        )
+    } else {
+        ghost_agent_loop::tools::builtin::filesystem::FilesystemTool::new(std::path::PathBuf::from(
+            cwd,
+        ))
+    }
+}
+
+fn run_sandbox_fs_read(cwd: &str, path: &str, allow_absolute_paths: bool) -> Result<(), CliError> {
+    let fs = sandbox_filesystem_tool(cwd, allow_absolute_paths);
+    let content = fs
+        .read_file(path)
+        .map_err(|error| CliError::Internal(format!("sandbox fs read failed: {error}")))?;
+    use std::io::Write;
+    std::io::stdout()
+        .write_all(content.as_bytes())
+        .map_err(|error| CliError::Internal(format!("write sandbox fs stdout: {error}")))?;
+    Ok(())
+}
+
+fn run_sandbox_fs_write(cwd: &str, path: &str, allow_absolute_paths: bool) -> Result<(), CliError> {
+    let fs = sandbox_filesystem_tool(cwd, allow_absolute_paths);
+    let mut content = String::new();
+    use std::io::Read;
+    std::io::stdin()
+        .read_to_string(&mut content)
+        .map_err(|error| CliError::Internal(format!("read sandbox fs stdin: {error}")))?;
+    fs.write_file(path, &content)
+        .map_err(|error| CliError::Internal(format!("sandbox fs write failed: {error}")))?;
+    Ok(())
+}
+
+fn run_sandbox_fs_list(cwd: &str, path: &str, allow_absolute_paths: bool) -> Result<(), CliError> {
+    let fs = sandbox_filesystem_tool(cwd, allow_absolute_paths);
+    let entries = fs
+        .list_dir(path)
+        .map_err(|error| CliError::Internal(format!("sandbox fs list failed: {error}")))?;
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
+    for entry in entries {
+        writeln!(&mut stdout, "{entry}")
+            .map_err(|error| CliError::Internal(format!("write sandbox fs stdout: {error}")))?;
+    }
+    Ok(())
+}
+
+async fn run_sandbox_web_search(query: &str, config_json: &str) -> Result<(), CliError> {
+    let config: ghost_agent_loop::tools::builtin::web_search::WebSearchConfig =
+        serde_json::from_str(config_json).map_err(|error| {
+            CliError::Internal(format!("parse sandbox web search config: {error}"))
+        })?;
+    let results = ghost_agent_loop::tools::builtin::web_search::search(query, &config)
+        .await
+        .map_err(|error| CliError::Internal(format!("sandbox web search failed: {error}")))?;
+    println!(
+        "{}",
+        serde_json::to_string(&results).map_err(|error| CliError::Internal(format!(
+            "serialize sandbox web search output: {error}"
+        )))?,
+    );
+    Ok(())
+}
+
+async fn run_sandbox_web_fetch(url: &str, config_json: &str) -> Result<(), CliError> {
+    let config: ghost_agent_loop::tools::builtin::web_fetch::FetchConfig =
+        serde_json::from_str(config_json).map_err(|error| {
+            CliError::Internal(format!("parse sandbox web fetch config: {error}"))
+        })?;
+    let result = ghost_agent_loop::tools::builtin::web_fetch::fetch_url(url, &config)
+        .await
+        .map_err(|error| CliError::Internal(format!("sandbox web fetch failed: {error}")))?;
+    println!(
+        "{}",
+        serde_json::to_string(&result).map_err(|error| CliError::Internal(format!(
+            "serialize sandbox web fetch output: {error}"
+        )))?,
+    );
+    Ok(())
+}
+
+async fn run_sandbox_http_request(config_json: &str) -> Result<(), CliError> {
+    #[derive(serde::Deserialize)]
+    struct SandboxHttpRequestInput {
+        url: String,
+        method: String,
+        headers: std::collections::HashMap<String, String>,
+        body: Option<String>,
+    }
+
+    let config: ghost_agent_loop::tools::builtin::http_request::HttpRequestConfig =
+        serde_json::from_str(config_json).map_err(|error| {
+            CliError::Internal(format!("parse sandbox http request config: {error}"))
+        })?;
+    let mut input = String::new();
+    use std::io::Read;
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(|error| CliError::Internal(format!("read sandbox http request stdin: {error}")))?;
+    let request: SandboxHttpRequestInput = serde_json::from_str(&input).map_err(|error| {
+        CliError::Internal(format!("parse sandbox http request input: {error}"))
+    })?;
+
+    let result = ghost_agent_loop::tools::builtin::http_request::http_request(
+        &request.url,
+        &request.method,
+        &request.headers,
+        request.body.as_deref(),
+        &config,
+    )
+    .await
+    .map_err(|error| CliError::Internal(format!("sandbox http request failed: {error}")))?;
+    println!(
+        "{}",
+        serde_json::to_string(&result).map_err(|error| CliError::Internal(format!(
+            "serialize sandbox http output: {error}"
+        )))?,
+    );
+    Ok(())
 }

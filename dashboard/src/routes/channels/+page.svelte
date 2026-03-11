@@ -4,7 +4,7 @@
    * Lists all configured channel adapters with status indicators.
    * Supports add/remove/reconnect operations.
    */
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import type { ChannelInfo } from '@ghost/sdk';
   import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
@@ -13,13 +13,21 @@
   let loading = $state(true);
   let error = $state('');
   let showAddForm = $state(false);
+  let creating = $state(false);
 
   // Add channel form state
   let newChannelType = $state('cli');
   let newAgentId = $state('');
+  let newChannelConfig = $state('{}');
   let agents: Array<{ id: string; name: string }> = $state([]);
 
-  const CHANNEL_TYPES = ['cli', 'slack', 'discord', 'telegram', 'whatsapp'];
+  const CHANNEL_TYPES = ['cli', 'websocket', 'slack', 'discord', 'telegram', 'whatsapp'];
+  const CHANNEL_EVENTS = [
+    'ChannelCreated',
+    'ChannelUpdated',
+    'ChannelStatusChanged',
+    'ChannelDeleted',
+  ] as const;
 
   function statusColor(status: string): string {
     switch (status) {
@@ -53,9 +61,13 @@
 
   async function loadChannels() {
     try {
+      error = '';
       const client = await getGhostClient();
       const data = await client.channels.list();
       channels = data?.channels ?? [];
+      if (selectedChannel) {
+        selectedChannel = channels.find((channel) => channel.id === selectedChannel?.id) ?? null;
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
     }
@@ -73,18 +85,45 @@
     } catch { /* non-fatal */ }
   }
 
+  function parseChannelConfig(): Record<string, unknown> | null {
+    if (!newChannelConfig.trim()) {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(newChannelConfig);
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+        error = 'Channel config must be a JSON object';
+        return null;
+      }
+      return parsed as Record<string, unknown>;
+    } catch (parseError) {
+      error = parseError instanceof Error ? parseError.message : 'Invalid channel config JSON';
+      return null;
+    }
+  }
+
   async function addChannel() {
     if (!newAgentId) return;
+    const config = parseChannelConfig();
+    if (!config) return;
+
     try {
+      creating = true;
+      error = '';
       const client = await getGhostClient();
       await client.channels.create({
         channel_type: newChannelType,
         agent_id: newAgentId,
+        config,
       });
       showAddForm = false;
+      newChannelConfig = '{}';
       await loadChannels();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to add channel';
+    } finally {
+      creating = false;
     }
   }
 
@@ -114,10 +153,10 @@
   onMount(() => {
     loadChannels();
     loadAgents();
-    const unsub = wsStore.on('AgentStateChange', () => { loadChannels(); });
+    const unsubs = CHANNEL_EVENTS.map((eventType) => wsStore.on(eventType, () => { loadChannels(); }));
     const unsubResync = wsStore.onResync(() => { loadChannels(); });
     return () => {
-      unsub();
+      unsubs.forEach((unsubscribe) => unsubscribe());
       unsubResync();
     };
   });
@@ -160,7 +199,13 @@
           {/each}
         </select>
       </label>
-      <button class="btn-primary" onclick={addChannel}>Create</button>
+      <label class="config-field">
+        <span class="label-text">Config (JSON)</span>
+        <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
+      </label>
+      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+        {creating ? 'Creating…' : 'Create'}
+      </button>
     </div>
   {/if}
 
@@ -214,6 +259,8 @@
         <dt>Channel ID</dt><dd>{selectedChannel.id}</dd>
         <dt>Type</dt><dd>{selectedChannel.channel_type}</dd>
         <dt>Agent</dt><dd>{selectedChannel.agent_name ?? selectedChannel.agent_id}</dd>
+        <dt>Routing Key</dt><dd class="mono">{selectedChannel.routing_key}</dd>
+        <dt>Source</dt><dd>{selectedChannel.source}</dd>
         <dt>Status</dt><dd style="color: {statusColor(selectedChannel.status)}">{statusLabel(selectedChannel.status)}</dd>
         <dt>Messages</dt><dd>{selectedChannel.message_count}</dd>
         <dt>Last Message</dt><dd>{timeAgo(selectedChannel.last_message_at)}</dd>
@@ -246,7 +293,8 @@
   }
 
   .add-channel-form {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: var(--spacing-3);
     align-items: end;
     padding: var(--spacing-4);
@@ -269,12 +317,29 @@
   }
 
   .add-channel-form select {
+    min-height: 40px;
     padding: var(--spacing-2);
     background: var(--color-bg-elevated-2);
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-sm);
     color: var(--color-text-primary);
     font-size: var(--font-size-sm);
+  }
+
+  .config-field {
+    grid-column: 1 / -1;
+  }
+
+  .config-field textarea {
+    min-height: 120px;
+    padding: var(--spacing-2);
+    background: var(--color-bg-elevated-2);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-primary);
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+    resize: vertical;
   }
 
   .channel-list {
@@ -402,6 +467,10 @@
   .detail-list dd {
     font-size: var(--font-size-sm);
     margin: 0;
+  }
+
+  .mono {
+    font-family: var(--font-family-mono);
   }
 
   .channel-detail h3 {

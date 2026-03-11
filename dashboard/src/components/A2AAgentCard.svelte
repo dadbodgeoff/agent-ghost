@@ -8,6 +8,7 @@
   }
 
   let { agent, onSendTask }: Props = $props();
+  let isVerified = $derived(agent.verified ?? agent.trust_score > 0);
 
   let trustColor = $derived(
     agent.trust_score >= 0.8 ? 'var(--color-score-high)' :
@@ -39,10 +40,10 @@
     <span class="agent-url" title={agent.endpoint_url}>
       {agent.endpoint_url.replace(/^https?:\/\//, '')}
     </span>
-    <span class="agent-version">v{agent.version}</span>
+    <span class="agent-version">{isVerified ? 'Verified' : 'Unverified'} · v{agent.version}</span>
   </div>
 
-  {#if onSendTask && agent.reachable}
+  {#if onSendTask && agent.reachable && isVerified}
     <button class="send-btn" onclick={() => onSendTask(agent)}>
       Send Task
     </button>

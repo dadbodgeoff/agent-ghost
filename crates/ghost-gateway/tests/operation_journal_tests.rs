@@ -54,6 +54,39 @@ async fn seed_goal_proposal_with_contract(
     .unwrap();
 }
 
+async fn seed_memory_write_proposal(
+    app_state: &Arc<ghost_gateway::state::AppState>,
+    id: &str,
+    memory_id: &str,
+) {
+    let db = app_state.db.write().await;
+    cortex_storage::queries::goal_proposal_queries::insert_proposal(
+        &db,
+        id,
+        "agent-1",
+        "session-1",
+        "agent",
+        "MemoryWrite",
+        "Semantic",
+        &serde_json::json!({
+            "subject_key": format!("memory:{memory_id}"),
+            "reviewed_revision": "rev-1",
+            "memory_id": memory_id,
+            "memory_type": "semantic",
+            "importance": "medium",
+            "summary": "Materialized durable memory",
+            "text": "remember the integration contract",
+            "tags": ["memory", "contract"],
+        })
+        .to_string(),
+        "[]",
+        "HumanReviewRequired",
+        &proposal_hash(),
+        &proposal_hash(),
+    )
+    .unwrap();
+}
+
 async fn seed_itp_event(
     app_state: &Arc<ghost_gateway::state::AppState>,
     event_id: &str,
@@ -706,6 +739,7 @@ fn seed_registered_agent_with_capabilities(
             name: name.to_string(),
             state: ghost_gateway::agents::registry::AgentLifecycleState::Ready,
             channel_bindings: vec!["slack".into()],
+            isolation: ghost_gateway::config::IsolationMode::InProcess,
             full_access: false,
             capabilities: capabilities.iter().map(|cap| (*cap).to_string()).collect(),
             skills: None,
@@ -880,6 +914,7 @@ async fn seed_live_execution_record_with_version(
             route_kind,
             actor_key: actor,
             state_version,
+            attempt: 0,
             status,
             state_json,
         },
@@ -1030,6 +1065,11 @@ impl PersistentGateway {
         let shared_state = Arc::new(ghost_gateway::gateway::GatewaySharedState::new());
         let (event_tx, _) = tokio::sync::broadcast::channel(64);
         let replay_buffer = Arc::new(ghost_gateway::api::websocket::EventReplayBuffer::new(100));
+        let sandbox_reviews = ghost_gateway::sandbox_reviews::SandboxReviewCoordinator::new(
+            Arc::clone(&db),
+            Arc::clone(&replay_buffer),
+            event_tx.clone(),
+        );
         let kill_switch = Arc::new(ghost_gateway::safety::kill_switch::KillSwitch::new());
         let cost_tracker = Arc::new(ghost_gateway::cost::tracker::CostTracker::new());
         let secret_provider: Box<dyn ghost_secrets::SecretProvider> =
@@ -1043,13 +1083,30 @@ impl PersistentGateway {
         let oauth_broker = Arc::new(ghost_oauth::OAuthBroker::new(oauth_providers, token_store));
         let embedding_engine =
             cortex_embeddings::EmbeddingEngine::new(cortex_embeddings::EmbeddingConfig::default());
+        let ws_connection_tracker =
+            Arc::new(ghost_gateway::api::websocket::WsConnectionTracker::new());
+        let pc_control_runtime = Arc::new(
+            ghost_gateway::pc_control_runtime::PcControlRuntimeService::new(
+                &ghost_pc_control::safety::PcControlConfig::default(),
+                "tests",
+            ),
+        );
+        let agents = Arc::new(RwLock::new(
+            ghost_gateway::agents::registry::AgentRegistry::new(),
+        ));
+        let channel_manager = Arc::new(ghost_gateway::channel_manager::ChannelManager::new(
+            Arc::clone(&db),
+            Arc::clone(&agents),
+            event_tx.clone(),
+            Arc::clone(&replay_buffer),
+        ));
 
         let app_state = Arc::new(ghost_gateway::state::AppState {
+            started_at: std::time::Instant::now(),
             gateway: Arc::clone(&shared_state),
             config_path: std::path::PathBuf::from("ghost.yml"),
-            agents: Arc::new(RwLock::new(
-                ghost_gateway::agents::registry::AgentRegistry::new(),
-            )),
+            agents,
+            channel_manager,
             kill_switch,
             quarantine: Arc::new(RwLock::new(
                 ghost_gateway::safety::quarantine::QuarantineManager::new(),
@@ -1058,6 +1115,10 @@ impl PersistentGateway {
             event_tx,
             trigger_sender:
                 tokio::sync::mpsc::channel::<cortex_core::safety::trigger::TriggerEvent>(16).0,
+            sandbox_reviews,
+            itp_emitter: None,
+            itp_router: None,
+            itp_session_tracker: None,
             replay_buffer,
             cost_tracker,
             kill_gate: None,
@@ -1070,7 +1131,9 @@ impl PersistentGateway {
             default_model_provider,
             pc_control_circuit_breaker: ghost_pc_control::safety::PcControlConfig::default()
                 .circuit_breaker(),
+            pc_control_runtime,
             websocket_auth_tickets: Arc::new(dashmap::DashMap::new()),
+            ws_connection_tracker,
             ws_ticket_auth_only: config.gateway.ws_ticket_auth_only,
             tools_config,
             custom_safety_checks: Arc::new(RwLock::new(Vec::new())),
@@ -1083,6 +1146,9 @@ impl PersistentGateway {
             monitor_block_on_degraded: false,
             convergence_state_stale_after: std::time::Duration::from_secs(300),
             monitor_healthy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            monitor_runtime_status: Arc::new(RwLock::new(
+                ghost_gateway::state::MonitorRuntimeStatus::default(),
+            )),
             distributed_kill_enabled: false,
             embedding_engine: Arc::new(tokio::sync::Mutex::new(embedding_engine)),
             skill_catalog: Arc::new(
@@ -1090,6 +1156,12 @@ impl PersistentGateway {
             ),
             client_heartbeats: Arc::new(dashmap::DashMap::new()),
             session_ttl_days: 90,
+            backup_scheduler_status: Arc::new(RwLock::new(
+                ghost_gateway::state::BackupSchedulerRuntimeStatus::default(),
+            )),
+            config_watcher_status: Arc::new(RwLock::new(
+                ghost_gateway::state::ConfigWatcherRuntimeStatus::default(),
+            )),
             autonomy: Arc::new(ghost_gateway::autonomy::AutonomyService::default()),
         });
 
@@ -1236,6 +1308,73 @@ async fn goal_approval_replays_committed_response_and_writes_audit_metadata() {
         )
         .unwrap();
     assert_eq!(audit_count, 2);
+}
+
+#[tokio::test]
+async fn approving_memory_write_proposal_materializes_durable_memory_and_searches_with_alias_filters(
+) {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    let memory_id = "22222222-2222-4222-8222-222222222222";
+    seed_memory_write_proposal(&gateway.app_state, "memory-proposal-1", memory_id).await;
+
+    let detail = fetch_goal_detail(&gateway.client, &gateway.base_url, "memory-proposal-1").await;
+    let body = decision_body(
+        detail["lineage_id"].as_str().unwrap(),
+        detail["subject_key"].as_str().unwrap(),
+        detail["reviewed_revision"].as_str().unwrap(),
+    );
+
+    let approve = gateway
+        .client
+        .post(gateway.url("/api/goals/memory-proposal-1/approve"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(approve.status(), StatusCode::OK);
+
+    let db = gateway.app_state.db.read().unwrap();
+    let snapshot: String = db
+        .query_row(
+            "SELECT snapshot FROM memory_snapshots WHERE memory_id = ?1 ORDER BY id DESC LIMIT 1",
+            [memory_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let snapshot_json: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(snapshot_json["memory_type"], "Semantic");
+    assert_eq!(snapshot_json["importance"], "Normal");
+    assert_eq!(
+        snapshot_json["content"]["source_proposal_id"],
+        "memory-proposal-1"
+    );
+
+    let event_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM memory_events WHERE memory_id = ?1",
+            [memory_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(event_count >= 1);
+    drop(db);
+
+    let search = gateway
+        .client
+        .get(gateway.url("/api/memory/search?memory_type=semantic&importance=medium"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(search.status(), StatusCode::OK);
+    let body = json_body(search).await;
+    assert!(body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["memory_id"] == memory_id));
 }
 
 #[tokio::test]
@@ -1483,6 +1622,166 @@ async fn reject_with_wrong_reviewed_revision_is_rejected() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = json_body(response).await;
     assert_eq!(body["error"]["code"], "STALE_DECISION_REVIEWED_REVISION");
+}
+
+#[tokio::test]
+async fn pending_goals_filter_includes_human_review_required_proposals() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    seed_goal_proposal(&gateway.app_state, "goal-pending-filter").await;
+
+    let response = gateway
+        .client
+        .get(gateway.url("/api/goals?status=pending"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let proposals = body["proposals"].as_array().unwrap();
+    let proposal = proposals
+        .iter()
+        .find(|proposal| proposal["id"] == "goal-pending-filter")
+        .expect("pending proposal should be returned");
+    assert_eq!(proposal["decision"], "HumanReviewRequired");
+    assert_eq!(proposal["status"], "pending_review");
+    assert_eq!(proposal["current_state"], "pending_review");
+}
+
+#[tokio::test]
+async fn pending_goals_filter_excludes_auto_applied_proposals() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    seed_goal_proposal(&gateway.app_state, "goal-auto-applied").await;
+
+    {
+        let db = gateway.app_state.db.write().await;
+        cortex_storage::queries::goal_proposal_queries::resolve_proposal(
+            &db,
+            "goal-auto-applied",
+            "AutoApproved",
+            "system",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+    }
+
+    let pending = gateway
+        .client
+        .get(gateway.url("/api/goals?status=pending"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pending.status(), StatusCode::OK);
+    let pending_body = json_body(pending).await;
+    assert!(pending_body["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|proposal| proposal["id"] != "goal-auto-applied"));
+
+    let history = gateway
+        .client
+        .get(gateway.url("/api/goals?status=history"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(history.status(), StatusCode::OK);
+    let history_body = json_body(history).await;
+    let proposal = history_body["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|proposal| proposal["id"] == "goal-auto-applied")
+        .expect("auto-applied proposal should be returned in history");
+    assert_eq!(proposal["status"], "auto_applied");
+}
+
+#[tokio::test]
+async fn active_goals_route_returns_canonical_goal_state() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    seed_goal_proposal(&gateway.app_state, "goal-active-state").await;
+
+    {
+        let db = gateway.app_state.db.write().await;
+        cortex_storage::queries::goal_proposal_queries::resolve_proposal(
+            &db,
+            "goal-active-state",
+            "AutoApproved",
+            "system",
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+    }
+
+    let response = gateway
+        .client
+        .get(gateway.url("/api/goals/active"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let goal = body["goals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|goal| goal["proposal_id"] == "goal-active-state")
+        .expect("active goal should be returned");
+    assert_eq!(goal["goal_text"], "ship idempotency");
+    assert_eq!(goal["state"], "auto_applied");
+}
+
+#[tokio::test]
+async fn proposal_watcher_broadcasts_creation_events() {
+    let _guard = hold_env_lock();
+    let gateway = TestGateway::start().await;
+    let mut rx = gateway.app_state.event_tx.subscribe();
+    let watcher = tokio::spawn(ghost_gateway::proposal_watcher::proposal_watcher_task(
+        Arc::clone(&gateway.app_state),
+    ));
+
+    seed_goal_proposal(&gateway.app_state, "goal-created-event").await;
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match rx.recv().await {
+                Ok(envelope) => match envelope.event {
+                    ghost_gateway::api::websocket::WsEvent::ProposalUpdated {
+                        proposal_id,
+                        agent_id,
+                        status,
+                        change,
+                        supersedes_proposal_id,
+                    } if proposal_id == "goal-created-event" => {
+                        break (
+                            proposal_id,
+                            agent_id,
+                            status,
+                            change,
+                            supersedes_proposal_id,
+                        );
+                    }
+                    _ => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(error) => panic!("failed to receive proposal event: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("proposal creation event should be broadcast");
+
+    watcher.abort();
+
+    assert_eq!(event.0, "goal-created-event");
+    assert_eq!(event.1, "agent-1");
+    assert_eq!(event.2, "pending_review");
+    assert_eq!(event.3, "created");
+    assert_eq!(event.4, None);
 }
 
 #[tokio::test]
@@ -2697,10 +2996,11 @@ async fn create_studio_session_replays_committed_response_and_records_audit_prov
 async fn create_bookmark_replays_committed_response_and_records_audit_provenance() {
     let _guard = hold_env_lock();
     let gateway = TestGateway::start().await;
+    seed_itp_event(&gateway.app_state, "evt-bookmark-7", "session-bookmarks", 7).await;
     let operation_id = "018f0f23-8c65-7abc-9def-1434567890ab";
     let idempotency_key = "bookmark-create-key";
     let body = serde_json::json!({
-        "eventIndex": 7,
+        "sequence_number": 7,
         "label": "checkpoint"
     });
 
@@ -2782,8 +3082,8 @@ async fn delete_bookmark_replays_committed_response_and_records_audit_provenance
     {
         let db = gateway.app_state.db.write().await;
         db.execute(
-            "INSERT INTO session_bookmarks (id, session_id, event_index, label) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["bookmark-delete-target", "session-bookmarks", 3u32, "remove me"],
+            "INSERT INTO session_bookmarks (id, session_id, sequence_number, label) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["bookmark-delete-target", "session-bookmarks", 3i64, "remove me"],
         )
         .unwrap();
     }
@@ -2867,7 +3167,7 @@ async fn branch_session_replays_committed_response_and_records_audit_provenance(
 
     let operation_id = "018f0f23-8c65-7abc-9def-1534567890ab";
     let idempotency_key = "branch-session-key";
-    let body = serde_json::json!({ "from_event_index": 2 });
+    let body = serde_json::json!({ "from_sequence_number": 2 });
 
     let first = gateway
         .client
@@ -4575,8 +4875,12 @@ async fn studio_message_stream_cancel_marks_execution_cancelled_and_stops_shell_
     assert_eq!(cancel_status, StatusCode::OK, "cancel body: {cancel_text}");
     let cancel_body: serde_json::Value = serde_json::from_str(&cancel_text).unwrap();
     assert_eq!(cancel_body["execution_id"], execution_id);
-    assert_eq!(cancel_body["status"], "cancelled");
-    assert_eq!(cancel_body["cancel_signal_sent"], true);
+    assert_eq!(cancel_body["status"], "cancel_requested");
+    assert_eq!(cancel_body["cancel_requested"], true);
+    assert!(
+        cancel_body["cancel_signal_sent"].is_boolean(),
+        "cancel body: {cancel_text}"
+    );
 
     let (stream_status, stream_headers, stream_text) =
         tokio::time::timeout(std::time::Duration::from_secs(10), stream_task)
@@ -5624,15 +5928,17 @@ async fn agent_chat_replays_after_restart_without_refiring_provider() {
         .send()
         .await
         .unwrap();
-    assert_eq!(first.status(), StatusCode::OK);
+    let first_status = first.status();
+    let first_headers = first.headers().clone();
+    let first_text = first.text().await.unwrap();
+    assert_eq!(first_status, StatusCode::OK, "body: {first_text}");
     assert_eq!(
-        first
-            .headers()
+        first_headers
             .get("x-ghost-idempotency-status")
             .and_then(|value| value.to_str().ok()),
         Some("executed")
     );
-    let first_body = json_body(first).await;
+    let first_body: serde_json::Value = serde_json::from_str(&first_text).unwrap();
     assert_eq!(first_body["content"], "Hello world");
     assert!(first_body["session_id"].as_str().unwrap().len() > 10);
     assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
@@ -5654,15 +5960,17 @@ async fn agent_chat_replays_after_restart_without_refiring_provider() {
         .send()
         .await
         .unwrap();
-    assert_eq!(replay.status(), StatusCode::OK);
+    let replay_status = replay.status();
+    let replay_headers = replay.headers().clone();
+    let replay_text = replay.text().await.unwrap();
+    assert_eq!(replay_status, StatusCode::OK, "body: {replay_text}");
     assert_eq!(
-        replay
-            .headers()
+        replay_headers
             .get("x-ghost-idempotency-status")
             .and_then(|value| value.to_str().ok()),
         Some("replayed")
     );
-    let replay_body = json_body(replay).await;
+    let replay_body: serde_json::Value = serde_json::from_str(&replay_text).unwrap();
     assert_eq!(replay_body["content"], "Hello world");
     assert_eq!(replay_body["session_id"], first_body["session_id"]);
     assert_eq!(provider.hits.load(Ordering::SeqCst), 1);
@@ -5796,14 +6104,14 @@ async fn agent_chat_materializes_runtime_session_for_sessions_api() {
 
     let sessions = gateway
         .client
-        .get(gateway.url("/api/sessions?page=1&page_size=10"))
+        .get(gateway.url("/api/sessions?limit=10"))
         .send()
         .await
         .unwrap();
     assert_eq!(sessions.status(), StatusCode::OK);
     let sessions_body = json_body(sessions).await;
     assert!(
-        sessions_body["sessions"]
+        sessions_body["data"]
             .as_array()
             .unwrap()
             .iter()
