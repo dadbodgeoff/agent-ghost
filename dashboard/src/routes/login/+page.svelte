@@ -14,6 +14,7 @@
   let loading = $state(false);
 
   async function login() {
+    if (loading) return;
     error = '';
     if (!token.trim()) {
       error = 'Token is required';
@@ -40,12 +41,16 @@
       error = e instanceof Error
         ? e.message
         : 'Gateway unreachable. Is ghost-gateway running? Check ghost.yml for the configured port.';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') login();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void login();
+    }
   }
 </script>
 
@@ -54,7 +59,7 @@
     <div class="logo">GHOST</div>
     <p class="subtitle">Enter your access token to continue.</p>
 
-    <form onsubmit={(e) => { e.preventDefault(); login(); }}>
+    <form onsubmit={(e) => { e.preventDefault(); void login(); }}>
       <label for="token-input" class="sr-only">Access Token</label>
       <input
         id="token-input"

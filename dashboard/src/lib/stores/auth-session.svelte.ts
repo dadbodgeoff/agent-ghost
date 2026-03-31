@@ -30,11 +30,13 @@ class AuthSessionStore {
 
   hydrate(session: SessionResponse | null) {
     this.session = session;
+    this.loading = false;
     this.error = '';
   }
 
   clear() {
     this.session = null;
+    this.loading = false;
     this.error = '';
   }
 

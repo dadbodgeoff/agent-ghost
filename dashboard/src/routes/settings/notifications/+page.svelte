@@ -15,6 +15,14 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let statusMessage = $state('');
+  let statusTone = $state<'success' | 'error'>('success');
+
+  function normalizeCategories(value: unknown): string[] {
+    if (!Array.isArray(value)) return ['intervention', 'kill_switch'];
+    const allowed = new Set(CATEGORIES.map((category) => category.id));
+    return value.filter((entry): entry is string => typeof entry === 'string' && allowed.has(entry));
+  }
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -39,55 +47,85 @@
     pushSupported = 'PushManager' in window && 'Notification' in window;
     if (pushSupported) {
       permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
 
       // Load saved preferences.
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          enabledCategories = normalizeCategories(JSON.parse(saved));
         } catch { /* use defaults */ }
+      }
+
+      if ('serviceWorker' in navigator && permissionState === 'granted') {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          pushEnabled = (await reg.pushManager.getSubscription()) !== null;
+        } catch {
+          pushEnabled = false;
+        }
       }
     }
   });
 
   async function togglePush() {
     if (!pushSupported) return;
+    statusMessage = '';
 
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
         await subscribePush();
       }
     } else {
-      pushEnabled = false;
       await unsubscribePush();
     }
   }
 
   async function subscribePush() {
     try {
+      statusMessage = '';
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        pushEnabled = true;
+        return;
+      }
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) {
+        pushEnabled = false;
+        statusTone = 'error';
+        statusMessage = 'Push notifications are unavailable because the gateway did not return a VAPID key.';
+        return;
+      }
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) {
+        pushEnabled = false;
+        statusTone = 'error';
+        statusMessage = 'The browser returned an invalid push subscription payload.';
+        await sub.unsubscribe().catch(() => {});
+        return;
+      }
       await client.push.subscribe(payload);
+      pushEnabled = true;
+      statusTone = 'success';
+      statusMessage = 'Push notifications enabled.';
     } catch {
-      // Push subscription failed.
+      pushEnabled = false;
+      statusTone = 'error';
+      statusMessage = 'Push subscription failed. Confirm that the service worker is active and the gateway push config is valid.';
     }
   }
 
   async function unsubscribePush() {
     try {
+      statusMessage = '';
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
@@ -98,8 +136,13 @@
         }
         await sub.unsubscribe();
       }
+      pushEnabled = false;
+      statusTone = 'success';
+      statusMessage = 'Push notifications disabled.';
     } catch {
-      // Unsubscribe failed.
+      pushEnabled = true;
+      statusTone = 'error';
+      statusMessage = 'Failed to disable push notifications.';
     }
   }
 
@@ -121,8 +164,11 @@
         icon: '/icons/ghost-192.png',
         tag: 'ghost-test',
       });
+      statusTone = 'success';
+      statusMessage = 'Test notification sent.';
     } catch {
-      // Test failed.
+      statusTone = 'error';
+      statusMessage = 'Failed to send the test notification.';
     } finally {
       testSending = false;
     }
@@ -140,6 +186,11 @@
       Push notifications are not supported in this browser.
     </div>
   {:else}
+    {#if statusMessage}
+      <div class:status-success={statusTone === 'success'} class:status-error={statusTone === 'error'} class="status-banner">
+        {statusMessage}
+      </div>
+    {/if}
     <div class="section">
       <div class="toggle-row">
         <div>
@@ -225,6 +276,22 @@
     padding: var(--spacing-3) var(--spacing-4);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
+  }
+
+  .status-banner {
+    padding: var(--spacing-3) var(--spacing-4);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+  }
+
+  .status-success {
+    background: color-mix(in srgb, var(--color-score-high) 14%, transparent);
+    color: var(--color-score-high);
+  }
+
+  .status-error {
+    background: color-mix(in srgb, var(--color-severity-hard) 14%, transparent);
+    color: var(--color-severity-hard);
   }
 
   .section {
