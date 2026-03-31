@@ -60,7 +60,8 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
 export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
-  await chrome.storage.local.remove([JWT_TOKEN_KEY]);
+  currentState.lastValidated = 0;
+  await chrome.storage.local.remove([JWT_TOKEN_KEY, GATEWAY_URL_KEY]);
 }
 
 /**

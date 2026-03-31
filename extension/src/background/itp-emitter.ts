@@ -13,7 +13,7 @@ interface ITPEvent {
 
 export class ITPEmitter {
   private nativePort: chrome.runtime.Port | null = null;
-  private latestScore: number = 0;
+  private latestScore = 0;
   private useNative: boolean = false;
 
   constructor() {
@@ -48,8 +48,19 @@ export class ITPEmitter {
     }
   }
 
-  getLatestScore(): number {
-    return this.latestScore;
+  getLatestScore(): { compositeScore: number; level: number; signals: number[] } {
+    const compositeScore = this.latestScore;
+    const level =
+      compositeScore > 0.85 ? 4 :
+      compositeScore > 0.7 ? 3 :
+      compositeScore > 0.5 ? 2 :
+      compositeScore > 0.3 ? 1 : 0;
+
+    return {
+      compositeScore,
+      level,
+      signals: Array(7).fill(0),
+    };
   }
 
   refreshScore(): void {
@@ -64,6 +75,11 @@ export class ITPEmitter {
     tx.objectStore('events').add({
       ...event,
       storedAt: new Date().toISOString(),
+    });
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
     });
   }
 

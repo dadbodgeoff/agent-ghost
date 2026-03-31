@@ -38,7 +38,7 @@
   class:assistant={message.role === 'assistant'}
   class:streaming={isStreaming}
   role="article"
-  aria-label="{message.role === 'user' ? 'User' : 'Assistant'} message"
+  aria-label={`${message.role === 'user' ? 'User' : 'Assistant'} message`}
 >
   <div class="msg-avatar">
     {#if message.role === 'user'}

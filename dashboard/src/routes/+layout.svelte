@@ -29,9 +29,16 @@
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  type BeforeInstallPromptEvent = Event & {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  };
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let handleOnline: (() => void) | null = null;
+  let handleOffline: (() => void) | null = null;
+  let handleBeforeInstallPrompt: ((event: Event) => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -52,6 +59,7 @@
 
   function applyTheme() {
     const stored = localStorage.getItem('ghost-theme');
+    document.documentElement.classList.remove('light');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
     } else if (stored === 'system') {
@@ -141,17 +149,20 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    handleOnline = () => (offline = false);
+    handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -161,6 +172,15 @@
   });
 
   onDestroy(() => {
+    if (handleOnline) {
+      window.removeEventListener('online', handleOnline);
+    }
+    if (handleOffline) {
+      window.removeEventListener('offline', handleOffline);
+    }
+    if (handleBeforeInstallPrompt) {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    }
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
     wsStore.disconnect();

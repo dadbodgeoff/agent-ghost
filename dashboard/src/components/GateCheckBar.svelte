@@ -55,12 +55,12 @@
   class="gate-check-bar"
   class:compact
   role="group"
-  aria-label="Safety gate status: {passCount} passed, {failCount} failed"
+  aria-label={`Safety gate status: ${passCount} passed, ${failCount} failed`}
 >
   {#each gates as gate}
     <div
       class="gate"
-      title="{gate.detail ?? gate.name}: {gate.status}"
+      title={`${gate.detail ?? gate.name}: ${gate.status}`}
       style="--gate-color: {statusColors[gate.status]}"
     >
       <span class="gate-icon" aria-hidden="true">{statusIcons[gate.status]}</span>
