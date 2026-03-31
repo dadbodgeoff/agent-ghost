@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   /**
    * ConfirmDialog — destructive action confirmation modal.
    *
@@ -35,11 +37,19 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') cancel();
   }
+
+  let dialogEl: HTMLDivElement | null = null;
+
+  onMount(() => {
+    dialogEl?.focus();
+  });
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="overlay" onclick={cancel} onkeydown={handleKeydown} role="presentation">
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="overlay" onclick={cancel} role="presentation">
   <div
+    bind:this={dialogEl}
     class="dialog"
     role="alertdialog"
     tabindex="-1"
@@ -47,7 +57,6 @@
     aria-labelledby="confirm-title"
     aria-describedby="confirm-message"
     onclick={(e) => e.stopPropagation()}
-    onkeydown={handleKeydown}
   >
     <h2 id="confirm-title">{title}</h2>
     <p id="confirm-message">{message}</p>
