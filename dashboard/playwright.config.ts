@@ -20,7 +20,7 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   webServer: {
-    command: 'npm run preview -- --host 127.0.0.1 --port 4173',
+    command: 'pnpm build && pnpm preview -- --host 127.0.0.1 --port 4173',
     port: 4173,
     reuseExistingServer: true,
   },

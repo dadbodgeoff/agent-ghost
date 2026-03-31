@@ -5,6 +5,8 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class CharacterAIAdapter extends BasePlatformAdapter {
+  readonly platformId = 'character-ai';
+
   matches(url: string): boolean {
     return url.includes('character.ai');
   }

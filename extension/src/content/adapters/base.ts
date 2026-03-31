@@ -9,13 +9,13 @@ export interface ParsedMessage {
 }
 
 export abstract class BasePlatformAdapter {
+  abstract readonly platformId: string;
   abstract matches(url: string): boolean;
   abstract getMessageContainerSelector(): string;
   abstract parseMessage(element: Element): ParsedMessage | null;
 
   observeNewMessages(callback: (msg: ParsedMessage) => void): MutationObserver {
     const selector = this.getMessageContainerSelector();
-    const container = document.querySelector(selector);
 
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -30,8 +30,24 @@ export abstract class BasePlatformAdapter {
       }
     });
 
-    if (container) {
+    const connectToContainer = () => {
+      const container = document.querySelector(selector);
+      if (!container) return false;
+
       observer.observe(container, { childList: true, subtree: true });
+      return true;
+    };
+
+    if (!connectToContainer()) {
+      const bootstrapObserver = new MutationObserver(() => {
+        if (connectToContainer()) {
+          bootstrapObserver.disconnect();
+        }
+      });
+      bootstrapObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+      });
     }
 
     return observer;

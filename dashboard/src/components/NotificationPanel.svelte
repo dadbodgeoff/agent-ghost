@@ -36,13 +36,15 @@
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const agentId = readString(msg, 'agent_id');
+        const status = readString(msg, 'status') ?? readString(msg, 'new_state') ?? 'unknown';
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${status}`,
+          actionHref: agentId ? `/agents/${agentId}` : undefined,
+          agentId: agentId ?? undefined,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -50,24 +52,26 @@
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: readString(msg, 'reason') ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const agentId = readString(msg, 'agent_id');
+        const level = readString(msg, 'new_level') ?? 'unknown';
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level → ${level}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId: agentId ?? undefined,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const proposalId = readString(msg, 'proposal_id') ?? '';
+        const change = readString(msg, 'change') ?? 'updated';
+        const status = readString(msg, 'status') ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -105,6 +109,8 @@
     try {
       const runtime = await getRuntime();
       if (!runtime.isDesktop()) return;
+      const granted = await runtime.requestNotificationPermission();
+      if (!granted) return;
       await runtime.sendNotification({
         title: n.title,
         body: n.message,
@@ -159,7 +165,10 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          notifications = parsed as AppNotification[];
+        }
       }
     } catch { /* start fresh */ }
   }
@@ -167,6 +176,17 @@
   function persistToStorage() {
     if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+  }
+
+  function readString(msg: WsMessage, key: string): string | null {
+    const value = msg[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    return null;
   }
 </script>
 
