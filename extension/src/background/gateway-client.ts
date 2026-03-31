@@ -11,6 +11,10 @@ export interface AgentSummary {
   id: string;
   name: string;
   state: string;
+  status?: string;
+  effective_state?: string;
+  lifecycle_state?: string;
+  safety_state?: string;
 }
 
 export interface GatewayHealth {
@@ -57,8 +61,18 @@ export async function getHealth(): Promise<GatewayHealth> {
  * Get list of agents.
  */
 export async function getAgents(): Promise<AgentSummary[]> {
-  const data = await request<{ agents?: AgentSummary[] }>('/api/agents');
-  return data.agents || [];
+  const data = await request<AgentSummary[] | { agents?: AgentSummary[] }>('/api/agents');
+  const agents = Array.isArray(data) ? data : (data.agents ?? []);
+  return agents.map((agent) => ({
+    ...agent,
+    state:
+      agent.state ||
+      agent.effective_state ||
+      agent.safety_state ||
+      agent.lifecycle_state ||
+      agent.status ||
+      'unknown',
+  }));
 }
 
 /**
