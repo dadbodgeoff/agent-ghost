@@ -16,6 +16,27 @@
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
 
+  function readSavedCategories(): string[] {
+    if (typeof localStorage === 'undefined') return enabledCategories;
+    try {
+      const saved = localStorage.getItem('ghost-push-categories');
+      if (!saved) return enabledCategories;
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : enabledCategories;
+    } catch {
+      return enabledCategories;
+    }
+  }
+
+  function persistCategories(): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    } catch {
+      // Ignore storage failures and keep the UI responsive.
+    }
+  }
+
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
     const normalized = (key + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -40,14 +61,7 @@
     if (pushSupported) {
       permissionState = Notification.permission;
       pushEnabled = permissionState === 'granted';
-
-      // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
-      if (saved) {
-        try {
-          enabledCategories = JSON.parse(saved);
-        } catch { /* use defaults */ }
-      }
+      enabledCategories = readSavedCategories();
     }
   });
 
@@ -68,6 +82,7 @@
   }
 
   async function subscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -87,6 +102,7 @@
   }
 
   async function unsubscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -109,10 +125,11 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    persistCategories();
   }
 
   async function sendTestNotification() {
+    if (!('serviceWorker' in navigator)) return;
     testSending = true;
     try {
       const reg = await navigator.serviceWorker.ready;

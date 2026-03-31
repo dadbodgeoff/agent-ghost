@@ -55,9 +55,16 @@
     { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
     { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
     { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => {
+      if (typeof document === 'undefined') return;
       document.documentElement.classList.toggle('light');
       const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+        } catch {
+          // Ignore storage persistence failures and still apply the theme.
+        }
+      }
     }, frecencyScore: 0 },
     { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
     { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },

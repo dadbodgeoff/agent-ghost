@@ -57,7 +57,19 @@ class FrecencyTracker {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed: [string, FrecencyEntry][] = JSON.parse(stored);
-        this.entries = new Map(parsed);
+        if (Array.isArray(parsed)) {
+          this.entries = new Map(
+            parsed.filter(
+              (entry): entry is [string, FrecencyEntry] =>
+                Array.isArray(entry)
+                && typeof entry[0] === 'string'
+                && !!entry[1]
+                && typeof entry[1].commandId === 'string'
+                && typeof entry[1].lastUsed === 'number'
+                && typeof entry[1].useCount === 'number',
+            ),
+          );
+        }
       }
     } catch {
       // Corrupted data — start fresh.
@@ -66,10 +78,14 @@ class FrecencyTracker {
 
   private persist(): void {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([...this.entries.entries()]),
-    );
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify([...this.entries.entries()]),
+      );
+    } catch {
+      // Ignore storage persistence failures.
+    }
   }
 }
 

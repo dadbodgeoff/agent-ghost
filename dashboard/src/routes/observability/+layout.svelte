@@ -7,6 +7,10 @@
     { href: '/observability/traces', label: 'Traces' },
     { href: '/observability/ade', label: 'ADE Health' },
   ];
+
+  function isActiveTab(href: string): boolean {
+    return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
+  }
 </script>
 
 <div class="observability-shell">
@@ -19,8 +23,8 @@
       {#each tabs as tab}
         <a
           href={tab.href}
-          class:active={page.url.pathname === tab.href}
-          aria-current={page.url.pathname === tab.href ? 'page' : undefined}
+          class:active={isActiveTab(tab.href)}
+          aria-current={isActiveTab(tab.href) ? 'page' : undefined}
         >
           {tab.label}
         </a>

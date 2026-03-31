@@ -265,7 +265,7 @@
         <dt>Messages</dt><dd>{selectedChannel.message_count}</dd>
         <dt>Last Message</dt><dd>{timeAgo(selectedChannel.last_message_at)}</dd>
       </dl>
-      {#if Object.keys(selectedChannel.config).length > 0}
+      {#if selectedChannel.config && Object.keys(selectedChannel.config).length > 0}
         <h3>Configuration</h3>
         <pre class="config-json">{JSON.stringify(selectedChannel.config, null, 2)}</pre>
       {/if}

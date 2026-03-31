@@ -5,6 +5,66 @@ const CLIENT_ID_KEY = 'ghost-client-id';
 const SESSION_EPOCH_KEY = 'ghost-session-epoch';
 const listeners = new Set<(token: string | null) => void>();
 
+function hasLocalStorage(): boolean {
+  return typeof localStorage !== 'undefined';
+}
+
+function hasSessionStorage(): boolean {
+  return typeof sessionStorage !== 'undefined';
+}
+
+function readLocalStorage(key: string): string | null {
+  if (!hasLocalStorage()) return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  if (!hasLocalStorage()) return;
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage write failures (for example, private browsing or quotas).
+  }
+}
+
+function readSessionStorage(key: string): string | null {
+  if (!hasSessionStorage()) return null;
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionStorage(key: string, value: string): void {
+  if (!hasSessionStorage()) return;
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // Ignore storage write failures to avoid breaking auth flows.
+  }
+}
+
+function removeSessionStorage(key: string): void {
+  if (!hasSessionStorage()) return;
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // Ignore storage write failures to avoid breaking auth flows.
+  }
+}
+
+function randomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `ghost-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function emitTokenChange(token: string | null) {
   for (const listener of listeners) {
     listener(token);
@@ -12,10 +72,8 @@ function emitTokenChange(token: string | null) {
 }
 
 function resolveBaseUrl(): string {
-  if (typeof localStorage !== 'undefined') {
-    const override = localStorage.getItem('ghost-gateway-url');
-    if (override) return override;
-  }
+  const override = readLocalStorage('ghost-gateway-url');
+  if (override) return override;
 
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GHOST_GATEWAY_URL) {
     return import.meta.env.VITE_GHOST_GATEWAY_URL;
@@ -25,18 +83,18 @@ function resolveBaseUrl(): string {
 }
 
 function resolveReplayClientId(): string {
-  const existing = localStorage.getItem(CLIENT_ID_KEY);
+  const existing = readLocalStorage(CLIENT_ID_KEY);
   if (existing) return existing;
-  const clientId = crypto.randomUUID();
-  localStorage.setItem(CLIENT_ID_KEY, clientId);
+  const clientId = randomId();
+  writeLocalStorage(CLIENT_ID_KEY, clientId);
   return clientId;
 }
 
 function resolveReplaySessionEpoch(): number {
-  const raw = localStorage.getItem(SESSION_EPOCH_KEY);
+  const raw = readLocalStorage(SESSION_EPOCH_KEY);
   const epoch = raw ? Number.parseInt(raw, 10) : 1;
   if (Number.isFinite(epoch) && epoch > 0) return epoch;
-  localStorage.setItem(SESSION_EPOCH_KEY, '1');
+  writeLocalStorage(SESSION_EPOCH_KEY, '1');
   return 1;
 }
 
@@ -47,14 +105,14 @@ export const webRuntime: RuntimePlatform = {
     return resolveBaseUrl();
   },
   async getToken() {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return readSessionStorage(TOKEN_KEY);
   },
   async setToken(token: string) {
-    sessionStorage.setItem(TOKEN_KEY, token);
+    writeSessionStorage(TOKEN_KEY, token);
     emitTokenChange(token);
   },
   async clearToken() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    removeSessionStorage(TOKEN_KEY);
     emitTokenChange(null);
   },
   async getReplayClientId() {
@@ -65,7 +123,7 @@ export const webRuntime: RuntimePlatform = {
   },
   async advanceReplaySessionEpoch() {
     const next = resolveReplaySessionEpoch() + 1;
-    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    writeLocalStorage(SESSION_EPOCH_KEY, String(next));
     return next;
   },
   subscribeTokenChange(listener) {
@@ -82,6 +140,7 @@ export const webRuntime: RuntimePlatform = {
     throw new Error('Gateway lifecycle control is only available in the desktop app');
   },
   async openExternalUrl(url: string) {
+    if (typeof window === 'undefined') return;
     window.open(url, '_blank', 'noopener,noreferrer');
   },
   async requestNotificationPermission() {

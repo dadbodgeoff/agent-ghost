@@ -14,19 +14,33 @@
 
   let theme: ThemeChoice = $state('dark');
 
+  function readStoredTheme(): ThemeChoice {
+    if (typeof localStorage === 'undefined') return 'dark';
+    try {
+      const stored = localStorage.getItem('ghost-theme');
+      return stored === 'light' || stored === 'system' ? stored : 'dark';
+    } catch {
+      return 'dark';
+    }
+  }
+
+  function persistTheme(choice: ThemeChoice): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem('ghost-theme', choice);
+    } catch {
+      // Ignore storage persistence failures and still apply the theme in-memory.
+    }
+  }
+
   // Initialize from localStorage on mount.
   $effect(() => {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light' || stored === 'system') {
-      theme = stored;
-    } else {
-      theme = 'dark';
-    }
+    theme = readStoredTheme();
   });
 
   function setTheme(choice: ThemeChoice) {
     theme = choice;
-    localStorage.setItem('ghost-theme', choice);
+    persistTheme(choice);
 
     const html = document.documentElement;
     html.classList.remove('light');
