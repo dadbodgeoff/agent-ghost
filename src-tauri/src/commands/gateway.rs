@@ -11,6 +11,26 @@ pub struct GatewayProcess(pub Mutex<Option<CommandChild>>);
 /// Port resolved from ghost.yml, cached for the app lifetime.
 pub struct GatewayPort(pub u16);
 
+fn store_gateway_port(handle: &AppHandle, port: u16) {
+    if handle.try_state::<GatewayPort>().is_none() {
+        handle.manage(GatewayPort(port));
+    }
+}
+
+async fn replace_gateway_process(
+    handle: &AppHandle,
+    child: Option<CommandChild>,
+) -> Result<(), GhostDesktopError> {
+    if let Some(state) = handle.try_state::<GatewayProcess>() {
+        let mut guard = state.0.lock().await;
+        *guard = child;
+        return Ok(());
+    }
+
+    handle.manage(GatewayProcess(Mutex::new(child)));
+    Ok(())
+}
+
 // ── Minimal config parsing (no ghost-gateway dependency) ───────────
 
 #[derive(Deserialize, Default)]
@@ -102,9 +122,8 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
 
     let port = read_port_from_config(&config_path);
 
-
-    // Store port for other commands to use.
-    handle.manage(GatewayPort(port));
+    // Store port for other commands to use without re-registering managed state.
+    store_gateway_port(&handle, port);
 
     let health_url = format!("http://127.0.0.1:{port}/api/health");
 
@@ -117,7 +136,7 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     if let Ok(resp) = client.get(&health_url).send().await {
         if resp.status().is_success() {
             log::info!("Gateway already healthy on port {port} — skipping sidecar launch");
-            handle.manage(GatewayProcess(Mutex::new(None)));
+            replace_gateway_process(&handle, None).await?;
             return Ok(());
         }
     }
@@ -159,12 +178,13 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     }
 
     // Phase 3: Spawn the sidecar.
-    let sidecar = handle
-        .shell()
-        .sidecar("ghost")
-        .map_err(|e| GhostDesktopError::GatewayStartFailed {
-            reason: e.to_string(),
-        })?;
+    let sidecar =
+        handle
+            .shell()
+            .sidecar("ghost")
+            .map_err(|e| GhostDesktopError::GatewayStartFailed {
+                reason: e.to_string(),
+            })?;
     log::info!("Using config: {config_path}");
 
     // Derive dev port (Vite) as gateway_port + 1.
@@ -191,12 +211,14 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
 
     cmd = cmd.env("GHOST_TOKEN", &desktop_gateway_token);
 
-    let (mut rx, child) = cmd.spawn().map_err(|e| GhostDesktopError::GatewayStartFailed {
-        reason: e.to_string(),
-    })?;
+    let (mut rx, child) = cmd
+        .spawn()
+        .map_err(|e| GhostDesktopError::GatewayStartFailed {
+            reason: e.to_string(),
+        })?;
 
-    // Store child handle for shutdown.
-    handle.manage(GatewayProcess(Mutex::new(Some(child))));
+    // Store child handle for shutdown without panicking on repeated starts.
+    replace_gateway_process(&handle, Some(child)).await?;
 
     // Log sidecar stdout/stderr.
     tauri::async_runtime::spawn(async move {
