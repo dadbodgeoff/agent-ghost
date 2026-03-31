@@ -23,17 +23,24 @@
   } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
+  import { applyThemeChoice, readThemeChoice, toggleThemeChoice } from '$lib/theme';
 
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let teardownWindowListeners: Array<() => void> = [];
 
   let wsState = $derived(wsStore.state);
+
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
 
   async function handleKillAllShortcut() {
     if (confirm('Kill all agents? This cannot be undone.')) {
@@ -50,15 +57,14 @@
     };
   }
 
-  function applyTheme() {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light') {
-      document.documentElement.classList.add('light');
-    } else if (stored === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        document.documentElement.classList.add('light');
-      }
-    }
+  function registerWindowListener(
+    type: string,
+    listener: (event: Event) => void,
+  ) {
+    window.addEventListener(type, listener);
+    teardownWindowListeners.push(() => {
+      window.removeEventListener(type, listener);
+    });
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -85,7 +91,7 @@
   }
 
   onMount(async () => {
-    applyTheme();
+    applyThemeChoice(readThemeChoice());
 
     runtime = await getRuntime();
     unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
@@ -128,28 +134,32 @@
       }
     }
 
-    await wsStore.connect();
+    try {
+      await wsStore.connect();
+    } catch {
+      bootError = 'Dashboard shell loaded, but the live gateway connection could not be established.';
+    }
 
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
     shortcuts.registerCommand('theme.toggle', () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      toggleThemeChoice();
     });
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    registerWindowListener('online', () => {
+      offline = false;
+    });
+    registerWindowListener('offline', () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
     });
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    registerWindowListener('beforeinstallprompt', (e) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
     });
 
@@ -163,6 +173,10 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    for (const teardown of teardownWindowListeners) {
+      teardown();
+    }
+    teardownWindowListeners = [];
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,7 +206,15 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (
+      typeof window === 'undefined'
+      || typeof navigator === 'undefined'
+      || typeof Notification === 'undefined'
+      || !('serviceWorker' in navigator)
+      || !('PushManager' in window)
+    ) {
+      return;
+    }
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 

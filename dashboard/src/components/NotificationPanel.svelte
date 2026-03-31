@@ -30,19 +30,53 @@
 
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
+  let teardownGlobalHandlers: Array<() => void> = [];
+
+  function readString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  }
+
+  function readNotificationArray(value: unknown): AppNotification[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value
+      .filter((entry): entry is AppNotification =>
+        !!entry
+        && typeof entry === 'object'
+        && typeof entry.id === 'string'
+        && typeof entry.type === 'string'
+        && typeof entry.severity === 'string'
+        && typeof entry.title === 'string'
+        && typeof entry.message === 'string'
+        && typeof entry.timestamp === 'string'
+        && typeof entry.read === 'boolean',
+      )
+      .slice(0, MAX_NOTIFICATIONS);
+  }
+
+  function eventField(msg: WsMessage, key: string): string | null {
+    return readString(msg[key]);
+  }
+
+  function closePanel() {
+    panelOpen = false;
+  }
 
   onMount(() => {
     loadFromStorage();
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const agentId = eventField(msg, 'agent_id');
+        const state = eventField(msg, 'status') ?? eventField(msg, 'new_state') ?? 'unknown';
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${state}`,
+          actionHref: agentId ? `/agents/${agentId}` : '/agents',
+          agentId: agentId ?? undefined,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -50,24 +84,25 @@
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: eventField(msg, 'reason') ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const agentId = eventField(msg, 'agent_id');
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level -> ${eventField(msg, 'new_level') ?? 'unknown'}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId: agentId ?? undefined,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const proposalId = eventField(msg, 'proposal_id') ?? '';
+        const change = eventField(msg, 'change') ?? 'updated';
+        const status = eventField(msg, 'status') ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -80,11 +115,21 @@
         });
       }),
     );
+
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closePanel();
+      }
+    };
+    document.addEventListener('keydown', handleKeydown);
+    teardownGlobalHandlers.push(() => document.removeEventListener('keydown', handleKeydown));
   });
 
   onDestroy(() => {
     for (const unsub of unsubs) unsub();
     unsubs = [];
+    for (const teardown of teardownGlobalHandlers) teardown();
+    teardownGlobalHandlers = [];
   });
 
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
@@ -159,7 +204,7 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        notifications = readNotificationArray(JSON.parse(stored));
       }
     } catch { /* start fresh */ }
   }
@@ -175,6 +220,7 @@
     class="bell-button"
     onclick={() => panelOpen = !panelOpen}
     aria-label="Notifications ({unreadCount} unread)"
+    aria-expanded={panelOpen}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
@@ -186,7 +232,7 @@
   </button>
 
   {#if panelOpen}
-    <div class="panel-overlay" onclick={() => panelOpen = false} role="presentation"></div>
+    <div class="panel-overlay" onclick={closePanel} role="presentation"></div>
     <div class="notification-panel" role="dialog" aria-label="Notifications">
       <div class="panel-header">
         <h3>Notifications</h3>

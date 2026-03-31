@@ -17,6 +17,8 @@
     import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
     import { frecencyTracker } from '$lib/frecency';
     import { shortcuts } from '$lib/shortcuts';
+    import { onDestroy } from 'svelte';
+    import { toggleThemeChoice } from '$lib/theme';
   import type { SearchResult } from '@ghost/sdk';
 
   type SearchPrefix = '>' | '@' | '#' | '/';
@@ -37,6 +39,7 @@
   let loading = $state(false);
   let selectedIndex = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let searchRequestId = 0;
   let mode = $state<'search' | 'commands'>('search');
   let inputEl = $state<HTMLInputElement | null>(null);
 
@@ -55,9 +58,7 @@
     { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
     { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
     { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      toggleThemeChoice();
     }, frecencyScore: 0 },
     { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
     { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
@@ -204,6 +205,7 @@
     // If prefix is used or query starts with prefix chars, show commands
     if (prefix) {
       mode = 'commands';
+      results = [];
       paletteCommands = filterCommands(getAllCommands(), prefix, queryStr);
       selectedIndex = 0;
       return;
@@ -228,17 +230,26 @@
     // Also check against commands without prefix
     paletteCommands = filterCommands(getAllCommands(), null, queryStr);
     mode = paletteCommands.length > 0 ? 'commands' : 'search';
+    results = [];
 
     // Also search via API
     debounceTimer = setTimeout(search, 200);
   }
 
   async function search() {
-    if (!query.trim()) return;
+    const trimmed = query.trim();
+    if (!trimmed) {
+      results = [];
+      return;
+    }
+    const requestId = ++searchRequestId;
     loading = true;
     try {
       const client = await getGhostClient();
-      const res = await client.search.query({ q: query.trim(), limit: 10 });
+      const res = await client.search.query({ q: trimmed, limit: 10 });
+      if (requestId !== searchRequestId || trimmed !== query.trim()) {
+        return;
+      }
       results = res.results ?? [];
       // If no command matches but search results exist, switch to search mode
       if (paletteCommands.length === 0 && results.length > 0) {
@@ -246,11 +257,30 @@
       }
       selectedIndex = 0;
     } catch {
-      results = [];
+      if (requestId === searchRequestId) {
+        results = [];
+      }
     } finally {
-      loading = false;
+      if (requestId === searchRequestId) {
+        loading = false;
+      }
     }
   }
+
+  async function runPaletteAction(action: () => void | Promise<void>) {
+    try {
+      await action();
+    } catch {
+      // Keep the palette responsive; routes and commands surface their own UI errors.
+    }
+  }
+
+  onDestroy(() => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  });
 
   function getDisplayItems(): Array<{ type: 'command'; item: PaletteCommand } | { type: 'result'; item: SearchResult }> {
     const items: Array<{ type: 'command'; item: PaletteCommand } | { type: 'result'; item: SearchResult }> = [];
@@ -279,7 +309,7 @@
       if (item) {
         if (item.type === 'command') {
           frecencyTracker.record(item.item.id);
-          item.item.action();
+          void runPaletteAction(item.item.action);
           open = false;
         } else {
           const r = item.item;
@@ -345,7 +375,7 @@
                 onclick={() => {
                   if (item.type === 'command') {
                     frecencyTracker.record(item.item.id);
-                    item.item.action();
+                    void runPaletteAction(item.item.action);
                   } else {
                     const r = item.item;
                     const link = hrefForSearchResult(r, query.trim());
