@@ -4,8 +4,8 @@
   "build": {
     "frontendDist": "../dashboard/build",
     "devUrl": "http://localhost:39781",
-    "beforeDevCommand": "cd dashboard && npm run dev",
-    "beforeBuildCommand": "cd dashboard && npm run build"
+    "beforeDevCommand": "pnpm --dir ../dashboard dev",
+    "beforeBuildCommand": "pnpm --dir ../dashboard build"
   },
   "app": {
     "withGlobalTauri": true,
