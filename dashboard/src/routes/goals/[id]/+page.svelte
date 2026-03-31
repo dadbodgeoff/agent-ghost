@@ -237,10 +237,10 @@
 
     {#if isPending}
       <div class="actions">
-        <button class="btn secondary" disabled={actionLoading} onclick={() => handleAction('reject')}>
+        <button type="button" class="btn secondary" disabled={actionLoading} onclick={() => handleAction('reject')}>
           {actionLoading ? 'Working...' : 'Reject'}
         </button>
-        <button class="btn" disabled={actionLoading} onclick={() => handleAction('approve')}>
+        <button type="button" class="btn" disabled={actionLoading} onclick={() => handleAction('approve')}>
           {actionLoading ? 'Working...' : 'Approve'}
         </button>
       </div>

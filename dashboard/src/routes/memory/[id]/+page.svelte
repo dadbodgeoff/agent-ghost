@@ -133,7 +133,7 @@
         <h2>Lifecycle</h2>
         {#if isArchived}
           <p class="helper">This memory is excluded from list and search surfaces unless archived entries are explicitly requested.</p>
-          <button disabled={actionLoading} onclick={unarchiveMemory}>
+          <button type="button" disabled={actionLoading} onclick={unarchiveMemory}>
             {actionLoading ? 'Working...' : 'Unarchive'}
           </button>
         {:else}
@@ -141,7 +141,7 @@
             <span>Archive reason</span>
             <input type="text" bind:value={archiveReason} />
           </label>
-          <button class="secondary" disabled={actionLoading} onclick={archiveMemory}>
+          <button type="button" class="secondary" disabled={actionLoading} onclick={archiveMemory}>
             {actionLoading ? 'Working...' : 'Archive'}
           </button>
         {/if}

@@ -124,11 +124,11 @@
       <input type="number" bind:value={maxSteps} min="1" max="20" class="config-number" />
     </label>
     <div class="config-actions">
-      <button class="btn-run" disabled={running || !userGoal.trim()} onclick={runSandbox}>
+      <button type="button" class="btn-run" disabled={running || !userGoal.trim()} onclick={runSandbox}>
         {running ? 'Simulating…' : 'Run Simulation'}
       </button>
       {#if completed}
-        <button class="btn-reset" onclick={reset}>Reset</button>
+        <button type="button" class="btn-reset" onclick={reset}>Reset</button>
       {/if}
     </div>
   </div>

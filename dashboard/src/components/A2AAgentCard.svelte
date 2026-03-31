@@ -44,7 +44,7 @@
   </div>
 
   {#if onSendTask && agent.reachable && isVerified}
-    <button class="send-btn" onclick={() => onSendTask(agent)}>
+    <button type="button" class="send-btn" onclick={() => onSendTask(agent)}>
       Send Task
     </button>
   {/if}

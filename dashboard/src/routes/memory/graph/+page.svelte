@@ -262,7 +262,7 @@
 {#if error}
   <div class="error-banner" role="alert">
     <span>{error}</span>
-    <button onclick={() => { error = ''; loadGraph(); }}>Retry</button>
+    <button type="button" onclick={() => { error = ''; loadGraph(); }}>Retry</button>
   </div>
 {/if}
 
@@ -285,7 +285,7 @@
       <div class="detail-sidebar">
         <div class="detail-header">
           <h2>{selectedNode.label}</h2>
-          <button class="close-btn" onclick={() => { selectedNode = null; nodeDetail = null; }}>x</button>
+          <button type="button" class="close-btn" onclick={() => { selectedNode = null; nodeDetail = null; }}>x</button>
         </div>
         <dl class="detail-list">
           <dt>Type</dt><dd class="type-badge" style="color: {TYPE_COLORS[selectedNode.type]}">{selectedNode.type}</dd>

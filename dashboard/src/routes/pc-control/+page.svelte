@@ -257,7 +257,7 @@
 {#if error}
   <div class="error-banner" role="alert">
     <span>{error}</span>
-    <button onclick={() => (error = '')}>Dismiss</button>
+    <button type="button" onclick={() => (error = '')}>Dismiss</button>
   </div>
 {/if}
 
@@ -266,7 +266,7 @@
 {:else if !status}
   <div class="empty-state">
     <p>PC Control data unavailable.</p>
-    <button onclick={loadStatus}>Retry</button>
+    <button type="button" onclick={loadStatus}>Retry</button>
   </div>
 {:else}
   <!-- Status Overview -->
@@ -274,6 +274,7 @@
     <div class="section-header">
       <h2>Status</h2>
       <button
+        type="button"
         class="toggle-btn"
         class:enabled={status.enabled}
         onclick={toggleEnabled}
@@ -380,13 +381,13 @@
       {#each status.allowed_apps as app}
         <span class="tag">
           {app}
-          <button class="tag-remove" onclick={() => removeApp(app)} aria-label="Remove {app}">x</button>
+          <button type="button" class="tag-remove" onclick={() => removeApp(app)} aria-label="Remove {app}">x</button>
         </span>
       {/each}
     </div>
     <div class="add-row">
       <input type="text" bind:value={newApp} placeholder="Application name" onkeydown={(e) => e.key === 'Enter' && addApp()} />
-      <button class="btn-sm" onclick={addApp}>Add</button>
+      <button type="button" class="btn-sm" onclick={addApp}>Add</button>
     </div>
   </section>
 
@@ -446,13 +447,13 @@
       {#each status.blocked_hotkeys as key}
         <span class="tag">
           <kbd>{key}</kbd>
-          <button class="tag-remove" onclick={() => removeHotkey(key)} aria-label="Remove {key}">x</button>
+          <button type="button" class="tag-remove" onclick={() => removeHotkey(key)} aria-label="Remove {key}">x</button>
         </span>
       {/each}
     </div>
     <div class="add-row">
       <input type="text" bind:value={newHotkey} placeholder="e.g. Cmd+Q" onkeydown={(e) => e.key === 'Enter' && addHotkey()} />
-      <button class="btn-sm" onclick={addHotkey}>Add</button>
+      <button type="button" class="btn-sm" onclick={addHotkey}>Add</button>
     </div>
   </section>
 

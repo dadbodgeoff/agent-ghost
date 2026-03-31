@@ -192,9 +192,9 @@
       bind:value={searchQuery}
       onkeydown={(e) => { if (e.key === 'Enter') handleSearch(); }}
     />
-    <button class="btn-search" onclick={handleSearch}>Search</button>
+    <button type="button" class="btn-search" onclick={handleSearch}>Search</button>
     {#if isSearchMode}
-      <button class="btn-clear" onclick={clearSearch}>Clear</button>
+      <button type="button" class="btn-clear" onclick={clearSearch}>Clear</button>
     {/if}
   </div>
 
@@ -222,7 +222,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={loadMemories}>Retry</button>
+    <button type="button" onclick={loadMemories}>Retry</button>
   </div>
 {:else if memories.length === 0}
   <div class="empty-state">

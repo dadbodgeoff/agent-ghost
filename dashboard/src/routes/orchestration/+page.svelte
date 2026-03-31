@@ -234,10 +234,10 @@
   {/if}
 
   <div class="tab-bar" role="tablist">
-    <button role="tab" class:active={activeTab === 'trust'} aria-selected={activeTab === 'trust'} onclick={() => activeTab = 'trust'}>Trust Graph</button>
-    <button role="tab" class:active={activeTab === 'consensus'} aria-selected={activeTab === 'consensus'} onclick={() => activeTab = 'consensus'}>Consensus</button>
-    <button role="tab" class:active={activeTab === 'sybil'} aria-selected={activeTab === 'sybil'} onclick={() => activeTab = 'sybil'}>Sybil Resistance</button>
-    <button role="tab" class:active={activeTab === 'a2a'} aria-selected={activeTab === 'a2a'} onclick={() => { activeTab = 'a2a'; void orchestrationStore.refreshTasks(); }}>A2A Discovery</button>
+    <button type="button" role="tab" class:active={activeTab === 'trust'} aria-selected={activeTab === 'trust'} onclick={() => activeTab = 'trust'}>Trust Graph</button>
+    <button type="button" role="tab" class:active={activeTab === 'consensus'} aria-selected={activeTab === 'consensus'} onclick={() => activeTab = 'consensus'}>Consensus</button>
+    <button type="button" role="tab" class:active={activeTab === 'sybil'} aria-selected={activeTab === 'sybil'} onclick={() => activeTab = 'sybil'}>Sybil Resistance</button>
+    <button type="button" role="tab" class:active={activeTab === 'a2a'} aria-selected={activeTab === 'a2a'} onclick={() => { activeTab = 'a2a'; void orchestrationStore.refreshTasks(); }}>A2A Discovery</button>
   </div>
 
   <div class="tab-content" role="tabpanel">
@@ -403,7 +403,7 @@
     {:else if activeTab === 'a2a'}
       <div class="a2a-panel">
         <div class="a2a-controls">
-          <button class="discover-btn" onclick={discoverAgents} disabled={orchestrationStore.discovering}>
+          <button type="button" class="discover-btn" onclick={discoverAgents} disabled={orchestrationStore.discovering}>
             {orchestrationStore.discovering ? 'Discovering...' : 'Discover Agents'}
           </button>
         </div>
@@ -429,7 +429,7 @@
             {#if sendInputError}
               <p class="error-msg">{sendInputError}</p>
             {/if}
-            <button class="send-btn" onclick={sendA2ATask} disabled={orchestrationStore.sendingTask || !sendTarget.trim() || !sendInput.trim() || !!sendInputError}>
+            <button type="button" class="send-btn" onclick={sendA2ATask} disabled={orchestrationStore.sendingTask || !sendTarget.trim() || !sendInput.trim() || !!sendInputError}>
               {orchestrationStore.sendingTask ? 'Sending...' : 'Send Task'}
             </button>
           </div>

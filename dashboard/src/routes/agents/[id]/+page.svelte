@@ -261,16 +261,16 @@
 
   <div class="controls">
     {#if agent.action_policy?.can_pause}
-      <button class="btn btn-warning" onclick={() => confirmAction = 'pause'}>Pause</button>
+      <button type="button" class="btn btn-warning" onclick={() => confirmAction = 'pause'}>Pause</button>
     {/if}
     {#if agent.action_policy?.resume_kind === 'pause'}
-      <button class="btn btn-success" onclick={() => confirmAction = 'resume_pause'}>Resume</button>
+      <button type="button" class="btn btn-success" onclick={() => confirmAction = 'resume_pause'}>Resume</button>
     {/if}
     {#if agent.action_policy?.resume_kind === 'quarantine'}
-      <button class="btn btn-success" onclick={() => confirmAction = 'resume_quarantine'}>Resume After Review</button>
+      <button type="button" class="btn btn-success" onclick={() => confirmAction = 'resume_quarantine'}>Resume After Review</button>
     {/if}
     {#if agent.action_policy?.can_quarantine}
-      <button class="btn btn-danger" onclick={() => confirmAction = 'quarantine'}>Quarantine</button>
+      <button type="button" class="btn btn-danger" onclick={() => confirmAction = 'quarantine'}>Quarantine</button>
     {/if}
     {#if actionError}
       <span class="action-error">{actionError}</span>
@@ -353,7 +353,7 @@
           />
         </label>
 
-        <button class="btn btn-primary" onclick={saveSandbox} disabled={sandboxSaving}>
+        <button type="button" class="btn btn-primary" onclick={saveSandbox} disabled={sandboxSaving}>
           {sandboxSaving ? 'Saving...' : 'Save Sandbox'}
         </button>
 
@@ -515,8 +515,8 @@
           <p class="action-error">{actionError}</p>
         {/if}
         <div class="actions">
-          <button class="cancel-btn" onclick={closeReviewDialog}>Cancel</button>
-          <button class="confirm-btn" onclick={executeAction} disabled={!forensicReviewed || !secondConfirmation || actionLoading}>
+          <button type="button" class="cancel-btn" onclick={closeReviewDialog}>Cancel</button>
+          <button type="button" class="confirm-btn" onclick={executeAction} disabled={!forensicReviewed || !secondConfirmation || actionLoading}>
             {actionLoading ? 'Working...' : 'Resume With Monitoring'}
           </button>
         </div>

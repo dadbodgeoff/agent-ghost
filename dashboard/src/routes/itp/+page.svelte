@@ -154,7 +154,7 @@
     <h1 class="page-title">ITP Events</h1>
     <p class="page-subtitle">Auto-refreshing event view with websocket signals, reconciliation polling, and direct session drilldown.</p>
   </div>
-  <button class="refresh-btn" onclick={() => loadEvents({ silent: true })} disabled={loading || refreshing}>
+  <button type="button" class="refresh-btn" onclick={() => loadEvents({ silent: true })} disabled={loading || refreshing}>
     {refreshing ? 'Refreshing…' : 'Refresh'}
   </button>
 </div>
@@ -226,7 +226,7 @@
 {#if error}
   <div class="error-banner" role="alert">
     <span>{error}</span>
-    <button onclick={() => loadEvents()}>Retry</button>
+    <button type="button" onclick={() => loadEvents()}>Retry</button>
   </div>
 {/if}
 

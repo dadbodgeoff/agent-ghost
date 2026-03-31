@@ -14,7 +14,7 @@
 
 {#if hasMore}
   <div class="pagination-trigger">
-    <button class="load-more-btn" onclick={loadMore} disabled={loading}>
+    <button type="button" class="load-more-btn" onclick={loadMore} disabled={loading}>
       {loading ? 'Loading...' : 'Load more'}
     </button>
     {#if totalCount !== undefined}

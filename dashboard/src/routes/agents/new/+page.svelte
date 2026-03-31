@@ -457,14 +457,14 @@
   <!-- Navigation -->
   <div class="wizard-nav">
     {#if step > 1}
-      <button class="btn-back" onclick={prevStep}>Back</button>
+      <button type="button" class="btn-back" onclick={prevStep}>Back</button>
     {:else}
       <div></div>
     {/if}
     {#if step < TOTAL_STEPS}
-      <button class="btn-next" onclick={nextStep}>Next</button>
+      <button type="button" class="btn-next" onclick={nextStep}>Next</button>
     {:else}
-      <button class="btn-create" onclick={submit} disabled={submitting}>
+      <button type="button" class="btn-create" onclick={submit} disabled={submitting}>
         {submitting ? 'Creating...' : 'Create Agent'}
       </button>
     {/if}

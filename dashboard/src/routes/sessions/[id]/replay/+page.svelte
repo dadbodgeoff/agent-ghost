@@ -221,10 +221,10 @@
     <a href={`/sessions/${sessionId}`} class="back-link">Session {sessionId.slice(0, 8)}...</a>
     <h1>Replay</h1>
     <div class="header-actions">
-      <button class="btn-secondary" onclick={() => (showBookmarkForm = !showBookmarkForm)}>
+      <button type="button" class="btn-secondary" onclick={() => (showBookmarkForm = !showBookmarkForm)}>
         Bookmark
       </button>
-      <button class="btn-secondary" onclick={branchFromHere} disabled={branching || !currentEvent}>
+      <button type="button" class="btn-secondary" onclick={branchFromHere} disabled={branching || !currentEvent}>
         {branching ? 'Branching…' : 'Branch'}
       </button>
     </div>
@@ -235,18 +235,18 @@
   {/if}
 
   <div class="playback-controls">
-    <button class="control-btn" onclick={stepBackward} disabled={currentIndex <= 0} aria-label="Step back">
+    <button type="button" class="control-btn" onclick={stepBackward} disabled={currentIndex <= 0} aria-label="Step back">
       &lt;
     </button>
-    <button class="control-btn play-btn" onclick={togglePlayback} aria-label={playing ? 'Pause' : 'Play'}>
+    <button type="button" class="control-btn play-btn" onclick={togglePlayback} aria-label={playing ? 'Pause' : 'Play'}>
       {playing ? '||' : '>'}
     </button>
-    <button class="control-btn" onclick={stepForward} disabled={currentIndex >= events.length - 1} aria-label="Step forward">
+    <button type="button" class="control-btn" onclick={stepForward} disabled={currentIndex >= events.length - 1} aria-label="Step forward">
       &gt;
     </button>
     <div class="speed-selector">
       {#each [1, 2, 4] as speed}
-        <button class="speed-btn" class:active={playbackSpeed === speed} onclick={() => setSpeed(speed)}>
+        <button type="button" class="speed-btn" class:active={playbackSpeed === speed} onclick={() => setSpeed(speed)}>
           {speed}x
         </button>
       {/each}
@@ -287,10 +287,10 @@
         placeholder="Bookmark label (optional)"
         onkeydown={(event) => event.key === 'Enter' && addBookmark()}
       />
-      <button class="btn-primary" onclick={addBookmark} disabled={mutatingBookmark || !currentEvent}>
+      <button type="button" class="btn-primary" onclick={addBookmark} disabled={mutatingBookmark || !currentEvent}>
         {mutatingBookmark ? 'Adding…' : 'Add'}
       </button>
-      <button class="btn-text" onclick={() => (showBookmarkForm = false)}>Cancel</button>
+      <button type="button" class="btn-text" onclick={() => (showBookmarkForm = false)}>Cancel</button>
     </div>
   {/if}
 

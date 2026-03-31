@@ -79,6 +79,7 @@
   <p class="section-desc">Choose your preferred color scheme.</p>
   <div class="theme-options" role="radiogroup" aria-label="Theme selection">
     <button
+      type="button"
       class="theme-btn"
       class:active={theme === 'dark'}
       onclick={() => setTheme('dark')}
@@ -89,6 +90,7 @@
       Dark
     </button>
     <button
+      type="button"
       class="theme-btn"
       class:active={theme === 'light'}
       onclick={() => setTheme('light')}
@@ -99,6 +101,7 @@
       Light
     </button>
     <button
+      type="button"
       class="theme-btn"
       class:active={theme === 'system'}
       onclick={() => setTheme('system')}
@@ -114,7 +117,7 @@
 <div class="section">
   <h2 class="section-title">Authentication</h2>
   <p class="section-desc">Sign out of the current session.</p>
-  <button class="logout-btn" onclick={logout}>Logout</button>
+  <button type="button" class="logout-btn" onclick={logout}>Logout</button>
 </div>
 
 <div class="section">

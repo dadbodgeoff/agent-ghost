@@ -43,7 +43,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button type="button" onclick={() => location.reload()}>Retry</button>
   </div>
 {:else}
   <div class="grid">

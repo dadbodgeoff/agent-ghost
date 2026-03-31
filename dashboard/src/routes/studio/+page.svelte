@@ -279,7 +279,7 @@
       <ul class="session-list">
         {#each filteredSessions as s (s.id)}
           <li class="session-item" class:active={s.id === studioChatStore.activeSessionId}>
-            <button class="session-btn" onclick={() => studioChatStore.switchSession(s.id)}>
+            <button type="button" class="session-btn" onclick={() => studioChatStore.switchSession(s.id)}>
               <span class="session-title">{s.title}</span>
               <div class="session-bottom">
                 <span class="session-preview">{lastMessagePreview(s)}</span>
@@ -287,6 +287,7 @@
               </div>
             </button>
             <button
+              type="button"
               class="session-delete"
               onclick={(e) => { e.stopPropagation(); studioChatStore.deleteSession(s.id); }}
               title="Delete session"
@@ -296,7 +297,7 @@
         {/each}
         {#if studioChatStore.hasMoreSessions && !searchQuery.trim()}
           <li class="session-load-more">
-            <button class="load-more-btn" onclick={() => studioChatStore.loadMoreSessions()}>
+            <button type="button" class="load-more-btn" onclick={() => studioChatStore.loadMoreSessions()}>
               Load more sessions
             </button>
           </li>
@@ -333,7 +334,7 @@
           <p>Select a session or create a new one to start chatting.</p>
           <p class="no-session-hint">GHOST Agent with full skill access, safety pipeline, and tool execution.</p>
         {/if}
-        <button class="btn-primary" onclick={newChat} disabled={creatingSession}>
+        <button type="button" class="btn-primary" onclick={newChat} disabled={creatingSession}>
           {#if creatingSession}
             Creating...
           {:else}
@@ -361,14 +362,14 @@
       {#if wsStore.state === 'disconnected' || wsStore.state === 'reconnecting'}
         <div class="status-banner banner-error">
           <span>Connection lost — {wsStore.state === 'reconnecting' ? `reconnecting (attempt ${wsStore.reconnectAttempt})...` : 'disconnected'}</span>
-          <button class="banner-btn" onclick={() => { void wsStore.connect(); }}>Reconnect</button>
+          <button type="button" class="banner-btn" onclick={() => { void wsStore.connect(); }}>Reconnect</button>
         </div>
       {/if}
 
       {#if authExpiryWarning}
         <div class="status-banner banner-warning">
           <span>Session expiring soon</span>
-          <button class="banner-btn" onclick={async () => {
+          <button type="button" class="banner-btn" onclick={async () => {
             try {
               const client = await getGhostClient();
               const data = await client.auth.refresh();
@@ -421,7 +422,7 @@
       {#if studioChatStore.error}
         <div class="error-box">
           <span>{studioChatStore.error}</span>
-          <button class="error-retry-btn" onclick={() => studioChatStore.retryLastMessage()}>Retry</button>
+          <button type="button" class="error-retry-btn" onclick={() => studioChatStore.retryLastMessage()}>Retry</button>
         </div>
       {/if}
 
@@ -433,12 +434,13 @@
           disabled={studioChatStore.sending || creatingSession}
         />
         {#if studioChatStore.streaming}
-          <button class="btn-stop" onclick={() => studioChatStore.cancelStreaming()}>
+          <button type="button" class="btn-stop" onclick={() => studioChatStore.cancelStreaming()}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
             Stop
           </button>
         {:else}
             <button
+              type="button"
               class="btn-primary"
               disabled={studioChatStore.sending || creatingSession}
               onclick={() => {

@@ -213,7 +213,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button type="button" onclick={() => location.reload()}>Retry</button>
   </div>
 {:else if scores.length === 0}
   <div class="empty-state">
@@ -338,7 +338,7 @@
   <div class="card">
     <div class="section-header">
       <h2>Threshold Configuration</h2>
-      <button class="btn-text" onclick={() => (showThresholdConfig = !showThresholdConfig)}>
+      <button type="button" class="btn-text" onclick={() => (showThresholdConfig = !showThresholdConfig)}>
         {showThresholdConfig ? 'Hide' : 'Adjust Thresholds'}
       </button>
     </div>

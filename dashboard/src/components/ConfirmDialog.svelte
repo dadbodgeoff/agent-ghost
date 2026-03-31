@@ -52,8 +52,9 @@
     <h2 id="confirm-title">{title}</h2>
     <p id="confirm-message">{message}</p>
     <div class="actions">
-      <button class="cancel-btn" onclick={cancel} disabled={loading}>Cancel</button>
+      <button type="button" class="cancel-btn" onclick={cancel} disabled={loading}>Cancel</button>
       <button
+        type="button"
         class="confirm-btn"
         class:danger
         onclick={confirm}

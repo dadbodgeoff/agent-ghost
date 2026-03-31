@@ -46,7 +46,7 @@
               <div class="bottom-pane">
                 <div class="bottom-header">
                   <span class="bottom-title">Terminal</span>
-                  <button class="bottom-toggle" onclick={toggleBottom} aria-label="Collapse panel">&times;</button>
+                  <button type="button" class="bottom-toggle" onclick={toggleBottom} aria-label="Collapse panel">&times;</button>
                 </div>
                 <div class="bottom-content">
                   {@render bottom()}
@@ -59,7 +59,7 @@
             {@render main()}
           </div>
           {#if bottom && bottomCollapsed}
-            <button class="bottom-expand" onclick={toggleBottom}>Show Panel</button>
+            <button type="button" class="bottom-expand" onclick={toggleBottom}>Show Panel</button>
           {/if}
         {/if}
       </div>
