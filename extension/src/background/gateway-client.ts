@@ -40,10 +40,24 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
 
   if (!resp.ok) {
-    throw new Error(`Gateway ${resp.status}: ${resp.statusText}`);
+    const detail = await resp.text().catch(() => '');
+    throw new Error(
+      detail
+        ? `Gateway ${resp.status}: ${resp.statusText} - ${detail}`
+        : `Gateway ${resp.status}: ${resp.statusText}`,
+    );
   }
 
-  return (await resp.json()) as T;
+  if (resp.status === 204 || resp.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
+
+  const body = await resp.text();
+  if (!body.trim()) {
+    return undefined as T;
+  }
+
+  return JSON.parse(body) as T;
 }
 
 /**

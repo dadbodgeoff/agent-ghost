@@ -6,7 +6,7 @@ mod tray;
 use tauri::Manager;
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = match tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -50,13 +50,20 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error building GHOST desktop")
-        .run(|app_handle, event| {
-            // Kill sidecar on app exit (NOT on window close — tray keeps app alive)
-            if let tauri::RunEvent::Exit = event {
-                tauri::async_runtime::block_on(async {
-                    commands::gateway::auto_stop(app_handle.clone()).await;
-                });
-            }
-        });
+    {
+        Ok(app) => app,
+        Err(error) => {
+            eprintln!("error building GHOST desktop: {error}");
+            return;
+        }
+    };
+
+    app.run(|app_handle, event| {
+        // Kill sidecar on app exit (NOT on window close — tray keeps app alive)
+        if let tauri::RunEvent::Exit = event {
+            tauri::async_runtime::block_on(async {
+                commands::gateway::auto_stop(app_handle.clone()).await;
+            });
+        }
+    });
 }

@@ -4,9 +4,8 @@ use tauri::{
 };
 
 pub fn create(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    TrayIconBuilder::new()
+    let mut builder = TrayIconBuilder::new()
         .tooltip("GHOST — Gateway Active")
-        .icon(app.default_window_icon().cloned().expect("no icon"))
         .on_tray_icon_event(|tray_icon, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -20,7 +19,12 @@ pub fn create(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = w.set_focus();
                 }
             }
-        })
-        .build(app)?;
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+
+    builder.build(app)?;
     Ok(())
 }
