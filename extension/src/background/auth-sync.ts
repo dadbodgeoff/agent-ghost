@@ -2,11 +2,12 @@
  * JWT auth sync between extension and GHOST dashboard (T-4.9.1).
  *
  * Reads JWT token from chrome.storage.local and validates it against
- * the gateway /api/health endpoint. Syncs auth state with dashboard.
+ * the authenticated session endpoint. Syncs auth state across extension contexts.
  */
 
-const GATEWAY_URL_KEY = 'ghost-gateway-url';
-const JWT_TOKEN_KEY = 'ghost-jwt-token';
+import { GATEWAY_URL_KEY, JWT_TOKEN_KEY } from './auth-keys';
+
+const DEFAULT_GATEWAY_URL = 'http://localhost:39780';
 
 export interface AuthState {
   authenticated: boolean;
@@ -15,26 +16,62 @@ export interface AuthState {
   lastValidated: number;
 }
 
+type AuthStorageSnapshot = Record<string, string | null | undefined>;
+
 const currentState: AuthState = {
   authenticated: false,
-  gatewayUrl: 'http://localhost:39780',
+  gatewayUrl: DEFAULT_GATEWAY_URL,
   token: null,
   lastValidated: 0,
 };
+let storageListenerRegistered = false;
+
+function applyStoredState(stored: AuthStorageSnapshot): void {
+  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || DEFAULT_GATEWAY_URL;
+  currentState.token = stored[JWT_TOKEN_KEY] || null;
+}
+
+function ensureStorageListener(): void {
+  if (storageListenerRegistered) return;
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+    if (!changes[GATEWAY_URL_KEY] && !changes[JWT_TOKEN_KEY]) return;
+
+    applyStoredState({
+      [GATEWAY_URL_KEY]: changes[GATEWAY_URL_KEY]?.newValue,
+      [JWT_TOKEN_KEY]: changes[JWT_TOKEN_KEY]?.newValue,
+    });
+
+    if (!currentState.token) {
+      currentState.authenticated = false;
+      currentState.lastValidated = 0;
+      return;
+    }
+
+    void validateToken();
+  });
+
+  storageListenerRegistered = true;
+}
 
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
 export async function initAuthSync(): Promise<AuthState> {
+  ensureStorageListener();
+
   const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
-  currentState.token = stored[JWT_TOKEN_KEY] || null;
+  applyStoredState(stored);
 
   if (currentState.token) {
     await validateToken();
+  } else {
+    currentState.authenticated = false;
+    currentState.lastValidated = 0;
   }
 
-  return currentState;
+  return getAuthState();
 }
 
 /**
@@ -60,6 +97,7 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
 export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
+  currentState.lastValidated = 0;
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 
@@ -69,13 +107,15 @@ export async function clearToken(): Promise<void> {
 async function validateToken(): Promise<boolean> {
   if (!currentState.token) {
     currentState.authenticated = false;
+    currentState.lastValidated = 0;
     return false;
   }
 
   try {
-    const resp = await fetch(`${currentState.gatewayUrl}/api/health`, {
+    const resp = await fetch(`${currentState.gatewayUrl}/api/auth/session`, {
       headers: {
         Authorization: `Bearer ${currentState.token}`,
+        Accept: 'application/json',
       },
       signal: AbortSignal.timeout(5000),
     });
@@ -85,6 +125,7 @@ async function validateToken(): Promise<boolean> {
     return resp.ok;
   } catch {
     currentState.authenticated = false;
+    currentState.lastValidated = Date.now();
     return false;
   }
 }

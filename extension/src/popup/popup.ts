@@ -2,7 +2,8 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { GATEWAY_URL_KEY, JWT_TOKEN_KEY } from '../background/auth-keys';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -65,28 +66,48 @@ async function loadSyncStatus(): Promise<void> {
   }
 }
 
+async function refreshGatewayState(): Promise<void> {
+  const auth = await initAuthSync();
+  updateConnectionIndicator(auth.authenticated);
+
+  if (auth.authenticated) {
+    await loadAgentList();
+    return;
+  }
+
+  const container = document.getElementById('agentList');
+  if (container) {
+    container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
+  }
+}
+
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
   data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
+    const valueEl = document.getElementById(`signal-value-${i}`);
+    const barEl = document.getElementById(`signal-bar-${i}`);
+    if (valueEl) valueEl.textContent = val.toFixed(3);
+    if (barEl) {
+      (barEl as HTMLElement).style.width = `${Math.max(0, Math.min(100, val * 100)).toFixed(0)}%`;
+    }
   });
 
   // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (data.level >= 3 && alertEl) {
+    alertEl.className = 'alert-banner active alert-danger';
+    alertEl.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  } else if (alertEl) {
+    alertEl.className = 'alert-banner';
+    alertEl.textContent = '';
   }
 }
 
@@ -107,25 +128,30 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
 
 // Session timer
 const sessionStart = Date.now();
-setInterval(() => {
+function renderSessionTimer(): void {
   const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
+  const timerEl = document.getElementById('sessionDuration');
   if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
+}
+
+renderSessionTimer();
+setInterval(renderSessionTimer, 60000);
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
-  const auth = getAuthState();
-  updateConnectionIndicator(auth.authenticated);
-
-  if (auth.authenticated) {
-    await loadAgentList();
-  } else {
-    const container = document.getElementById('agentList');
-    if (container) {
-      container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
-    }
-  }
-
+  await refreshGatewayState();
   await loadSyncStatus();
 })();
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  if (!changes[JWT_TOKEN_KEY] && !changes[GATEWAY_URL_KEY] && !changes['ghost-last-sync']) return;
+
+  if (changes[JWT_TOKEN_KEY] || changes[GATEWAY_URL_KEY]) {
+    void refreshGatewayState();
+  }
+
+  if (changes['ghost-last-sync']) {
+    void loadSyncStatus();
+  }
+});
