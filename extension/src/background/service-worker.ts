@@ -3,8 +3,16 @@
  */
 
 import { ITPEmitter } from './itp-emitter';
+import { initAuthSync } from './auth-sync';
 
 const emitter = new ITPEmitter();
+
+chrome.runtime.onInstalled.addListener(() => {
+  void chrome.storage.local.set({
+    enabled: true,
+    privacyLevel: 'standard',
+  });
+});
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -41,5 +49,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 setInterval(() => {
   emitter.refreshScore();
 }, 30_000);
+
+void initAuthSync();
 
 console.log('[GHOST] Background service worker initialized');
