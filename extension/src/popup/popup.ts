@@ -1,30 +1,168 @@
 /**
- * Popup script — displays convergence score and signals.
+ * Popup script — renders convergence status, signal breakdown, and gateway state.
  */
 
 import { getAuthState } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
-/**
- * Update the connection indicator (statusDot + statusLabel).
- */
+const SIGNAL_NAMES = [
+  'Session Duration',
+  'Inter-Session Gap',
+  'Response Latency',
+  'Vocabulary Convergence',
+  'Goal Boundary Erosion',
+  'Initiative Balance',
+  'Disengagement Resistance',
+];
+
+const LEVEL_LABELS = [
+  'Level 0 - Normal',
+  'Level 1 - Soft',
+  'Level 2 - Active',
+  'Level 3 - Hard',
+  'Level 4 - External',
+];
+
+const LEVEL_CLASSES = ['level-0', 'level-1', 'level-2', 'level-3', 'level-4'];
+
+type ScorePayload = {
+  composite_score?: number;
+  score?: number;
+  level?: number;
+  signals?: number[];
+  platform?: string;
+};
+
+let sessionStartTime = Date.now();
+
 function updateConnectionIndicator(connected: boolean): void {
   const dot = document.getElementById('statusDot');
   const label = document.getElementById('statusLabel');
   if (dot) {
-    dot.classList.remove('connected', 'disconnected');
-    dot.classList.add(connected ? 'connected' : 'disconnected');
+    dot.className = `status-dot ${connected ? 'connected' : 'disconnected'}`;
+    dot.setAttribute('aria-label', connected ? 'Connected' : 'Disconnected');
   }
   if (label) {
-    label.classList.remove('connected', 'disconnected');
-    label.classList.add(connected ? 'connected' : 'disconnected');
+    label.className = `status-label ${connected ? 'connected' : 'disconnected'}`;
     label.textContent = connected ? 'Connected' : 'Disconnected';
   }
 }
 
-/**
- * Fetch and render the agent list from the gateway.
- */
+function scoreColor(score: number): string {
+  if (score < 0.3) return '#22c55e';
+  if (score < 0.5) return '#eab308';
+  if (score < 0.7) return '#f97316';
+  return '#ef4444';
+}
+
+function renderSignalList(): void {
+  const container = document.getElementById('signalList');
+  if (!container) return;
+
+  container.innerHTML = SIGNAL_NAMES.map(
+    (name, index) => `
+      <div class="signal-row">
+        <span class="signal-name">${name}</span>
+        <span class="signal-value" id="signal-value-${index}">0.000</span>
+        <div class="signal-bar">
+          <div class="signal-bar-fill" id="signal-bar-${index}" style="width:0%"></div>
+        </div>
+      </div>
+    `,
+  ).join('');
+}
+
+function updateAlert(level: number): void {
+  const banner = document.getElementById('alertBanner');
+  if (!banner) return;
+
+  if (level >= 3) {
+    banner.className = 'alert-banner active alert-danger';
+    banner.textContent =
+      level === 4
+        ? 'Intervention Level 4 - External escalation active'
+        : `Intervention Level ${level} - Session may be terminated`;
+    return;
+  }
+
+  if (level >= 2) {
+    banner.className = 'alert-banner active alert-warning';
+    banner.textContent = 'Intervention Level 2 - Acknowledgment required';
+    return;
+  }
+
+  banner.className = 'alert-banner';
+  banner.textContent = '';
+}
+
+function updateDisplay(data: ScorePayload | null | undefined): void {
+  const scoreValue = document.getElementById('scoreValue');
+  const levelBadge = document.getElementById('levelBadge');
+  const platform = document.getElementById('platform');
+
+  const score =
+    typeof data?.composite_score === 'number'
+      ? data.composite_score
+      : typeof data?.score === 'number'
+        ? data.score
+        : 0;
+
+  const inferredLevel =
+    score > 0.85 ? 4 :
+    score > 0.7 ? 3 :
+    score > 0.5 ? 2 :
+    score > 0.3 ? 1 : 0;
+  const level = typeof data?.level === 'number' ? data.level : inferredLevel;
+  const clampedLevel = Math.max(0, Math.min(level, LEVEL_LABELS.length - 1));
+
+  if (scoreValue) {
+    scoreValue.textContent = score.toFixed(2);
+    (scoreValue as HTMLElement).style.color = scoreColor(score);
+  }
+
+  if (levelBadge) {
+    levelBadge.textContent = LEVEL_LABELS[clampedLevel] ?? `Level ${clampedLevel}`;
+    levelBadge.className = `level-badge ${LEVEL_CLASSES[clampedLevel] ?? 'level-0'}`;
+  }
+
+  if (platform && data?.platform) {
+    platform.textContent = data.platform;
+  }
+
+  const signals = Array.isArray(data?.signals) ? data.signals : [];
+  for (let index = 0; index < SIGNAL_NAMES.length; index += 1) {
+    const rawValue = signals[index];
+    const value = typeof rawValue === 'number' && Number.isFinite(rawValue) ? rawValue : 0;
+    const valueEl = document.getElementById(`signal-value-${index}`);
+    const barEl = document.getElementById(`signal-bar-${index}`);
+    if (valueEl) {
+      valueEl.textContent = value.toFixed(3);
+    }
+    if (barEl) {
+      (barEl as HTMLElement).style.width = `${Math.max(0, Math.min(value, 1)) * 100}%`;
+      (barEl as HTMLElement).style.background = scoreColor(value);
+    }
+  }
+
+  updateAlert(clampedLevel);
+}
+
+function startSessionTimer(): void {
+  const el = document.getElementById('sessionDuration');
+  if (!el) return;
+
+  const render = () => {
+    const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
+    const hours = Math.floor(elapsed / 3600);
+    const minutes = Math.floor((elapsed % 3600) / 60);
+    const seconds = elapsed % 60;
+    el.textContent = `${hours}h ${minutes}m ${seconds}s`;
+  };
+
+  render();
+  window.setInterval(render, 1000);
+}
+
 async function loadAgentList(): Promise<void> {
   const container = document.getElementById('agentList');
   if (!container) return;
@@ -35,13 +173,14 @@ async function loadAgentList(): Promise<void> {
       container.innerHTML = '<span class="agent-list-empty">No agents found</span>';
       return;
     }
+
     container.innerHTML = agents
       .map(
-        (a) =>
+        (agent) =>
           `<div class="agent-list-item">` +
-          `<span class="agent-name">${a.name || a.id}</span>` +
-          `<span class="agent-state">${a.state}</span>` +
-          `</div>`
+          `<span class="agent-name">${agent.name || agent.id}</span>` +
+          `<span class="agent-state">${agent.state}</span>` +
+          `</div>`,
       )
       .join('');
   } catch {
@@ -49,72 +188,39 @@ async function loadAgentList(): Promise<void> {
   }
 }
 
-/**
- * Load and display the last sync time from storage.
- */
 async function loadSyncStatus(): Promise<void> {
   const el = document.getElementById('syncStatus');
   if (!el) return;
 
   const stored = await chrome.storage.local.get('ghost-last-sync');
-  const ts = stored['ghost-last-sync'];
-  if (ts && typeof ts === 'number') {
-    el.textContent = new Date(ts).toLocaleTimeString();
-  } else {
-    el.textContent = 'never';
-  }
+  const timestamp = stored['ghost-last-sync'];
+  el.textContent = typeof timestamp === 'number' ? new Date(timestamp).toLocaleTimeString() : 'never';
 }
 
-function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+function requestStatus(): void {
+  chrome.runtime.sendMessage({ type: 'get_status' }, (response: {
+    connected?: boolean;
+    latestScore?: ScorePayload | null;
+  } | undefined) => {
+    if (chrome.runtime.lastError || !response) return;
+    updateConnectionIndicator(Boolean(response.connected));
+    if (response.latestScore) {
+      updateDisplay(response.latestScore);
+    }
+  });
+}
 
-  if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
-  if (levelEl) {
-    levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
-  }
+document.addEventListener('DOMContentLoaded', async () => {
+  renderSignalList();
+  startSessionTimer();
+  requestStatus();
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
+  chrome.runtime.onMessage.addListener((message: { type?: string; data?: ScorePayload }) => {
+    if (message.type === 'score_update') {
+      updateDisplay(message.data);
+    }
   });
 
-  // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
-  }
-}
-
-// Request score from background
-chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
-    updateUI({
-      score: response.score,
-      level,
-      signals: [0, 0, 0, 0, 0, 0, 0],
-    });
-  }
-});
-
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
-
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
-(async () => {
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
 
@@ -128,4 +234,5 @@ setInterval(() => {
   }
 
   await loadSyncStatus();
-})();
+  window.setInterval(requestStatus, 5000);
+});
