@@ -38,7 +38,7 @@ export async function getHealth() {
  */
 export async function getAgents() {
     const data = await request('/api/agents');
-    return data.agents || [];
+    return Array.isArray(data) ? data : (data.agents || []);
 }
 /**
  * Get convergence scores.
