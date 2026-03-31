@@ -70,9 +70,10 @@
   });
 
   onDestroy(() => {
-    void pty?.close();
     ptyDisposables.forEach((d) => d.dispose());
     ptyDisposables = [];
+    void pty?.close();
+    pty = null;
     resizeObserver?.disconnect();
     term?.dispose();
   });
@@ -82,8 +83,8 @@
 
     try {
       pty = await runtime.spawnTerminalPty({
-        cols: term.cols,
-        rows: term.rows,
+        cols: Math.max(term.cols, 1),
+        rows: Math.max(term.rows, 1),
       });
       if (!pty) {
         throw new Error('PTY support is unavailable in this runtime');
@@ -104,7 +105,7 @@
 
       // Resize xterm → PTY
       const resizeSub = term.onResize((e: { cols: number; rows: number }) => {
-        activePty.resize(e.cols, e.rows);
+        activePty.resize(Math.max(e.cols, 1), Math.max(e.rows, 1));
       });
       ptyDisposables.push(resizeSub);
 
