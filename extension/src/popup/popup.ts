@@ -2,8 +2,18 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState, initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+
+const SIGNAL_LABELS = [
+  'Velocity',
+  'Repetition',
+  'Dwell',
+  'Context',
+  'Escalation',
+  'Recovery',
+  'Novelty',
+];
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -66,28 +76,75 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  const signalList = document.getElementById('signalList');
+  if (signalList) {
+    signalList.innerHTML = data.signals
+      .map((value, index) => {
+        const percent = Math.max(0, Math.min(100, Math.round(value * 100)));
+        return (
+          `<div class="signal-row">` +
+          `<span class="signal-name">${SIGNAL_LABELS[index] ?? `Signal ${index + 1}`}</span>` +
+          `<span style="display:flex;align-items:center;gap:8px;">` +
+          `<span class="signal-value">${value.toFixed(2)}</span>` +
+          `<span class="signal-bar"><span class="signal-bar-fill" style="width:${percent}%;background:${signalBarColor(data.level)};"></span></span>` +
+          `</span>` +
+          `</div>`
+        );
+      })
+      .join('');
+  }
 
   // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl) {
+    if (data.level >= 3) {
+      alertEl.className = `alert-banner active ${data.level >= 4 ? 'alert-danger' : 'alert-warning'}`;
+      alertEl.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+    } else {
+      alertEl.className = 'alert-banner';
+      alertEl.textContent = '';
+    }
   }
+}
+
+function signalBarColor(level: number): string {
+  if (level >= 4) return '#f87171';
+  if (level >= 3) return '#fbbf24';
+  if (level >= 2) return '#fb923c';
+  if (level >= 1) return '#fde047';
+  return '#22c55e';
+}
+
+function updateSessionDuration(sessionStart: number): void {
+  const elapsedMinutes = Math.floor((Date.now() - sessionStart) / 60000);
+  const timerEl = document.getElementById('sessionDuration');
+  if (timerEl) {
+    timerEl.textContent = `${elapsedMinutes}m`;
+  }
+}
+
+function updatePlatformLabel(): void {
+  const platformEl = document.getElementById('platform');
+  if (!platformEl) return;
+  const ua = navigator.userAgent.toLowerCase();
+  if (ua.includes('firefox')) {
+    platformEl.textContent = 'Firefox';
+    return;
+  }
+  if (ua.includes('edg/')) {
+    platformEl.textContent = 'Edge';
+    return;
+  }
+  platformEl.textContent = 'Chrome';
 }
 
 // Request score from background
@@ -107,16 +164,17 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
 
 // Session timer
 const sessionStart = Date.now();
+updateSessionDuration(sessionStart);
 setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
+  updateSessionDuration(sessionStart);
 }, 60000);
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
+  await initAuthSync();
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
+  updatePlatformLabel();
 
   if (auth.authenticated) {
     await loadAgentList();
