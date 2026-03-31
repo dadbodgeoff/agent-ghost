@@ -19,6 +19,12 @@ const adapters: BasePlatformAdapter[] = [
   new GrokAdapter(),
 ];
 
+function postMessage(payload: Record<string, unknown>): void {
+  chrome.runtime.sendMessage(payload, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
 function init(): void {
   const url = window.location.href;
   const adapter = adapters.find(a => a.matches(url));
@@ -28,24 +34,25 @@ function init(): void {
     return;
   }
 
-  console.log(`[GHOST] Using adapter for: ${url}`);
+  console.log(`[GHOST] Using adapter for: ${adapter.platformName}`);
+  const sessionId = generateSessionId();
 
   // Notify session start
-  chrome.runtime.sendMessage({
+  postMessage({
     type: 'SESSION_START',
-    platform: url,
-    sessionId: generateSessionId(),
+    platform: adapter.platformName,
+    sessionId,
   });
 
   // Observe new messages
   adapter.observeNewMessages(async (msg) => {
     const contentHash = await adapter.hashContent(msg.content);
-    chrome.runtime.sendMessage({
+    postMessage({
       type: 'NEW_MESSAGE',
-      platform: url,
+      platform: adapter.platformName,
       role: msg.role,
       contentHash,
-      sessionId: generateSessionId(),
+      sessionId,
     });
   });
 }
