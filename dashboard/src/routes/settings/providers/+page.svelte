@@ -16,6 +16,7 @@
   let codexBusy = $state(false);
   let codexPolling = $state(false);
   let codexPollHandle: number | null = null;
+  let codexPendingAuthUrl = $state<string | null>(null);
 
   onMount(() => {
     loadProviders();
@@ -63,6 +64,7 @@
   async function refreshCodexStatus() {
     if (!hasCodexSubscriptionProvider()) {
       codexStatus = null;
+      codexPendingAuthUrl = null;
       stopCodexPolling();
       return;
     }
@@ -75,6 +77,7 @@
       codexStatus = status;
       if (status.account) {
         const completedInteractiveLogin = codexPolling && !hadAccount;
+        codexPendingAuthUrl = null;
         stopCodexPolling();
         if (completedInteractiveLogin) {
           success = 'Codex login completed.';
@@ -89,6 +92,21 @@
     }
   }
 
+  function codexLoginMessage(authType: string, openedBrowser: boolean): string {
+    switch (authType) {
+      case 'api_key':
+        return 'Codex authenticated using the configured API key.';
+      case 'chatgpt_auth_tokens':
+        return 'Codex authenticated using existing ChatGPT auth tokens on this machine.';
+      case 'chatgpt':
+        return openedBrowser
+          ? 'Opened ChatGPT login in your browser. Finish sign-in to connect Codex.'
+          : 'ChatGPT login is ready. Open the link below to continue connecting Codex.';
+      default:
+        return 'Codex login started. Refresh to check connection status.';
+    }
+  }
+
   async function startCodexLogin() {
     codexBusy = true;
     error = null;
@@ -96,12 +114,23 @@
     try {
       const client = await getGhostClient();
       const login = await client.codex.startLogin();
+      codexPendingAuthUrl = login.auth_url ?? null;
+      let openedBrowser = false;
       if (login.auth_url) {
-        const runtime = await getRuntime();
-        await runtime.openExternalUrl(login.auth_url);
+        try {
+          const runtime = await getRuntime();
+          await runtime.openExternalUrl(login.auth_url);
+          openedBrowser = true;
+        } catch {
+          error = 'Failed to open the ChatGPT login page automatically.';
+        }
       }
-      success = 'Opened ChatGPT login in your browser. Finish sign-in to connect Codex.';
-      startCodexPolling();
+      success = codexLoginMessage(login.auth_type, openedBrowser);
+      if (login.auth_type === 'chatgpt' && login.auth_url) {
+        startCodexPolling();
+      } else {
+        stopCodexPolling();
+      }
       await refreshCodexStatus();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to start Codex login';
@@ -119,6 +148,7 @@
       const client = await getGhostClient();
       const result = await client.codex.logout();
       codexStatus = null;
+      codexPendingAuthUrl = null;
       stopCodexPolling();
       success = result.message;
       await refreshCodexStatus();
@@ -312,6 +342,14 @@
             <p>Connected: <code>{codexAccountSummary()}</code></p>
           </div>
         {/if}
+        {#if p.provider_name === 'codex' && !p.env_name && !codexStatus?.account && codexPendingAuthUrl}
+          <div class="hint">
+            <p>
+              Continue ChatGPT sign-in:
+              <a href={codexPendingAuthUrl} target="_blank" rel="noreferrer">Open login page</a>
+            </p>
+          </div>
+        {/if}
       {/each}
     </div>
 
@@ -476,6 +514,15 @@
     align-items: center;
     gap: var(--spacing-2);
     flex-shrink: 0;
+  }
+
+  .hint a {
+    color: var(--color-brand-primary);
+    text-decoration: none;
+  }
+
+  .hint a:hover {
+    text-decoration: underline;
   }
 
   .key-form {
