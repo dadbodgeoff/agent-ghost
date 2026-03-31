@@ -5,6 +5,8 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class DeepSeekAdapter extends BasePlatformAdapter {
+  readonly platform = 'deepseek';
+
   matches(url: string): boolean {
     return url.includes('chat.deepseek.com');
   }

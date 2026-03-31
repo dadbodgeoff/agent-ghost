@@ -456,3 +456,27 @@ This effort is not done until all of the following are true:
    - which incompatible contracts changed
    - what was migrated
    - what remains intentionally deferred
+
+## Agent Ghost Sweep Coverage Log
+
+- 2026-03-22
+- Active category: `build and typecheck health`
+- Status: `in-progress`
+- Checked:
+  - dashboard package/check wiring
+  - extension popup/background/content wiring
+  - Tauri check entrypoint and workspace health
+- Fixed:
+  - dashboard OAuth connect now uses runtime external-open flow
+  - dashboard layout now clears stale theme state and cleans up window listeners
+  - extension fallback events now queue into the syncable pending-event store
+  - extension service worker now initializes auth sync and reconnect auto-sync
+  - extension observer now emits canonical platform ids and a stable session id
+  - extension adapters now wait for late-mounted containers and inspect nested added nodes
+  - extension popup now matches the real popup DOM and initializes auth before rendering
+- Blockers:
+  - `pnpm -C dashboard check`: `svelte-kit` missing locally
+  - `pnpm -C extension typecheck`: `tsc` missing locally
+  - `cargo check --manifest-path src-tauri/Cargo.toml`: no disk space
+- Next category:
+  - continue `build and typecheck health` once dependencies and disk space permit verification

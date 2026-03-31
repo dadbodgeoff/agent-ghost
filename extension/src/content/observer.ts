@@ -29,25 +29,34 @@ function init(): void {
   }
 
   console.log(`[GHOST] Using adapter for: ${url}`);
+  const sessionId = generateSessionId();
 
   // Notify session start
   chrome.runtime.sendMessage({
     type: 'SESSION_START',
-    platform: url,
-    sessionId: generateSessionId(),
+    platform: adapter.platform,
+    sessionId,
   });
 
   // Observe new messages
-  adapter.observeNewMessages(async (msg) => {
+  const observer = adapter.observeNewMessages(async (msg) => {
     const contentHash = await adapter.hashContent(msg.content);
     chrome.runtime.sendMessage({
       type: 'NEW_MESSAGE',
-      platform: url,
+      platform: adapter.platform,
       role: msg.role,
       contentHash,
-      sessionId: generateSessionId(),
+      sessionId,
     });
   });
+
+  window.addEventListener(
+    'beforeunload',
+    () => {
+      observer.disconnect();
+    },
+    { once: true },
+  );
 }
 
 function generateSessionId(): string {

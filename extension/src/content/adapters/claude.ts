@@ -5,6 +5,8 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class ClaudeAdapter extends BasePlatformAdapter {
+  readonly platform = 'claude';
+
   matches(url: string): boolean {
     return url.includes('claude.ai');
   }

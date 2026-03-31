@@ -5,6 +5,8 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class GeminiAdapter extends BasePlatformAdapter {
+  readonly platform = 'gemini';
+
   matches(url: string): boolean {
     return url.includes('gemini.google.com');
   }

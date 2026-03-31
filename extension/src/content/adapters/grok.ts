@@ -5,6 +5,8 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class GrokAdapter extends BasePlatformAdapter {
+  readonly platform = 'grok';
+
   matches(url: string): boolean {
     return url.includes('grok.x.ai');
   }

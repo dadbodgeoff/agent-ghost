@@ -9,32 +9,75 @@ export interface ParsedMessage {
 }
 
 export abstract class BasePlatformAdapter {
+  abstract readonly platform: string;
   abstract matches(url: string): boolean;
   abstract getMessageContainerSelector(): string;
   abstract parseMessage(element: Element): ParsedMessage | null;
 
   observeNewMessages(callback: (msg: ParsedMessage) => void): MutationObserver {
     const selector = this.getMessageContainerSelector();
-    const container = document.querySelector(selector);
+    const parseCandidate = (candidate: Element) => {
+      const msg = this.parseMessage(candidate);
+      if (msg) {
+        callback(msg);
+      }
+    };
 
-    const observer = new MutationObserver((mutations) => {
+    const inspectNode = (node: Node) => {
+      if (!(node instanceof Element)) {
+        return;
+      }
+      parseCandidate(node);
+      for (const child of node.querySelectorAll('*')) {
+        parseCandidate(child);
+      }
+    };
+
+    const messageObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-          if (node instanceof Element) {
-            const msg = this.parseMessage(node);
-            if (msg) {
-              callback(msg);
-            }
-          }
+          inspectNode(node);
         }
       }
     });
 
+    const attachToContainer = (container: Element) => {
+      messageObserver.observe(container, { childList: true, subtree: true });
+    };
+
+    const container = document.querySelector(selector);
     if (container) {
-      observer.observe(container, { childList: true, subtree: true });
+      attachToContainer(container);
+      return messageObserver;
     }
 
-    return observer;
+    const bootstrapObserver = new MutationObserver(() => {
+      const nextContainer = document.querySelector(selector);
+      if (!nextContainer) {
+        return;
+      }
+
+      bootstrapObserver.disconnect();
+      attachToContainer(nextContainer);
+    });
+
+    const root = document.body ?? document.documentElement;
+    if (root) {
+      bootstrapObserver.observe(root, { childList: true, subtree: true });
+    }
+
+    return {
+      observe() {
+        // No-op: observation is handled by the inner observers above.
+      },
+      disconnect() {
+        bootstrapObserver.disconnect();
+        messageObserver.disconnect();
+      },
+      takeRecords() {
+        return messageObserver.takeRecords();
+      },
+    };
   }
 
   /** SHA-256 hash of content for privacy. */
