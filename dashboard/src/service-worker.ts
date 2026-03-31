@@ -31,6 +31,10 @@ interface SyncCapableServiceWorkerRegistration extends ServiceWorkerRegistration
   };
 }
 
+interface SyncEvent extends ExtendableEvent {
+  tag: string;
+}
+
 // Static assets to pre-cache (shell).
 const PRECACHE_ASSETS = [...build, ...files];
 
@@ -428,9 +432,10 @@ async function registerPendingActionSync(): Promise<void> {
 
 // ── Background Sync (T-4.7.3) ──────────────────────────────────────────
 
-self.addEventListener('sync' as any, (event: any) => {
-  if (event.tag === 'ghost-pending-actions') {
-    event.waitUntil(replayPendingActions());
+self.addEventListener('sync', (event: Event) => {
+  const syncEvent = event as SyncEvent;
+  if (syncEvent.tag === 'ghost-pending-actions') {
+    syncEvent.waitUntil(replayPendingActions());
   }
 });
 

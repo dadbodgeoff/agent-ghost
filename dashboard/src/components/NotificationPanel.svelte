@@ -9,6 +9,7 @@
   import { goto } from '$app/navigation';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
   import { getRuntime } from '$lib/platform/runtime';
+  import type { JsonObject } from '$lib/types/json';
 
   interface AppNotification {
     id: string;
@@ -31,43 +32,72 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function getRecord(msg: WsMessage): JsonObject {
+    return msg as JsonObject;
+  }
+
+  function readString(record: JsonObject, key: string): string | undefined {
+    const value = record[key];
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  function isAppNotification(value: unknown): value is AppNotification {
+    if (!value || typeof value !== 'object') return false;
+    const notification = value as Partial<AppNotification>;
+    return (
+      typeof notification.id === 'string' &&
+      typeof notification.type === 'string' &&
+      typeof notification.severity === 'string' &&
+      typeof notification.title === 'string' &&
+      typeof notification.message === 'string' &&
+      typeof notification.timestamp === 'string' &&
+      typeof notification.read === 'boolean'
+    );
+  }
+
   onMount(() => {
     loadFromStorage();
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const event = getRecord(msg);
+        const agentId = readString(event, 'agent_id');
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${readString(event, 'status') ?? readString(event, 'new_state') ?? 'unknown'}`,
+          actionHref: agentId ? `/agents/${agentId}` : '/agents',
+          agentId,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
+        const event = getRecord(msg);
         addNotification({
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: readString(event, 'reason') ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const event = getRecord(msg);
+        const agentId = readString(event, 'agent_id');
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level → ${readString(event, 'new_level') ?? 'unknown'}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const event = getRecord(msg);
+        const proposalId = readString(event, 'proposal_id') ?? '';
+        const change = readString(event, 'change') ?? 'updated';
+        const status = readString(event, 'status') ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -159,7 +189,10 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed)
+          ? parsed.filter(isAppNotification).slice(0, MAX_NOTIFICATIONS)
+          : [];
       }
     } catch { /* start fresh */ }
   }

@@ -3,17 +3,7 @@
    * AgentTemplateSelector — template picker for studio prompt playground (T-2.7.2).
    * Provides pre-built agent configurations as starting points.
    */
-
-  interface AgentTemplate {
-    id: string;
-    name: string;
-    description: string;
-    systemPrompt: string;
-    model: string;
-    temperature: number;
-    maxTokens: number;
-    capabilities: string[];
-  }
+  import type { AgentTemplate } from '$lib/types/studio';
 
   let {
     onselect,

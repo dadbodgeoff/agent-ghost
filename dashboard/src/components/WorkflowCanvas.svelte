@@ -3,6 +3,7 @@
    * WorkflowCanvas — visual DAG editor for the currently supported runtime nodes.
    * The canvas is intentionally limited to semantics the backend can execute.
    */
+  import type { JsonObject } from '$lib/types/json';
 
   export interface WorkflowNode {
     id: string;
@@ -10,7 +11,7 @@
     label: string;
     x: number;
     y: number;
-    config: Record<string, any>;
+    config: JsonObject;
     branch_group?: string;
     condition?: string;
     execution_status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'passed';

@@ -9,9 +9,13 @@
   import { select } from 'd3-selection';
   import { zoom as d3Zoom } from 'd3-zoom';
   import { drag as d3Drag } from 'd3-drag';
+  import type { Selection } from 'd3-selection';
   import type { MemoryEntry, MemoryGraphEdge, MemoryGraphNode as ApiMemoryGraphNode } from '@ghost/sdk';
 
   interface MemoryGraphNode extends ApiMemoryGraphNode, d3.SimulationNodeDatum {}
+  type GraphEdgeSelection = Selection<SVGLineElement, MemoryGraphEdge, SVGGElement, unknown>;
+  type GraphNodeSelection = Selection<SVGCircleElement, MemoryGraphNode, SVGGElement, unknown>;
+  type GraphLabelSelection = Selection<SVGTextElement, MemoryGraphNode, SVGGElement, unknown>;
 
   let svgEl = $state<SVGSVGElement | null>(null);
   let loading = $state(true);
@@ -23,9 +27,9 @@
   let graphEdges: MemoryGraphEdge[] = $state([]);
   let filteredNodeIds: Set<string> | null = $state(null);
   let simulation: ReturnType<typeof d3.forceSimulation<MemoryGraphNode>> | null = null;
-  let linkSelection: any = null;
-  let nodeSelection: any = null;
-  let nodeLabelSelection: any = null;
+  let linkSelection: GraphEdgeSelection | null = null;
+  let nodeSelection: GraphNodeSelection | null = null;
+  let nodeLabelSelection: GraphLabelSelection | null = null;
 
   const TYPE_COLORS: Record<string, string> = {
     entity: '#7c3aed',
@@ -43,6 +47,11 @@
 
   function edgeWidth(strength: number): number {
     return 1 + strength * 3;
+  }
+
+  function nodeCoord(node: d3.SimulationNodeDatum, axis: 'x' | 'y'): number {
+    const value = node[axis];
+    return typeof value === 'number' ? value : 0;
   }
 
   async function loadGraph() {
@@ -83,8 +92,8 @@
       nodeSelection.attr('opacity', (node: MemoryGraphNode) => (matchIds.has(node.id) ? 1 : 0.15));
       nodeLabelSelection.attr('opacity', (node: MemoryGraphNode) => (matchIds.has(node.id) ? 1 : 0.1));
       linkSelection.attr('opacity', (edge: MemoryGraphEdge) => {
-        const sourceId = typeof edge.source === 'string' ? edge.source : edge.source.id;
-        const targetId = typeof edge.target === 'string' ? edge.target : edge.target.id;
+        const sourceId = typeof edge.source === 'string' ? edge.source : (edge.source?.id ?? '');
+        const targetId = typeof edge.target === 'string' ? edge.target : (edge.target?.id ?? '');
         return matchIds.has(sourceId) || matchIds.has(targetId) ? 0.6 : 0.05;
       });
       return;
@@ -202,22 +211,22 @@
 
     activeSimulation.on('tick', () => {
       link
-        .attr('x1', d => (d.source as MemoryGraphNode).x!)
-        .attr('y1', d => (d.source as MemoryGraphNode).y!)
-        .attr('x2', d => (d.target as MemoryGraphNode).x!)
-        .attr('y2', d => (d.target as MemoryGraphNode).y!);
+        .attr('x1', d => nodeCoord(d.source as MemoryGraphNode, 'x'))
+        .attr('y1', d => nodeCoord(d.source as MemoryGraphNode, 'y'))
+        .attr('x2', d => nodeCoord(d.target as MemoryGraphNode, 'x'))
+        .attr('y2', d => nodeCoord(d.target as MemoryGraphNode, 'y'));
 
       linkLabel
-        .attr('x', d => ((d.source as MemoryGraphNode).x! + (d.target as MemoryGraphNode).x!) / 2)
-        .attr('y', d => ((d.source as MemoryGraphNode).y! + (d.target as MemoryGraphNode).y!) / 2);
+        .attr('x', d => (nodeCoord(d.source as MemoryGraphNode, 'x') + nodeCoord(d.target as MemoryGraphNode, 'x')) / 2)
+        .attr('y', d => (nodeCoord(d.source as MemoryGraphNode, 'y') + nodeCoord(d.target as MemoryGraphNode, 'y')) / 2);
 
       node
-        .attr('cx', d => d.x!)
-        .attr('cy', d => d.y!);
+        .attr('cx', d => nodeCoord(d, 'x'))
+        .attr('cy', d => nodeCoord(d, 'y'));
 
       label
-        .attr('x', d => d.x!)
-        .attr('y', d => d.y!);
+        .attr('x', d => nodeCoord(d, 'x'))
+        .attr('y', d => nodeCoord(d, 'y'));
     });
 
     linkSelection = link;

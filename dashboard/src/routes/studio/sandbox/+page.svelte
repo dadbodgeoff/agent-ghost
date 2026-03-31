@@ -4,6 +4,7 @@
    * MVP "dry run" mode: logs what the agent would do without real tool execution.
    */
   import { getGhostClient } from '$lib/ghost-client';
+  import type { JsonObject } from '$lib/types/json';
   import GateCheckBar from '../../../components/GateCheckBar.svelte';
 
   let systemPrompt = $state('You are an AI agent. Plan tasks step-by-step.');
@@ -17,7 +18,7 @@
     action: string;
     reasoning: string;
     tool?: string;
-    args?: Record<string, any>;
+    args?: JsonObject;
     simulated: boolean;
   }> = $state([]);
   let error = $state('');

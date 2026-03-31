@@ -8,6 +8,7 @@
 -->
 <script lang="ts">
   import GateCheckBar from './GateCheckBar.svelte';
+  import type { JsonObject } from '$lib/types/json';
 
   interface NodeData {
     id: string;
@@ -20,7 +21,7 @@
     content_hash?: string;
     latency_ms?: number;
     token_count?: number;
-    attributes?: Record<string, any>;
+    attributes?: JsonObject;
     gates?: Array<{ name: string; status: 'pass' | 'fail' | 'warning' | 'unknown'; detail?: string }>;
   }
 

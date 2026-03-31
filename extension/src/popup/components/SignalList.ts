@@ -20,15 +20,33 @@ function barColor(val: number): string {
 }
 
 export function renderSignalList(container: HTMLElement): void {
-  container.innerHTML = SIGNAL_NAMES.map((name, i) => `
-    <div class="signal-row" role="listitem">
-      <span class="signal-name">${name}</span>
-      <span class="signal-value" id="signal-value-${i}">0.000</span>
-      <div class="signal-bar">
-        <div class="signal-bar-fill" id="signal-bar-${i}" style="width:0%"></div>
-      </div>
-    </div>
-  `).join('');
+  container.replaceChildren();
+  SIGNAL_NAMES.forEach((name, i) => {
+    const row = document.createElement('div');
+    row.className = 'signal-row';
+    row.setAttribute('role', 'listitem');
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'signal-name';
+    nameEl.textContent = name;
+
+    const valueEl = document.createElement('span');
+    valueEl.className = 'signal-value';
+    valueEl.id = `signal-value-${i}`;
+    valueEl.textContent = '0.000';
+
+    const bar = document.createElement('div');
+    bar.className = 'signal-bar';
+
+    const fill = document.createElement('div');
+    fill.className = 'signal-bar-fill';
+    fill.id = `signal-bar-${i}`;
+    fill.style.width = '0%';
+
+    bar.appendChild(fill);
+    row.append(nameEl, valueEl, bar);
+    container.appendChild(row);
+  });
 }
 
 export function updateSignalList(signals: number[]): void {

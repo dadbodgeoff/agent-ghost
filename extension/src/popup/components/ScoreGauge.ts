@@ -4,21 +4,34 @@
 
 const LEVEL_COLORS = ['#22c55e', '#eab308', '#f97316', '#ef4444', '#991b1b'];
 
-export function renderScoreGauge(container: HTMLElement, score: number, level: number): void {
-  const color = LEVEL_COLORS[level] || LEVEL_COLORS[0];
+function ensureScoreGaugeStructure(container: HTMLElement): HTMLDivElement {
+  let valueEl = container.querySelector<HTMLDivElement>('.score-value');
+  let labelEl = container.querySelector<HTMLDivElement>('.score-label');
 
-  container.innerHTML = `
-    <div class="score-value" style="color: ${color}" aria-label="Convergence score: ${score.toFixed(2)}">${score.toFixed(2)}</div>
-    <div class="score-label">Convergence Score</div>
-  `;
+  if (!valueEl) {
+    valueEl = document.createElement('div');
+    valueEl.className = 'score-value';
+    container.appendChild(valueEl);
+  }
+
+  if (!labelEl) {
+    labelEl = document.createElement('div');
+    labelEl.className = 'score-label';
+    labelEl.textContent = 'Convergence Score';
+    container.appendChild(labelEl);
+  }
+
+  return valueEl;
+}
+
+export function renderScoreGauge(container: HTMLElement, score: number, level: number): void {
+  updateScoreGauge(container, score, level);
 }
 
 export function updateScoreGauge(container: HTMLElement, score: number, level: number): void {
   const color = LEVEL_COLORS[level] || LEVEL_COLORS[0];
-  const valueEl = container.querySelector('.score-value');
-  if (valueEl) {
-    (valueEl as HTMLElement).textContent = score.toFixed(2);
-    (valueEl as HTMLElement).style.color = color;
-    (valueEl as HTMLElement).setAttribute('aria-label', `Convergence score: ${score.toFixed(2)}`);
-  }
+  const valueEl = ensureScoreGaugeStructure(container);
+  valueEl.textContent = score.toFixed(2);
+  valueEl.style.color = color;
+  valueEl.setAttribute('aria-label', `Convergence score: ${score.toFixed(2)}`);
 }

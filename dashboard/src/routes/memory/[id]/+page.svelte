@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { getGhostClient } from '$lib/ghost-client';
+  import type { JsonObject } from '$lib/types/json';
   import type { MemoryEntry } from '@ghost/sdk';
 
   let memoryId = $derived($page.params.id ?? '');
@@ -69,10 +70,13 @@
     }
   }
 
-  function parseSnapshot(raw: string | Record<string, unknown>): Record<string, any> {
-    if (typeof raw !== 'string') return raw;
+  function parseSnapshot(raw: string | Record<string, unknown>): JsonObject {
+    if (typeof raw !== 'string') return raw as JsonObject;
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as JsonObject)
+        : { raw };
     } catch {
       return { raw };
     }

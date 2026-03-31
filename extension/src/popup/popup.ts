@@ -4,6 +4,49 @@
 
 import { getAuthState } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+import { renderSignalList, updateSignalList } from './components/SignalList';
+
+interface AgentListEntry {
+  id?: string;
+  name?: string;
+  state?: string;
+}
+
+function setText(id: string, text: string): HTMLElement | null {
+  const element = document.getElementById(id);
+  if (element) {
+    element.textContent = text;
+  }
+  return element;
+}
+
+function renderAgentEmpty(container: HTMLElement, text: string): void {
+  container.replaceChildren();
+  const empty = document.createElement('span');
+  empty.className = 'agent-list-empty';
+  empty.textContent = text;
+  container.appendChild(empty);
+}
+
+function renderAgentList(container: HTMLElement, agents: AgentListEntry[]): void {
+  container.replaceChildren();
+
+  for (const agent of agents) {
+    const item = document.createElement('div');
+    item.className = 'agent-list-item';
+
+    const name = document.createElement('span');
+    name.className = 'agent-name';
+    name.textContent = agent.name || agent.id || 'Unnamed agent';
+
+    const state = document.createElement('span');
+    state.className = 'agent-state';
+    state.textContent = agent.state || 'unknown';
+
+    item.append(name, state);
+    container.appendChild(item);
+  }
+}
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -30,22 +73,14 @@ async function loadAgentList(): Promise<void> {
   if (!container) return;
 
   try {
-    const agents = await getAgents();
+    const agents = (await getAgents()) as AgentListEntry[];
     if (agents.length === 0) {
-      container.innerHTML = '<span class="agent-list-empty">No agents found</span>';
+      renderAgentEmpty(container, 'No agents found');
       return;
     }
-    container.innerHTML = agents
-      .map(
-        (a) =>
-          `<div class="agent-list-item">` +
-          `<span class="agent-name">${a.name || a.id}</span>` +
-          `<span class="agent-state">${a.state}</span>` +
-          `</div>`
-      )
-      .join('');
+    renderAgentList(container, agents);
   } catch {
-    container.innerHTML = '<span class="agent-list-empty">Unable to load agents</span>';
+    renderAgentEmpty(container, 'Unable to load agents');
   }
 }
 
@@ -66,27 +101,25 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  updateSignalList(data.signals);
 
   // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
+  const alertEl = document.getElementById('alertBanner');
+  if (data.level >= 3 && alertEl) {
     alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+    alertEl.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  } else if (alertEl) {
+    alertEl.classList.remove('visible');
+    alertEl.textContent = '';
   }
 }
 
@@ -107,14 +140,19 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
 
 // Session timer
 const sessionStart = Date.now();
+setText('sessionDuration', 'Session: 0m');
 setInterval(() => {
   const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
+  setText('sessionDuration', `Session: ${elapsed}m`);
 }, 60000);
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
+  const signalList = document.getElementById('signalList');
+  if (signalList) {
+    renderSignalList(signalList);
+  }
+
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
 
@@ -123,7 +161,7 @@ setInterval(() => {
   } else {
     const container = document.getElementById('agentList');
     if (container) {
-      container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
+      renderAgentEmpty(container, 'Not connected to gateway');
     }
   }
 

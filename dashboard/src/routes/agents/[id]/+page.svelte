@@ -3,12 +3,26 @@
   import { page } from '$app/stores';
   import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
+  import type { JsonObject } from '$lib/types/json';
   import type { AgentDetail, AgentOverview } from '@ghost/sdk';
   import ScoreGauge from '../../../components/ScoreGauge.svelte';
   import CostBar from '../../../components/CostBar.svelte';
   import ConfirmDialog from '../../../components/ConfirmDialog.svelte';
 
   type ConfirmAction = 'pause' | 'quarantine' | 'resume_pause' | 'resume_quarantine' | null;
+
+  interface IntegrityChainSummary {
+    total_events?: number;
+    sessions_checked?: number;
+    memory_chains_checked?: number;
+    is_valid?: boolean;
+    breaks?: unknown[];
+  }
+
+  interface IntegrityChains extends JsonObject {
+    itp_events?: IntegrityChainSummary;
+    memory_events?: IntegrityChainSummary;
+  }
 
   let agentId = $derived($page.params.id);
   let agent: AgentDetail | null = $state(null);
@@ -443,7 +457,7 @@
     <section class="card wide">
       <h2>Hash Chain Integrity</h2>
       {#if isReady('integrity_summary') && overview.integrity_summary?.chains}
-        {@const chains = overview.integrity_summary.chains as Record<string, any>}
+        {@const chains = overview.integrity_summary.chains as IntegrityChains}
         {#if chains.itp_events}
           <div class="integrity-section">
             <h3>ITP Events</h3>

@@ -19,9 +19,12 @@
     focused?: boolean;
   } = $props();
 
-  function parseSnapshot(raw: string): Record<string, any> {
+  function parseSnapshot(raw: string): JsonObject {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as JsonObject)
+        : { content: raw };
     } catch {
       return { content: raw };
     }
@@ -41,14 +44,21 @@
     IMPORTANCE_COLORS[(data.importance ?? '').toLowerCase()] ?? 'var(--color-text-muted)'
   );
 
-  function previewContent(data: Record<string, any>): string {
+  function readNestedString(value: JsonValue | undefined, keys: string[]): string | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    for (const key of keys) {
+      const candidate = value[key];
+      if (typeof candidate === 'string' && candidate.trim()) return candidate;
+    }
+    return null;
+  }
+
+  function previewContent(data: JsonObject): string {
     if (typeof data.summary === 'string' && data.summary.trim()) return data.summary;
     if (typeof data.content === 'string' && data.content.trim()) return data.content;
-    if (data.content && typeof data.content === 'object') {
-      for (const key of ['goal_text', 'text', 'message', 'description', 'fact']) {
-        const value = data.content[key];
-        if (typeof value === 'string' && value.trim()) return value;
-      }
+    if (data.content && typeof data.content === 'object' && !Array.isArray(data.content)) {
+      const nested = readNestedString(data.content, ['goal_text', 'text', 'message', 'description', 'fact']);
+      if (nested) return nested;
       return JSON.stringify(data.content).slice(0, 200);
     }
     if (typeof data.text === 'string' && data.text.trim()) return data.text;
@@ -122,3 +132,4 @@
     font-family: var(--font-family-mono);
   }
 </style>
+  import type { JsonObject, JsonValue } from '$lib/types/json';
