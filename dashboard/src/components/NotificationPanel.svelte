@@ -25,6 +25,7 @@
   let notifications = $state<AppNotification[]>([]);
   let panelOpen = $state(false);
   let unsubs: Array<() => void> = [];
+  let handleEscape: ((event: KeyboardEvent) => void) | null = null;
 
   let unreadCount = $derived(notifications.filter(n => !n.read).length);
 
@@ -33,16 +34,25 @@
 
   onMount(() => {
     loadFromStorage();
+    handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        panelOpen = false;
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const agentId = typeof (msg as { agent_id?: unknown }).agent_id === 'string'
+          ? (msg as { agent_id: string }).agent_id
+          : undefined;
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
           message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          actionHref: agentId ? `/agents/${agentId}` : '/agents',
+          agentId,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -85,6 +95,10 @@
   onDestroy(() => {
     for (const unsub of unsubs) unsub();
     unsubs = [];
+    if (handleEscape) {
+      document.removeEventListener('keydown', handleEscape);
+      handleEscape = null;
+    }
   });
 
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
@@ -159,7 +173,8 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed) ? parsed.slice(0, MAX_NOTIFICATIONS) : [];
       }
     } catch { /* start fresh */ }
   }

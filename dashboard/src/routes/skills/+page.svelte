@@ -97,7 +97,8 @@
           break;
         case 'resolve':
           if (skill.quarantine_revision == null) {
-            throw new Error('Quarantine revision is required to resolve a skill quarantine');
+            error = 'Quarantine revision is required to resolve a skill quarantine';
+            return;
           }
           await client.skills.resolveQuarantine(skill.id, {
             expected_quarantine_revision: skill.quarantine_revision,

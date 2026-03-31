@@ -39,13 +39,20 @@
     pushSupported = 'PushManager' in window && 'Notification' in window;
     if (pushSupported) {
       permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
+      const registration = 'serviceWorker' in navigator
+        ? await navigator.serviceWorker.ready.catch(() => null)
+        : null;
+      const subscription = await registration?.pushManager.getSubscription().catch(() => null);
+      pushEnabled = permissionState === 'granted' && !!subscription;
 
       // Load saved preferences.
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          enabledCategories = Array.isArray(parsed)
+            ? parsed.filter((value): value is string => typeof value === 'string')
+            : enabledCategories;
         } catch { /* use defaults */ }
       }
     }
@@ -69,8 +76,14 @@
 
   async function subscribePush() {
     try {
+      if (!('serviceWorker' in navigator)) return;
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        pushEnabled = true;
+        return;
+      }
       const keyData = await client.push.getVapidKey();
       if (!keyData.key) return;
 
@@ -81,13 +94,16 @@
       const payload = pushSubscriptionToPayload(sub.toJSON());
       if (!payload) return;
       await client.push.subscribe(payload);
+      pushEnabled = true;
     } catch {
       // Push subscription failed.
+      pushEnabled = false;
     }
   }
 
   async function unsubscribePush() {
     try {
+      if (!('serviceWorker' in navigator)) return;
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
@@ -98,6 +114,7 @@
         }
         await sub.unsubscribe();
       }
+      pushEnabled = false;
     } catch {
       // Unsubscribe failed.
     }
@@ -115,6 +132,9 @@
   async function sendTestNotification() {
     testSending = true;
     try {
+      if (!('serviceWorker' in navigator) || Notification.permission !== 'granted') {
+        return;
+      }
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',

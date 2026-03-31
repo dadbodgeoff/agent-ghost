@@ -113,6 +113,10 @@
       const client = await getGhostClient();
       const detail = await client.goals.get(proposalId);
       const request = decisionRequest(detail);
+      if (!request) {
+        error = 'Proposal detail is missing required lineage or revision fields';
+        return;
+      }
       if (action === 'approve') {
         await client.goals.approve(proposalId, request);
       } else {
@@ -143,14 +147,14 @@
     void loadData();
   }
 
-  function decisionRequest(detail: ProposalDetail): GoalDecisionRequest {
+  function decisionRequest(detail: ProposalDetail): GoalDecisionRequest | null {
     if (
       !detail.current_state ||
       !detail.lineage_id ||
       !detail.subject_key ||
       !detail.reviewed_revision
     ) {
-      throw new Error('Proposal detail is missing required lineage or revision fields');
+      return null;
     }
 
     return {
