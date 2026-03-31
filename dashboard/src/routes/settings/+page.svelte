@@ -13,6 +13,8 @@
   type ThemeChoice = 'dark' | 'light' | 'system';
 
   let theme: ThemeChoice = $state('dark');
+  let loggingOut = $state(false);
+  let logoutNotice = $state<string | null>(null);
 
   // Initialize from localStorage on mount.
   $effect(() => {
@@ -42,43 +44,57 @@
   }
 
   async function logout() {
-    let remoteSucceeded = false;
-    let reason: string | undefined;
-
+    if (loggingOut) return;
+    loggingOut = true;
+    logoutNotice = null;
     try {
-      const client = await getGhostClient();
-      await client.auth.logout();
-      remoteSucceeded = true;
-    } catch (error) {
-      if (isAuthResetError(error)) {
+      let remoteSucceeded = false;
+      let reason: string | undefined;
+
+      try {
+        const client = await getGhostClient();
+        await client.auth.logout();
         remoteSucceeded = true;
-      } else {
-        reason = error instanceof Error ? error.message : 'Failed to contact logout endpoint';
+      } catch (error) {
+        if (isAuthResetError(error)) {
+          remoteSucceeded = true;
+        } else {
+          reason = error instanceof Error ? error.message : 'Failed to contact logout endpoint';
+        }
       }
-    }
 
-    const runtime = await getRuntime();
-    await rotateAuthBoundarySession();
-    await runtime.clearToken();
-    invalidateAuthClientState();
-    await notifyAuthBoundary('ghost-auth-cleared');
-    wsStore.disconnect();
+      const runtime = await getRuntime();
+      await rotateAuthBoundarySession();
+      await runtime.clearToken();
+      invalidateAuthClientState();
+      await notifyAuthBoundary('ghost-auth-cleared');
+      wsStore.disconnect();
 
-    const result = { remoteSucceeded, reason };
-    if (!result.remoteSucceeded && result.reason) {
-      alert(`Signed out locally, but the server logout endpoint did not confirm revocation: ${result.reason}`);
+      if (!remoteSucceeded && reason) {
+        logoutNotice = `Signed out locally, but the server logout endpoint did not confirm revocation: ${reason}`;
+      }
+      await goto('/login');
+    } finally {
+      loggingOut = false;
     }
-    goto('/login');
   }
 </script>
 
 <h1 class="page-title">Settings</h1>
+
+{#if logoutNotice}
+  <div class="notice-banner" role="status">
+    <p>{logoutNotice}</p>
+    <button type="button" onclick={() => (logoutNotice = null)}>Dismiss</button>
+  </div>
+{/if}
 
 <div class="section">
   <h2 class="section-title">Theme</h2>
   <p class="section-desc">Choose your preferred color scheme.</p>
   <div class="theme-options" role="radiogroup" aria-label="Theme selection">
     <button
+      type="button"
       class="theme-btn"
       class:active={theme === 'dark'}
       onclick={() => setTheme('dark')}
@@ -89,6 +105,7 @@
       Dark
     </button>
     <button
+      type="button"
       class="theme-btn"
       class:active={theme === 'light'}
       onclick={() => setTheme('light')}
@@ -99,6 +116,7 @@
       Light
     </button>
     <button
+      type="button"
       class="theme-btn"
       class:active={theme === 'system'}
       onclick={() => setTheme('system')}
@@ -114,7 +132,9 @@
 <div class="section">
   <h2 class="section-title">Authentication</h2>
   <p class="section-desc">Sign out of the current session.</p>
-  <button class="logout-btn" onclick={logout}>Logout</button>
+  <button class="logout-btn" type="button" onclick={logout} disabled={loggingOut}>
+    {loggingOut ? 'Signing out…' : 'Logout'}
+  </button>
 </div>
 
 <div class="section">
@@ -155,6 +175,32 @@
     font-size: var(--font-size-xs);
     color: var(--color-text-disabled);
     margin-top: var(--spacing-2);
+  }
+
+  .notice-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-4);
+    margin-bottom: var(--spacing-4);
+    padding: var(--spacing-3) var(--spacing-4);
+    background: color-mix(in srgb, var(--color-severity-soft) 10%, transparent);
+    border: 1px solid var(--color-severity-soft);
+    border-radius: var(--radius-md);
+    color: var(--color-text-primary);
+  }
+
+  .notice-banner p {
+    margin: 0;
+    font-size: var(--font-size-sm);
+  }
+
+  .notice-banner button {
+    background: transparent;
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-sm);
+    color: inherit;
+    padding: var(--spacing-1) var(--spacing-3);
   }
 
   .section-desc code {
@@ -211,5 +257,10 @@
     background: var(--color-severity-hard-bg);
     border-color: var(--color-severity-hard);
     color: var(--color-severity-hard);
+  }
+
+  .logout-btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
   }
 </style>

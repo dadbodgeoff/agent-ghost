@@ -60,6 +60,7 @@
   }
 
   async function loadChannels() {
+    loading = true;
     try {
       error = '';
       const client = await getGhostClient();
@@ -70,8 +71,9 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
@@ -167,7 +169,7 @@
 {#if error}
   <div class="error-banner" role="alert">
     <span>{error}</span>
-    <button onclick={() => (error = '')}>Dismiss</button>
+    <button type="button" onclick={() => (error = '')}>Dismiss</button>
   </div>
 {/if}
 
@@ -176,7 +178,7 @@
 {:else}
   <div class="channels-toolbar">
     <span class="channel-count">{channels.length} channel{channels.length !== 1 ? 's' : ''}</span>
-    <button class="btn-primary" onclick={() => (showAddForm = !showAddForm)}>
+    <button class="btn-primary" type="button" onclick={() => (showAddForm = !showAddForm)}>
       {showAddForm ? 'Cancel' : '+ Add Channel'}
     </button>
   </div>
@@ -203,7 +205,7 @@
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      <button class="btn-primary" type="button" onclick={addChannel} disabled={creating}>
         {creating ? 'Creating…' : 'Create'}
       </button>
     </div>
@@ -217,6 +219,7 @@
     <div class="channel-list" role="list">
       {#each channels as channel (channel.id)}
         <button
+          type="button"
           class="channel-card"
           class:selected={selectedChannel?.id === channel.id}
           onclick={() => (selectedChannel = selectedChannel?.id === channel.id ? null : channel)}
@@ -250,9 +253,9 @@
         <h2>{selectedChannel.channel_type} — {selectedChannel.agent_name ?? selectedChannel.agent_id.slice(0, 8)}</h2>
         <div class="detail-actions">
           {#if selectedChannel.status === 'error' || selectedChannel.status === 'disconnected'}
-            <button class="btn-secondary" onclick={() => reconnect(selectedChannel!.id)}>Reconnect</button>
+            <button class="btn-secondary" type="button" onclick={() => reconnect(selectedChannel!.id)}>Reconnect</button>
           {/if}
-          <button class="btn-danger" onclick={() => removeChannel(selectedChannel!.id)}>Remove</button>
+          <button class="btn-danger" type="button" onclick={() => removeChannel(selectedChannel!.id)}>Remove</button>
         </div>
       </div>
       <dl class="detail-list">
