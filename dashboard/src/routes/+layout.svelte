@@ -29,11 +29,19 @@
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeBeforeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
+
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
 
   async function handleKillAllShortcut() {
     if (confirm('Kill all agents? This cannot be undone.')) {
@@ -82,6 +90,14 @@
     }
 
     return `This ${clientLabel} build is incompatible with gateway ${assessment.gatewayVersion}. Update the client before continuing.`;
+  }
+
+  function addWindowListener<K extends keyof WindowEventMap>(
+    type: K,
+    listener: (event: WindowEventMap[K]) => void,
+  ): () => void {
+    window.addEventListener(type, listener);
+    return () => window.removeEventListener(type, listener);
   }
 
   onMount(async () => {
@@ -141,15 +157,17 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    removeOnlineListener = addWindowListener('online', () => {
+      offline = false;
+    });
+    removeOfflineListener = addWindowListener('offline', () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
     });
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    removeBeforeInstallPromptListener = addWindowListener('beforeinstallprompt', (e) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
     });
 
@@ -163,6 +181,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeBeforeInstallPromptListener?.();
+    removeBeforeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,7 +216,7 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!('PushManager' in window) || !('serviceWorker' in navigator)) return;
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 
