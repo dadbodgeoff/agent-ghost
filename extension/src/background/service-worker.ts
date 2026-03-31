@@ -2,7 +2,7 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
-import { ITPEmitter } from './itp-emitter';
+import { ITPEmitter } from './itp-emitter.js';
 
 const emitter = new ITPEmitter();
 

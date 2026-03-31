@@ -5,7 +5,7 @@
  * Forwards ITP observations and retrieves agent state.
  */
 
-import { getAuthState } from './auth-sync';
+import { getAuthState } from './auth-sync.js';
 
 export interface AgentSummary {
   id: string;

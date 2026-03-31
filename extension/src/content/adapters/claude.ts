@@ -2,7 +2,7 @@
  * Claude.ai DOM adapter.
  */
 
-import { BasePlatformAdapter, ParsedMessage } from './base';
+import { BasePlatformAdapter, ParsedMessage } from './base.js';
 
 export class ClaudeAdapter extends BasePlatformAdapter {
   matches(url: string): boolean {

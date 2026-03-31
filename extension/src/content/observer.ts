@@ -2,13 +2,13 @@
  * Content script — observes DOM for new messages and emits to background.
  */
 
-import { BasePlatformAdapter } from './adapters/base';
-import { ChatGPTAdapter } from './adapters/chatgpt';
-import { ClaudeAdapter } from './adapters/claude';
-import { CharacterAIAdapter } from './adapters/character-ai';
-import { GeminiAdapter } from './adapters/gemini';
-import { DeepSeekAdapter } from './adapters/deepseek';
-import { GrokAdapter } from './adapters/grok';
+import { BasePlatformAdapter } from './adapters/base.js';
+import { ChatGPTAdapter } from './adapters/chatgpt.js';
+import { ClaudeAdapter } from './adapters/claude.js';
+import { CharacterAIAdapter } from './adapters/character-ai.js';
+import { GeminiAdapter } from './adapters/gemini.js';
+import { DeepSeekAdapter } from './adapters/deepseek.js';
+import { GrokAdapter } from './adapters/grok.js';
 
 const adapters: BasePlatformAdapter[] = [
   new ChatGPTAdapter(),

@@ -5,7 +5,7 @@
  * Events queued while offline are replayed in order.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState } from '../background/auth-sync.js';
 
 const DB_NAME = 'ghost-convergence';
 const PENDING_STORE = 'pending_events';
