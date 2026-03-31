@@ -4,6 +4,7 @@ mod menu;
 mod tray;
 
 use tauri::Manager;
+use tokio::sync::Mutex;
 
 pub fn run() {
     tauri::Builder::default()
@@ -31,15 +32,13 @@ pub fn run() {
             commands::gateway::gateway_port,
         ])
         .setup(|app| {
-            // --- Tray (Tauri v2 API: build in setup, NOT .system_tray()) ---
             tray::create(app)?;
-
-            // --- Menu (Tauri v2 API: build in setup, NOT .menu()) ---
             menu::create(app)?;
 
             app.manage(commands::desktop::DesktopTerminalState::default());
+            app.manage(commands::gateway::GatewayPort(Mutex::new(39780)));
+            app.manage(commands::gateway::GatewayProcess(Mutex::new(None)));
 
-            // --- Auto-start gateway sidecar ---
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = commands::gateway::auto_start(handle.clone()).await {
@@ -52,7 +51,6 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error building GHOST desktop")
         .run(|app_handle, event| {
-            // Kill sidecar on app exit (NOT on window close — tray keeps app alive)
             if let tauri::RunEvent::Exit = event {
                 tauri::async_runtime::block_on(async {
                     commands::gateway::auto_stop(app_handle.clone()).await;
