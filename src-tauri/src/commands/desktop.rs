@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, PtyPair, PtySize};
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutBinding {
@@ -85,10 +85,18 @@ struct TerminalSession {
     writer: Mutex<Box<dyn Write + Send>>,
 }
 
-#[derive(Default)]
 pub struct DesktopTerminalState {
     next_session_id: AtomicU32,
     sessions: RwLock<BTreeMap<u32, Arc<TerminalSession>>>,
+}
+
+impl Default for DesktopTerminalState {
+    fn default() -> Self {
+        Self {
+            next_session_id: AtomicU32::new(1),
+            sessions: RwLock::new(BTreeMap::new()),
+        }
+    }
 }
 
 fn desktop_state_path() -> Result<PathBuf, String> {
@@ -194,6 +202,24 @@ fn session_for(
         .ok_or_else(|| format!("terminal session {session_id} not found"))
 }
 
+fn remove_terminal_session(state: &DesktopTerminalState, session_id: u32) -> Result<(), String> {
+    state
+        .sessions
+        .write()
+        .map_err(|_| "terminal session registry poisoned".to_string())?
+        .remove(&session_id);
+    Ok(())
+}
+
+fn normalized_terminal_size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows: rows.max(1),
+        cols: cols.max(1),
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
 #[tauri::command]
 pub async fn read_keybindings() -> Result<Vec<ShortcutBinding>, String> {
     let path = ghost_config_path("keybindings.json")?;
@@ -274,12 +300,7 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
 ) -> Result<u32, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
+        .openpty(normalized_terminal_size(cols, rows))
         .map_err(|error| format!("Failed to create PTY: {error}"))?;
     let writer = pair
         .master
@@ -348,6 +369,9 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
                 exit_code: exit_code as i32,
             },
         );
+
+        let state = app_handle_clone.state::<DesktopTerminalState>();
+        let _ = remove_terminal_session(&state, session_id);
     });
 
     Ok(session_id)
@@ -360,13 +384,17 @@ pub async fn write_terminal_input(
     data: String,
 ) -> Result<(), String> {
     let session = session_for(&terminal_state, session_id)?;
-    let result = session
+    let mut writer = session
         .writer
         .lock()
-        .map_err(|_| "terminal writer poisoned".to_string())?
+        .map_err(|_| "terminal writer poisoned".to_string())?;
+    writer
         .write_all(data.as_bytes())
-        .map_err(|error| format!("Failed to write terminal input: {error}"));
-    result
+        .map_err(|error| format!("Failed to write terminal input: {error}"))?;
+    writer
+        .flush()
+        .map_err(|error| format!("Failed to flush terminal input: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -377,19 +405,14 @@ pub async fn resize_terminal_session(
     rows: u16,
 ) -> Result<(), String> {
     let session = session_for(&terminal_state, session_id)?;
-    let result = session
+    session
         .pair
         .lock()
         .map_err(|_| "terminal pair poisoned".to_string())?
         .master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|error| format!("Failed to resize terminal: {error}"));
-    result
+        .resize(normalized_terminal_size(cols, rows))
+        .map_err(|error| format!("Failed to resize terminal: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -404,6 +427,7 @@ pub async fn close_terminal_session(
         .map_err(|_| "terminal killer poisoned".to_string())?
         .kill()
         .map_err(|error| format!("Failed to close terminal session: {error}"))?;
+    remove_terminal_session(&terminal_state, session_id)?;
     Ok(())
 }
 
@@ -564,6 +588,29 @@ mod tests {
         };
 
         assert_eq!(resolve_default_shell(), expected);
+    }
+
+    #[test]
+    fn desktop_terminal_state_starts_session_ids_at_one() {
+        let state = DesktopTerminalState::default();
+
+        assert_eq!(state.next_session_id.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn normalized_terminal_size_clamps_zero_dimensions() {
+        let size = normalized_terminal_size(0, 0);
+
+        assert_eq!(size.cols, 1);
+        assert_eq!(size.rows, 1);
+    }
+
+    #[test]
+    fn normalized_terminal_size_preserves_non_zero_dimensions() {
+        let size = normalized_terminal_size(132, 48);
+
+        assert_eq!(size.cols, 132);
+        assert_eq!(size.rows, 48);
     }
 
     #[tokio::test]
