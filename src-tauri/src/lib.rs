@@ -38,6 +38,8 @@ pub fn run() {
             menu::create(app)?;
 
             app.manage(commands::desktop::DesktopTerminalState::default());
+            app.manage(commands::gateway::GatewayProcess::default());
+            app.manage(commands::gateway::GatewayPort::default());
 
             // --- Auto-start gateway sidecar ---
             let handle = app.handle().clone();

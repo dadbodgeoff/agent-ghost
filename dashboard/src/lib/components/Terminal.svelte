@@ -60,9 +60,7 @@
 
     if (runtime.isDesktop()) {
       // Don't block mount on PTY — fire and forget so the UI stays responsive.
-      startPty(runtime).catch((err) => {
-        term?.writeln(`Failed to start PTY: ${err}`);
-      });
+      void startPty(runtime);
     } else {
       term.writeln('Terminal is only available in the desktop app.');
       term.writeln('Run with `cargo tauri dev` to enable PTY support.');
@@ -70,9 +68,10 @@
   });
 
   onDestroy(() => {
-    void pty?.close();
     ptyDisposables.forEach((d) => d.dispose());
     ptyDisposables = [];
+    void pty?.close();
+    pty = null;
     resizeObserver?.disconnect();
     term?.dispose();
   });
@@ -110,6 +109,7 @@
 
       // Handle exit
       const exitSub = activePty.onExit(({ exitCode }: { exitCode: number }) => {
+        pty = null;
         term?.writeln(`\r\n[Process exited with code ${exitCode}]`);
       });
       ptyDisposables.push(exitSub);
