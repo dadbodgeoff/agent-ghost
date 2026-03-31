@@ -35,6 +35,11 @@
 
   let wsState = $derived(wsStore.state);
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
   async function handleKillAllShortcut() {
     if (confirm('Kill all agents? This cannot be undone.')) {
       const client = await getGhostClient();
@@ -51,6 +56,7 @@
   }
 
   function applyTheme() {
+    document.documentElement.classList.remove('light');
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
@@ -59,6 +65,10 @@
         document.documentElement.classList.add('light');
       }
     }
+  }
+
+  function isActivePath(pathname: string, prefix: string): boolean {
+    return pathname === prefix || pathname.startsWith(`${prefix}/`);
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -140,24 +150,36 @@
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
-    offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    };
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
-    });
+    };
+
+    offline = !navigator.onLine;
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
 
     await subscribeToPush();
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
   });
 
   onDestroy(() => {
@@ -256,29 +278,29 @@
       <nav aria-label="Primary navigation">
         <div class="logo" role="banner">GHOST</div>
         <a href="/" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
-        <a href="/convergence" class:active={$page.url.pathname === '/convergence'} aria-current={$page.url.pathname === '/convergence' ? 'page' : undefined}>Convergence</a>
-        <a href="/memory" class:active={$page.url.pathname.startsWith('/memory')} aria-current={$page.url.pathname.startsWith('/memory') ? 'page' : undefined}>Memory</a>
-        <a href="/goals" class:active={$page.url.pathname.startsWith('/goals')} aria-current={$page.url.pathname.startsWith('/goals') ? 'page' : undefined}>Proposals</a>
-        <a href="/sessions" class:active={$page.url.pathname.startsWith('/sessions')} aria-current={$page.url.pathname.startsWith('/sessions') ? 'page' : undefined}>Sessions</a>
-        <a href="/agents" class:active={$page.url.pathname === '/agents'} aria-current={$page.url.pathname === '/agents' ? 'page' : undefined}>Agents</a>
-        <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')} aria-current={$page.url.pathname.startsWith('/workflows') ? 'page' : undefined}>Workflows</a>
-        <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')} aria-current={$page.url.pathname.startsWith('/skills') ? 'page' : undefined}>Skills</a>
-        <a href="/studio" class:active={$page.url.pathname.startsWith('/studio')} aria-current={$page.url.pathname.startsWith('/studio') ? 'page' : undefined}>Studio</a>
-        <a href="/channels" class:active={$page.url.pathname === '/channels'} aria-current={$page.url.pathname === '/channels' ? 'page' : undefined}>Channels</a>
-        <a href="/observability" class:active={$page.url.pathname.startsWith('/observability')} aria-current={$page.url.pathname.startsWith('/observability') ? 'page' : undefined}>Observability</a>
-        <a href="/orchestration" class:active={$page.url.pathname.startsWith('/orchestration')} aria-current={$page.url.pathname.startsWith('/orchestration') ? 'page' : undefined}>Orchestration</a>
-        <a href="/pc-control" class:active={$page.url.pathname === '/pc-control'} aria-current={$page.url.pathname === '/pc-control' ? 'page' : undefined}>PC Control</a>
-        <a href="/itp" class:active={$page.url.pathname === '/itp'} aria-current={$page.url.pathname === '/itp' ? 'page' : undefined}>ITP Events</a>
-        <a href="/security" class:active={$page.url.pathname === '/security'} aria-current={$page.url.pathname === '/security' ? 'page' : undefined}>Security</a>
-        <a href="/costs" class:active={$page.url.pathname === '/costs'} aria-current={$page.url.pathname === '/costs' ? 'page' : undefined}>Costs</a>
-        <a href="/search" class:active={$page.url.pathname === '/search'} aria-current={$page.url.pathname === '/search' ? 'page' : undefined}>Search</a>
-        <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')} aria-current={$page.url.pathname.startsWith('/settings') ? 'page' : undefined}>Settings</a>
+        <a href="/convergence" class:active={isActivePath($page.url.pathname, '/convergence')} aria-current={isActivePath($page.url.pathname, '/convergence') ? 'page' : undefined}>Convergence</a>
+        <a href="/memory" class:active={isActivePath($page.url.pathname, '/memory')} aria-current={isActivePath($page.url.pathname, '/memory') ? 'page' : undefined}>Memory</a>
+        <a href="/goals" class:active={isActivePath($page.url.pathname, '/goals')} aria-current={isActivePath($page.url.pathname, '/goals') ? 'page' : undefined}>Proposals</a>
+        <a href="/sessions" class:active={isActivePath($page.url.pathname, '/sessions')} aria-current={isActivePath($page.url.pathname, '/sessions') ? 'page' : undefined}>Sessions</a>
+        <a href="/agents" class:active={isActivePath($page.url.pathname, '/agents')} aria-current={isActivePath($page.url.pathname, '/agents') ? 'page' : undefined}>Agents</a>
+        <a href="/workflows" class:active={isActivePath($page.url.pathname, '/workflows')} aria-current={isActivePath($page.url.pathname, '/workflows') ? 'page' : undefined}>Workflows</a>
+        <a href="/skills" class:active={isActivePath($page.url.pathname, '/skills')} aria-current={isActivePath($page.url.pathname, '/skills') ? 'page' : undefined}>Skills</a>
+        <a href="/studio" class:active={isActivePath($page.url.pathname, '/studio')} aria-current={isActivePath($page.url.pathname, '/studio') ? 'page' : undefined}>Studio</a>
+        <a href="/channels" class:active={$page.url.pathname === '/channels' || $page.url.pathname === '/settings/channels'} aria-current={$page.url.pathname === '/channels' || $page.url.pathname === '/settings/channels' ? 'page' : undefined}>Channels</a>
+        <a href="/observability" class:active={isActivePath($page.url.pathname, '/observability')} aria-current={isActivePath($page.url.pathname, '/observability') ? 'page' : undefined}>Observability</a>
+        <a href="/orchestration" class:active={isActivePath($page.url.pathname, '/orchestration')} aria-current={isActivePath($page.url.pathname, '/orchestration') ? 'page' : undefined}>Orchestration</a>
+        <a href="/pc-control" class:active={isActivePath($page.url.pathname, '/pc-control')} aria-current={isActivePath($page.url.pathname, '/pc-control') ? 'page' : undefined}>PC Control</a>
+        <a href="/itp" class:active={isActivePath($page.url.pathname, '/itp')} aria-current={isActivePath($page.url.pathname, '/itp') ? 'page' : undefined}>ITP Events</a>
+        <a href="/security" class:active={isActivePath($page.url.pathname, '/security')} aria-current={isActivePath($page.url.pathname, '/security') ? 'page' : undefined}>Security</a>
+        <a href="/costs" class:active={isActivePath($page.url.pathname, '/costs')} aria-current={isActivePath($page.url.pathname, '/costs') ? 'page' : undefined}>Costs</a>
+        <a href="/search" class:active={isActivePath($page.url.pathname, '/search')} aria-current={isActivePath($page.url.pathname, '/search') ? 'page' : undefined}>Search</a>
+        <a href="/settings" class:active={isActivePath($page.url.pathname, '/settings')} aria-current={isActivePath($page.url.pathname, '/settings') ? 'page' : undefined}>Settings</a>
         {#if $page.url.pathname.startsWith('/settings')}
           <div class="settings-subnav">
             <a href="/settings/profiles" class:active={$page.url.pathname === '/settings/profiles'}>Profiles</a>
             <a href="/settings/policies" class:active={$page.url.pathname === '/settings/policies'}>Policies</a>
             <a href="/settings/providers" class:active={$page.url.pathname === '/settings/providers'}>Providers</a>
-            <a href="/channels" class:active={$page.url.pathname === '/channels' || $page.url.pathname === '/settings/channels'}>Channels</a>
+            <a href="/settings/channels" class:active={$page.url.pathname === '/channels' || $page.url.pathname === '/settings/channels'}>Channels</a>
             <a href="/settings/backups" class:active={$page.url.pathname === '/settings/backups'}>Backups</a>
             <a href="/settings/webhooks" class:active={$page.url.pathname === '/settings/webhooks'}>Webhooks</a>
             <a href="/settings/notifications" class:active={$page.url.pathname === '/settings/notifications'}>Notifications</a>

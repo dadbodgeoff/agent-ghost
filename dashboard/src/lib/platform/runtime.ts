@@ -29,6 +29,7 @@ export interface RuntimePlatform {
   sendNotification(notification: { title: string; body?: string }): Promise<void>;
   readKeybindings(): Promise<Array<{ key: string; command: string; when?: string }>>;
   spawnTerminalPty(options: { cols: number; rows: number }): Promise<RuntimeTerminalPty | null>;
+  subscribeWindowFocus?(listener: () => void): Promise<() => void>;
 }
 
 let runtimePromise: Promise<RuntimePlatform> | null = null;

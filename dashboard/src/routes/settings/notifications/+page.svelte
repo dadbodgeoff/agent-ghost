@@ -16,6 +16,14 @@
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
 
+  function hasPushSupport(): boolean {
+    return typeof window !== 'undefined'
+      && typeof navigator !== 'undefined'
+      && 'serviceWorker' in navigator
+      && 'PushManager' in window
+      && 'Notification' in window;
+  }
+
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
     const normalized = (key + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -36,7 +44,7 @@
   }
 
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported = hasPushSupport();
     if (pushSupported) {
       permissionState = Notification.permission;
       pushEnabled = permissionState === 'granted';
@@ -68,6 +76,7 @@
   }
 
   async function subscribePush() {
+    if (!hasPushSupport()) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -87,6 +96,7 @@
   }
 
   async function unsubscribePush() {
+    if (!hasPushSupport()) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -113,6 +123,7 @@
   }
 
   async function sendTestNotification() {
+    if (!hasPushSupport()) return;
     testSending = true;
     try {
       const reg = await navigator.serviceWorker.ready;
