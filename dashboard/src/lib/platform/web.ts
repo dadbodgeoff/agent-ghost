@@ -105,4 +105,24 @@ export const webRuntime: RuntimePlatform = {
   async spawnTerminalPty() {
     return null;
   },
+  async subscribeResume(listener) {
+    const handleResume = () => {
+      listener();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        listener();
+      }
+    };
+
+    window.addEventListener('focus', handleResume);
+    window.addEventListener('pageshow', handleResume);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', handleResume);
+      window.removeEventListener('pageshow', handleResume);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  },
 };

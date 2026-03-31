@@ -7,7 +7,7 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
-  import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
+  import { getRuntime } from '$lib/platform/runtime';
   import { shortcuts } from '$lib/shortcuts';
   import type { StudioMessage } from '$lib/stores/studioChat.svelte';
   import ChatMessage from '../../components/ChatMessage.svelte';
@@ -18,9 +18,19 @@
   import VirtualMessageList from '../../components/VirtualMessageList.svelte';
   import 'highlight.js/styles/github-dark.css';
 
+  interface StudioTemplate {
+    id: string;
+    name: string;
+    description: string;
+    systemPrompt: string;
+    model: string;
+    temperature: number;
+    maxTokens: number;
+  }
+
   let responseTime = $state(0);
   let searchQuery = $state('');
-  let selectedTemplate = $state<any>(null);
+  let selectedTemplate = $state<StudioTemplate | null>(null);
   let artifacts = $state<Artifact[]>([]);
   let showArtifacts = $state(false);
   let chatAreaHeight = $state(0);
@@ -34,6 +44,40 @@
   let authCheckInterval: ReturnType<typeof setInterval> | null = null;
   const artifactCache = new Map<string, Artifact[]>();
   const ARTIFACT_CACHE_MAX = 50;
+
+  function decodeJwtPayload(token: string): Record<string, unknown> | null {
+    const payload = token.split('.')[1];
+    if (!payload) {
+      return null;
+    }
+
+    try {
+      const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+      return JSON.parse(atob(padded)) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  async function updateAuthExpiryWarning() {
+    const runtime = await getRuntime();
+    const token = await runtime.getToken();
+    if (!token) {
+      authExpiryWarning = false;
+      return;
+    }
+
+    const payload = decodeJwtPayload(token);
+    const exp = typeof payload?.exp === 'number' ? payload.exp : null;
+    if (!exp) {
+      authExpiryWarning = false;
+      return;
+    }
+
+    const expMs = exp * 1000;
+    authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
+  }
 
   function collectArtifacts(messages: StudioMessage[]): Artifact[] {
     const artifactCandidates = messages.filter(
@@ -65,55 +109,22 @@
     shortcuts.registerCommand('studio.cancelStream', () => {
       studioChatStore.cancelStreaming();
     });
-    let disposeTauriFocus: (() => void) | null = null;
+    let disposeResumeSubscription: (() => void) | null = null;
 
-    // WP9-G: Check JWT expiry every 60s.
+    void updateAuthExpiryWarning();
     authCheckInterval = setInterval(() => {
-      void (async () => {
-        const runtime = await getRuntime();
-        const token = await runtime.getToken();
-        if (!token) return;
-        try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          const expMs = (payload.exp ?? 0) * 1000;
-          authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
-        } catch { /* malformed token — ignore */ }
-      })();
+      void updateAuthExpiryWarning();
     }, 60_000);
 
-    const handleWindowFocus = () => {
-      scheduleStudioResumeSync();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        scheduleStudioResumeSync();
-      }
-    };
-
-    window.addEventListener('focus', handleWindowFocus);
-    window.addEventListener('pageshow', handleWindowFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    if (isTauriEnvironment()) {
-      void import('@tauri-apps/api/window')
-        .then(({ getCurrentWindow }) =>
-          getCurrentWindow().onFocusChanged(({ payload }) => {
-            if (payload) {
-              scheduleStudioResumeSync();
-            }
-          }),
-        )
-        .then((unlisten) => {
-          disposeTauriFocus = unlisten;
-        })
-        .catch(() => {});
-    }
+    void getRuntime()
+      .then((runtime) => runtime.subscribeResume(scheduleStudioResumeSync))
+      .then((dispose) => {
+        disposeResumeSubscription = dispose;
+      })
+      .catch(() => {});
 
     return () => {
-      disposeTauriFocus?.();
-      window.removeEventListener('focus', handleWindowFocus);
-      window.removeEventListener('pageshow', handleWindowFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      disposeResumeSubscription?.();
     };
   });
 
@@ -158,7 +169,7 @@
     responseTime = Math.round(performance.now() - start);
   }
 
-  function handleTemplateSelect(template: any) {
+  function handleTemplateSelect(template: StudioTemplate) {
     // Toggle selection — clicking the same template deselects it.
     if (selectedTemplate?.id === template.id) {
       selectedTemplate = null;

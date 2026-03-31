@@ -32,6 +32,9 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -88,6 +91,8 @@
     applyTheme();
 
     runtime = await getRuntime();
+    const currentPath = $page.url.pathname;
+    const requiresAuthenticatedShell = currentPath !== '/login';
     unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
       if (!token) {
         authSessionStore.clear();
@@ -95,7 +100,6 @@
       }
       void authSessionStore.refresh().catch(() => {});
     });
-    const currentPath = $page.url.pathname;
 
     try {
       const client = await getGhostClient();
@@ -108,7 +112,7 @@
       // Compatibility probe is advisory at startup; hard enforcement lives in the gateway.
     }
 
-    if (currentPath !== '/login') {
+    if (requiresAuthenticatedShell) {
       try {
         const client = await getGhostClient();
         const session = await client.auth.session();
@@ -128,7 +132,9 @@
       }
     }
 
-    await wsStore.connect();
+    if (requiresAuthenticatedShell) {
+      await wsStore.connect();
+    }
 
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
@@ -140,29 +146,47 @@
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
-    offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    };
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredPrompt = e;
       showInstallPrompt = true;
-    });
+    };
+
+    offline = !navigator.onLine;
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
 
-    await subscribeToPush();
+    if (requiresAuthenticatedShell) {
+      await subscribeToPush();
+    }
   });
 
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeInstallPromptListener?.();
+    removeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,7 +216,7 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!('PushManager' in window) || !('serviceWorker' in navigator) || typeof Notification === 'undefined') return;
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 

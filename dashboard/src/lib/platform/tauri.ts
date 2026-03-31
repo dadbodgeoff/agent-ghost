@@ -133,4 +133,37 @@ export const tauriRuntime: RuntimePlatform = {
     const sessionId = await invoke<number>('open_terminal_session', options);
     return createTauriTerminalPty(sessionId);
   },
+  async subscribeResume(listener) {
+    const handleResume = () => {
+      listener();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        listener();
+      }
+    };
+
+    window.addEventListener('focus', handleResume);
+    window.addEventListener('pageshow', handleResume);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    let unlistenTauriFocus: (() => void) | null = null;
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      unlistenTauriFocus = await getCurrentWindow().onFocusChanged(({ payload }) => {
+        if (payload) {
+          listener();
+        }
+      });
+    } catch {
+      unlistenTauriFocus = null;
+    }
+
+    return () => {
+      window.removeEventListener('focus', handleResume);
+      window.removeEventListener('pageshow', handleResume);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      unlistenTauriFocus?.();
+    };
+  },
 };
