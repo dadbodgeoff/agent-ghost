@@ -68,7 +68,7 @@
     if (!result.remoteSucceeded && result.reason) {
       alert(`Signed out locally, but the server logout endpoint did not confirm revocation: ${result.reason}`);
     }
-    goto('/login');
+    await goto('/login');
   }
 </script>
 

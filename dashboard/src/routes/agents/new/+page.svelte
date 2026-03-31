@@ -125,6 +125,9 @@
         if (data.spending_cap <= 0) errors.push('Spending cap must be positive');
         if (data.spending_cap > 1000) errors.push('Spending cap > $1000 requires admin approval');
         break;
+      case 6:
+        if (data.channels.length === 0) errors.push('Select at least one bootstrap channel');
+        break;
     }
     return errors;
   }
@@ -163,6 +166,8 @@
     if (stepErrors.length > 0) { step = 2; return; }
     stepErrors = validateStep(5);
     if (stepErrors.length > 0) { step = 5; return; }
+    stepErrors = validateStep(6);
+    if (stepErrors.length > 0) { step = 6; return; }
 
     submitting = true;
     error = '';
@@ -171,6 +176,7 @@
       const result = await client.agents.create({
         name: data.name,
         capabilities: data.tools,
+        generate_keypair: true,
         spending_cap: data.spending_cap,
         sandbox: {
           enabled: data.sandbox_enabled,
@@ -200,9 +206,9 @@
       }
 
       if (agentId) {
-        goto(`/agents/${agentId}`);
+        await goto(`/agents/${agentId}`);
       } else {
-        goto('/agents');
+        await goto('/agents');
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to create agent';
@@ -273,6 +279,7 @@
     {:else if step === 2}
       <div class="step-panel">
         <h2>Model Configuration</h2>
+        <p class="step-desc">These settings are collected for the fuller provisioning flow. The current create-agent contract does not persist model configuration yet.</p>
         <div class="field">
           <label for="provider">Provider <span class="required">*</span></label>
           <select id="provider" bind:value={data.provider} onchange={() => { data.model = modelsForProvider[0] ?? ''; }}>
@@ -305,6 +312,7 @@
     {:else if step === 3}
       <div class="step-panel">
         <h2>System Prompt</h2>
+        <p class="step-desc">This prompt is review-only for now. The current create-agent contract still falls back to the default gateway prompt path.</p>
         <div class="field">
           <label for="sysprompt">System prompt</label>
           <textarea id="sysprompt" bind:value={data.system_prompt} rows="12" placeholder="You are a helpful assistant..." class="mono-textarea"></textarea>
@@ -350,6 +358,7 @@
         </div>
         <div class="field">
           <label for="profile">Convergence Profile</label>
+          <span class="field-hint">Profile assignment is not yet applied by the current create-agent API contract.</span>
           <select id="profile" bind:value={data.convergence_profile}>
             {#each CONVERGENCE_PROFILES as p}
               <option value={p}>{p}</option>
@@ -410,6 +419,9 @@
     {:else if step === 7}
       <div class="step-panel">
         <h2>Review</h2>
+        <div class="persistence-note" role="note">
+          This flow currently persists: name, selected tools/capabilities, sandbox settings, spending cap, a generated keypair, and the selected bootstrap channels. Model settings, system prompt, and convergence profile remain review-only until the gateway contract expands.
+        </div>
         <div class="review-grid">
           <div class="review-section">
             <h3>Identity</h3>
@@ -651,6 +663,17 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-3);
+  }
+
+  .persistence-note {
+    margin-bottom: var(--spacing-3);
+    padding: var(--spacing-3);
+    background: var(--color-bg-elevated-1);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    line-height: var(--line-height-normal);
   }
 
   .review-section {

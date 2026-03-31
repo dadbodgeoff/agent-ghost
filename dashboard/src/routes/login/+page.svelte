@@ -45,7 +45,10 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') login();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void login();
+    }
   }
 </script>
 
@@ -54,7 +57,7 @@
     <div class="logo">GHOST</div>
     <p class="subtitle">Enter your access token to continue.</p>
 
-    <form onsubmit={(e) => { e.preventDefault(); login(); }}>
+    <form onsubmit={(e) => { e.preventDefault(); void login(); }}>
       <label for="token-input" class="sr-only">Access Token</label>
       <input
         id="token-input"
@@ -67,7 +70,7 @@
       />
       <button type="submit" disabled={loading}>
         {#if loading}
-          Authenticating…
+        Signing in…
         {:else}
           Login
         {/if}

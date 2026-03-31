@@ -12,6 +12,12 @@
   function agentLabel(agentIds: string[]) {
     return agentIds.length > 0 ? agentIds.join(', ') : 'Unknown';
   }
+
+  function formatTimestamp(value: string | null | undefined) {
+    if (!value) return 'Unknown';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+  }
 </script>
 
 <h1 class="page-title">Sessions</h1>
@@ -32,38 +38,40 @@
     <span>{sessionsStore.list.length} of {sessionsStore.totalCount} sessions loaded</span>
   </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th>Session ID</th>
-        <th>Agents</th>
-        <th>Events</th>
-        <th>Chain</th>
-        <th>Started</th>
-        <th>Last Event</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each sessionsStore.list as session}
+  <div class="table-shell">
+    <table>
+      <thead>
         <tr>
-          <td class="mono">
-            <a href={`/sessions/${session.session_id}`} class="session-link">
-              {session.session_id.slice(0, 8)}…
-            </a>
-          </td>
-          <td>{agentLabel(session.agent_ids ?? [])}</td>
-          <td>{session.event_count}</td>
-          <td>
-            <span class:chain-valid={session.chain_valid} class:chain-broken={!session.chain_valid}>
-              {session.chain_valid ? 'Valid' : 'Broken'}
-            </span>
-          </td>
-          <td class="timestamp">{new Date(session.started_at).toLocaleString()}</td>
-          <td class="timestamp">{new Date(session.last_event_at).toLocaleString()}</td>
+          <th>Session ID</th>
+          <th>Agents</th>
+          <th>Events</th>
+          <th>Chain</th>
+          <th>Started</th>
+          <th>Last Event</th>
         </tr>
-      {/each}
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        {#each sessionsStore.list as session}
+          <tr>
+            <td class="mono">
+              <a href={`/sessions/${session.session_id}`} class="session-link" title={session.session_id}>
+                {session.session_id.slice(0, 8)}…
+              </a>
+            </td>
+            <td>{agentLabel(session.agent_ids ?? [])}</td>
+            <td>{session.event_count}</td>
+            <td>
+              <span class:chain-valid={session.chain_valid} class:chain-broken={!session.chain_valid}>
+                {session.chain_valid ? 'Valid' : 'Broken'}
+              </span>
+            </td>
+            <td class="timestamp">{formatTimestamp(session.started_at)}</td>
+            <td class="timestamp">{formatTimestamp(session.last_event_at)}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  </div>
 
   {#if sessionsStore.hasMore}
     <div class="load-more">
@@ -90,6 +98,13 @@
   table {
     width: 100%;
     border-collapse: collapse;
+    min-width: 760px;
+  }
+
+  .table-shell {
+    overflow-x: auto;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
   }
 
   th {
