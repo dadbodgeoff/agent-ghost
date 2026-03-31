@@ -7,6 +7,7 @@
 
 const GATEWAY_URL_KEY = 'ghost-gateway-url';
 const JWT_TOKEN_KEY = 'ghost-jwt-token';
+const DEFAULT_GATEWAY_URL = 'http://localhost:39780';
 
 export interface AuthState {
   authenticated: boolean;
@@ -17,18 +18,22 @@ export interface AuthState {
 
 const currentState: AuthState = {
   authenticated: false,
-  gatewayUrl: 'http://localhost:39780',
+  gatewayUrl: DEFAULT_GATEWAY_URL,
   token: null,
   lastValidated: 0,
 };
+
+async function hydrateFromStorage(): Promise<void> {
+  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
+  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || DEFAULT_GATEWAY_URL;
+  currentState.token = stored[JWT_TOKEN_KEY] || null;
+}
 
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
 export async function initAuthSync(): Promise<AuthState> {
-  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
-  currentState.token = stored[JWT_TOKEN_KEY] || null;
+  await hydrateFromStorage();
 
   if (currentState.token) {
     await validateToken();
@@ -92,6 +97,12 @@ async function validateToken(): Promise<boolean> {
 /**
  * Get current auth state.
  */
-export function getAuthState(): AuthState {
+export async function getAuthState(): Promise<AuthState> {
+  await hydrateFromStorage();
+  if (currentState.token) {
+    await validateToken();
+  } else {
+    currentState.authenticated = false;
+  }
   return { ...currentState };
 }

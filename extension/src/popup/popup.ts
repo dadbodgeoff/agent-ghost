@@ -87,6 +87,9 @@ function updateUI(data: { score: number; level: number; signals: number[] }): vo
   if (data.level >= 3 && alertEl && alertText) {
     alertEl.classList.add('visible');
     alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  } else if (alertEl && alertText) {
+    alertEl.classList.remove('visible');
+    alertText.textContent = '';
   }
 }
 
@@ -115,7 +118,7 @@ setInterval(() => {
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
-  const auth = getAuthState();
+  const auth = await getAuthState();
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {

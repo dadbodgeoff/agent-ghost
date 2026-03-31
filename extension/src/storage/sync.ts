@@ -61,7 +61,7 @@ export async function queueEvent(type: string, payload: unknown): Promise<void> 
  * Sync all pending events to the gateway.
  */
 export async function syncPendingEvents(): Promise<{ synced: number; failed: number }> {
-  const auth = getAuthState();
+  const auth = await getAuthState();
   if (!auth.authenticated || !auth.token) {
     return { synced: 0, failed: 0 };
   }
