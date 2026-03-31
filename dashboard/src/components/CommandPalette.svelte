@@ -57,7 +57,9 @@
     { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => {
       document.documentElement.classList.toggle('light');
       const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      }
     }, frecencyScore: 0 },
     { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
     { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },

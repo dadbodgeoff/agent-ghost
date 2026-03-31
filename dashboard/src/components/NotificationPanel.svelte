@@ -31,18 +31,32 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function readStringField(msg: WsMessage, key: string): string | undefined {
+    const value = msg[key];
+    return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      panelOpen = false;
+    }
+  }
+
   onMount(() => {
     loadFromStorage();
+    window.addEventListener('keydown', handleWindowKeydown);
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const agentId = readStringField(msg, 'agent_id');
+        const status = readStringField(msg, 'status') ?? readStringField(msg, 'new_state') ?? 'unknown';
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${status}`,
+          actionHref: agentId ? `/agents/${agentId}` : '/agents',
+          agentId,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -50,24 +64,25 @@
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: readStringField(msg, 'reason') ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const agentId = readStringField(msg, 'agent_id');
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level -> ${readStringField(msg, 'new_level') ?? 'unknown'}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const proposalId = readStringField(msg, 'proposal_id') ?? '';
+        const change = readStringField(msg, 'change') ?? 'updated';
+        const status = readStringField(msg, 'status') ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -83,6 +98,7 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('keydown', handleWindowKeydown);
     for (const unsub of unsubs) unsub();
     unsubs = [];
   });
@@ -159,7 +175,17 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          notifications = parsed.filter(
+            (entry): entry is AppNotification =>
+              typeof entry?.id === 'string' &&
+              typeof entry?.title === 'string' &&
+              typeof entry?.message === 'string' &&
+              typeof entry?.timestamp === 'string' &&
+              typeof entry?.read === 'boolean',
+          );
+        }
       }
     } catch { /* start fresh */ }
   }
@@ -186,7 +212,15 @@
   </button>
 
   {#if panelOpen}
-    <div class="panel-overlay" onclick={() => panelOpen = false} role="presentation"></div>
+    <div
+      class="panel-overlay"
+      onclick={(event) => {
+        if (event.currentTarget === event.target) {
+          panelOpen = false;
+        }
+      }}
+      role="presentation"
+    ></div>
     <div class="notification-panel" role="dialog" aria-label="Notifications">
       <div class="panel-header">
         <h3>Notifications</h3>

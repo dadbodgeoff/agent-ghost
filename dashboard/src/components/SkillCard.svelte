@@ -144,6 +144,7 @@
     {:else}
       {#each actions as action}
         <button
+          type="button"
           class="action-btn"
           class:danger={action.tone === 'danger'}
           class:secondary={action.tone === 'secondary'}

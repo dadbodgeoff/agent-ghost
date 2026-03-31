@@ -32,6 +32,9 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -125,6 +128,7 @@
           return;
         }
         bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
+        return;
       }
     }
 
@@ -135,23 +139,34 @@
     shortcuts.registerCommand('theme.toggle', () => {
       document.documentElement.classList.toggle('light');
       const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      }
     });
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredPrompt = e;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +178,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeInstallPromptListener?.();
+    removeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });

@@ -24,17 +24,18 @@ function init(): void {
   const adapter = adapters.find(a => a.matches(url));
 
   if (!adapter) {
-    console.log('[GHOST] No adapter for this page');
     return;
   }
 
-  console.log(`[GHOST] Using adapter for: ${url}`);
+  const sessionId = generateSessionId();
+  const platform = window.location.hostname;
+  void chrome.storage.local.set({ 'ghost-last-platform': platform });
 
   // Notify session start
   chrome.runtime.sendMessage({
     type: 'SESSION_START',
-    platform: url,
-    sessionId: generateSessionId(),
+    platform,
+    sessionId,
   });
 
   // Observe new messages
@@ -42,10 +43,10 @@ function init(): void {
     const contentHash = await adapter.hashContent(msg.content);
     chrome.runtime.sendMessage({
       type: 'NEW_MESSAGE',
-      platform: url,
+      platform,
       role: msg.role,
       contentHash,
-      sessionId: generateSessionId(),
+      sessionId,
     });
   });
 }

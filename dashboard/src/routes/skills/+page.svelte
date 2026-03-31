@@ -16,6 +16,13 @@
   let quarantineSkill = $state<Skill | null>(null);
   let quarantineReason = $state('');
 
+  function handleModalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && (confirmSkill || quarantineSkill)) {
+      confirmSkill = null;
+      closeQuarantineDialog();
+    }
+  }
+
   type SkillAction = 'install' | 'uninstall' | 'quarantine' | 'resolve' | 'reverify';
 
   onMount(() => {
@@ -49,11 +56,13 @@
   async function handleAction(skill: Skill, action: SkillAction) {
     if (action === 'install') {
       if (!skill.installable) return;
+      error = null;
       confirmSkill = skill;
       return;
     }
     if (action === 'uninstall' && !skill.removable) return;
     if (action === 'quarantine') {
+      error = null;
       quarantineSkill = skill;
       quarantineReason = skill.quarantine_reason ?? '';
       return;
@@ -83,6 +92,7 @@
 
   async function doAction(skill: Skill, action: SkillAction, reason?: string) {
     actionLoading = skill.id;
+    error = null;
     try {
       const client = await getGhostClient();
       switch (action) {
@@ -191,6 +201,8 @@
     {/if}
   {/if}
 </div>
+
+<svelte:window onkeydown={handleModalKeydown} />
 
 {#if confirmSkill}
   <div class="confirm-overlay" onclick={() => (confirmSkill = null)} role="presentation">

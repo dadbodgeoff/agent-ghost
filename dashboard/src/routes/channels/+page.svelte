@@ -60,6 +60,7 @@
   }
 
   async function loadChannels() {
+    loading = true;
     try {
       error = '';
       const client = await getGhostClient();
@@ -70,8 +71,9 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
@@ -265,7 +267,7 @@
         <dt>Messages</dt><dd>{selectedChannel.message_count}</dd>
         <dt>Last Message</dt><dd>{timeAgo(selectedChannel.last_message_at)}</dd>
       </dl>
-      {#if Object.keys(selectedChannel.config).length > 0}
+      {#if selectedChannel.config && typeof selectedChannel.config === 'object' && Object.keys(selectedChannel.config).length > 0}
         <h3>Configuration</h3>
         <pre class="config-json">{JSON.stringify(selectedChannel.config, null, 2)}</pre>
       {/if}

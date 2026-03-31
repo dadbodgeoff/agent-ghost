@@ -38,8 +38,8 @@
   <p class="description">{goal.description}</p>
   {#if isPending}
     <div class="actions">
-      <button class="approve" onclick={() => onapprove?.(goal.id)}>Approve</button>
-      <button class="reject" onclick={() => onreject?.(goal.id)}>Reject</button>
+      <button class="approve" type="button" onclick={() => onapprove?.(goal.id)}>Approve</button>
+      <button class="reject" type="button" onclick={() => onreject?.(goal.id)}>Reject</button>
     </div>
   {/if}
   <div class="footer">{new Date(goal.created_at).toLocaleString()}</div>

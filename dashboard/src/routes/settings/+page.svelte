@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
@@ -14,9 +15,8 @@
 
   let theme: ThemeChoice = $state('dark');
 
-  // Initialize from localStorage on mount.
-  $effect(() => {
-    const stored = localStorage.getItem('ghost-theme');
+  onMount(() => {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('ghost-theme') : null;
     if (stored === 'light' || stored === 'system') {
       theme = stored;
     } else {
@@ -26,7 +26,9 @@
 
   function setTheme(choice: ThemeChoice) {
     theme = choice;
-    localStorage.setItem('ghost-theme', choice);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ghost-theme', choice);
+    }
 
     const html = document.documentElement;
     html.classList.remove('light');
@@ -81,6 +83,7 @@
     <button
       class="theme-btn"
       class:active={theme === 'dark'}
+      type="button"
       onclick={() => setTheme('dark')}
       role="radio"
       aria-checked={theme === 'dark'}
@@ -91,6 +94,7 @@
     <button
       class="theme-btn"
       class:active={theme === 'light'}
+      type="button"
       onclick={() => setTheme('light')}
       role="radio"
       aria-checked={theme === 'light'}
@@ -101,6 +105,7 @@
     <button
       class="theme-btn"
       class:active={theme === 'system'}
+      type="button"
       onclick={() => setTheme('system')}
       role="radio"
       aria-checked={theme === 'system'}
@@ -114,7 +119,7 @@
 <div class="section">
   <h2 class="section-title">Authentication</h2>
   <p class="section-desc">Sign out of the current session.</p>
-  <button class="logout-btn" onclick={logout}>Logout</button>
+  <button class="logout-btn" type="button" onclick={logout}>Logout</button>
 </div>
 
 <div class="section">

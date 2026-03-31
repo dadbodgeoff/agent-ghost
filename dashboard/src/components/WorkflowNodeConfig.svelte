@@ -40,7 +40,9 @@
     const target = e.target as HTMLTextAreaElement;
     try {
       const config = JSON.parse(target.value);
-      onupdate?.({ ...node, config });
+      if (config && typeof config === 'object' && !Array.isArray(config)) {
+        onupdate?.({ ...node, config });
+      }
     } catch {
       // Ignore invalid JSON until the user corrects it.
     }
