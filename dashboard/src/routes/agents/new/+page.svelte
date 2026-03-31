@@ -125,6 +125,9 @@
         if (data.spending_cap <= 0) errors.push('Spending cap must be positive');
         if (data.spending_cap > 1000) errors.push('Spending cap > $1000 requires admin approval');
         break;
+      case 6:
+        if (data.channels.length === 0) errors.push('Select at least one bootstrap channel');
+        break;
     }
     return errors;
   }
@@ -163,6 +166,8 @@
     if (stepErrors.length > 0) { step = 2; return; }
     stepErrors = validateStep(5);
     if (stepErrors.length > 0) { step = 5; return; }
+    stepErrors = validateStep(6);
+    if (stepErrors.length > 0) { step = 6; return; }
 
     submitting = true;
     error = '';

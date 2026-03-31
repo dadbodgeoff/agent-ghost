@@ -110,20 +110,37 @@
 
   let activeArtifactId = $state<string | undefined>(undefined);
   let copyFeedback = $state<string | null>(null);
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   let activeArtifact = $derived(
     artifacts.find(a => a.id === activeArtifactId) ?? artifacts[0]
   );
 
+  $effect(() => {
+    if (artifacts.length === 0) {
+      activeArtifactId = undefined;
+      return;
+    }
+
+    if (!artifacts.some((artifact) => artifact.id === activeArtifactId)) {
+      activeArtifactId = artifacts[0]?.id;
+    }
+  });
+
   async function copyToClipboard(content: string) {
+    if (copyFeedbackTimer) {
+      clearTimeout(copyFeedbackTimer);
+    }
     try {
       await navigator.clipboard.writeText(content);
       copyFeedback = 'Copied!';
-      setTimeout(() => copyFeedback = null, 2000);
     } catch {
       copyFeedback = 'Failed to copy';
-      setTimeout(() => copyFeedback = null, 2000);
     }
+    copyFeedbackTimer = setTimeout(() => {
+      copyFeedback = null;
+      copyFeedbackTimer = null;
+    }, 2000);
   }
 
   function renderDiffLine(line: string): { class: string; text: string } {
@@ -142,6 +159,7 @@
       <button
         role="tab"
         aria-selected={artifact.id === activeArtifact?.id}
+        aria-controls={`artifact-panel-${artifact.id}`}
         class:active={artifact.id === activeArtifact?.id}
         onclick={() => activeArtifactId = artifact.id}
       >
@@ -151,12 +169,12 @@
   </div>
 
   <!-- Content area -->
-  <div class="artifact-content" role="tabpanel">
+  <div class="artifact-content" role="tabpanel" id={activeArtifact ? `artifact-panel-${activeArtifact.id}` : undefined}>
     {#if activeArtifact?.type === 'code'}
       <div class="artifact-code">
         <div class="artifact-toolbar">
           <span class="artifact-language">{activeArtifact.language}</span>
-          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact!.content)}>
+          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact.content)}>
             {copyFeedback ?? 'Copy'}
           </button>
         </div>
@@ -166,7 +184,7 @@
       <div class="artifact-diff">
         <div class="artifact-toolbar">
           <span class="artifact-language">diff</span>
-          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact!.content)}>
+          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact.content)}>
             {copyFeedback ?? 'Copy'}
           </button>
         </div>
@@ -177,7 +195,7 @@
       <div class="artifact-code">
         <div class="artifact-toolbar">
           <span class="artifact-language">JSON</span>
-          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact!.content)}>
+          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact.content)}>
             {copyFeedback ?? 'Copy'}
           </button>
         </div>
@@ -187,7 +205,7 @@
       <div class="artifact-table">
         <div class="artifact-toolbar">
           <span class="artifact-language">Table</span>
-          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact!.content)}>
+          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact.content)}>
             {copyFeedback ?? 'Copy'}
           </button>
         </div>
@@ -200,7 +218,7 @@
       <div class="artifact-html">
         <div class="artifact-toolbar">
           <span class="artifact-language">HTML</span>
-          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact!.content)}>
+          <button class="copy-btn" onclick={() => copyToClipboard(activeArtifact.content)}>
             {copyFeedback ?? 'Copy'}
           </button>
         </div>

@@ -2,11 +2,16 @@
   import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/stores';
   import { getGhostClient } from '$lib/ghost-client';
-  import { GhostAPIError, type GoalDecisionRequest, type ProposalDetail } from '@ghost/sdk';
+  import { GhostAPIError, type ProposalDetail } from '@ghost/sdk';
+  import {
+    buildDecisionRequest,
+    hasDecisionPrereqs,
+    PENDING_PROPOSAL_STATUS,
+    proposalStatus,
+    statusLabel,
+  } from '$lib/goal-decisions';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
   import ValidationMatrix from '../../../components/ValidationMatrix.svelte';
-
-  const PENDING_STATUS = 'pending_review';
 
   let proposalId = $derived($page.params.id ?? '');
   let proposal = $state<ProposalDetail | null>(null);
@@ -18,7 +23,8 @@
   let unsubs: Array<() => void> = [];
 
   let status = $derived(proposal ? proposalStatus(proposal) : 'unknown');
-  let isPending = $derived(status === PENDING_STATUS);
+  let isPending = $derived(status === PENDING_PROPOSAL_STATUS);
+  let decisionReady = $derived(proposal ? hasDecisionPrereqs(proposal) : false);
 
   onMount(() => {
     void loadProposal();
@@ -66,7 +72,13 @@
     try {
       const client = await getGhostClient();
       const freshDetail = await client.goals.get(proposalId);
-      const request = decisionRequest(freshDetail);
+      const request = buildDecisionRequest(freshDetail);
+      if (!request) {
+        actionError =
+          'Proposal is missing lineage or revision data and cannot be decided safely.';
+        proposal = freshDetail;
+        return;
+      }
       if (action === 'approve') {
         await client.goals.approve(proposalId, request);
       } else {
@@ -86,54 +98,8 @@
     }
   }
 
-  function decisionRequest(detail: ProposalDetail): GoalDecisionRequest {
-    if (
-      !detail.current_state ||
-      !detail.lineage_id ||
-      !detail.subject_key ||
-      !detail.reviewed_revision
-    ) {
-      throw new Error('Proposal detail is missing required lineage or revision fields');
-    }
-
-    return {
-      expectedState: detail.current_state,
-      expectedLineageId: detail.lineage_id,
-      expectedSubjectKey: detail.subject_key,
-      expectedReviewedRevision: detail.reviewed_revision,
-    };
-  }
-
-  function proposalStatus(detail: Pick<ProposalDetail, 'status' | 'current_state' | 'decision'>): string {
-    return detail.status ?? detail.current_state ?? fallbackStatusFromDecision(detail.decision);
-  }
-
-  function fallbackStatusFromDecision(decision: string | null | undefined): string {
-    switch (decision) {
-      case 'approved':
-        return 'approved';
-      case 'rejected':
-        return 'rejected';
-      case 'Superseded':
-        return 'superseded';
-      case 'TimedOut':
-        return 'timed_out';
-      case 'AutoApproved':
-      case 'ApprovedWithFlags':
-        return 'auto_applied';
-      case 'AutoRejected':
-        return 'auto_rejected';
-      default:
-        return PENDING_STATUS;
-    }
-  }
-
-  function statusLabel(value: string): string {
-    return value.replaceAll('_', ' ');
-  }
-
   function statusClass(value: string): string {
-    if (value === PENDING_STATUS) return 'pending';
+    if (value === PENDING_PROPOSAL_STATUS) return 'pending';
     if (value === 'approved') return 'approved';
     if (value === 'rejected') return 'rejected';
     return 'history';
@@ -145,6 +111,7 @@
 {:else if loadError}
   <div class="error-state">
     <p>{loadError}</p>
+    <button class="btn secondary" type="button" onclick={() => void loadProposal()}>Retry</button>
     <a href="/goals">← Back to Proposals</a>
   </div>
 {:else if proposal}
@@ -198,6 +165,12 @@
       <section class="card">
         <h2>Validation Dimensions</h2>
         <ValidationMatrix scores={proposal.dimension_scores ?? {}} />
+        {#if !decisionReady}
+          <p class="validation-warning">
+            This proposal is missing canonical lineage or revision metadata, so approval controls
+            stay disabled until the gateway returns a complete record.
+          </p>
+        {/if}
       </section>
 
       {#if proposal.flags.length > 0}
@@ -237,10 +210,10 @@
 
     {#if isPending}
       <div class="actions">
-        <button class="btn secondary" disabled={actionLoading} onclick={() => handleAction('reject')}>
+        <button class="btn secondary" disabled={actionLoading || !decisionReady} onclick={() => handleAction('reject')}>
           {actionLoading ? 'Working...' : 'Reject'}
         </button>
-        <button class="btn" disabled={actionLoading} onclick={() => handleAction('approve')}>
+        <button class="btn" disabled={actionLoading || !decisionReady} onclick={() => handleAction('approve')}>
           {actionLoading ? 'Working...' : 'Approve'}
         </button>
       </div>
@@ -441,6 +414,12 @@
   .btn.secondary {
     background: transparent;
     color: var(--color-text-primary);
+  }
+
+  .validation-warning {
+    margin: var(--spacing-3) 0 0;
+    color: var(--color-severity-soft);
+    font-size: var(--font-size-sm);
   }
 
   .btn:disabled {

@@ -99,8 +99,12 @@
       if (login.auth_url) {
         const runtime = await getRuntime();
         await runtime.openExternalUrl(login.auth_url);
+      } else {
+        success = 'ChatGPT login is already waiting for completion. Refresh if the browser flow finished.';
       }
-      success = 'Opened ChatGPT login in your browser. Finish sign-in to connect Codex.';
+      if (login.auth_url) {
+        success = 'Opened ChatGPT login in your browser. Finish sign-in to connect Codex.';
+      }
       startCodexPolling();
       await refreshCodexStatus();
     } catch (e: unknown) {
@@ -175,6 +179,7 @@
   function cancelEditing() {
     editingEnv = null;
     keyInput = '';
+    error = null;
   }
 
   function providerLabel(name: string): string {

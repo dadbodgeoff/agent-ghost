@@ -4,13 +4,15 @@
   import {
     GhostAPIError,
     type ActiveGoal,
-    type GoalDecisionRequest,
     type Proposal,
-    type ProposalDetail,
   } from '@ghost/sdk';
+  import {
+    buildDecisionRequest,
+    PENDING_PROPOSAL_STATUS,
+    proposalStatus,
+    statusLabel,
+  } from '$lib/goal-decisions';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
-
-  const PENDING_STATUS = 'pending_review';
 
   let activeGoals = $state<ActiveGoal[]>([]);
   let proposals = $state<Proposal[]>([]);
@@ -24,10 +26,10 @@
   let unsubs: Array<() => void> = [];
 
   let pendingProposals = $derived(
-    proposals.filter((proposal) => proposalStatus(proposal) === PENDING_STATUS),
+    proposals.filter((proposal) => proposalStatus(proposal) === PENDING_PROPOSAL_STATUS),
   );
   let historyProposals = $derived(
-    proposals.filter((proposal) => proposalStatus(proposal) !== PENDING_STATUS),
+    proposals.filter((proposal) => proposalStatus(proposal) !== PENDING_PROPOSAL_STATUS),
   );
   let visibleProposals = $derived(
     activeTab === 'pending' ? pendingProposals : historyProposals,
@@ -112,7 +114,12 @@
     try {
       const client = await getGhostClient();
       const detail = await client.goals.get(proposalId);
-      const request = decisionRequest(detail);
+      const request = buildDecisionRequest(detail);
+      if (!request) {
+        error =
+          'Proposal is missing lineage or revision data and cannot be decided safely from the queue.';
+        return;
+      }
       if (action === 'approve') {
         await client.goals.approve(proposalId, request);
       } else {
@@ -133,32 +140,18 @@
   }
 
   function applyAgentFilter() {
+    error = '';
+    notice = '';
     appliedAgentFilter = agentFilter.trim();
     void loadData();
   }
 
   function clearAgentFilter() {
+    error = '';
+    notice = '';
     agentFilter = '';
     appliedAgentFilter = '';
     void loadData();
-  }
-
-  function decisionRequest(detail: ProposalDetail): GoalDecisionRequest {
-    if (
-      !detail.current_state ||
-      !detail.lineage_id ||
-      !detail.subject_key ||
-      !detail.reviewed_revision
-    ) {
-      throw new Error('Proposal detail is missing required lineage or revision fields');
-    }
-
-    return {
-      expectedState: detail.current_state,
-      expectedLineageId: detail.lineage_id,
-      expectedSubjectKey: detail.subject_key,
-      expectedReviewedRevision: detail.reviewed_revision,
-    };
   }
 
   function isStaleDecisionError(errorValue: unknown): boolean {
@@ -167,36 +160,8 @@
     );
   }
 
-  function proposalStatus(proposal: Pick<Proposal, 'status' | 'current_state' | 'decision'>): string {
-    return proposal.status ?? proposal.current_state ?? fallbackStatusFromDecision(proposal.decision);
-  }
-
-  function fallbackStatusFromDecision(decision: string | null | undefined): string {
-    switch (decision) {
-      case 'approved':
-        return 'approved';
-      case 'rejected':
-        return 'rejected';
-      case 'Superseded':
-        return 'superseded';
-      case 'TimedOut':
-        return 'timed_out';
-      case 'AutoApproved':
-      case 'ApprovedWithFlags':
-        return 'auto_applied';
-      case 'AutoRejected':
-        return 'auto_rejected';
-      default:
-        return PENDING_STATUS;
-    }
-  }
-
-  function statusLabel(status: string): string {
-    return status.replaceAll('_', ' ');
-  }
-
   function statusClass(status: string): string {
-    if (status === PENDING_STATUS) return 'pending';
+    if (status === PENDING_PROPOSAL_STATUS) return 'pending';
     if (status === 'approved') return 'approved';
     if (status === 'rejected') return 'rejected';
     return 'history';
@@ -333,7 +298,10 @@
   {/if}
 
   {#if error}
-    <div class="banner error" role="alert">{error}</div>
+    <div class="banner error" role="alert">
+      <span>{error}</span>
+      <button type="button" class="banner-action" onclick={() => void loadData()}>Retry</button>
+    </div>
   {/if}
 
   {#if loading}
@@ -350,7 +318,7 @@
     <div class="proposal-list">
       {#each visibleProposals as proposal (proposal.id)}
         {@const status = proposalStatus(proposal)}
-        {@const pending = status === PENDING_STATUS}
+        {@const pending = status === PENDING_PROPOSAL_STATUS}
         <article class="proposal-card">
           <div class="proposal-card__header">
             <div>
@@ -628,6 +596,17 @@
   .banner.error {
     border-color: color-mix(in srgb, var(--color-severity-hard) 35%, transparent);
     background: color-mix(in srgb, var(--color-severity-hard) 10%, transparent);
+  }
+
+  .banner-action {
+    margin-left: var(--spacing-3);
+    background: transparent;
+    border: 1px solid currentColor;
+    color: inherit;
+    border-radius: var(--radius-sm);
+    padding: var(--spacing-1) var(--spacing-3);
+    font-size: var(--font-size-xs);
+    cursor: pointer;
   }
 
   .empty-state {

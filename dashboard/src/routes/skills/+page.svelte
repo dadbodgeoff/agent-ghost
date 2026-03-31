@@ -47,6 +47,7 @@
   }
 
   async function handleAction(skill: Skill, action: SkillAction) {
+    error = null;
     if (action === 'install') {
       if (!skill.installable) return;
       confirmSkill = skill;
@@ -97,7 +98,8 @@
           break;
         case 'resolve':
           if (skill.quarantine_revision == null) {
-            throw new Error('Quarantine revision is required to resolve a skill quarantine');
+            error = 'This skill is quarantined but the gateway did not return a quarantine revision.';
+            return;
           }
           await client.skills.resolveQuarantine(skill.id, {
             expected_quarantine_revision: skill.quarantine_revision,
@@ -130,14 +132,14 @@
     <button
       class="tab"
       class:active={activeTab === 'installed'}
-      onclick={() => (activeTab = 'installed')}
+      onclick={() => { error = null; activeTab = 'installed'; }}
     >
       Installed ({installed.length})
     </button>
     <button
       class="tab"
       class:active={activeTab === 'available'}
-      onclick={() => (activeTab = 'available')}
+      onclick={() => { error = null; activeTab = 'available'; }}
     >
       Available ({available.length})
     </button>
@@ -258,6 +260,7 @@
         id="quarantine-reason"
         bind:value={quarantineReason}
         rows="4"
+        placeholder="Explain why this skill should be blocked"
         placeholder="Explain why this artifact is being quarantined"
       ></textarea>
       <div class="confirm-actions">

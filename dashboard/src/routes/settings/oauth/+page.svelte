@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime } from '$lib/platform/runtime';
 
   interface OAuthProvider {
     name: string;
@@ -18,6 +19,7 @@
   let connections: OAuthConnection[] = [];
   let loading = true;
   let error = '';
+  let connectingProvider: string | null = null;
   let disconnectingRefId: string | null = null;
 
   async function loadData(showSpinner = true) {
@@ -40,11 +42,16 @@
 
   async function connectProvider(name: string, scopes: string[]) {
     try {
+      error = '';
+      connectingProvider = name;
       const client = await getGhostClient();
       const data = await client.oauth.connect({ provider: name, scopes });
-      window.location.href = data.authorization_url;
+      const runtime = await getRuntime();
+      await runtime.openExternalUrl(data.authorization_url);
     } catch (e: unknown) {
       error = `Connect failed: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      connectingProvider = null;
     }
   }
 
@@ -111,9 +118,10 @@
             <button
               class="btn-connect"
               onclick={() => connectProvider(provider.name, [])}
+              disabled={connectingProvider === provider.name}
               aria-label="Connect {provider.name}"
             >
-              Connect
+              {connectingProvider === provider.name ? 'Opening…' : 'Connect'}
             </button>
           {/if}
         </div>
@@ -141,9 +149,13 @@
             <span class="connected-at">{new Date(conn.connected_at).toLocaleDateString()}</span>
           </div>
           <div class="connection-scopes">
-            {#each conn.scopes as scope}
-              <span class="scope-tag">{scope}</span>
-            {/each}
+            {#if conn.scopes.length > 0}
+              {#each conn.scopes as scope}
+                <span class="scope-tag">{scope}</span>
+              {/each}
+            {:else}
+              <span class="scope-tag">No scopes recorded</span>
+            {/if}
           </div>
           <button
             class="btn-disconnect"

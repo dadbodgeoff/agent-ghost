@@ -14,6 +14,7 @@
   let error = $state('');
   let showAddForm = $state(false);
   let creating = $state(false);
+  let actionChannelId = $state<string | null>(null);
 
   // Add channel form state
   let newChannelType = $state('cli');
@@ -104,7 +105,10 @@
   }
 
   async function addChannel() {
-    if (!newAgentId) return;
+    if (!newAgentId) {
+      error = 'Select an agent before creating a channel.';
+      return;
+    }
     const config = parseChannelConfig();
     if (!config) return;
 
@@ -129,22 +133,33 @@
 
   async function reconnect(channelId: string) {
     try {
+      actionChannelId = channelId;
+      error = '';
       const client = await getGhostClient();
       await client.channels.reconnect(channelId);
       await loadChannels();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to reconnect';
+    } finally {
+      actionChannelId = null;
     }
   }
 
   async function removeChannel(channelId: string) {
     if (!confirm('Remove this channel?')) return;
     try {
+      actionChannelId = channelId;
+      error = '';
       const client = await getGhostClient();
       await client.channels.delete(channelId);
+      if (selectedChannel?.id === channelId) {
+        selectedChannel = null;
+      }
       await loadChannels();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove channel';
+    } finally {
+      actionChannelId = null;
     }
   }
 
@@ -193,7 +208,7 @@
       </label>
       <label>
         <span class="label-text">Agent</span>
-        <select bind:value={newAgentId}>
+        <select bind:value={newAgentId} disabled={agents.length === 0}>
           {#each agents as agent}
             <option value={agent.id}>{agent.name}</option>
           {/each}
@@ -203,9 +218,12 @@
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      <button class="btn-primary" onclick={addChannel} disabled={creating || agents.length === 0}>
         {creating ? 'Creating…' : 'Create'}
       </button>
+      {#if agents.length === 0}
+        <p class="form-hint">Create an agent first. Channels must be attached to an existing agent.</p>
+      {/if}
     </div>
   {/if}
 
@@ -250,9 +268,21 @@
         <h2>{selectedChannel.channel_type} — {selectedChannel.agent_name ?? selectedChannel.agent_id.slice(0, 8)}</h2>
         <div class="detail-actions">
           {#if selectedChannel.status === 'error' || selectedChannel.status === 'disconnected'}
-            <button class="btn-secondary" onclick={() => reconnect(selectedChannel!.id)}>Reconnect</button>
+            <button
+              class="btn-secondary"
+              onclick={() => selectedChannel && reconnect(selectedChannel.id)}
+              disabled={actionChannelId === selectedChannel.id}
+            >
+              {actionChannelId === selectedChannel.id ? 'Reconnecting…' : 'Reconnect'}
+            </button>
           {/if}
-          <button class="btn-danger" onclick={() => removeChannel(selectedChannel!.id)}>Remove</button>
+          <button
+            class="btn-danger"
+            onclick={() => selectedChannel && removeChannel(selectedChannel.id)}
+            disabled={actionChannelId === selectedChannel.id}
+          >
+            {actionChannelId === selectedChannel.id ? 'Removing…' : 'Remove'}
+          </button>
         </div>
       </div>
       <dl class="detail-list">
@@ -471,6 +501,13 @@
 
   .mono {
     font-family: var(--font-family-mono);
+  }
+
+  .form-hint {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
   }
 
   .channel-detail h3 {
