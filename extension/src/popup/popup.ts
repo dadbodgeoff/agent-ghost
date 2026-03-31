@@ -2,7 +2,7 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -49,6 +49,13 @@ async function loadAgentList(): Promise<void> {
   }
 }
 
+function setAgentListMessage(message: string): void {
+  const container = document.getElementById('agentList');
+  if (!container) return;
+
+  container.innerHTML = `<span class="agent-list-empty">${message}</span>`;
+}
+
 /**
  * Load and display the last sync time from storage.
  */
@@ -92,17 +99,19 @@ function updateUI(data: { score: number; level: number; signals: number[] }): vo
 
 // Request score from background
 chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
-    updateUI({
-      score: response.score,
-      level,
-      signals: [0, 0, 0, 0, 0, 0, 0],
-    });
+  if (chrome.runtime.lastError || !response || response.score === undefined) {
+    return;
   }
+
+  const level = response.score > 0.85 ? 4 :
+                response.score > 0.7 ? 3 :
+                response.score > 0.5 ? 2 :
+                response.score > 0.3 ? 1 : 0;
+  updateUI({
+    score: response.score,
+    level,
+    signals: [0, 0, 0, 0, 0, 0, 0],
+  });
 });
 
 // Session timer
@@ -115,16 +124,18 @@ setInterval(() => {
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
-  const auth = getAuthState();
-  updateConnectionIndicator(auth.authenticated);
+  try {
+    const auth = await initAuthSync();
+    updateConnectionIndicator(auth.authenticated);
 
-  if (auth.authenticated) {
-    await loadAgentList();
-  } else {
-    const container = document.getElementById('agentList');
-    if (container) {
-      container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
+    if (auth.authenticated) {
+      await loadAgentList();
+    } else {
+      setAgentListMessage('Not connected to gateway');
     }
+  } catch {
+    updateConnectionIndicator(false);
+    setAgentListMessage('Auth state unavailable');
   }
 
   await loadSyncStatus();
