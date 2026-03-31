@@ -24,14 +24,22 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -82,6 +90,11 @@
     }
 
     return `This ${clientLabel} build is incompatible with gateway ${assessment.gatewayVersion}. Update the client before continuing.`;
+  }
+
+  function addWindowListener(type: string, listener: EventListener) {
+    window.addEventListener(type, listener);
+    return () => window.removeEventListener(type, listener);
   }
 
   onMount(async () => {
@@ -141,15 +154,17 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    removeOnlineListener = addWindowListener('online', () => {
+      offline = false;
+    });
+    removeOfflineListener = addWindowListener('offline', () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
     });
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    removeInstallPromptListener = addWindowListener('beforeinstallprompt', (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
     });
 
@@ -163,6 +178,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeInstallPromptListener?.();
+    removeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });

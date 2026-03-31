@@ -51,6 +51,8 @@ struct DesktopRuntimeStateFile {
     #[serde(default)]
     token: Option<String>,
     #[serde(default)]
+    gateway_token: Option<String>,
+    #[serde(default)]
     replay_client_id: Option<String>,
     #[serde(default = "default_session_epoch")]
     replay_session_epoch: u64,
@@ -85,10 +87,18 @@ struct TerminalSession {
     writer: Mutex<Box<dyn Write + Send>>,
 }
 
-#[derive(Default)]
 pub struct DesktopTerminalState {
     next_session_id: AtomicU32,
     sessions: RwLock<BTreeMap<u32, Arc<TerminalSession>>>,
+}
+
+impl Default for DesktopTerminalState {
+    fn default() -> Self {
+        Self {
+            next_session_id: AtomicU32::new(1),
+            sessions: RwLock::new(BTreeMap::new()),
+        }
+    }
 }
 
 fn desktop_state_path() -> Result<PathBuf, String> {
@@ -161,6 +171,10 @@ pub fn load_auth_token() -> Result<Option<String>, String> {
     Ok(load_desktop_state()?.token)
 }
 
+pub fn load_gateway_auth_token() -> Result<Option<String>, String> {
+    Ok(load_desktop_state()?.gateway_token)
+}
+
 fn save_desktop_state(
     mutate: impl FnOnce(&mut DesktopRuntimeStateFile),
 ) -> Result<DesktopRuntimeStateFile, String> {
@@ -181,6 +195,17 @@ pub fn sync_auth_token(token: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn sync_gateway_auth_token(token: &str) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Err("gateway auth token must not be empty".to_string());
+    }
+
+    save_desktop_state(|state| {
+        state.gateway_token = Some(token.to_string());
+    })?;
+    Ok(())
+}
+
 fn session_for(
     state: &tauri::State<'_, DesktopTerminalState>,
     session_id: u32,
@@ -192,6 +217,17 @@ fn session_for(
         .get(&session_id)
         .cloned()
         .ok_or_else(|| format!("terminal session {session_id} not found"))
+}
+
+fn remove_terminal_session(
+    state: &DesktopTerminalState,
+    session_id: u32,
+) -> Result<Option<Arc<TerminalSession>>, String> {
+    state
+        .sessions
+        .write()
+        .map_err(|_| "terminal session registry poisoned".to_string())
+        .map(|mut sessions| sessions.remove(&session_id))
 }
 
 #[tauri::command]
@@ -348,6 +384,7 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
                 exit_code: exit_code as i32,
             },
         );
+        let _ = remove_terminal_session(&terminal_state, session_id);
     });
 
     Ok(session_id)
@@ -360,13 +397,16 @@ pub async fn write_terminal_input(
     data: String,
 ) -> Result<(), String> {
     let session = session_for(&terminal_state, session_id)?;
-    let result = session
+    let mut writer = session
         .writer
         .lock()
-        .map_err(|_| "terminal writer poisoned".to_string())?
+        .map_err(|_| "terminal writer poisoned".to_string())?;
+    writer
         .write_all(data.as_bytes())
-        .map_err(|error| format!("Failed to write terminal input: {error}"));
-    result
+        .map_err(|error| format!("Failed to write terminal input: {error}"))?;
+    writer
+        .flush()
+        .map_err(|error| format!("Failed to flush terminal input: {error}"))
 }
 
 #[tauri::command]
@@ -397,7 +437,8 @@ pub async fn close_terminal_session(
     terminal_state: tauri::State<'_, DesktopTerminalState>,
     session_id: u32,
 ) -> Result<(), String> {
-    let session = session_for(&terminal_state, session_id)?;
+    let session = remove_terminal_session(&terminal_state, session_id)?
+        .ok_or_else(|| format!("terminal session {session_id} not found"))?;
     session
         .child_killer
         .lock()
@@ -607,5 +648,23 @@ mod tests {
 
         let replay_state = get_replay_state().await.expect("empty file should self-heal");
         assert_eq!(replay_state.session_epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn desktop_runtime_state_keeps_gateway_token_separate_from_user_auth_token() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("create temp home");
+        let _home = EnvVarGuard::set("HOME", temp.path().to_string_lossy().as_ref());
+
+        set_auth_token("user-auth-token".to_string()).await.unwrap();
+        sync_gateway_auth_token("desktop-gateway-token").unwrap();
+
+        assert_eq!(get_auth_token().await.unwrap().as_deref(), Some("user-auth-token"));
+        assert_eq!(
+            load_gateway_auth_token().unwrap().as_deref(),
+            Some("desktop-gateway-token")
+        );
     }
 }

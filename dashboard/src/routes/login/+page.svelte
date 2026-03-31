@@ -14,6 +14,7 @@
   let loading = $state(false);
 
   async function login() {
+    if (loading) return;
     error = '';
     if (!token.trim()) {
       error = 'Token is required';
@@ -43,10 +44,6 @@
     }
     loading = false;
   }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') login();
-  }
 </script>
 
 <div class="login-container">
@@ -63,7 +60,6 @@
         placeholder="GHOST_TOKEN or JWT"
         autocomplete="off"
         disabled={loading}
-        onkeydown={handleKeydown}
       />
       <button type="submit" disabled={loading}>
         {#if loading}
