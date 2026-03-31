@@ -91,8 +91,6 @@
       ],
     });
     view = new EditorView({ state, parent: editorContainer });
-    shortcuts.setContext('studioFocused', true);
-
     const handleResume = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
         return;
@@ -105,19 +103,25 @@
       }
     };
     const handleEditorFocus = () => {
+      shortcuts.setContext('studioFocused', true);
       scheduleRefresh();
+    };
+    const handleEditorBlur = () => {
+      shortcuts.setContext('studioFocused', false);
     };
 
     window.addEventListener('focus', handleResume);
     window.addEventListener('pageshow', handleResume);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     editorContainer.addEventListener('focusin', handleEditorFocus);
+    editorContainer.addEventListener('focusout', handleEditorBlur);
 
     return () => {
       window.removeEventListener('focus', handleResume);
       window.removeEventListener('pageshow', handleResume);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       editorContainer.removeEventListener('focusin', handleEditorFocus);
+      editorContainer.removeEventListener('focusout', handleEditorBlur);
     };
   });
 

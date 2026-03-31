@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime } from '$lib/platform/runtime';
 
   const CATEGORIES = [
     { id: 'intervention', label: 'Intervention Changes', desc: 'Agent paused, resumed, quarantined' },
@@ -15,6 +16,8 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let error = $state('');
+  let runtimeIsDesktop = $state(false);
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -36,9 +39,12 @@
   }
 
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    const runtime = await getRuntime();
+    runtimeIsDesktop = runtime.isDesktop();
+    pushSupported = runtimeIsDesktop || ('PushManager' in window && 'Notification' in window);
     if (pushSupported) {
-      permissionState = Notification.permission;
+      permissionState =
+        typeof Notification !== 'undefined' ? Notification.permission : 'default';
       pushEnabled = permissionState === 'granted';
 
       // Load saved preferences.
@@ -53,22 +59,37 @@
 
   async function togglePush() {
     if (!pushSupported) return;
+    error = '';
+
+    const runtime = await getRuntime();
 
     if (!pushEnabled) {
-      const permission = await Notification.requestPermission();
-      permissionState = permission;
-      if (permission === 'granted') {
+      const granted = await runtime.requestNotificationPermission();
+      permissionState =
+        typeof Notification !== 'undefined'
+          ? Notification.permission
+          : granted
+            ? 'granted'
+            : 'default';
+      if (granted) {
         pushEnabled = true;
-        await subscribePush();
+        if (!runtime.isDesktop()) {
+          await subscribePush();
+        }
       }
     } else {
       pushEnabled = false;
-      await unsubscribePush();
+      if (!runtime.isDesktop()) {
+        await unsubscribePush();
+      }
     }
   }
 
   async function subscribePush() {
     try {
+      if (!('serviceWorker' in navigator)) {
+        throw new Error('Service workers are unavailable in this browser');
+      }
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const keyData = await client.push.getVapidKey();
@@ -81,13 +102,17 @@
       const payload = pushSubscriptionToPayload(sub.toJSON());
       if (!payload) return;
       await client.push.subscribe(payload);
-    } catch {
-      // Push subscription failed.
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Push subscription failed';
+      pushEnabled = false;
     }
   }
 
   async function unsubscribePush() {
     try {
+      if (!('serviceWorker' in navigator)) {
+        return;
+      }
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
@@ -98,8 +123,8 @@
         }
         await sub.unsubscribe();
       }
-    } catch {
-      // Unsubscribe failed.
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to disable push notifications';
     }
   }
 
@@ -114,15 +139,29 @@
 
   async function sendTestNotification() {
     testSending = true;
+    error = '';
     try {
+      const runtime = await getRuntime();
+      if (runtime.isDesktop()) {
+        await runtime.sendNotification({
+          title: 'GHOST Test',
+          body: 'Desktop notifications are working correctly.',
+        });
+        return;
+      }
+
+      if (!('serviceWorker' in navigator)) {
+        throw new Error('Service workers are unavailable in this browser');
+      }
+
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
         icon: '/icons/ghost-192.png',
         tag: 'ghost-test',
       });
-    } catch {
-      // Test failed.
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Test notification failed';
     } finally {
       testSending = false;
     }
@@ -132,8 +171,14 @@
 <div class="page">
   <header class="page-header">
     <h1>Notifications</h1>
-    <p class="subtitle">Configure push notification preferences</p>
+    <p class="subtitle">
+      Configure {runtimeIsDesktop ? 'desktop notification' : 'push notification'} preferences
+    </p>
   </header>
+
+  {#if error}
+    <div class="error-banner" role="alert">{error}</div>
+  {/if}
 
   {#if !pushSupported}
     <div class="unsupported">
@@ -143,18 +188,19 @@
     <div class="section">
       <div class="toggle-row">
         <div>
-          <span class="toggle-label">Push Notifications</span>
+          <span class="toggle-label">{runtimeIsDesktop ? 'Desktop Notifications' : 'Push Notifications'}</span>
           <span class="toggle-desc">
             {#if permissionState === 'denied'}
               Blocked by browser — check site permissions
             {:else if pushEnabled}
-              Enabled — receiving notifications
+              Enabled — receiving {runtimeIsDesktop ? 'desktop alerts' : 'push notifications'}
             {:else}
               Disabled — click to enable
             {/if}
           </span>
         </div>
         <button
+          type="button"
           class="toggle-btn"
           class:active={pushEnabled}
           disabled={permissionState === 'denied'}
@@ -187,6 +233,7 @@
 
       <div class="section">
         <button
+          type="button"
           class="test-btn"
           disabled={testSending}
           onclick={sendTestNotification}
@@ -217,6 +264,14 @@
     color: var(--color-text-muted);
     font-size: var(--font-size-sm);
     margin: var(--spacing-1) 0 0;
+  }
+
+  .error-banner {
+    padding: var(--spacing-3);
+    border-radius: var(--radius-md);
+    background: var(--color-severity-hard-bg);
+    color: var(--color-severity-hard);
+    font-size: var(--font-size-sm);
   }
 
   .unsupported {

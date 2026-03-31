@@ -133,4 +133,26 @@ export const tauriRuntime: RuntimePlatform = {
     const sessionId = await invoke<number>('open_terminal_session', options);
     return createTauriTerminalPty(sessionId);
   },
+  subscribeAppFocus(listener) {
+    let disposed = false;
+    let unsubscribeFocus: (() => void) | null = null;
+
+    void listen<boolean>('tauri://focus', (event) => {
+      if (!disposed && event.payload) {
+        listener();
+      }
+    }).then((unsubscribe) => {
+      if (disposed) {
+        unsubscribe();
+        return;
+      }
+      unsubscribeFocus = unsubscribe;
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribeFocus?.();
+      unsubscribeFocus = null;
+    };
+  },
 };

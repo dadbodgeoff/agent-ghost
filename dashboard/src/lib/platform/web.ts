@@ -105,4 +105,22 @@ export const webRuntime: RuntimePlatform = {
   async spawnTerminalPty() {
     return null;
   },
+  subscribeAppFocus(listener) {
+    const handleFocus = () => listener();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        listener();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('pageshow', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('pageshow', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  },
 };

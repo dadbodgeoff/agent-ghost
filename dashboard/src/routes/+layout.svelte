@@ -32,6 +32,8 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let cleanupNetworkListeners: (() => void) | null = null;
+  let cleanupInstallPrompt: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -97,6 +99,31 @@
     });
     const currentPath = $page.url.pathname;
 
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
+      offline = true;
+      lastSync = new Date().toLocaleTimeString();
+    };
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      deferredPrompt = event;
+      showInstallPrompt = true;
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    cleanupNetworkListeners = () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+    cleanupInstallPrompt = () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+    offline = !navigator.onLine;
+
     try {
       const client = await getGhostClient();
       const compatibility = await client.compatibility.assessCurrentClient();
@@ -125,7 +152,12 @@
           return;
         }
         bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
+        return;
       }
+    }
+
+    if (currentPath === '/login') {
+      return;
     }
 
     await wsStore.connect();
@@ -140,19 +172,6 @@
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
-    offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
-      offline = true;
-      lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      showInstallPrompt = true;
-    });
-
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
@@ -163,6 +182,10 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    cleanupNetworkListeners?.();
+    cleanupNetworkListeners = null;
+    cleanupInstallPrompt?.();
+    cleanupInstallPrompt = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,7 +215,9 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!('PushManager' in window) || !('serviceWorker' in navigator) || typeof Notification === 'undefined') {
+      return;
+    }
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 
@@ -243,8 +268,8 @@
 {#if showInstallPrompt}
   <div class="install-banner">
     <span>Install GHOST Dashboard for quick access</span>
-    <button onclick={installPWA}>Install</button>
-    <button onclick={() => (showInstallPrompt = false)}>Dismiss</button>
+    <button type="button" onclick={installPWA}>Install</button>
+    <button type="button" onclick={() => (showInstallPrompt = false)}>Dismiss</button>
   </div>
 {/if}
 
