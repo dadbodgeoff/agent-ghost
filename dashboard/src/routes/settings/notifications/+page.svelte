@@ -15,6 +15,9 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let busy = $state(false);
+  let error = $state('');
+  let success = $state('');
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -45,26 +48,42 @@
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          const knownIds = new Set(CATEGORIES.map((category) => category.id));
+          if (Array.isArray(parsed)) {
+            enabledCategories = parsed.filter((id): id is string => typeof id === 'string' && knownIds.has(id));
+          }
         } catch { /* use defaults */ }
       }
     }
   });
 
   async function togglePush() {
-    if (!pushSupported) return;
+    if (!pushSupported || busy) return;
 
+    busy = true;
+    error = '';
+    success = '';
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        const subscribed = await subscribePush();
+        pushEnabled = subscribed;
+        if (subscribed) {
+          success = 'Push notifications enabled.';
+        }
+      } else {
+        error = 'Notification permission was not granted.';
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      const unsubscribed = await unsubscribePush();
+      if (unsubscribed) {
+        pushEnabled = false;
+        success = 'Push notifications disabled.';
+      }
     }
+    busy = false;
   }
 
   async function subscribePush() {
@@ -72,17 +91,25 @@
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) {
+        error = 'Push notifications are not configured on the gateway yet.';
+        return false;
+      }
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) {
+        error = 'Browser returned an invalid push subscription.';
+        return false;
+      }
       await client.push.subscribe(payload);
-    } catch {
-      // Push subscription failed.
+      return true;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Push subscription failed';
+      return false;
     }
   }
 
@@ -98,8 +125,10 @@
         }
         await sub.unsubscribe();
       }
-    } catch {
-      // Unsubscribe failed.
+      return true;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to disable push notifications';
+      return false;
     }
   }
 
@@ -113,6 +142,8 @@
   }
 
   async function sendTestNotification() {
+    error = '';
+    success = '';
     testSending = true;
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -121,8 +152,9 @@
         icon: '/icons/ghost-192.png',
         tag: 'ghost-test',
       });
-    } catch {
-      // Test failed.
+      success = 'Test notification sent.';
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to send test notification';
     } finally {
       testSending = false;
     }
@@ -134,6 +166,14 @@
     <h1>Notifications</h1>
     <p class="subtitle">Configure push notification preferences</p>
   </header>
+
+  {#if error}
+    <div class="banner error-banner" role="alert">{error}</div>
+  {/if}
+
+  {#if success}
+    <div class="banner success-banner">{success}</div>
+  {/if}
 
   {#if !pushSupported}
     <div class="unsupported">
@@ -157,10 +197,10 @@
         <button
           class="toggle-btn"
           class:active={pushEnabled}
-          disabled={permissionState === 'denied'}
+          disabled={permissionState === 'denied' || busy}
           onclick={togglePush}
         >
-          {pushEnabled ? 'ON' : 'OFF'}
+          {busy ? '...' : pushEnabled ? 'ON' : 'OFF'}
         </button>
       </div>
     </div>
@@ -225,6 +265,22 @@
     padding: var(--spacing-3) var(--spacing-4);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
+  }
+
+  .banner {
+    padding: var(--spacing-3) var(--spacing-4);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+  }
+
+  .error-banner {
+    background: color-mix(in srgb, var(--color-severity-hard) 15%, transparent);
+    color: var(--color-severity-hard);
+  }
+
+  .success-banner {
+    background: color-mix(in srgb, var(--color-score-high) 15%, transparent);
+    color: var(--color-score-high);
   }
 
   .section {

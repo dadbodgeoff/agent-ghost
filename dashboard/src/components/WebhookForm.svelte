@@ -31,6 +31,7 @@
     url = initialWebhook?.url ?? '';
     secret = '';
     selectedEvents = [...(initialWebhook?.events ?? [])];
+    error = '';
   });
 
   function toggleEvent(evt: WebhookEventType) {
@@ -48,6 +49,10 @@
     }
     if (!editId && !secret.trim()) {
       error = 'Secret is required for new webhooks';
+      return;
+    }
+    if (selectedEvents.length === 0) {
+      error = 'Select at least one event';
       return;
     }
     saving = true;

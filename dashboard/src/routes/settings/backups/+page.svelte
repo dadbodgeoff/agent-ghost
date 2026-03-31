@@ -10,7 +10,7 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
 
   let backups: Backup[] = $state([]);
-  let loading = $state(false);
+  let loading = $state(true);
   let creating = $state(false);
   let error: string | null = $state(null);
   let success: string | null = $state(null);
@@ -29,6 +29,7 @@
 
   async function loadBackups() {
     loading = true;
+    error = null;
     try {
       const client = await getGhostClient();
       const res = await client.backups.list();
@@ -111,7 +112,8 @@
   {:else if backups.length === 0}
     <p class="empty">No backups found. Click "Backup Now" to create the first backup.</p>
   {:else}
-    <table class="data-table">
+    <div class="table-wrap">
+      <table class="data-table">
       <thead>
         <tr>
           <th>ID</th>
@@ -139,6 +141,7 @@
         {/each}
       </tbody>
     </table>
+    </div>
   {/if}
 </div>
 
@@ -171,7 +174,8 @@
     margin-bottom: var(--spacing-4);
   }
 
-  .data-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
+  .table-wrap { overflow-x: auto; }
+  .data-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: var(--font-size-sm); }
   .data-table th {
     text-align: left; padding: var(--spacing-2) var(--spacing-3); background: var(--color-bg-elevated-1);
     color: var(--color-text-muted); font-weight: 600; font-size: var(--font-size-xs);

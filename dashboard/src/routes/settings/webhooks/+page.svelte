@@ -44,8 +44,10 @@
   async function deleteWebhook(id: string) {
     if (!confirm('Delete this webhook?')) return;
     try {
+      error = null;
       const client = await getGhostClient();
       await client.webhooks.delete(id);
+      testResult = testResult?.id === id ? null : testResult;
       await loadWebhooks();
     } catch (e: unknown) {
       // T-5.9.2: Show error instead of swallowing.
@@ -56,12 +58,17 @@
   async function testWebhook(id: string) {
     testingId = id;
     testResult = null;
+    error = null;
     try {
       const client = await getGhostClient();
       const data = await client.webhooks.test(id);
       testResult = { id, success: data.success, code: data.status_code };
-    } catch {
+      if (!data.success) {
+        error = `Webhook test failed with status ${data.status_code}`;
+      }
+    } catch (e: unknown) {
       testResult = { id, success: false, code: 0 };
+      error = e instanceof Error ? e.message : 'Failed to test webhook';
     } finally {
       testingId = null;
     }
@@ -71,6 +78,8 @@
     showForm = false;
     editId = null;
     editWebhookData = null;
+    error = null;
+    testResult = null;
     loadWebhooks();
   }
 
@@ -78,6 +87,8 @@
     editId = wh.id;
     editWebhookData = wh;
     showForm = true;
+    error = null;
+    testResult = null;
   }
 </script>
 

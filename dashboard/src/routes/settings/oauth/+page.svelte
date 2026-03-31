@@ -19,6 +19,7 @@
   let loading = true;
   let error = '';
   let disconnectingRefId: string | null = null;
+  let connectingProvider: string | null = null;
 
   async function loadData(showSpinner = true) {
     try {
@@ -40,11 +41,15 @@
 
   async function connectProvider(name: string, scopes: string[]) {
     try {
+      error = '';
+      connectingProvider = name;
       const client = await getGhostClient();
       const data = await client.oauth.connect({ provider: name, scopes });
       window.location.href = data.authorization_url;
     } catch (e: unknown) {
       error = `Connect failed: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      connectingProvider = null;
     }
   }
 
@@ -82,6 +87,15 @@
     return connections.some(c => c.provider === providerName && c.status === 'connected');
   }
 
+  function connectionCount(providerName: string): number {
+    return connections.filter((connection) => connection.provider === providerName).length;
+  }
+
+  function formatConnectedAt(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Unknown date' : date.toLocaleDateString();
+  }
+
   onMount(loadData);
 </script>
 
@@ -111,12 +125,18 @@
             <button
               class="btn-connect"
               onclick={() => connectProvider(provider.name, [])}
+              disabled={connectingProvider === provider.name}
               aria-label="Connect {provider.name}"
             >
-              Connect
+              {connectingProvider === provider.name ? 'Connecting…' : 'Connect'}
             </button>
           {/if}
         </div>
+        {#if connectionCount(provider.name) > 0}
+          <p class="provider-detail">
+            {connectionCount(provider.name)} saved connection{connectionCount(provider.name) === 1 ? '' : 's'}
+          </p>
+        {/if}
       </div>
     {/each}
   </div>
@@ -138,12 +158,16 @@
           </div>
           <div class="connection-meta">
             <span class="ref-id" title={conn.ref_id}>{conn.ref_id.slice(0, 8)}…</span>
-            <span class="connected-at">{new Date(conn.connected_at).toLocaleDateString()}</span>
+            <span class="connected-at">{formatConnectedAt(conn.connected_at)}</span>
           </div>
           <div class="connection-scopes">
-            {#each conn.scopes as scope}
-              <span class="scope-tag">{scope}</span>
-            {/each}
+            {#if conn.scopes.length === 0}
+              <span class="scope-empty">No scopes recorded</span>
+            {:else}
+              {#each conn.scopes as scope}
+                <span class="scope-tag">{scope}</span>
+              {/each}
+            {/if}
           </div>
           <button
             class="btn-disconnect"
@@ -155,6 +179,11 @@
           </button>
         </div>
       {/each}
+    </div>
+  {:else}
+    <div class="section empty-state">
+      <p>No active OAuth connections yet.</p>
+      <p class="empty-hint">Use a provider card above to start the browser sign-in flow.</p>
     </div>
   {/if}
 {/if}
@@ -235,6 +264,12 @@
     text-transform: capitalize;
   }
 
+  .provider-detail {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+  }
+
   .badge {
     font-size: var(--font-size-xs);
     padding: var(--spacing-0-5) var(--spacing-2);
@@ -272,6 +307,11 @@
     background: var(--color-bg-elevated-3);
     padding: var(--spacing-0-5) var(--spacing-1);
     border-radius: var(--radius-sm);
+  }
+
+  .scope-empty {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
   }
 
   .btn-connect {

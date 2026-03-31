@@ -61,6 +61,7 @@
 
   async function loadChannels() {
     try {
+      loading = true;
       error = '';
       const client = await getGhostClient();
       const data = await client.channels.list();
@@ -70,8 +71,9 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
@@ -104,7 +106,10 @@
   }
 
   async function addChannel() {
-    if (!newAgentId) return;
+    if (!newAgentId) {
+      error = 'No agents are available yet. Create an agent before adding a channel.';
+      return;
+    }
     const config = parseChannelConfig();
     if (!config) return;
 
@@ -142,6 +147,9 @@
     try {
       const client = await getGhostClient();
       await client.channels.delete(channelId);
+      if (selectedChannel?.id === channelId) {
+        selectedChannel = null;
+      }
       await loadChannels();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove channel';
@@ -193,17 +201,24 @@
       </label>
       <label>
         <span class="label-text">Agent</span>
-        <select bind:value={newAgentId}>
-          {#each agents as agent}
-            <option value={agent.id}>{agent.name}</option>
-          {/each}
+        <select bind:value={newAgentId} disabled={agents.length === 0}>
+          {#if agents.length === 0}
+            <option value="">No agents available</option>
+          {:else}
+            {#each agents as agent}
+              <option value={agent.id}>{agent.name}</option>
+            {/each}
+          {/if}
         </select>
       </label>
       <label class="config-field">
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      {#if agents.length === 0}
+        <p class="form-hint">Create an agent first, then attach a channel to it here.</p>
+      {/if}
+      <button class="btn-primary" onclick={addChannel} disabled={creating || agents.length === 0}>
         {creating ? 'Creating…' : 'Create'}
       </button>
     </div>
@@ -340,6 +355,12 @@
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);
     resize: vertical;
+  }
+
+  .form-hint {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
   }
 
   .channel-list {
