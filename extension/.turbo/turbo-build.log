@@ -1,4 +1,0 @@
-
-> ghost-convergence-extension@0.1.0 build /Users/geoffreyfernald/Documents/New project/agent-ghost/extension
-> tsc && node scripts/bundle.js
-
