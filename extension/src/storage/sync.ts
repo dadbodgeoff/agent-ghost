@@ -5,7 +5,7 @@
  * Events queued while offline are replayed in order.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState, initAuthSync } from '../background/auth-sync';
 
 const DB_NAME = 'ghost-convergence';
 const PENDING_STORE = 'pending_events';
@@ -61,7 +61,10 @@ export async function queueEvent(type: string, payload: unknown): Promise<void> 
  * Sync all pending events to the gateway.
  */
 export async function syncPendingEvents(): Promise<{ synced: number; failed: number }> {
-  const auth = getAuthState();
+  let auth = getAuthState();
+  if (!auth.authenticated || !auth.token) {
+    auth = await initAuthSync();
+  }
   if (!auth.authenticated || !auth.token) {
     return { synced: 0, failed: 0 };
   }
@@ -80,7 +83,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
 
       for (const event of events) {
         try {
-          await fetch(`${auth.gatewayUrl}/api/memory`, {
+          const response = await fetch(`${auth.gatewayUrl}/api/memory`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -93,6 +96,11 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
             }),
             signal: AbortSignal.timeout(5000),
           });
+
+          if (!response.ok) {
+            failed++;
+            break;
+          }
 
           // Mark as synced.
           const updateTx = db.transaction(PENDING_STORE, 'readwrite');
