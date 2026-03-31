@@ -267,6 +267,11 @@
 
   function handleKeydown(e: KeyboardEvent) {
     const total = displayItems.length;
+    if (total === 0 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      selectedIndex = 0;
+      return;
+    }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       selectedIndex = Math.min(selectedIndex + 1, total - 1);

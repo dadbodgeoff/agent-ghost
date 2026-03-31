@@ -73,7 +73,7 @@ async function validateToken(): Promise<boolean> {
   }
 
   try {
-    const resp = await fetch(`${currentState.gatewayUrl}/api/health`, {
+    const resp = await fetch(`${currentState.gatewayUrl}/api/auth/session`, {
       headers: {
         Authorization: `Bearer ${currentState.token}`,
       },

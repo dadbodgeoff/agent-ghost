@@ -2,7 +2,7 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState, initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -84,9 +84,22 @@ function updateUI(data: { score: number; level: number; signals: number[] }): vo
   // Alert banner
   const alertEl = document.getElementById('alert');
   const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  if (alertEl && alertText) {
+    if (data.level >= 3) {
+      alertEl.classList.add('visible');
+      alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+    } else {
+      alertEl.classList.remove('visible');
+      alertText.textContent = '';
+    }
+  }
+}
+
+function renderSessionTimer(sessionStart: number): void {
+  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
+  const timerEl = document.getElementById('timer');
+  if (timerEl) {
+    timerEl.textContent = `Session: ${elapsed}m`;
   }
 }
 
@@ -107,14 +120,14 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
 
 // Session timer
 const sessionStart = Date.now();
+renderSessionTimer(sessionStart);
 setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
+  renderSessionTimer(sessionStart);
 }, 60000);
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
+  await initAuthSync();
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
 

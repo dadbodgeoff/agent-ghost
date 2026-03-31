@@ -2,9 +2,14 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
 import { ITPEmitter } from './itp-emitter';
+import { initAutoSync } from '../storage/sync';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync();
+initAutoSync();
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -23,6 +28,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SESSION_START') {
     emitter.emit({
       eventType: 'SessionStart',
+      platform: message.platform,
+      timestamp: new Date().toISOString(),
+      sessionId: message.sessionId,
+    });
+    sendResponse({ ok: true });
+  }
+
+  if (message.type === 'SESSION_END') {
+    emitter.emit({
+      eventType: 'SessionEnd',
       platform: message.platform,
       timestamp: new Date().toISOString(),
       sessionId: message.sessionId,

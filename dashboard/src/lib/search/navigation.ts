@@ -14,9 +14,9 @@ export function hrefForSearchResult(result: SearchResult, fallbackQuery?: string
     case 'proposal':
       return `/goals/${result.id}`;
     case 'memory':
-      return `/memory${encodedQuery}`;
+      return `/memory/${result.id}${encodedQuery}`;
     case 'audit':
-      return `/security${fallbackQuery ? `?search=${encodeURIComponent(fallbackQuery)}` : ''}`;
+      return `/security${fallbackQuery ? `?search=${encodeURIComponent(fallbackQuery)}&focus=${encodeURIComponent(result.id)}` : `?focus=${encodeURIComponent(result.id)}`}`;
     default:
       return `/search${encodedQuery}`;
   }
