@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::sync::RwLock;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
@@ -6,10 +7,17 @@ use tokio::sync::Mutex;
 
 use crate::error::GhostDesktopError;
 
+#[derive(Default)]
 pub struct GatewayProcess(pub Mutex<Option<CommandChild>>);
 
 /// Port resolved from ghost.yml, cached for the app lifetime.
-pub struct GatewayPort(pub u16);
+pub struct GatewayPort(pub RwLock<u16>);
+
+impl Default for GatewayPort {
+    fn default() -> Self {
+        Self(RwLock::new(default_port()))
+    }
+}
 
 // ── Minimal config parsing (no ghost-gateway dependency) ───────────
 
@@ -35,6 +43,21 @@ impl Default for MinimalGateway {
 
 fn default_port() -> u16 {
     39780
+}
+
+fn set_cached_port(handle: &AppHandle, port: u16) {
+    if let Some(state) = handle.try_state::<GatewayPort>() {
+        if let Ok(mut guard) = state.0.write() {
+            *guard = port;
+        }
+    }
+}
+
+fn cached_port(handle: &AppHandle) -> u16 {
+    handle
+        .try_state::<GatewayPort>()
+        .and_then(|state| state.0.read().ok().map(|port| *port))
+        .unwrap_or_else(default_port)
 }
 
 /// Read the gateway port from ghost.yml without pulling in ghost-gateway.
@@ -101,10 +124,7 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     })?;
 
     let port = read_port_from_config(&config_path);
-
-
-    // Store port for other commands to use.
-    handle.manage(GatewayPort(port));
+    set_cached_port(&handle, port);
 
     let health_url = format!("http://127.0.0.1:{port}/api/health");
 
@@ -117,7 +137,10 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     if let Ok(resp) = client.get(&health_url).send().await {
         if resp.status().is_success() {
             log::info!("Gateway already healthy on port {port} — skipping sidecar launch");
-            handle.manage(GatewayProcess(Mutex::new(None)));
+            if let Some(state) = handle.try_state::<GatewayProcess>() {
+                let mut guard = state.0.lock().await;
+                *guard = None;
+            }
             return Ok(());
         }
     }
@@ -159,12 +182,13 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     }
 
     // Phase 3: Spawn the sidecar.
-    let sidecar = handle
-        .shell()
-        .sidecar("ghost")
-        .map_err(|e| GhostDesktopError::GatewayStartFailed {
-            reason: e.to_string(),
-        })?;
+    let sidecar =
+        handle
+            .shell()
+            .sidecar("ghost")
+            .map_err(|e| GhostDesktopError::GatewayStartFailed {
+                reason: e.to_string(),
+            })?;
     log::info!("Using config: {config_path}");
 
     // Derive dev port (Vite) as gateway_port + 1.
@@ -191,12 +215,21 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
 
     cmd = cmd.env("GHOST_TOKEN", &desktop_gateway_token);
 
-    let (mut rx, child) = cmd.spawn().map_err(|e| GhostDesktopError::GatewayStartFailed {
-        reason: e.to_string(),
-    })?;
+    let (mut rx, child) = cmd
+        .spawn()
+        .map_err(|e| GhostDesktopError::GatewayStartFailed {
+            reason: e.to_string(),
+        })?;
 
     // Store child handle for shutdown.
-    handle.manage(GatewayProcess(Mutex::new(Some(child))));
+    if let Some(state) = handle.try_state::<GatewayProcess>() {
+        let mut guard = state.0.lock().await;
+        if let Some(previous_child) = guard.take() {
+            let _ = previous_child.kill();
+            log::warn!("Replaced a previously tracked gateway sidecar before restart");
+        }
+        *guard = Some(child);
+    }
 
     // Log sidecar stdout/stderr.
     tauri::async_runtime::spawn(async move {
@@ -260,10 +293,7 @@ pub async fn stop_gateway(handle: AppHandle) -> Result<String, GhostDesktopError
 
 #[tauri::command]
 pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopError> {
-    let port = handle
-        .try_state::<GatewayPort>()
-        .map(|p| p.0)
-        .unwrap_or(39780);
+    let port = cached_port(&handle);
     match reqwest::get(format!("http://127.0.0.1:{port}/api/health")).await {
         Ok(r) if r.status().is_success() => Ok("healthy".into()),
         _ => Ok("unreachable".into()),
@@ -272,8 +302,5 @@ pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopErr
 
 #[tauri::command]
 pub fn gateway_port(handle: AppHandle) -> u16 {
-    handle
-        .try_state::<GatewayPort>()
-        .map(|p| p.0)
-        .unwrap_or(39780)
+    cached_port(&handle)
 }

@@ -85,10 +85,18 @@ struct TerminalSession {
     writer: Mutex<Box<dyn Write + Send>>,
 }
 
-#[derive(Default)]
 pub struct DesktopTerminalState {
     next_session_id: AtomicU32,
-    sessions: RwLock<BTreeMap<u32, Arc<TerminalSession>>>,
+    sessions: Arc<RwLock<BTreeMap<u32, Arc<TerminalSession>>>>,
+}
+
+impl Default for DesktopTerminalState {
+    fn default() -> Self {
+        Self {
+            next_session_id: AtomicU32::new(1),
+            sessions: Arc::new(RwLock::new(BTreeMap::new())),
+        }
+    }
 }
 
 fn desktop_state_path() -> Result<PathBuf, String> {
@@ -194,6 +202,16 @@ fn session_for(
         .ok_or_else(|| format!("terminal session {session_id} not found"))
 }
 
+fn remove_session(state: &DesktopTerminalState, session_id: u32) {
+    if let Ok(mut sessions) = state.sessions.write() {
+        sessions.remove(&session_id);
+    }
+}
+
+fn normalize_terminal_dimension(value: u16) -> u16 {
+    value.max(1)
+}
+
 #[tauri::command]
 pub async fn read_keybindings() -> Result<Vec<ShortcutBinding>, String> {
     let path = ghost_config_path("keybindings.json")?;
@@ -273,6 +291,8 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
     rows: u16,
 ) -> Result<u32, String> {
     let pty_system = native_pty_system();
+    let cols = normalize_terminal_dimension(cols);
+    let rows = normalize_terminal_dimension(rows);
     let pair = pty_system
         .openpty(PtySize {
             rows,
@@ -302,7 +322,9 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
         .map_err(|error| format!("Failed to spawn shell: {error}"))?;
     let child_killer = child.clone_killer();
 
-    let session_id = terminal_state.next_session_id.fetch_add(1, Ordering::Relaxed);
+    let session_id = terminal_state
+        .next_session_id
+        .fetch_add(1, Ordering::Relaxed);
     let session = Arc::new(TerminalSession {
         pair: Mutex::new(pair),
         child: Mutex::new(child),
@@ -316,6 +338,7 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
         .insert(session_id, Arc::clone(&session));
 
     let app_handle_clone = app_handle.clone();
+    let sessions = Arc::clone(&terminal_state.sessions);
     std::thread::spawn(move || {
         let data_event = format!("{TERMINAL_DATA_EVENT_PREFIX}{session_id}");
         let exit_event = format!("{TERMINAL_EXIT_EVENT_PREFIX}{session_id}");
@@ -341,6 +364,9 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
             .lock()
             .map(|mut child| child.wait().map(|status| status.exit_code()).unwrap_or(1))
             .unwrap_or(1);
+        if let Ok(mut guard) = sessions.write() {
+            guard.remove(&session_id);
+        }
         let _ = app_handle_clone.emit(
             &exit_event,
             TerminalExitEvent {
@@ -360,13 +386,16 @@ pub async fn write_terminal_input(
     data: String,
 ) -> Result<(), String> {
     let session = session_for(&terminal_state, session_id)?;
-    let result = session
+    let mut writer = session
         .writer
         .lock()
-        .map_err(|_| "terminal writer poisoned".to_string())?
+        .map_err(|_| "terminal writer poisoned".to_string())?;
+    writer
         .write_all(data.as_bytes())
-        .map_err(|error| format!("Failed to write terminal input: {error}"));
-    result
+        .map_err(|error| format!("Failed to write terminal input: {error}"))?;
+    writer
+        .flush()
+        .map_err(|error| format!("Failed to flush terminal input: {error}"))
 }
 
 #[tauri::command]
@@ -377,6 +406,8 @@ pub async fn resize_terminal_session(
     rows: u16,
 ) -> Result<(), String> {
     let session = session_for(&terminal_state, session_id)?;
+    let cols = normalize_terminal_dimension(cols);
+    let rows = normalize_terminal_dimension(rows);
     let result = session
         .pair
         .lock()
@@ -398,6 +429,7 @@ pub async fn close_terminal_session(
     session_id: u32,
 ) -> Result<(), String> {
     let session = session_for(&terminal_state, session_id)?;
+    remove_session(&terminal_state, session_id);
     session
         .child_killer
         .lock()
@@ -454,7 +486,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("create temp home");
         let _home = EnvVarGuard::set("HOME", temp.path().to_string_lossy().as_ref());
 
-        let bindings = read_keybindings().await.expect("missing file should not fail");
+        let bindings = read_keybindings()
+            .await
+            .expect("missing file should not fail");
 
         assert!(bindings.is_empty());
     }
@@ -475,7 +509,9 @@ mod tests {
         )
         .expect("write keybindings");
 
-        let bindings = read_keybindings().await.expect("valid keybindings should load");
+        let bindings = read_keybindings()
+            .await
+            .expect("valid keybindings should load");
 
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings[0].key, "mod+k");
@@ -494,7 +530,8 @@ mod tests {
 
         let config_dir = temp.path().join(".ghost");
         fs::create_dir_all(&config_dir).expect("create config dir");
-        fs::write(config_dir.join("keybindings.json"), "{not-json").expect("write malformed keybindings");
+        fs::write(config_dir.join("keybindings.json"), "{not-json")
+            .expect("write malformed keybindings");
 
         let error = read_keybindings()
             .await
@@ -577,7 +614,10 @@ mod tests {
         assert_eq!(get_auth_token().await.unwrap(), None);
 
         set_auth_token("secret-token".to_string()).await.unwrap();
-        assert_eq!(get_auth_token().await.unwrap().as_deref(), Some("secret-token"));
+        assert_eq!(
+            get_auth_token().await.unwrap().as_deref(),
+            Some("secret-token")
+        );
 
         let replay_state = get_replay_state().await.unwrap();
         assert_eq!(replay_state.session_epoch, 1);
@@ -605,7 +645,9 @@ mod tests {
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(config_dir.join(DESKTOP_STATE_FILE), "").expect("write empty desktop state");
 
-        let replay_state = get_replay_state().await.expect("empty file should self-heal");
+        let replay_state = get_replay_state()
+            .await
+            .expect("empty file should self-heal");
         assert_eq!(replay_state.session_epoch, 1);
     }
 }
