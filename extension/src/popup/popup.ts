@@ -1,8 +1,8 @@
 /**
- * Popup script — displays convergence score and signals.
+ * Popup script — displays convergence score and gateway state.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -20,6 +20,31 @@ function updateConnectionIndicator(connected: boolean): void {
     label.classList.add(connected ? 'connected' : 'disconnected');
     label.textContent = connected ? 'Connected' : 'Disconnected';
   }
+}
+
+function renderSignals(signals: number[]): void {
+  const container = document.getElementById('signalList');
+  if (!container) return;
+
+  if (signals.length === 0) {
+    container.innerHTML = '<span class="agent-list-empty">No signal detail available yet</span>';
+    return;
+  }
+
+  container.innerHTML = signals
+    .map((value, index) => {
+      const normalized = Math.max(0, Math.min(1, value));
+      return (
+        `<div class="signal-row">` +
+        `<span class="signal-name">Signal ${index + 1}</span>` +
+        `<span style="display:flex;align-items:center;">` +
+        `<span class="signal-value">${value.toFixed(2)}</span>` +
+        `<span class="signal-bar"><span class="signal-bar-fill" style="width:${normalized * 100}%;background:${normalized >= 0.7 ? '#ef4444' : normalized >= 0.4 ? '#f59e0b' : '#22c55e'};"></span></span>` +
+        `</span>` +
+        `</div>`
+      );
+    })
+    .join('');
 }
 
 /**
@@ -66,28 +91,39 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  renderSignals(data.signals);
 
   // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl) {
+    if (data.level >= 3) {
+      alertEl.className = `alert-banner active ${data.level >= 4 ? 'alert-danger' : 'alert-warning'}`;
+      alertEl.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+    } else {
+      alertEl.className = 'alert-banner';
+      alertEl.textContent = '';
+    }
   }
+}
+
+function renderSessionDuration(sessionStart: number): void {
+  const timerEl = document.getElementById('sessionDuration');
+  if (!timerEl) return;
+
+  const elapsedMs = Date.now() - sessionStart;
+  const totalMinutes = Math.floor(elapsedMs / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  timerEl.textContent = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
 // Request score from background
@@ -107,15 +143,21 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
 
 // Session timer
 const sessionStart = Date.now();
+renderSessionDuration(sessionStart);
 setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
+  renderSessionDuration(sessionStart);
 }, 60000);
 
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
+const platformEl = document.getElementById('platform');
+if (platformEl) {
+  platformEl.textContent = 'Browser extension';
+}
+
+renderSignals([0, 0, 0, 0, 0, 0, 0]);
+
+// Check auth state and update connection indicator, agent list, sync status.
 (async () => {
-  const auth = getAuthState();
+  const auth = await initAuthSync();
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {

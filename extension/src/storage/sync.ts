@@ -24,6 +24,14 @@ interface NavigatorWithConnection extends Navigator {
   };
 }
 
+function waitForTransaction(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 /**
  * Open the IndexedDB database.
  */
@@ -55,6 +63,7 @@ export async function queueEvent(type: string, payload: unknown): Promise<void> 
     payload,
     synced: false,
   });
+  await waitForTransaction(tx);
 }
 
 /**
@@ -80,7 +89,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
 
       for (const event of events) {
         try {
-          await fetch(`${auth.gatewayUrl}/api/memory`, {
+          const response = await fetch(`${auth.gatewayUrl}/api/memory`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -94,10 +103,15 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
             signal: AbortSignal.timeout(5000),
           });
 
+          if (!response.ok) {
+            throw new Error(`Sync failed with ${response.status}`);
+          }
+
           // Mark as synced.
           const updateTx = db.transaction(PENDING_STORE, 'readwrite');
           const updateStore = updateTx.objectStore(PENDING_STORE);
           updateStore.put({ ...event, synced: true });
+          await waitForTransaction(updateTx);
           synced++;
         } catch {
           failed++;
