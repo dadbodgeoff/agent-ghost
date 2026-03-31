@@ -102,7 +102,6 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
 
     let port = read_port_from_config(&config_path);
 
-
     // Store port for other commands to use.
     handle.manage(GatewayPort(port));
 
@@ -159,12 +158,13 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     }
 
     // Phase 3: Spawn the sidecar.
-    let sidecar = handle
-        .shell()
-        .sidecar("ghost")
-        .map_err(|e| GhostDesktopError::GatewayStartFailed {
-            reason: e.to_string(),
-        })?;
+    let sidecar =
+        handle
+            .shell()
+            .sidecar("ghost")
+            .map_err(|e| GhostDesktopError::GatewayStartFailed {
+                reason: e.to_string(),
+            })?;
     log::info!("Using config: {config_path}");
 
     // Derive dev port (Vite) as gateway_port + 1.
@@ -191,9 +191,11 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
 
     cmd = cmd.env("GHOST_TOKEN", &desktop_gateway_token);
 
-    let (mut rx, child) = cmd.spawn().map_err(|e| GhostDesktopError::GatewayStartFailed {
-        reason: e.to_string(),
-    })?;
+    let (mut rx, child) = cmd
+        .spawn()
+        .map_err(|e| GhostDesktopError::GatewayStartFailed {
+            reason: e.to_string(),
+        })?;
 
     // Store child handle for shutdown.
     handle.manage(GatewayProcess(Mutex::new(Some(child))));

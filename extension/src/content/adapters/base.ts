@@ -9,6 +9,7 @@ export interface ParsedMessage {
 }
 
 export abstract class BasePlatformAdapter {
+  abstract readonly platformId: string;
   abstract matches(url: string): boolean;
   abstract getMessageContainerSelector(): string;
   abstract parseMessage(element: Element): ParsedMessage | null;

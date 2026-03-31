@@ -2,11 +2,14 @@
  * ITP event emitter — sends events to native messaging host or IndexedDB fallback.
  */
 
+import { queueEvent } from '../storage/sync';
+
 interface ITPEvent {
   eventType: string;
   platform: string;
   timestamp: string;
   sessionId?: string;
+  pageUrl?: string;
   role?: string;
   contentHash?: string;
 }
@@ -42,10 +45,16 @@ export class ITPEmitter {
 
   emit(event: ITPEvent): void {
     if (this.useNative && this.nativePort) {
-      this.nativePort.postMessage(event);
-    } else {
-      this.storeInIndexedDB(event);
+      try {
+        this.nativePort.postMessage(event);
+        return;
+      } catch {
+        this.nativePort = null;
+        this.useNative = false;
+      }
     }
+
+    void this.storeForSync(event);
   }
 
   getLatestScore(): number {
@@ -58,29 +67,10 @@ export class ITPEmitter {
     }
   }
 
-  private async storeInIndexedDB(event: ITPEvent): Promise<void> {
-    const db = await this.openDB();
-    const tx = db.transaction('events', 'readwrite');
-    tx.objectStore('events').add({
+  private async storeForSync(event: ITPEvent): Promise<void> {
+    await queueEvent(event.eventType, {
       ...event,
       storedAt: new Date().toISOString(),
-    });
-  }
-
-  private openDB(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open('ghost-itp', 1);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains('events')) {
-          db.createObjectStore('events', { autoIncrement: true });
-        }
-        if (!db.objectStoreNames.contains('settings')) {
-          db.createObjectStore('settings', { keyPath: 'key' });
-        }
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
     });
   }
 }

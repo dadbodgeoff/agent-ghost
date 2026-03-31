@@ -20,6 +20,19 @@ export interface GatewayHealth {
 
 type JsonObject = Record<string, unknown>;
 
+async function readResponseBody<T>(resp: Response): Promise<T> {
+  if (resp.status === 204) {
+    return undefined as T;
+  }
+
+  const text = await resp.text();
+  if (!text.trim()) {
+    return undefined as T;
+  }
+
+  return JSON.parse(text) as T;
+}
+
 /**
  * Make an authenticated request to the gateway.
  */
@@ -43,7 +56,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error(`Gateway ${resp.status}: ${resp.statusText}`);
   }
 
-  return (await resp.json()) as T;
+  return readResponseBody<T>(resp);
 }
 
 /**
@@ -57,7 +70,10 @@ export async function getHealth(): Promise<GatewayHealth> {
  * Get list of agents.
  */
 export async function getAgents(): Promise<AgentSummary[]> {
-  const data = await request<{ agents?: AgentSummary[] }>('/api/agents');
+  const data = await request<{ agents?: AgentSummary[] } | AgentSummary[]>('/api/agents');
+  if (Array.isArray(data)) {
+    return data;
+  }
   return data.agents || [];
 }
 

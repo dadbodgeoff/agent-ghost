@@ -24,6 +24,14 @@ interface NavigatorWithConnection extends Navigator {
   };
 }
 
+function waitForTransaction(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 /**
  * Open the IndexedDB database.
  */
@@ -55,6 +63,7 @@ export async function queueEvent(type: string, payload: unknown): Promise<void> 
     payload,
     synced: false,
   });
+  await waitForTransaction(tx);
 }
 
 /**
@@ -80,7 +89,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
 
       for (const event of events) {
         try {
-          await fetch(`${auth.gatewayUrl}/api/memory`, {
+          const resp = await fetch(`${auth.gatewayUrl}/api/memory`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -93,11 +102,16 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
             }),
             signal: AbortSignal.timeout(5000),
           });
+          if (!resp.ok) {
+            failed++;
+            break;
+          }
 
           // Mark as synced.
           const updateTx = db.transaction(PENDING_STORE, 'readwrite');
           const updateStore = updateTx.objectStore(PENDING_STORE);
           updateStore.put({ ...event, synced: true });
+          await waitForTransaction(updateTx);
           synced++;
         } catch {
           failed++;
@@ -142,6 +156,14 @@ export async function cleanupSyncedEvents(): Promise<void> {
  * `navigator.connection` change events if available.
  */
 export function initAutoSync(): void {
+  if (navigator.onLine) {
+    void syncPendingEvents().then(async (result) => {
+      if (result.synced > 0) {
+        await chrome.storage.local.set({ 'ghost-last-sync': Date.now() });
+      }
+    });
+  }
+
   // Sync pending events whenever the browser comes back online.
   self.addEventListener('online', async () => {
     const result = await syncPendingEvents();

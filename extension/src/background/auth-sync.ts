@@ -22,6 +22,24 @@ const currentState: AuthState = {
   lastValidated: 0,
 };
 
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') {
+    return;
+  }
+
+  if (JWT_TOKEN_KEY in changes) {
+    currentState.token = changes[JWT_TOKEN_KEY]?.newValue || null;
+    if (!currentState.token) {
+      currentState.authenticated = false;
+      currentState.lastValidated = 0;
+    }
+  }
+
+  if (GATEWAY_URL_KEY in changes) {
+    currentState.gatewayUrl = changes[GATEWAY_URL_KEY]?.newValue || 'http://localhost:39780';
+  }
+});
+
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
@@ -60,6 +78,7 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
 export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
+  currentState.lastValidated = 0;
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 
