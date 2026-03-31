@@ -97,6 +97,7 @@ class AgentsStore {
 
   /** Refresh agents from REST API. */
   async refresh() {
+    this.error = '';
     try {
       const client = await getGhostClient();
       this.list = await client.agents.list();

@@ -2,8 +2,18 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+
+const SIGNAL_LABELS = [
+  'Session Duration',
+  'Inter-Session Gap',
+  'Response Latency',
+  'Vocabulary Convergence',
+  'Goal Boundary Erosion',
+  'Initiative Balance',
+  'Disengagement Resistance',
+];
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -28,6 +38,8 @@ function updateConnectionIndicator(connected: boolean): void {
 async function loadAgentList(): Promise<void> {
   const container = document.getElementById('agentList');
   if (!container) return;
+
+  container.innerHTML = '<span class="agent-list-empty">Loading agents...</span>';
 
   try {
     const agents = await getAgents();
@@ -66,56 +78,99 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  const signalList = document.getElementById('signalList');
+  if (signalList) {
+    signalList.innerHTML = data.signals
+      .map((value, index) => {
+        const pct = Math.max(0, Math.min(100, value * 100));
+        return `
+          <div class="signal-row">
+            <span class="signal-name">${SIGNAL_LABELS[index] ?? `Signal ${index + 1}`}</span>
+            <div style="display:flex;align-items:center;">
+              <span class="signal-value">${value.toFixed(2)}</span>
+              <span class="signal-bar">
+                <span class="signal-bar-fill" style="width:${pct}%;background:#22c55e;"></span>
+              </span>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+  }
 
   // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl) {
+    if (data.level >= 3) {
+      alertEl.className = `alert-banner active ${data.level >= 4 ? 'alert-danger' : 'alert-warning'}`;
+      alertEl.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+    } else {
+      alertEl.className = 'alert-banner';
+      alertEl.textContent = '';
+    }
   }
 }
 
-// Request score from background
-chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
-    updateUI({
-      score: response.score,
-      level,
-      signals: [0, 0, 0, 0, 0, 0, 0],
-    });
+function updateSessionDuration(startedAt: number): void {
+  const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 60000));
+  const timerEl = document.getElementById('sessionDuration');
+  if (timerEl) {
+    timerEl.textContent = `${elapsed}m`;
   }
-});
+}
 
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
+function updatePlatform(platform: string): void {
+  const platformEl = document.getElementById('platform');
+  if (platformEl) {
+    platformEl.textContent = platform;
+  }
+}
 
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
+async function loadScore(): Promise<void> {
+  const response = await new Promise<{ score?: number } | undefined>((resolve) => {
+    chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (message) => {
+      if (chrome.runtime.lastError) {
+        resolve(undefined);
+        return;
+      }
+      resolve(message);
+    });
+  });
+
+  const score = response?.score;
+  if (typeof score !== 'number') {
+    return;
+  }
+
+  const level = score > 0.85 ? 4 :
+    score > 0.7 ? 3 :
+    score > 0.5 ? 2 :
+    score > 0.3 ? 1 : 0;
+  updateUI({
+    score,
+    level,
+    signals: [0, 0, 0, 0, 0, 0, 0],
+  });
+}
+
 (async () => {
-  const auth = getAuthState();
+  const sessionStart = Date.now();
+  updateSessionDuration(sessionStart);
+  setInterval(() => updateSessionDuration(sessionStart), 60_000);
+
+  updatePlatform('Browser extension');
+  await loadScore();
+
+  const auth = await initAuthSync();
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {

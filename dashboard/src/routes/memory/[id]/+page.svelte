@@ -22,6 +22,13 @@
   });
 
   async function loadMemory() {
+    if (!memoryId) {
+      memory = null;
+      error = 'Memory ID is missing';
+      loading = false;
+      return;
+    }
+
     loading = true;
     error = '';
 

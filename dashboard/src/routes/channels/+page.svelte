@@ -14,6 +14,8 @@
   let error = $state('');
   let showAddForm = $state(false);
   let creating = $state(false);
+  let agentsLoading = $state(false);
+  let agentsError = $state('');
 
   // Add channel form state
   let newChannelType = $state('cli');
@@ -75,6 +77,8 @@
   }
 
   async function loadAgents() {
+    agentsLoading = true;
+    agentsError = '';
     try {
       const client = await getGhostClient();
       const data = await client.agents.list();
@@ -82,7 +86,16 @@
       if (agents.length > 0 && !newAgentId) {
         newAgentId = agents[0].id;
       }
-    } catch { /* non-fatal */ }
+      if (agents.length === 0) {
+        newAgentId = '';
+      }
+    } catch (e: unknown) {
+      agents = [];
+      newAgentId = '';
+      agentsError = e instanceof Error ? e.message : 'Failed to load agents';
+    } finally {
+      agentsLoading = false;
+    }
   }
 
   function parseChannelConfig(): Record<string, unknown> | null {
@@ -193,17 +206,25 @@
       </label>
       <label>
         <span class="label-text">Agent</span>
-        <select bind:value={newAgentId}>
-          {#each agents as agent}
-            <option value={agent.id}>{agent.name}</option>
-          {/each}
-        </select>
+        {#if agentsLoading}
+          <div class="inline-state">Loading agents…</div>
+        {:else if agentsError}
+          <div class="inline-state inline-state-error" role="alert">{agentsError}</div>
+        {:else if agents.length === 0}
+          <div class="inline-state">Create an agent before adding a channel.</div>
+        {:else}
+          <select bind:value={newAgentId}>
+            {#each agents as agent}
+              <option value={agent.id}>{agent.name}</option>
+            {/each}
+          </select>
+        {/if}
       </label>
       <label class="config-field">
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      <button class="btn-primary" onclick={addChannel} disabled={creating || agentsLoading || agents.length === 0}>
         {creating ? 'Creating…' : 'Create'}
       </button>
     </div>
@@ -324,6 +345,23 @@
     border-radius: var(--radius-sm);
     color: var(--color-text-primary);
     font-size: var(--font-size-sm);
+  }
+
+  .inline-state {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--spacing-2);
+    background: var(--color-bg-elevated-2);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .inline-state-error {
+    border-color: var(--color-severity-hard);
+    color: var(--color-severity-hard);
   }
 
   .config-field {

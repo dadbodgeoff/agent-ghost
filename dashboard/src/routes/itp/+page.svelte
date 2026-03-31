@@ -43,6 +43,14 @@
       });
       applyResponse(data);
     } catch (e: unknown) {
+      applyResponse({
+        events: [],
+        monitor_connected: false,
+        live_updates_supported: false,
+        total_persisted: 0,
+        total_filtered: 0,
+        returned: 0,
+      });
       error = e instanceof Error ? e.message : 'Failed to load ITP events';
     } finally {
       loading = false;
@@ -234,7 +242,7 @@
   <div class="skeleton-block">&nbsp;</div>
 {:else if events.length === 0}
   <div class="empty-state">
-    <p>No ITP events match the current filters.</p>
+    <p>{sessionFilter || eventTypeFilter ? 'No ITP events match the current filters.' : 'No ITP events have been recorded yet.'}</p>
   </div>
 {:else}
   <div class="table-wrap">

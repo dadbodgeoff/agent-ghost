@@ -88,6 +88,7 @@ class ConvergenceStore {
 
   /** Refresh convergence scores from REST. */
   async refresh() {
+    this.error = '';
     try {
       const client = await getGhostClient();
       const data = await client.convergence.scores();

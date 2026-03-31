@@ -64,7 +64,9 @@
   async function confirmInstall() {
     if (!confirmSkill) return;
     await doAction(confirmSkill, 'install');
-    confirmSkill = null;
+    if (!error) {
+      confirmSkill = null;
+    }
   }
 
   async function confirmQuarantine() {
@@ -83,6 +85,7 @@
 
   async function doAction(skill: Skill, action: SkillAction, reason?: string) {
     actionLoading = skill.id;
+    error = null;
     try {
       const client = await getGhostClient();
       switch (action) {

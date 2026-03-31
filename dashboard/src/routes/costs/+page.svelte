@@ -12,13 +12,15 @@
   let error = $derived(costsStore.error);
 
   function remaining(c: AgentCostInfo): number {
-    return Math.max(0, c.cap_remaining ?? c.spending_cap - c.daily_total);
+    const spendingCap = c.spending_cap ?? 0;
+    return Math.max(0, c.cap_remaining ?? spendingCap - c.daily_total);
   }
 
   function utilization(c: AgentCostInfo): number {
     if (c.cap_utilization_pct !== undefined) return Math.min(100, c.cap_utilization_pct);
-    if (c.spending_cap <= 0) return 0;
-    return Math.min(100, (c.daily_total / c.spending_cap) * 100);
+    const spendingCap = c.spending_cap ?? 0;
+    if (spendingCap <= 0) return 0;
+    return Math.min(100, (c.daily_total / spendingCap) * 100);
   }
 
   function utilizationColor(pct: number): string {

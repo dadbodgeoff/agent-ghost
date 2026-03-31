@@ -2,7 +2,7 @@
  * JWT auth sync between extension and GHOST dashboard (T-4.9.1).
  *
  * Reads JWT token from chrome.storage.local and validates it against
- * the gateway /api/health endpoint. Syncs auth state with dashboard.
+ * the gateway auth session endpoint. Syncs auth state with dashboard.
  */
 
 const GATEWAY_URL_KEY = 'ghost-gateway-url';
@@ -73,7 +73,7 @@ async function validateToken(): Promise<boolean> {
   }
 
   try {
-    const resp = await fetch(`${currentState.gatewayUrl}/api/health`, {
+    const resp = await fetch(`${currentState.gatewayUrl}/api/auth/session`, {
       headers: {
         Authorization: `Bearer ${currentState.token}`,
       },
