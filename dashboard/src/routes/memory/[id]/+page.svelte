@@ -69,10 +69,18 @@
     }
   }
 
-  function parseSnapshot(raw: string | Record<string, unknown>): Record<string, any> {
+  type SnapshotValue = string | number | boolean | null | SnapshotObject | SnapshotValue[];
+  type SnapshotObject = Record<string, SnapshotValue>;
+
+  function isSnapshotObject(value: unknown): value is SnapshotObject {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  function parseSnapshot(raw: string | Record<string, unknown>): SnapshotObject {
     if (typeof raw !== 'string') return raw;
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return isSnapshotObject(parsed) ? parsed : { raw };
     } catch {
       return { raw };
     }

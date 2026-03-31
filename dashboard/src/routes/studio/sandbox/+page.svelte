@@ -17,7 +17,7 @@
     action: string;
     reasoning: string;
     tool?: string;
-    args?: Record<string, any>;
+    args?: Record<string, unknown>;
     simulated: boolean;
   }> = $state([]);
   let error = $state('');

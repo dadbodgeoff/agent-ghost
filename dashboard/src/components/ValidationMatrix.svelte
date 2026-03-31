@@ -18,8 +18,10 @@
     passed: boolean;
   }
 
+  type ScoreValue = number | { score?: number; threshold?: number; passed?: boolean };
+
   interface Props {
-    scores?: Record<string, any>;
+    scores?: Record<string, ScoreValue>;
     compact?: boolean;
   }
 

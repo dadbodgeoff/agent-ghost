@@ -10,7 +10,7 @@
     label: string;
     x: number;
     y: number;
-    config: Record<string, any>;
+    config: Record<string, unknown>;
     branch_group?: string;
     condition?: string;
     execution_status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'passed';

@@ -4,7 +4,7 @@
    * Provides pre-built agent configurations as starting points.
    */
 
-  interface AgentTemplate {
+  export interface AgentTemplate {
     id: string;
     name: string;
     description: string;

@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
   import * as d3 from 'd3-force';
+  import type { Selection } from 'd3-selection';
   import { select } from 'd3-selection';
   import { zoom as d3Zoom } from 'd3-zoom';
   import { drag as d3Drag } from 'd3-drag';
@@ -23,9 +24,9 @@
   let graphEdges: MemoryGraphEdge[] = $state([]);
   let filteredNodeIds: Set<string> | null = $state(null);
   let simulation: ReturnType<typeof d3.forceSimulation<MemoryGraphNode>> | null = null;
-  let linkSelection: any = null;
-  let nodeSelection: any = null;
-  let nodeLabelSelection: any = null;
+  let linkSelection: Selection<SVGLineElement, MemoryGraphEdge, SVGGElement, unknown> | null = null;
+  let nodeSelection: Selection<SVGCircleElement, MemoryGraphNode, SVGGElement, unknown> | null = null;
+  let nodeLabelSelection: Selection<SVGTextElement, MemoryGraphNode, SVGGElement, unknown> | null = null;
 
   const TYPE_COLORS: Record<string, string> = {
     entity: '#7c3aed',

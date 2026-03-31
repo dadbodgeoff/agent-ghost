@@ -19,9 +19,13 @@
     focused?: boolean;
   } = $props();
 
-  function parseSnapshot(raw: string): Record<string, any> {
+  type SnapshotValue = string | number | boolean | null | SnapshotObject | SnapshotValue[];
+  type SnapshotObject = Record<string, SnapshotValue>;
+
+  function parseSnapshot(raw: string): SnapshotObject {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return isSnapshotObject(parsed) ? parsed : { content: raw };
     } catch {
       return { content: raw };
     }
@@ -41,17 +45,33 @@
     IMPORTANCE_COLORS[(data.importance ?? '').toLowerCase()] ?? 'var(--color-text-muted)'
   );
 
-  function previewContent(data: Record<string, any>): string {
-    if (typeof data.summary === 'string' && data.summary.trim()) return data.summary;
-    if (typeof data.content === 'string' && data.content.trim()) return data.content;
-    if (data.content && typeof data.content === 'object') {
+  function isSnapshotObject(value: unknown): value is SnapshotObject {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  function readString(value: SnapshotValue | undefined): string | null {
+    return typeof value === 'string' && value.trim() ? value : null;
+  }
+
+  function previewContent(data: SnapshotObject): string {
+    const summary = readString(data.summary);
+    if (summary) return summary;
+
+    const content = data.content;
+    const contentText = readString(content);
+    if (contentText) return contentText;
+
+    if (isSnapshotObject(content)) {
       for (const key of ['goal_text', 'text', 'message', 'description', 'fact']) {
-        const value = data.content[key];
-        if (typeof value === 'string' && value.trim()) return value;
+        const value = readString(content[key]);
+        if (value) return value;
       }
-      return JSON.stringify(data.content).slice(0, 200);
+      return JSON.stringify(content).slice(0, 200);
     }
-    if (typeof data.text === 'string' && data.text.trim()) return data.text;
+
+    const text = readString(data.text);
+    if (text) return text;
+
     return JSON.stringify(data).slice(0, 200);
   }
 </script>

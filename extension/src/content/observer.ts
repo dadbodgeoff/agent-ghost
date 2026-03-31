@@ -28,12 +28,12 @@ function init(): void {
     return;
   }
 
-  console.log(`[GHOST] Using adapter for: ${url}`);
+  console.log(`[GHOST] Using adapter for: ${adapter.platformName}`);
 
   // Notify session start
   chrome.runtime.sendMessage({
     type: 'SESSION_START',
-    platform: url,
+    platform: adapter.platformName,
     sessionId: generateSessionId(),
   });
 
@@ -42,7 +42,7 @@ function init(): void {
     const contentHash = await adapter.hashContent(msg.content);
     chrome.runtime.sendMessage({
       type: 'NEW_MESSAGE',
-      platform: url,
+      platform: adapter.platformName,
       role: msg.role,
       contentHash,
       sessionId: generateSessionId(),

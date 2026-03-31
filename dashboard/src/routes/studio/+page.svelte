@@ -13,6 +13,7 @@
   import ChatMessage from '../../components/ChatMessage.svelte';
   import ToolCallIndicator from '../../components/ToolCallIndicator.svelte';
   import AgentTemplateSelector from '../../components/AgentTemplateSelector.svelte';
+  import type { AgentTemplate } from '../../components/AgentTemplateSelector.svelte';
   import ArtifactPanel, { extractArtifacts, type Artifact } from '../../components/ArtifactPanel.svelte';
   import StudioInput from '../../components/StudioInput.svelte';
   import VirtualMessageList from '../../components/VirtualMessageList.svelte';
@@ -20,7 +21,7 @@
 
   let responseTime = $state(0);
   let searchQuery = $state('');
-  let selectedTemplate = $state<any>(null);
+  let selectedTemplate = $state<AgentTemplate | null>(null);
   let artifacts = $state<Artifact[]>([]);
   let showArtifacts = $state(false);
   let chatAreaHeight = $state(0);
@@ -158,7 +159,7 @@
     responseTime = Math.round(performance.now() - start);
   }
 
-  function handleTemplateSelect(template: any) {
+  function handleTemplateSelect(template: AgentTemplate) {
     // Toggle selection — clicking the same template deselects it.
     if (selectedTemplate?.id === template.id) {
       selectedTemplate = null;

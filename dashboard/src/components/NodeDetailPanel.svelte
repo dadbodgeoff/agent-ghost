@@ -20,7 +20,7 @@
     content_hash?: string;
     latency_ms?: number;
     token_count?: number;
-    attributes?: Record<string, any>;
+    attributes?: Record<string, unknown>;
     gates?: Array<{ name: string; status: 'pass' | 'fail' | 'warning' | 'unknown'; detail?: string }>;
   }
 

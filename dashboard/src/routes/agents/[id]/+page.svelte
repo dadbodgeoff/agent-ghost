@@ -10,6 +10,23 @@
 
   type ConfirmAction = 'pause' | 'quarantine' | 'resume_pause' | 'resume_quarantine' | null;
 
+  interface IntegrityBreakSummary {
+    length: number;
+  }
+
+  interface IntegrityChainSummary {
+    total_events: number;
+    sessions_checked?: number;
+    memory_chains_checked?: number;
+    is_valid: boolean;
+    breaks: IntegrityBreakSummary[];
+  }
+
+  interface IntegrityChains {
+    itp_events?: IntegrityChainSummary;
+    memory_events?: IntegrityChainSummary;
+  }
+
   let agentId = $derived($page.params.id);
   let agent: AgentDetail | null = $state(null);
   let overview: AgentOverview | null = $state(null);
@@ -443,7 +460,7 @@
     <section class="card wide">
       <h2>Hash Chain Integrity</h2>
       {#if isReady('integrity_summary') && overview.integrity_summary?.chains}
-        {@const chains = overview.integrity_summary.chains as Record<string, any>}
+        {@const chains = overview.integrity_summary.chains as IntegrityChains}
         {#if chains.itp_events}
           <div class="integrity-section">
             <h3>ITP Events</h3>
