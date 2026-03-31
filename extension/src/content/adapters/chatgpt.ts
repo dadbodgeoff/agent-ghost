@@ -5,25 +5,30 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class ChatGPTAdapter extends BasePlatformAdapter {
+  platformId(): string {
+    return 'chatgpt';
+  }
+
   matches(url: string): boolean {
     return url.includes('chat.openai.com') || url.includes('chatgpt.com');
   }
 
-  getMessageContainerSelector(): string {
-    return '[class*="react-scroll-to-bottom"]';
+  getMessageContainerSelectors(): string[] {
+    return ['[class*="react-scroll-to-bottom"]', 'main .flex.flex-col', 'main'];
   }
 
   parseMessage(element: Element): ParsedMessage | null {
-    const isAssistant = element.querySelector('[data-message-author-role="assistant"]');
-    const isUser = element.querySelector('[data-message-author-role="user"]');
+    const messageRoot = this.findClosest(element, ['[data-message-author-role]']);
+    const role = messageRoot?.getAttribute('data-message-author-role');
+    if (role !== 'assistant' && role !== 'user') return null;
 
-    if (!isAssistant && !isUser) return null;
-
-    const content = element.textContent?.trim() || '';
+    const content = this.extractText(
+      this.findClosest(messageRoot, ['.markdown', '.whitespace-pre-wrap']) ?? messageRoot,
+    );
     if (!content) return null;
 
     return {
-      role: isAssistant ? 'assistant' : 'human',
+      role: role === 'assistant' ? 'assistant' : 'human',
       content,
       timestamp: new Date(),
     };

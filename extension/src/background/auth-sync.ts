@@ -7,6 +7,7 @@
 
 const GATEWAY_URL_KEY = 'ghost-gateway-url';
 const JWT_TOKEN_KEY = 'ghost-jwt-token';
+const DEFAULT_GATEWAY_URL = 'http://localhost:39780';
 
 export interface AuthState {
   authenticated: boolean;
@@ -17,17 +18,47 @@ export interface AuthState {
 
 const currentState: AuthState = {
   authenticated: false,
-  gatewayUrl: 'http://localhost:39780',
+  gatewayUrl: DEFAULT_GATEWAY_URL,
   token: null,
   lastValidated: 0,
 };
+let storageSyncInitialized = false;
+
+function normalizeGatewayUrl(url: string | undefined): string {
+  return (url || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
+}
+
+function initStorageSync(): void {
+  if (storageSyncInitialized) {
+    return;
+  }
+  storageSyncInitialized = true;
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') {
+      return;
+    }
+
+    if (changes[GATEWAY_URL_KEY]) {
+      currentState.gatewayUrl = normalizeGatewayUrl(changes[GATEWAY_URL_KEY].newValue as string | undefined);
+    }
+    if (changes[JWT_TOKEN_KEY]) {
+      currentState.token = (changes[JWT_TOKEN_KEY].newValue as string | undefined) || null;
+    }
+
+    if (changes[GATEWAY_URL_KEY] || changes[JWT_TOKEN_KEY]) {
+      void validateToken();
+    }
+  });
+}
 
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
 export async function initAuthSync(): Promise<AuthState> {
+  initStorageSync();
   const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
+  currentState.gatewayUrl = normalizeGatewayUrl(stored[GATEWAY_URL_KEY]);
   currentState.token = stored[JWT_TOKEN_KEY] || null;
 
   if (currentState.token) {
@@ -43,7 +74,7 @@ export async function initAuthSync(): Promise<AuthState> {
 export async function storeToken(token: string, gatewayUrl?: string): Promise<void> {
   currentState.token = token;
   if (gatewayUrl) {
-    currentState.gatewayUrl = gatewayUrl;
+    currentState.gatewayUrl = normalizeGatewayUrl(gatewayUrl);
   }
 
   await chrome.storage.local.set({
@@ -60,6 +91,7 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
 export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
+  currentState.lastValidated = 0;
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 
@@ -85,6 +117,7 @@ async function validateToken(): Promise<boolean> {
     return resp.ok;
   } catch {
     currentState.authenticated = false;
+    currentState.lastValidated = Date.now();
     return false;
   }
 }

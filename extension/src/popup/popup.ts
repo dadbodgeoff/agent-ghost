@@ -2,7 +2,7 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -41,7 +41,7 @@ async function loadAgentList(): Promise<void> {
           `<div class="agent-list-item">` +
           `<span class="agent-name">${a.name || a.id}</span>` +
           `<span class="agent-state">${a.state}</span>` +
-          `</div>`
+          `</div>`,
       )
       .join('');
   } catch {
@@ -66,56 +66,90 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
   data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
+    const valueEl = document.getElementById(`signal-value-${i}`);
+    const barEl = document.getElementById(`signal-bar-${i}`);
+    if (valueEl) {
+      valueEl.textContent = val.toFixed(3);
+    }
+    if (barEl instanceof HTMLElement) {
+      barEl.style.width = `${Math.max(0, Math.min(1, val)) * 100}%`;
+    }
   });
 
-  // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl) {
+    if (data.level >= 3) {
+      alertEl.classList.add('active', 'alert-danger');
+      alertEl.classList.remove('alert-warning');
+      alertEl.textContent = `Intervention Level ${data.level} — Session may be terminated`;
+    } else if (data.level >= 2) {
+      alertEl.classList.add('active', 'alert-warning');
+      alertEl.classList.remove('alert-danger');
+      alertEl.textContent = 'Intervention Level 2 — Acknowledgment required';
+    } else {
+      alertEl.classList.remove('active', 'alert-warning', 'alert-danger');
+      alertEl.textContent = '';
+    }
   }
 }
 
-// Request score from background
-chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
-    updateUI({
-      score: response.score,
-      level,
-      signals: [0, 0, 0, 0, 0, 0, 0],
-    });
+function renderScore(score: number): void {
+  const level = score > 0.85 ? 4 :
+                score > 0.7 ? 3 :
+                score > 0.5 ? 2 :
+                score > 0.3 ? 1 : 0;
+  updateUI({
+    score,
+    level,
+    signals: [0, 0, 0, 0, 0, 0, 0],
+  });
+}
+
+function requestScore(): void {
+  chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
+    const score = typeof response?.score === 'number' ? response.score : 0;
+    renderScore(score);
+  });
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'score_update' && typeof message.data?.score === 'number') {
+    renderScore(message.data.score);
   }
 });
 
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
+requestScore();
+setInterval(requestScore, 5000);
 
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
+const sessionStart = Date.now();
+function renderSessionTimer(): void {
+  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
+  const timerEl = document.getElementById('sessionDuration');
+  if (timerEl) timerEl.textContent = `${elapsed}m`;
+}
+renderSessionTimer();
+setInterval(renderSessionTimer, 60000);
+
 (async () => {
-  const auth = getAuthState();
+  const auth = await initAuthSync();
+  const platformEl = document.getElementById('platform');
+  if (platformEl) {
+    try {
+      platformEl.textContent = new URL(auth.gatewayUrl).host;
+    } catch {
+      platformEl.textContent = auth.gatewayUrl;
+    }
+  }
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {
@@ -125,6 +159,12 @@ setInterval(() => {
     if (container) {
       container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
     }
+  }
+
+  const syncStatus = document.getElementById('syncStatus');
+  if (syncStatus && auth.lastValidated > 0) {
+    syncStatus.textContent = new Date(auth.lastValidated).toLocaleTimeString();
+    return;
   }
 
   await loadSyncStatus();

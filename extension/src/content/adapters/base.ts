@@ -9,32 +9,83 @@ export interface ParsedMessage {
 }
 
 export abstract class BasePlatformAdapter {
+  abstract platformId(): string;
   abstract matches(url: string): boolean;
-  abstract getMessageContainerSelector(): string;
+  abstract getMessageContainerSelectors(): string[];
   abstract parseMessage(element: Element): ParsedMessage | null;
 
-  observeNewMessages(callback: (msg: ParsedMessage) => void): MutationObserver {
-    const selector = this.getMessageContainerSelector();
-    const container = document.querySelector(selector);
+  findMessageContainer(): Element | null {
+    for (const selector of this.getMessageContainerSelectors()) {
+      const container = document.querySelector(selector);
+      if (container) {
+        return container;
+      }
+    }
+    return null;
+  }
 
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node instanceof Element) {
-            const msg = this.parseMessage(node);
-            if (msg) {
-              callback(msg);
-            }
-          }
+  observeNewMessages(callback: (msg: ParsedMessage) => void): () => void {
+    let containerObserver: MutationObserver | null = null;
+    let rootObserver: MutationObserver | null = null;
+
+    const visitNode = (node: Node) => {
+      if (!(node instanceof Element)) {
+        return;
+      }
+
+      const parsed = this.parseMessage(node);
+      if (parsed) {
+        callback(parsed);
+      }
+
+      for (const descendant of node.querySelectorAll('*')) {
+        const nested = this.parseMessage(descendant);
+        if (nested) {
+          callback(nested);
         }
       }
-    });
+    };
 
-    if (container) {
-      observer.observe(container, { childList: true, subtree: true });
+    const attachToContainer = (container: Element) => {
+      if (containerObserver) {
+        containerObserver.disconnect();
+      }
+
+      containerObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (const node of mutation.addedNodes) {
+            visitNode(node);
+          }
+        }
+      });
+
+      containerObserver.observe(container, { childList: true, subtree: true });
+    };
+
+    const existingContainer = this.findMessageContainer();
+    if (existingContainer) {
+      attachToContainer(existingContainer);
+    } else {
+      rootObserver = new MutationObserver(() => {
+        const container = this.findMessageContainer();
+        if (!container) {
+          return;
+        }
+        attachToContainer(container);
+        rootObserver?.disconnect();
+        rootObserver = null;
+      });
+
+      const root = document.body ?? document.documentElement;
+      if (root) {
+        rootObserver.observe(root, { childList: true, subtree: true });
+      }
     }
 
-    return observer;
+    return () => {
+      containerObserver?.disconnect();
+      rootObserver?.disconnect();
+    };
   }
 
   /** SHA-256 hash of content for privacy. */
@@ -44,5 +95,31 @@ export abstract class BasePlatformAdapter {
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  protected findClosest(
+    element: Element | null | undefined,
+    selectors: string[],
+  ): Element | null {
+    if (!element) {
+      return null;
+    }
+
+    for (const selector of selectors) {
+      if (element.matches(selector)) {
+        return element;
+      }
+
+      const nested = element.querySelector(selector);
+      if (nested) {
+        return nested;
+      }
+    }
+
+    return null;
+  }
+
+  protected extractText(element: Element | null): string {
+    return element?.textContent?.trim() || '';
   }
 }

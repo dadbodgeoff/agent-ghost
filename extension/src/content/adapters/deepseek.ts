@@ -5,22 +5,28 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class DeepSeekAdapter extends BasePlatformAdapter {
+  platformId(): string {
+    return 'deepseek';
+  }
+
   matches(url: string): boolean {
     return url.includes('chat.deepseek.com');
   }
 
-  getMessageContainerSelector(): string {
-    return '.chat-message-list';
+  getMessageContainerSelectors(): string[] {
+    return ['.chat-message-list', '[class*="conversation"]', 'main'];
   }
 
   parseMessage(element: Element): ParsedMessage | null {
-    const content = element.textContent?.trim() || '';
+    const userRoot = this.findClosest(element, ['.user-message', '[class*="user"]', '[class*="human"]']);
+    const assistantRoot = this.findClosest(element, ['[class*="assistant"]', '[class*="bot"]']);
+    if (!userRoot && !assistantRoot) return null;
+
+    const content = this.extractText(assistantRoot ?? userRoot);
     if (!content) return null;
 
-    const isUser = element.classList.contains('user-message');
-
     return {
-      role: isUser ? 'human' : 'assistant',
+      role: userRoot ? 'human' : 'assistant',
       content,
       timestamp: new Date(),
     };

@@ -5,25 +5,28 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class ClaudeAdapter extends BasePlatformAdapter {
+  platformId(): string {
+    return 'claude';
+  }
+
   matches(url: string): boolean {
     return url.includes('claude.ai');
   }
 
-  getMessageContainerSelector(): string {
-    return '[class*="conversation-content"]';
+  getMessageContainerSelectors(): string[] {
+    return ['[class*="conversation-content"]', '[class*="conversation"]', 'main'];
   }
 
   parseMessage(element: Element): ParsedMessage | null {
-    const isHuman = element.querySelector('[class*="human-message"]');
-    const isAssistant = element.querySelector('[class*="assistant-message"]');
+    const humanRoot = this.findClosest(element, ['[class*="human-message"]', '[class*="user"]']);
+    const assistantRoot = this.findClosest(element, ['[class*="assistant-message"]', '[class*="claude"]']);
+    if (!humanRoot && !assistantRoot) return null;
 
-    if (!isHuman && !isAssistant) return null;
-
-    const content = element.textContent?.trim() || '';
+    const content = this.extractText(assistantRoot ?? humanRoot);
     if (!content) return null;
 
     return {
-      role: isAssistant ? 'assistant' : 'human',
+      role: assistantRoot ? 'assistant' : 'human',
       content,
       timestamp: new Date(),
     };
