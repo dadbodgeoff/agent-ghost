@@ -40,33 +40,55 @@
   let mode = $state<'search' | 'commands'>('search');
   let inputEl = $state<HTMLInputElement | null>(null);
 
-  // Static commands
-  const STATIC_COMMANDS: PaletteCommand[] = [
-    { id: 'nav-overview', label: 'Go to Overview', category: 'command', action: () => goto('/'), frecencyScore: 0 },
-    { id: 'nav-convergence', label: 'Go to Convergence', category: 'command', action: () => goto('/convergence'), frecencyScore: 0 },
-    { id: 'nav-memory', label: 'Go to Memory', category: 'command', action: () => goto('/memory'), frecencyScore: 0 },
-    { id: 'nav-goals', label: 'Go to Proposals', category: 'command', action: () => goto('/goals'), frecencyScore: 0 },
-    { id: 'nav-sessions', label: 'Go to Sessions', category: 'command', action: () => goto('/sessions'), frecencyScore: 0 },
-    { id: 'nav-agents', label: 'Go to Agents', category: 'command', action: () => goto('/agents'), frecencyScore: 0 },
-    { id: 'nav-studio', label: 'Go to Studio', category: 'command', action: () => goto('/studio'), frecencyScore: 0 },
-    { id: 'nav-security', label: 'Go to Security', category: 'command', action: () => goto('/security'), frecencyScore: 0 },
-    { id: 'nav-costs', label: 'Go to Costs', category: 'command', action: () => goto('/costs'), frecencyScore: 0 },
-    { id: 'nav-settings', label: 'Go to Settings', category: 'command', action: () => goto('/settings'), frecencyScore: 0 },
-    { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
-    { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
-    { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
-    }, frecencyScore: 0 },
-    { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
-    { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
-    { id: 'nav-providers', label: 'Go to Providers', category: 'setting', action: () => goto('/settings/providers'), frecencyScore: 0 },
-    { id: 'nav-channels', label: 'Go to Channels', category: 'setting', action: () => goto('/channels'), frecencyScore: 0 },
-    { id: 'nav-webhooks', label: 'Go to Webhooks', category: 'setting', action: () => goto('/settings/webhooks'), frecencyScore: 0 },
-    { id: 'nav-oauth', label: 'Go to OAuth Settings', category: 'setting', action: () => goto('/settings/oauth'), frecencyScore: 0 },
-    { id: 'nav-backups', label: 'Go to Backups', category: 'setting', action: () => goto('/settings/backups'), frecencyScore: 0 },
-  ];
+  function getStaticCommands(): PaletteCommand[] {
+    return [
+      { id: 'nav-overview', label: 'Go to Overview', category: 'command', action: () => goto('/'), frecencyScore: 0 },
+      { id: 'nav-convergence', label: 'Go to Convergence', category: 'command', action: () => goto('/convergence'), frecencyScore: 0 },
+      { id: 'nav-memory', label: 'Go to Memory', category: 'command', action: () => goto('/memory'), frecencyScore: 0 },
+      { id: 'nav-goals', label: 'Go to Proposals', category: 'command', action: () => goto('/goals'), frecencyScore: 0 },
+      { id: 'nav-sessions', label: 'Go to Sessions', category: 'command', action: () => goto('/sessions'), frecencyScore: 0 },
+      { id: 'nav-agents', label: 'Go to Agents', category: 'command', action: () => goto('/agents'), frecencyScore: 0 },
+      { id: 'nav-studio', label: 'Go to Studio', category: 'command', action: () => goto('/studio'), frecencyScore: 0 },
+      { id: 'nav-security', label: 'Go to Security', category: 'command', action: () => goto('/security'), frecencyScore: 0 },
+      { id: 'nav-costs', label: 'Go to Costs', category: 'command', action: () => goto('/costs'), frecencyScore: 0 },
+      { id: 'nav-settings', label: 'Go to Settings', category: 'command', action: () => goto('/settings'), frecencyScore: 0 },
+      { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
+      { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
+      {
+        id: 'theme-toggle',
+        label: 'Toggle Theme',
+        category: 'setting',
+        shortcut: shortcuts.getShortcutDisplay('theme.toggle'),
+        action: () => {
+          document.documentElement.classList.toggle('light');
+          const isLight = document.documentElement.classList.contains('light');
+          localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+        },
+        frecencyScore: 0,
+      },
+      {
+        id: 'search-global',
+        label: 'Global Search',
+        category: 'command',
+        shortcut: shortcuts.getShortcutDisplay('search.global'),
+        action: () => goto('/search'),
+        frecencyScore: 0,
+      },
+      {
+        id: 'new-session',
+        label: 'New Studio Session',
+        category: 'command',
+        shortcut: shortcuts.getShortcutDisplay('studio.newSession'),
+        action: () => goto('/studio'),
+        frecencyScore: 0,
+      },
+      { id: 'nav-providers', label: 'Go to Providers', category: 'setting', action: () => goto('/settings/providers'), frecencyScore: 0 },
+      { id: 'nav-channels', label: 'Go to Channels', category: 'setting', action: () => goto('/channels'), frecencyScore: 0 },
+      { id: 'nav-webhooks', label: 'Go to Webhooks', category: 'setting', action: () => goto('/settings/webhooks'), frecencyScore: 0 },
+      { id: 'nav-oauth', label: 'Go to OAuth Settings', category: 'setting', action: () => goto('/settings/oauth'), frecencyScore: 0 },
+      { id: 'nav-backups', label: 'Go to Backups', category: 'setting', action: () => goto('/settings/backups'), frecencyScore: 0 },
+    ];
+  }
 
   function parseQuery(raw: string): { prefix: SearchPrefix | null; query: string } {
     const prefixes: SearchPrefix[] = ['>', '@', '#', '/'];
@@ -161,7 +183,7 @@
   }
 
   function getAllCommands(): PaletteCommand[] {
-    return [...STATIC_COMMANDS, ...buildAgentCommands(agentsStore.list)];
+    return [...getStaticCommands(), ...buildAgentCommands(agentsStore.list)];
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {

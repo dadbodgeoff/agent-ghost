@@ -29,9 +29,14 @@
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
 
   let wsState = $derived(wsStore.state);
 
@@ -51,6 +56,7 @@
   }
 
   function applyTheme() {
+    document.documentElement.classList.remove('light');
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
@@ -130,6 +136,20 @@
 
     await wsStore.connect();
 
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
+      offline = true;
+      lastSync = new Date().toLocaleTimeString();
+    };
+    const handleBeforeInstallPrompt = (event: Event) => {
+      const promptEvent = event as BeforeInstallPromptEvent;
+      promptEvent.preventDefault();
+      deferredPrompt = promptEvent;
+      showInstallPrompt = true;
+    };
+
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
     shortcuts.registerCommand('theme.toggle', () => {
@@ -141,23 +161,21 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
-      offline = true;
-      lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      showInstallPrompt = true;
-    });
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
 
     await subscribeToPush();
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
   });
 
   onDestroy(() => {
@@ -179,9 +197,7 @@
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const result = await deferredPrompt.userChoice;
-    if (result.outcome === 'accepted') {
-      showInstallPrompt = false;
-    }
+    showInstallPrompt = false;
     deferredPrompt = null;
   }
 
@@ -244,7 +260,14 @@
   <div class="install-banner">
     <span>Install GHOST Dashboard for quick access</span>
     <button onclick={installPWA}>Install</button>
-    <button onclick={() => (showInstallPrompt = false)}>Dismiss</button>
+    <button
+      onclick={() => {
+        showInstallPrompt = false;
+        deferredPrompt = null;
+      }}
+    >
+      Dismiss
+    </button>
   </div>
 {/if}
 

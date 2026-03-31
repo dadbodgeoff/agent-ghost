@@ -42,6 +42,15 @@ export const DEFAULT_BINDINGS: ShortcutBinding[] = [
 
 type CommandHandler = () => void | Promise<void>;
 
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') {
+    return false;
+  }
+
+  const platform = navigator.userAgentData?.platform ?? navigator.platform ?? '';
+  return platform.toLowerCase().includes('mac');
+}
+
 class ShortcutManager {
   private bindings: ShortcutBinding[] = [];
   private handlers: Map<string, CommandHandler> = new Map();
@@ -88,7 +97,7 @@ class ShortcutManager {
     const binding = this.bindings.find(b => b.command === command);
     if (!binding) return undefined;
     return binding.key
-      .replace('cmd', navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl')
+      .replace('cmd', isMacPlatform() ? '\u2318' : 'Ctrl')
       .replace('shift', '\u21E7')
       .replace('alt', '\u2325')
       .replace('enter', '\u23CE')
