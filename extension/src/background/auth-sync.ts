@@ -5,6 +5,8 @@
  * the gateway /api/health endpoint. Syncs auth state with dashboard.
  */
 
+import { createTimeoutSignal } from '../shared/timeout';
+
 const GATEWAY_URL_KEY = 'ghost-gateway-url';
 const JWT_TOKEN_KEY = 'ghost-jwt-token';
 
@@ -77,7 +79,7 @@ async function validateToken(): Promise<boolean> {
       headers: {
         Authorization: `Bearer ${currentState.token}`,
       },
-      signal: AbortSignal.timeout(5000),
+      signal: createTimeoutSignal(5000),
     });
 
     currentState.authenticated = resp.ok;

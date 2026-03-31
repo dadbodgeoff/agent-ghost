@@ -6,6 +6,7 @@
  */
 
 import { getAuthState } from './auth-sync';
+import { createTimeoutSignal } from '../shared/timeout';
 
 export interface AgentSummary {
   id: string;
@@ -36,7 +37,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       Authorization: `Bearer ${auth.token}`,
       ...(options.headers || {}),
     },
-    signal: AbortSignal.timeout(10000),
+    signal: createTimeoutSignal(10000),
   });
 
   if (!resp.ok) {

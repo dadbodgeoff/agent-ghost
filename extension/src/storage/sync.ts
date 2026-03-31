@@ -6,6 +6,7 @@
  */
 
 import { getAuthState } from '../background/auth-sync';
+import { createTimeoutSignal } from '../shared/timeout';
 
 const DB_NAME = 'ghost-convergence';
 const PENDING_STORE = 'pending_events';
@@ -91,7 +92,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
               content: JSON.stringify(event.payload),
               metadata: { source: 'extension-sync', original_timestamp: event.timestamp },
             }),
-            signal: AbortSignal.timeout(5000),
+            signal: createTimeoutSignal(5000),
           });
 
           // Mark as synced.

@@ -4,9 +4,15 @@ use tauri::{
 };
 
 pub fn create(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    TrayIconBuilder::new()
-        .tooltip("GHOST — Gateway Active")
-        .icon(app.default_window_icon().cloned().expect("no icon"))
+    let mut builder = TrayIconBuilder::new().tooltip("GHOST — Gateway Active");
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    } else {
+        log::warn!("Desktop tray icon missing; continuing without a tray icon asset");
+    }
+
+    builder
         .on_tray_icon_event(|tray_icon, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
