@@ -240,7 +240,7 @@
   {#if killStateError}
     <div class="error-state">
       <p>{killStateError}</p>
-      <button onclick={() => loadKillState()}>Retry</button>
+      <button type="button" onclick={() => loadKillState()}>Retry</button>
     </div>
   {:else if killState}
     <div class="kill-state">
@@ -267,7 +267,7 @@
         </div>
       </div>
       {#if authSessionStore.canTriggerKillAll}
-        <button class="danger-btn" onclick={killAll}>KILL ALL</button>
+        <button type="button" class="danger-btn" onclick={killAll}>KILL ALL</button>
       {/if}
     </div>
 
@@ -300,7 +300,7 @@
   {#if reviewError}
     <div class="error-state">
       <p>{reviewError}</p>
-      <button onclick={() => loadSandboxReviews()}>Retry</button>
+      <button type="button" onclick={() => loadSandboxReviews()}>Retry</button>
     </div>
   {:else if sandboxReviews.length > 0}
     <div class="review-list">
@@ -321,10 +321,10 @@
           {#if review.status === 'pending'}
             {#if authSessionStore.canReviewSandbox}
               <div class="review-actions">
-                <button disabled={reviewActionId === review.id} onclick={() => resolveReview(review.id, 'approve')}>
+                <button type="button" disabled={reviewActionId === review.id} onclick={() => resolveReview(review.id, 'approve')}>
                   {reviewActionId === review.id ? 'Working…' : 'Approve'}
                 </button>
-                <button class="danger-outline" disabled={reviewActionId === review.id} onclick={() => resolveReview(review.id, 'reject')}>
+                <button type="button" class="danger-outline" disabled={reviewActionId === review.id} onclick={() => resolveReview(review.id, 'reject')}>
                   Reject
                 </button>
               </div>
@@ -345,9 +345,9 @@
       <span class="section-error-text">{auditError}</span>
     {/if}
     <div class="export-buttons">
-      <button onclick={() => exportAudit('json')}>JSON</button>
-      <button onclick={() => exportAudit('csv')}>CSV</button>
-      <button onclick={() => exportAudit('jsonl')}>JSONL</button>
+      <button type="button" onclick={() => exportAudit('json')}>JSON</button>
+      <button type="button" onclick={() => exportAudit('csv')}>CSV</button>
+      <button type="button" onclick={() => exportAudit('jsonl')}>JSONL</button>
     </div>
   </div>
 
@@ -360,7 +360,7 @@
   {#if auditError}
     <div class="error-state">
       <p>{auditError}</p>
-      <button onclick={() => loadAuditEntries(activeFilters)}>Retry</button>
+      <button type="button" onclick={() => loadAuditEntries(activeFilters)}>Retry</button>
     </div>
   {:else if auditEntries.length > 0}
     <AuditTimeline entries={auditEntries} focusedEntryId={focusedAuditId} />

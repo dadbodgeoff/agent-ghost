@@ -226,14 +226,14 @@
   {#if success}
     <div class="success-banner">
       <p>{success}</p>
-      <button onclick={() => { success = null; }}>Dismiss</button>
+      <button type="button" onclick={() => { success = null; }}>Dismiss</button>
     </div>
   {/if}
 
   {#if error}
     <div class="error-banner">
       <p>{error}</p>
-      <button onclick={() => { error = null; loadProviders(); }}>Retry</button>
+      <button type="button" onclick={() => { error = null; loadProviders(); }}>Retry</button>
     </div>
   {/if}
 
@@ -273,34 +273,34 @@
                     bind:value={keyInput}
                     onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') saveKey(p.env_name); if (e.key === 'Escape') cancelEditing(); }}
                   />
-                  <button class="save-btn" disabled={saving || !keyInput.trim()} onclick={() => saveKey(p.env_name)}>
+                  <button type="button" class="save-btn" disabled={saving || !keyInput.trim()} onclick={() => saveKey(p.env_name)}>
                     {saving ? '...' : 'Save'}
                   </button>
-                  <button class="cancel-btn" onclick={cancelEditing}>Cancel</button>
+                  <button type="button" class="cancel-btn" onclick={cancelEditing}>Cancel</button>
                 </div>
               {:else}
-                <button class="set-btn" onclick={() => startEditing(p.env_name)}>
+                <button type="button" class="set-btn" onclick={() => startEditing(p.env_name)}>
                   {p.is_set ? 'Update Key' : 'Set Key'}
                 </button>
                 {#if p.is_set}
-                  <button class="delete-btn" onclick={() => removeKey(p.env_name)}>Remove</button>
+                  <button type="button" class="delete-btn" onclick={() => removeKey(p.env_name)}>Remove</button>
                 {/if}
               {/if}
             </div>
           {:else if p.provider_name === 'codex'}
             <div class="provider-actions">
               {#if codexStatus?.account}
-                <button class="cancel-btn" disabled={codexBusy || codexLoading} onclick={refreshCodexStatus}>
+                <button type="button" class="cancel-btn" disabled={codexBusy || codexLoading} onclick={refreshCodexStatus}>
                   {codexLoading ? '...' : 'Refresh'}
                 </button>
-                <button class="delete-btn" disabled={codexBusy} onclick={logoutCodex}>
+                <button type="button" class="delete-btn" disabled={codexBusy} onclick={logoutCodex}>
                   {codexBusy ? '...' : 'Disconnect'}
                 </button>
               {:else}
-                <button class="set-btn" disabled={codexBusy || codexLoading} onclick={startCodexLogin}>
+                <button type="button" class="set-btn" disabled={codexBusy || codexLoading} onclick={startCodexLogin}>
                   {codexBusy ? '...' : 'Connect ChatGPT'}
                 </button>
-                <button class="cancel-btn" disabled={codexBusy || codexLoading} onclick={refreshCodexStatus}>
+                <button type="button" class="cancel-btn" disabled={codexBusy || codexLoading} onclick={refreshCodexStatus}>
                   {codexLoading ? '...' : codexPolling ? 'Waiting...' : 'Refresh'}
                 </button>
               {/if}

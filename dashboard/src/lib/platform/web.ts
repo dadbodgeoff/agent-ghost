@@ -99,6 +99,9 @@ export const webRuntime: RuntimePlatform = {
     }
     new Notification(notification.title, notification.body ? { body: notification.body } : undefined);
   },
+  async subscribeWindowFocus() {
+    return null;
+  },
   async readKeybindings() {
     return [];
   },

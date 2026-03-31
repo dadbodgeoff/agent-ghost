@@ -27,6 +27,7 @@ export interface RuntimePlatform {
   openExternalUrl(url: string): Promise<void>;
   requestNotificationPermission(): Promise<boolean>;
   sendNotification(notification: { title: string; body?: string }): Promise<void>;
+  subscribeWindowFocus(listener: () => void): Promise<(() => void) | null>;
   readKeybindings(): Promise<Array<{ key: string; command: string; when?: string }>>;
   spawnTerminalPty(options: { cols: number; rows: number }): Promise<RuntimeTerminalPty | null>;
 }

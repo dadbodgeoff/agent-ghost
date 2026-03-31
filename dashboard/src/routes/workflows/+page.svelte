@@ -403,7 +403,7 @@
   <aside class="wf-sidebar">
     <div class="sidebar-header">
       <h2>Workflows</h2>
-      <button class="btn-new" onclick={newWorkflow}>+ New</button>
+      <button type="button" class="btn-new" onclick={newWorkflow}>+ New</button>
     </div>
     {#if listLoading}
       <div class="loading-sm">Loading…</div>
@@ -412,6 +412,7 @@
         {#each workflows as wf (wf.id)}
           <li>
             <button
+              type="button"
               class="wf-item"
               class:active={activeWorkflow?.id === wf.id}
               onclick={() => loadWorkflow(wf.id)}
@@ -439,18 +440,18 @@
 
       <div class="node-buttons">
         {#each NODE_TYPES as nt}
-          <button class="btn-add-node" onclick={() => canvas.addNode(nt.type, nt.label)}>
+          <button type="button" class="btn-add-node" onclick={() => canvas.addNode(nt.type, nt.label)}>
             + {nt.label}
           </button>
         {/each}
       </div>
 
       <div class="action-buttons">
-        <button class="btn-save" disabled={saving} onclick={saveWorkflow}>
+        <button type="button" class="btn-save" disabled={saving} onclick={saveWorkflow}>
           {saving ? 'Saving…' : 'Save'}
         </button>
         {#if activeWorkflow}
-          <button class="btn-exec" disabled={executing} onclick={executeWorkflow}>
+          <button type="button" class="btn-exec" disabled={executing} onclick={executeWorkflow}>
             {executing ? 'Running…' : 'Execute'}
           </button>
         {/if}
@@ -488,6 +489,7 @@
               {#each executionHistory as execution (execution.execution_id)}
                 <li>
                   <button
+                    type="button"
                     class="execution-item"
                     class:active={selectedExecution?.execution_id === execution.execution_id}
                     onclick={() => loadExecutionDetail(execution.execution_id)}
@@ -508,7 +510,7 @@
           <div class="section-head">
             <h3>Execution Detail</h3>
             {#if isExecutionResumable(selectedExecution)}
-              <button class="btn-resume" disabled={resumeLoading} onclick={resumeExecution}>
+              <button type="button" class="btn-resume" disabled={resumeLoading} onclick={resumeExecution}>
                 {resumeLoading ? 'Resuming…' : 'Resume'}
               </button>
             {/if}

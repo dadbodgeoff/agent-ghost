@@ -128,6 +128,7 @@
 
   <div class="tabs">
     <button
+      type="button"
       class="tab"
       class:active={activeTab === 'installed'}
       onclick={() => (activeTab = 'installed')}
@@ -135,6 +136,7 @@
       Installed ({installed.length})
     </button>
     <button
+      type="button"
       class="tab"
       class:active={activeTab === 'available'}
       onclick={() => (activeTab = 'available')}
@@ -146,7 +148,7 @@
   {#if error}
     <div class="error-banner">
       <p>{error}</p>
-      <button onclick={() => { error = null; loadSkills(); }}>Retry</button>
+      <button type="button" onclick={() => { error = null; loadSkills(); }}>Retry</button>
     </div>
   {/if}
 
@@ -156,7 +158,7 @@
     {#if installed.length === 0}
       <div class="empty-state">
         <p>No skills installed yet.</p>
-        <button class="action-btn" onclick={() => (activeTab = 'available')}>
+        <button type="button" class="action-btn" onclick={() => (activeTab = 'available')}>
           Browse Available Skills
         </button>
       </div>
@@ -228,8 +230,8 @@
         <CapabilityBadge capability={confirmSkill.policy_capability} size="md" />
       </div>
       <div class="confirm-actions">
-        <button class="cancel-btn" onclick={() => (confirmSkill = null)}>Cancel</button>
-        <button class="approve-btn" onclick={confirmInstall} disabled={actionLoading === confirmSkill.id}>
+        <button type="button" class="cancel-btn" onclick={() => (confirmSkill = null)}>Cancel</button>
+        <button type="button" class="approve-btn" onclick={confirmInstall} disabled={actionLoading === confirmSkill.id}>
           {actionLoading === confirmSkill.id ? 'Installing...' : 'Approve & Install'}
         </button>
       </div>
@@ -261,8 +263,9 @@
         placeholder="Explain why this artifact is being quarantined"
       ></textarea>
       <div class="confirm-actions">
-        <button class="cancel-btn" onclick={closeQuarantineDialog}>Cancel</button>
+        <button type="button" class="cancel-btn" onclick={closeQuarantineDialog}>Cancel</button>
         <button
+          type="button"
           class="approve-btn"
           onclick={confirmQuarantine}
           disabled={actionLoading === quarantineSkill.id || !quarantineReason.trim()}

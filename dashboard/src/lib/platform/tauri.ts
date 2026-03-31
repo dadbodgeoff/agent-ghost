@@ -126,6 +126,14 @@ export const tauriRuntime: RuntimePlatform = {
     const { sendNotification } = await import('@tauri-apps/plugin-notification');
     await sendNotification(notification);
   },
+  async subscribeWindowFocus(listener) {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    return getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) {
+        listener();
+      }
+    });
+  },
   async readKeybindings() {
     return invoke<Array<{ key: string; command: string; when?: string }>>('read_keybindings');
   },
