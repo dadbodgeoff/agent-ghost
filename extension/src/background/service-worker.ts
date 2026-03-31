@@ -2,9 +2,14 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
 import { ITPEmitter } from './itp-emitter';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync().catch(() => {
+  console.warn('[GHOST] Failed to hydrate persisted auth state');
+});
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

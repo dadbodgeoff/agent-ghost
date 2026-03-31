@@ -8,8 +8,20 @@ use crate::error::GhostDesktopError;
 
 pub struct GatewayProcess(pub Mutex<Option<CommandChild>>);
 
+impl Default for GatewayProcess {
+    fn default() -> Self {
+        Self(Mutex::new(None))
+    }
+}
+
 /// Port resolved from ghost.yml, cached for the app lifetime.
-pub struct GatewayPort(pub u16);
+pub struct GatewayPort(pub std::sync::RwLock<u16>);
+
+impl Default for GatewayPort {
+    fn default() -> Self {
+        Self(std::sync::RwLock::new(default_port()))
+    }
+}
 
 // ── Minimal config parsing (no ghost-gateway dependency) ───────────
 
@@ -101,10 +113,11 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     })?;
 
     let port = read_port_from_config(&config_path);
-
-
-    // Store port for other commands to use.
-    handle.manage(GatewayPort(port));
+    if let Some(state) = handle.try_state::<GatewayPort>() {
+        if let Ok(mut cached_port) = state.0.write() {
+            *cached_port = port;
+        }
+    }
 
     let health_url = format!("http://127.0.0.1:{port}/api/health");
 
@@ -117,7 +130,6 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     if let Ok(resp) = client.get(&health_url).send().await {
         if resp.status().is_success() {
             log::info!("Gateway already healthy on port {port} — skipping sidecar launch");
-            handle.manage(GatewayProcess(Mutex::new(None)));
             return Ok(());
         }
     }
@@ -195,8 +207,11 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
         reason: e.to_string(),
     })?;
 
-    // Store child handle for shutdown.
-    handle.manage(GatewayProcess(Mutex::new(Some(child))));
+    // Store child handle for shutdown and later restart requests.
+    if let Some(state) = handle.try_state::<GatewayProcess>() {
+        let mut guard = state.0.lock().await;
+        *guard = Some(child);
+    }
 
     // Log sidecar stdout/stderr.
     tauri::async_runtime::spawn(async move {
@@ -262,7 +277,7 @@ pub async fn stop_gateway(handle: AppHandle) -> Result<String, GhostDesktopError
 pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopError> {
     let port = handle
         .try_state::<GatewayPort>()
-        .map(|p| p.0)
+        .and_then(|p| p.0.read().ok().map(|port| *port))
         .unwrap_or(39780);
     match reqwest::get(format!("http://127.0.0.1:{port}/api/health")).await {
         Ok(r) if r.status().is_success() => Ok("healthy".into()),
@@ -274,6 +289,6 @@ pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopErr
 pub fn gateway_port(handle: AppHandle) -> u16 {
     handle
         .try_state::<GatewayPort>()
-        .map(|p| p.0)
+        .and_then(|p| p.0.read().ok().map(|port| *port))
         .unwrap_or(39780)
 }
