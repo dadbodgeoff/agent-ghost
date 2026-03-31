@@ -2,9 +2,17 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
+import { initAutoSync } from '../storage/sync';
 import { ITPEmitter } from './itp-emitter';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync().catch((error) => {
+  console.warn('[GHOST] Failed to restore extension auth state', error);
+});
+
+initAutoSync();
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
