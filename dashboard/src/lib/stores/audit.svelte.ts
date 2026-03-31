@@ -47,9 +47,11 @@ class AuditStore {
     if (!this.resyncRegistered) {
       this.resyncRegistered = true;
       this.unsubs.push(
-        wsStore.on('Resync', () => {
+        wsStore.onResync(() => {
           // Stagger to avoid thundering herd on reconnect
-          setTimeout(() => this.query(this.lastFilters), Math.random() * 2000);
+          setTimeout(() => {
+            void this.query(this.lastFilters);
+          }, Math.random() * 2000);
         }),
       );
     }

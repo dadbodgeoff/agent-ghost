@@ -25,11 +25,17 @@
   let notifications = $state<AppNotification[]>([]);
   let panelOpen = $state(false);
   let unsubs: Array<() => void> = [];
+  const panelId = `notifications-${crypto.randomUUID()}`;
 
   let unreadCount = $derived(notifications.filter(n => !n.read).length);
 
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
+
+  function readMessageField(msg: WsMessage, field: string): string | undefined {
+    const value = msg[field];
+    return typeof value === 'string' && value.trim() ? value : undefined;
+  }
 
   onMount(() => {
     loadFromStorage();
@@ -39,10 +45,10 @@
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${readMessageField(msg, 'agent_id') ?? 'unknown'} state changed`,
+          message: `New state: ${readMessageField(msg, 'status') ?? readMessageField(msg, 'new_state') ?? 'unknown'}`,
+          actionHref: readMessageField(msg, 'agent_id') ? `/agents/${readMessageField(msg, 'agent_id')}` : '/agents',
+          agentId: readMessageField(msg, 'agent_id'),
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -50,7 +56,7 @@
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: readMessageField(msg, 'reason') ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
@@ -59,15 +65,15 @@
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${readMessageField(msg, 'agent_id') ?? 'unknown'}: level → ${readMessageField(msg, 'new_level') ?? 'unknown'}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId: readMessageField(msg, 'agent_id'),
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const proposalId = readMessageField(msg, 'proposal_id') ?? '';
+        const change = readMessageField(msg, 'change') ?? 'updated';
+        const status = readMessageField(msg, 'status') ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -80,6 +86,16 @@
         });
       }),
     );
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        panelOpen = false;
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+    };
   });
 
   onDestroy(() => {
@@ -159,7 +175,17 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed)
+          ? parsed.filter((item): item is AppNotification =>
+              item != null
+              && typeof item.id === 'string'
+              && typeof item.title === 'string'
+              && typeof item.message === 'string'
+              && typeof item.timestamp === 'string'
+              && typeof item.read === 'boolean',
+            )
+          : [];
       }
     } catch { /* start fresh */ }
   }
@@ -173,8 +199,12 @@
 <div class="notification-wrapper">
   <button
     class="bell-button"
+    type="button"
     onclick={() => panelOpen = !panelOpen}
     aria-label="Notifications ({unreadCount} unread)"
+    aria-haspopup="dialog"
+    aria-expanded={panelOpen}
+    aria-controls={panelId}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
@@ -187,11 +217,11 @@
 
   {#if panelOpen}
     <div class="panel-overlay" onclick={() => panelOpen = false} role="presentation"></div>
-    <div class="notification-panel" role="dialog" aria-label="Notifications">
+    <div class="notification-panel" id={panelId} role="dialog" aria-label="Notifications">
       <div class="panel-header">
         <h3>Notifications</h3>
         {#if unreadCount > 0}
-          <button class="mark-read-btn" onclick={markAllRead}>Mark all read</button>
+          <button class="mark-read-btn" type="button" onclick={markAllRead}>Mark all read</button>
         {/if}
       </div>
 

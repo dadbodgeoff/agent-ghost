@@ -46,7 +46,7 @@
 
   function stopCodexPolling() {
     if (codexPollHandle !== null) {
-      window.clearInterval(codexPollHandle);
+      clearInterval(codexPollHandle);
       codexPollHandle = null;
     }
     codexPolling = false;
@@ -55,7 +55,7 @@
   function startCodexPolling() {
     stopCodexPolling();
     codexPolling = true;
-    codexPollHandle = window.setInterval(() => {
+    codexPollHandle = setInterval(() => {
       void refreshCodexStatus();
     }, 1500);
   }
@@ -63,11 +63,13 @@
   async function refreshCodexStatus() {
     if (!hasCodexSubscriptionProvider()) {
       codexStatus = null;
+      codexBusy = false;
       stopCodexPolling();
       return;
     }
 
     codexLoading = true;
+    error = null;
     try {
       const hadAccount = !!codexStatus?.account;
       const client = await getGhostClient();
@@ -90,6 +92,7 @@
   }
 
   async function startCodexLogin() {
+    if (codexBusy) return;
     codexBusy = true;
     error = null;
     success = null;
@@ -112,6 +115,7 @@
 
   async function logoutCodex() {
     if (!confirm('Disconnect the current Codex login from this machine?')) return;
+    if (codexBusy) return;
     codexBusy = true;
     error = null;
     success = null;
@@ -175,6 +179,7 @@
   function cancelEditing() {
     editingEnv = null;
     keyInput = '';
+    error = null;
   }
 
   function providerLabel(name: string): string {

@@ -88,9 +88,11 @@ class AgentsStore {
           this.list = [...this.list];
         }
       }),
-      wsStore.on('Resync', () => {
+      wsStore.onResync(() => {
         // Stagger to avoid thundering herd on reconnect
-        setTimeout(() => this.refresh(), Math.random() * 2000);
+        setTimeout(() => {
+          void this.refresh();
+        }, Math.random() * 2000);
       }),
     );
   }

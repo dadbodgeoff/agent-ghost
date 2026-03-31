@@ -24,14 +24,22 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform?: string }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt = $state<BeforeInstallPromptEvent | null>(null);
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeBeforeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -51,6 +59,7 @@
   }
 
   function applyTheme() {
+    document.documentElement.classList.remove('light');
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
@@ -91,6 +100,7 @@
     unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
       if (!token) {
         authSessionStore.clear();
+        wsStore.disconnect();
         return;
       }
       void authSessionStore.refresh().catch(() => {});
@@ -121,14 +131,14 @@
           await runtime.clearToken();
           invalidateAuthClientState();
           await notifyAuthBoundary('ghost-auth-cleared');
-          goto('/login');
+          wsStore.disconnect();
+          await goto('/login');
           return;
         }
         bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
       }
+      await wsStore.connect();
     }
-
-    await wsStore.connect();
 
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
@@ -141,17 +151,27 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+      lastSync = new Date().toLocaleTimeString();
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeBeforeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +183,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeBeforeInstallPromptListener?.();
+    removeBeforeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,6 +218,8 @@
       } catch { /* non-fatal */ }
       return;
     }
+    if (typeof Notification === 'undefined') return;
+    if (!('serviceWorker' in navigator)) return;
     if (!('PushManager' in window)) return;
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
@@ -254,35 +282,35 @@
   <PanelLayout>
     {#snippet sidebar()}
       <nav aria-label="Primary navigation">
-        <div class="logo" role="banner">GHOST</div>
-        <a href="/" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
-        <a href="/convergence" class:active={$page.url.pathname === '/convergence'} aria-current={$page.url.pathname === '/convergence' ? 'page' : undefined}>Convergence</a>
-        <a href="/memory" class:active={$page.url.pathname.startsWith('/memory')} aria-current={$page.url.pathname.startsWith('/memory') ? 'page' : undefined}>Memory</a>
-        <a href="/goals" class:active={$page.url.pathname.startsWith('/goals')} aria-current={$page.url.pathname.startsWith('/goals') ? 'page' : undefined}>Proposals</a>
-        <a href="/sessions" class:active={$page.url.pathname.startsWith('/sessions')} aria-current={$page.url.pathname.startsWith('/sessions') ? 'page' : undefined}>Sessions</a>
-        <a href="/agents" class:active={$page.url.pathname === '/agents'} aria-current={$page.url.pathname === '/agents' ? 'page' : undefined}>Agents</a>
-        <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')} aria-current={$page.url.pathname.startsWith('/workflows') ? 'page' : undefined}>Workflows</a>
-        <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')} aria-current={$page.url.pathname.startsWith('/skills') ? 'page' : undefined}>Skills</a>
-        <a href="/studio" class:active={$page.url.pathname.startsWith('/studio')} aria-current={$page.url.pathname.startsWith('/studio') ? 'page' : undefined}>Studio</a>
-        <a href="/channels" class:active={$page.url.pathname === '/channels'} aria-current={$page.url.pathname === '/channels' ? 'page' : undefined}>Channels</a>
-        <a href="/observability" class:active={$page.url.pathname.startsWith('/observability')} aria-current={$page.url.pathname.startsWith('/observability') ? 'page' : undefined}>Observability</a>
-        <a href="/orchestration" class:active={$page.url.pathname.startsWith('/orchestration')} aria-current={$page.url.pathname.startsWith('/orchestration') ? 'page' : undefined}>Orchestration</a>
-        <a href="/pc-control" class:active={$page.url.pathname === '/pc-control'} aria-current={$page.url.pathname === '/pc-control' ? 'page' : undefined}>PC Control</a>
-        <a href="/itp" class:active={$page.url.pathname === '/itp'} aria-current={$page.url.pathname === '/itp' ? 'page' : undefined}>ITP Events</a>
-        <a href="/security" class:active={$page.url.pathname === '/security'} aria-current={$page.url.pathname === '/security' ? 'page' : undefined}>Security</a>
-        <a href="/costs" class:active={$page.url.pathname === '/costs'} aria-current={$page.url.pathname === '/costs' ? 'page' : undefined}>Costs</a>
-        <a href="/search" class:active={$page.url.pathname === '/search'} aria-current={$page.url.pathname === '/search' ? 'page' : undefined}>Search</a>
-        <a href="/settings" class:active={$page.url.pathname.startsWith('/settings')} aria-current={$page.url.pathname.startsWith('/settings') ? 'page' : undefined}>Settings</a>
+        <div class="logo">GHOST</div>
+        <a href="/" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
+        <a href="/convergence" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/convergence'} aria-current={$page.url.pathname === '/convergence' ? 'page' : undefined}>Convergence</a>
+        <a href="/memory" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/memory')} aria-current={$page.url.pathname.startsWith('/memory') ? 'page' : undefined}>Memory</a>
+        <a href="/goals" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/goals')} aria-current={$page.url.pathname.startsWith('/goals') ? 'page' : undefined}>Proposals</a>
+        <a href="/sessions" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/sessions')} aria-current={$page.url.pathname.startsWith('/sessions') ? 'page' : undefined}>Sessions</a>
+        <a href="/agents" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/agents'} aria-current={$page.url.pathname === '/agents' ? 'page' : undefined}>Agents</a>
+        <a href="/workflows" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/workflows')} aria-current={$page.url.pathname.startsWith('/workflows') ? 'page' : undefined}>Workflows</a>
+        <a href="/skills" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/skills')} aria-current={$page.url.pathname.startsWith('/skills') ? 'page' : undefined}>Skills</a>
+        <a href="/studio" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/studio')} aria-current={$page.url.pathname.startsWith('/studio') ? 'page' : undefined}>Studio</a>
+        <a href="/channels" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/channels'} aria-current={$page.url.pathname === '/channels' ? 'page' : undefined}>Channels</a>
+        <a href="/observability" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/observability')} aria-current={$page.url.pathname.startsWith('/observability') ? 'page' : undefined}>Observability</a>
+        <a href="/orchestration" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/orchestration')} aria-current={$page.url.pathname.startsWith('/orchestration') ? 'page' : undefined}>Orchestration</a>
+        <a href="/pc-control" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/pc-control'} aria-current={$page.url.pathname === '/pc-control' ? 'page' : undefined}>PC Control</a>
+        <a href="/itp" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/itp'} aria-current={$page.url.pathname === '/itp' ? 'page' : undefined}>ITP Events</a>
+        <a href="/security" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/security'} aria-current={$page.url.pathname === '/security' ? 'page' : undefined}>Security</a>
+        <a href="/costs" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/costs'} aria-current={$page.url.pathname === '/costs' ? 'page' : undefined}>Costs</a>
+        <a href="/search" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/search'} aria-current={$page.url.pathname === '/search' ? 'page' : undefined}>Search</a>
+        <a href="/settings" data-sveltekit-preload-data="hover" class:active={$page.url.pathname.startsWith('/settings')} aria-current={$page.url.pathname.startsWith('/settings') ? 'page' : undefined}>Settings</a>
         {#if $page.url.pathname.startsWith('/settings')}
           <div class="settings-subnav">
-            <a href="/settings/profiles" class:active={$page.url.pathname === '/settings/profiles'}>Profiles</a>
-            <a href="/settings/policies" class:active={$page.url.pathname === '/settings/policies'}>Policies</a>
-            <a href="/settings/providers" class:active={$page.url.pathname === '/settings/providers'}>Providers</a>
-            <a href="/channels" class:active={$page.url.pathname === '/channels' || $page.url.pathname === '/settings/channels'}>Channels</a>
-            <a href="/settings/backups" class:active={$page.url.pathname === '/settings/backups'}>Backups</a>
-            <a href="/settings/webhooks" class:active={$page.url.pathname === '/settings/webhooks'}>Webhooks</a>
-            <a href="/settings/notifications" class:active={$page.url.pathname === '/settings/notifications'}>Notifications</a>
-            <a href="/settings/oauth" class:active={$page.url.pathname === '/settings/oauth'}>OAuth</a>
+            <a href="/settings/profiles" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/profiles'}>Profiles</a>
+            <a href="/settings/policies" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/policies'}>Policies</a>
+            <a href="/settings/providers" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/providers'}>Providers</a>
+            <a href="/settings/channels" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/channels'}>Channels</a>
+            <a href="/settings/backups" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/backups'}>Backups</a>
+            <a href="/settings/webhooks" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/webhooks'}>Webhooks</a>
+            <a href="/settings/notifications" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/notifications'}>Notifications</a>
+            <a href="/settings/oauth" data-sveltekit-preload-data="hover" class:active={$page.url.pathname === '/settings/oauth'}>OAuth</a>
           </div>
         {/if}
       </nav>

@@ -87,8 +87,9 @@ class ShortcutManager {
   getShortcutDisplay(command: string): string | undefined {
     const binding = this.bindings.find(b => b.command === command);
     if (!binding) return undefined;
+    const isMac = typeof navigator !== 'undefined' && navigator.platform.includes('Mac');
     return binding.key
-      .replace('cmd', navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl')
+      .replace('cmd', isMac ? '\u2318' : 'Ctrl')
       .replace('shift', '\u21E7')
       .replace('alt', '\u2325')
       .replace('enter', '\u23CE')

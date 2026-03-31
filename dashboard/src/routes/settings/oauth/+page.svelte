@@ -16,9 +16,10 @@
 
   let providers: OAuthProvider[] = [];
   let connections: OAuthConnection[] = [];
-  let loading = true;
-  let error = '';
-  let disconnectingRefId: string | null = null;
+  let loading = $state(true);
+  let error = $state('');
+  let connectingProvider = $state<string | null>(null);
+  let disconnectingRefId = $state<string | null>(null);
 
   async function loadData(showSpinner = true) {
     try {
@@ -39,12 +40,16 @@
   }
 
   async function connectProvider(name: string, scopes: string[]) {
+    if (connectingProvider || disconnectingRefId) return;
     try {
+      connectingProvider = name;
+      error = '';
       const client = await getGhostClient();
       const data = await client.oauth.connect({ provider: name, scopes });
       window.location.href = data.authorization_url;
     } catch (e: unknown) {
       error = `Connect failed: ${e instanceof Error ? e.message : String(e)}`;
+      connectingProvider = null;
     }
   }
 
@@ -63,6 +68,12 @@
     } finally {
       disconnectingRefId = null;
     }
+  }
+
+  function formatConnectedAt(value: string): string {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return 'Unknown date';
+    return parsed.toLocaleDateString();
   }
 
   function statusColor(status: string): string {
@@ -112,8 +123,9 @@
               class="btn-connect"
               onclick={() => connectProvider(provider.name, [])}
               aria-label="Connect {provider.name}"
+              disabled={!!connectingProvider || !!disconnectingRefId}
             >
-              Connect
+              {connectingProvider === provider.name ? 'Opening…' : 'Connect'}
             </button>
           {/if}
         </div>
@@ -138,20 +150,24 @@
           </div>
           <div class="connection-meta">
             <span class="ref-id" title={conn.ref_id}>{conn.ref_id.slice(0, 8)}…</span>
-            <span class="connected-at">{new Date(conn.connected_at).toLocaleDateString()}</span>
+            <span class="connected-at">{formatConnectedAt(conn.connected_at)}</span>
           </div>
           <div class="connection-scopes">
-            {#each conn.scopes as scope}
-              <span class="scope-tag">{scope}</span>
-            {/each}
+            {#if conn.scopes.length > 0}
+              {#each conn.scopes as scope}
+                <span class="scope-tag">{scope}</span>
+              {/each}
+            {:else}
+              <span class="scope-tag">No scopes reported</span>
+            {/if}
           </div>
           <button
             class="btn-disconnect"
             onclick={() => disconnectConnection(conn.ref_id)}
-            disabled={disconnectingRefId === conn.ref_id}
+            disabled={disconnectingRefId === conn.ref_id || !!connectingProvider}
             aria-label="Disconnect {conn.provider}"
           >
-            Disconnect
+            {disconnectingRefId === conn.ref_id ? 'Disconnecting…' : 'Disconnect'}
           </button>
         </div>
       {/each}
