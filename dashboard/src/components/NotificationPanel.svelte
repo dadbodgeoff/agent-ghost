@@ -159,7 +159,8 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed) ? parsed.slice(0, MAX_NOTIFICATIONS) : [];
       }
     } catch { /* start fresh */ }
   }

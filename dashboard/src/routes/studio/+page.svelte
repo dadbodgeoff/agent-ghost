@@ -35,6 +35,23 @@
   const artifactCache = new Map<string, Artifact[]>();
   const ARTIFACT_CACHE_MAX = 50;
 
+  async function updateAuthExpiryWarning() {
+    const runtime = await getRuntime();
+    const token = await runtime.getToken();
+    if (!token) {
+      authExpiryWarning = false;
+      return;
+    }
+
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      const expMs = (payload.exp ?? 0) * 1000;
+      authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
+    } catch {
+      authExpiryWarning = false;
+    }
+  }
+
   function collectArtifacts(messages: StudioMessage[]): Artifact[] {
     const artifactCandidates = messages.filter(
       (msg) => msg.role === 'assistant' && !!msg.content && msg.content.includes('```'),
@@ -67,18 +84,10 @@
     });
     let disposeTauriFocus: (() => void) | null = null;
 
-    // WP9-G: Check JWT expiry every 60s.
+    // WP9-G: Check JWT expiry immediately, then every 60s.
+    void updateAuthExpiryWarning();
     authCheckInterval = setInterval(() => {
-      void (async () => {
-        const runtime = await getRuntime();
-        const token = await runtime.getToken();
-        if (!token) return;
-        try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          const expMs = (payload.exp ?? 0) * 1000;
-          authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
-        } catch { /* malformed token — ignore */ }
-      })();
+      void updateAuthExpiryWarning();
     }, 60_000);
 
     const handleWindowFocus = () => {

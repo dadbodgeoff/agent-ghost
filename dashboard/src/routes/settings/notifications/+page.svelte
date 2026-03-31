@@ -68,6 +68,7 @@
   }
 
   async function subscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -87,6 +88,7 @@
   }
 
   async function unsubscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -109,13 +111,17 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    }
   }
 
   async function sendTestNotification() {
+    if (!('serviceWorker' in navigator)) return;
     testSending = true;
     try {
       const reg = await navigator.serviceWorker.ready;
+      if (!('showNotification' in reg)) return;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
         icon: '/icons/ghost-192.png',

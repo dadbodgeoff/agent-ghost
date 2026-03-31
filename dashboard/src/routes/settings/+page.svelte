@@ -9,36 +9,17 @@
     rotateAuthBoundarySession,
   } from '$lib/auth-boundary';
   import { wsStore } from '$lib/stores/websocket.svelte';
-
-  type ThemeChoice = 'dark' | 'light' | 'system';
+  import { readStoredTheme, setThemeChoice, type ThemeChoice } from '$lib/theme';
 
   let theme: ThemeChoice = $state('dark');
 
   // Initialize from localStorage on mount.
   $effect(() => {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light' || stored === 'system') {
-      theme = stored;
-    } else {
-      theme = 'dark';
-    }
+    theme = readStoredTheme();
   });
 
   function setTheme(choice: ThemeChoice) {
-    theme = choice;
-    localStorage.setItem('ghost-theme', choice);
-
-    const html = document.documentElement;
-    html.classList.remove('light');
-
-    if (choice === 'light') {
-      html.classList.add('light');
-    } else if (choice === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        html.classList.add('light');
-      }
-    }
-    // 'dark' = no .light class = dark theme (default).
+    theme = setThemeChoice(choice);
   }
 
   async function logout() {
