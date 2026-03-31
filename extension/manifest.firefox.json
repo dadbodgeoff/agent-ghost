@@ -7,6 +7,8 @@
     "storage",
     "nativeMessaging",
     "activeTab",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",

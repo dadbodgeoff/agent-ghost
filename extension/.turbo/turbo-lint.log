@@ -1,4 +1,0 @@
-
-> ghost-convergence-extension@0.1.0 lint /Users/geoffreyfernald/Documents/New project/agent-ghost/extension
-> eslint src/ --ext .ts,.js
-

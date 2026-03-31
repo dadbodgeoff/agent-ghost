@@ -2,6 +2,7 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
 import { ITPEmitter } from './itp-emitter';
 
 const emitter = new ITPEmitter();
@@ -42,4 +43,12 @@ setInterval(() => {
   emitter.refreshScore();
 }, 30_000);
 
-console.log('[GHOST] Background service worker initialized');
+void initAuthSync()
+  .then((auth) => {
+    console.log(
+      `[GHOST] Background service worker initialized (auth=${auth.authenticated ? 'ready' : 'missing'})`,
+    );
+  })
+  .catch((error) => {
+    console.warn('[GHOST] Failed to initialize auth sync:', error);
+  });
