@@ -21,6 +21,8 @@
   };
 
   async function loadAgents() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [agentData, convData] = await Promise.all([
@@ -80,10 +82,10 @@
       <div class="card skeleton">&nbsp;</div>
     {/each}
   </div>
-{:else if error}
+  {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={loadAgents}>Retry</button>
   </div>
 {:else if agents.length === 0}
   <div class="empty-state">

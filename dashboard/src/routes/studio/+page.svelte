@@ -7,7 +7,7 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
-  import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
+  import { getRuntime, subscribeNativeWindowFocus } from '$lib/platform/runtime';
   import { shortcuts } from '$lib/shortcuts';
   import type { StudioMessage } from '$lib/stores/studioChat.svelte';
   import ChatMessage from '../../components/ChatMessage.svelte';
@@ -20,7 +20,16 @@
 
   let responseTime = $state(0);
   let searchQuery = $state('');
-  let selectedTemplate = $state<any>(null);
+  type StudioTemplate = {
+    id: string;
+    name: string;
+    systemPrompt?: string;
+    model?: string;
+    temperature?: number;
+    maxTokens?: number;
+  };
+
+  let selectedTemplate = $state<StudioTemplate | null>(null);
   let artifacts = $state<Artifact[]>([]);
   let showArtifacts = $state(false);
   let chatAreaHeight = $state(0);
@@ -65,7 +74,7 @@
     shortcuts.registerCommand('studio.cancelStream', () => {
       studioChatStore.cancelStreaming();
     });
-    let disposeTauriFocus: (() => void) | null = null;
+    let disposeNativeFocus: (() => void) | null = null;
 
     // WP9-G: Check JWT expiry every 60s.
     authCheckInterval = setInterval(() => {
@@ -94,23 +103,14 @@
     window.addEventListener('pageshow', handleWindowFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    if (isTauriEnvironment()) {
-      void import('@tauri-apps/api/window')
-        .then(({ getCurrentWindow }) =>
-          getCurrentWindow().onFocusChanged(({ payload }) => {
-            if (payload) {
-              scheduleStudioResumeSync();
-            }
-          }),
-        )
-        .then((unlisten) => {
-          disposeTauriFocus = unlisten;
-        })
-        .catch(() => {});
-    }
+    void subscribeNativeWindowFocus(() => {
+      scheduleStudioResumeSync();
+    }).then((dispose) => {
+      disposeNativeFocus = dispose;
+    }).catch(() => {});
 
     return () => {
-      disposeTauriFocus?.();
+      disposeNativeFocus?.();
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('pageshow', handleWindowFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -158,7 +158,7 @@
     responseTime = Math.round(performance.now() - start);
   }
 
-  function handleTemplateSelect(template: any) {
+  function handleTemplateSelect(template: StudioTemplate) {
     // Toggle selection — clicking the same template deselects it.
     if (selectedTemplate?.id === template.id) {
       selectedTemplate = null;

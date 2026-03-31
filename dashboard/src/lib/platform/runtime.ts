@@ -46,3 +46,12 @@ export function getRuntime(): Promise<RuntimePlatform> {
 
   return runtimePromise;
 }
+
+export async function subscribeNativeWindowFocus(listener: () => void): Promise<() => void> {
+  if (!isTauriEnvironment()) {
+    return () => {};
+  }
+
+  const module = await import('./tauri');
+  return module.subscribeNativeWindowFocus(listener);
+}

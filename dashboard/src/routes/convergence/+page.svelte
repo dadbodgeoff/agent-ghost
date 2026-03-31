@@ -78,6 +78,8 @@
   );
 
   async function loadScores() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [scoreData, healthData] = await Promise.all([
@@ -213,7 +215,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={loadScores}>Retry</button>
   </div>
 {:else if scores.length === 0}
   <div class="empty-state">

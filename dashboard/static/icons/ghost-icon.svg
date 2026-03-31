@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="ghostGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4de2c5"/>
+      <stop offset="100%" stop-color="#1fb7ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0d0d1a"/>
+  <path
+    d="M256 86c82 0 148 62 148 139v139c0 13-15 20-25 12l-36-29-52 42a18 18 0 0 1-22 0l-13-10-13 10a18 18 0 0 1-22 0l-52-42-36 29c-10 8-25 1-25-12V225c0-77 66-139 148-139Z"
+    fill="url(#ghostGlow)"
+  />
+  <circle cx="203" cy="231" r="22" fill="#0d0d1a"/>
+  <circle cx="309" cy="231" r="22" fill="#0d0d1a"/>
+  <path d="M196 308c17 20 42 31 60 31s43-11 60-31" fill="none" stroke="#0d0d1a" stroke-linecap="round" stroke-width="20"/>
+</svg>

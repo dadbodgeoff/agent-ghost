@@ -118,7 +118,7 @@
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
-        icon: '/icons/ghost-192.png',
+        icon: '/icons/ghost-icon.svg',
         tag: 'ghost-test',
       });
     } catch {

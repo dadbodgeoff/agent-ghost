@@ -134,3 +134,15 @@ export const tauriRuntime: RuntimePlatform = {
     return createTauriTerminalPty(sessionId);
   },
 };
+
+export async function subscribeNativeWindowFocus(listener: () => void): Promise<() => void> {
+  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+  const unlisten = await getCurrentWindow().onFocusChanged(({ payload }) => {
+    if (payload) {
+      listener();
+    }
+  });
+  return () => {
+    unlisten();
+  };
+}

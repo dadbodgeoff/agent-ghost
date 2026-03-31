@@ -22,16 +22,26 @@
     rotateAuthBoundarySession,
   } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
-  import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
+  import { getRuntime, subscribeNativeWindowFocus, type RuntimePlatform } from '$lib/platform/runtime';
+  import { applyThemeChoice, getStoredThemeChoice, toggleThemeChoice, type ThemeChoice } from '$lib/theme';
 
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
+  let deferredPrompt = $state<BeforeInstallPromptEvent | null>(null);
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
+  let removeNativeFocusListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -50,15 +60,9 @@
     };
   }
 
-  function applyTheme() {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light') {
-      document.documentElement.classList.add('light');
-    } else if (stored === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        document.documentElement.classList.add('light');
-      }
-    }
+  function applyStoredTheme() {
+    const storedTheme: ThemeChoice = getStoredThemeChoice();
+    applyThemeChoice(storedTheme);
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -85,7 +89,7 @@
   }
 
   onMount(async () => {
-    applyTheme();
+    applyStoredTheme();
 
     runtime = await getRuntime();
     unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
@@ -133,29 +137,40 @@
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
     shortcuts.registerCommand('theme.toggle', () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      toggleThemeChoice();
     });
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
+
+    removeNativeFocusListener = await subscribeNativeWindowFocus(() => {
+      lastSync = new Date().toLocaleTimeString();
+    });
 
     await subscribeToPush();
   });
@@ -163,6 +178,14 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOfflineListener?.();
+    removeInstallPromptListener?.();
+    removeNativeFocusListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener = null;
+    removeInstallPromptListener = null;
+    removeNativeFocusListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
