@@ -57,8 +57,16 @@ export async function getHealth(): Promise<GatewayHealth> {
  * Get list of agents.
  */
 export async function getAgents(): Promise<AgentSummary[]> {
-  const data = await request<{ agents?: AgentSummary[] }>('/api/agents');
-  return data.agents || [];
+  const data = await request<
+    Array<{ id: string; name: string; status?: string; effective_state?: string }> |
+    { agents?: Array<{ id: string; name: string; state?: string; status?: string; effective_state?: string }> }
+  >('/api/agents');
+  const agents = Array.isArray(data) ? data : data.agents ?? [];
+  return agents.map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    state: agent.effective_state ?? agent.status ?? agent.state ?? 'unknown',
+  }));
 }
 
 /**

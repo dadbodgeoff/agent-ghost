@@ -64,7 +64,7 @@
             aria-valuenow={pct}
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-label="Spending utilization for {agent.agent_name || agent.agent_id}"
+            aria-label={`Spending utilization for ${agent.agent_name || agent.agent_id}`}
           ></div>
         </div>
 

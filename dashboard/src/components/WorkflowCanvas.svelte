@@ -387,7 +387,7 @@
       onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectedNodeId = node.id; onnodeselect?.(node.id); } if (e.key === 'Delete' || e.key === 'Backspace') { removeNode(node.id); } }}
       role="button"
       tabindex="0"
-      aria-label="{node.type}: {node.label}"
+      aria-label={`${node.type}: ${node.label}`}
     >
       {#if isConditionNode(node.type)}
         <!-- Diamond shape for condition nodes -->

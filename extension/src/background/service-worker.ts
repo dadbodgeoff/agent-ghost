@@ -3,8 +3,11 @@
  */
 
 import { ITPEmitter } from './itp-emitter';
+import { initAuthSync } from './auth-sync';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync().catch(() => undefined);
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -18,6 +21,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sessionId: message.sessionId,
     });
     sendResponse({ ok: true });
+    return false;
   }
 
   if (message.type === 'SESSION_START') {
@@ -28,13 +32,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sessionId: message.sessionId,
     });
     sendResponse({ ok: true });
+    return false;
   }
 
   if (message.type === 'GET_SCORE') {
     sendResponse({ score: emitter.getLatestScore() });
+    return false;
   }
 
-  return true; // Keep channel open for async response
+  return false;
 });
 
 // Periodic score refresh

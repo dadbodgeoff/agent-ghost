@@ -290,7 +290,7 @@
               class="session-delete"
               onclick={(e) => { e.stopPropagation(); studioChatStore.deleteSession(s.id); }}
               title="Delete session"
-              aria-label="Delete session {s.title}"
+              aria-label={`Delete session ${s.title}`}
             >&times;</button>
           </li>
         {/each}

@@ -380,7 +380,7 @@
       {#each status.allowed_apps as app}
         <span class="tag">
           {app}
-          <button class="tag-remove" onclick={() => removeApp(app)} aria-label="Remove {app}">x</button>
+          <button class="tag-remove" onclick={() => removeApp(app)} aria-label={`Remove ${app}`}>x</button>
         </span>
       {/each}
     </div>
@@ -446,7 +446,7 @@
       {#each status.blocked_hotkeys as key}
         <span class="tag">
           <kbd>{key}</kbd>
-          <button class="tag-remove" onclick={() => removeHotkey(key)} aria-label="Remove {key}">x</button>
+          <button class="tag-remove" onclick={() => removeHotkey(key)} aria-label={`Remove ${key}`}>x</button>
         </span>
       {/each}
     </div>

@@ -32,7 +32,7 @@
   aria-valuenow={score}
   aria-valuemin={0}
   aria-valuemax={1}
-  aria-label="Convergence score: {score.toFixed(2)}, Level {level} {label}"
+  aria-label={`Convergence score: ${score.toFixed(2)}, Level ${level} ${label}`}
 >
   <svg viewBox="0 0 200 120" class="gauge-svg">
     <path

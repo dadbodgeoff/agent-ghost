@@ -133,7 +133,7 @@
   }
 </script>
 
-<div class="trace-waterfall" role="tree" aria-label="Trace waterfall with {spans.length} spans">
+<div class="trace-waterfall" role="tree" aria-label={`Trace waterfall with ${spans.length} spans`}>
   {#if spans.length === 0}
     <p class="empty">No trace data. Select a session to view spans.</p>
   {:else}

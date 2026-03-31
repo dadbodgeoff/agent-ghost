@@ -111,7 +111,7 @@
             <button
               class="btn-connect"
               onclick={() => connectProvider(provider.name, [])}
-              aria-label="Connect {provider.name}"
+              aria-label={`Connect ${provider.name}`}
             >
               Connect
             </button>
@@ -131,7 +131,7 @@
             <span
               class="badge"
               style="background: {statusColor(conn.status)}"
-              aria-label="Status: {conn.status}"
+              aria-label={`Status: ${conn.status}`}
             >
               {statusLabel(conn.status)}
             </span>
@@ -149,7 +149,7 @@
             class="btn-disconnect"
             onclick={() => disconnectConnection(conn.ref_id)}
             disabled={disconnectingRefId === conn.ref_id}
-            aria-label="Disconnect {conn.provider}"
+            aria-label={`Disconnect ${conn.provider}`}
           >
             Disconnect
           </button>

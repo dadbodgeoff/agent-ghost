@@ -41,7 +41,7 @@
         <button
           type="button"
           class="tab-close"
-          aria-label="Close {tab.label}"
+          aria-label={`Close ${tab.label}`}
           onclick={(e) => close(e, tab)}
         >&times;</button>
       {/if}

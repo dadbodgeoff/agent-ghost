@@ -117,6 +117,7 @@ class WebSocketStore {
           if (!this.isLeader) {
             return;
           }
+          this.state = 'disconnected';
           this.lastError = 'Connection lost - click to reconnect';
         },
         onError: (message) => {
@@ -141,8 +142,7 @@ class WebSocketStore {
     this.socket?.disconnect();
     this.socket = null;
     this.state = 'disconnected';
-    this.bc?.close();
-    this.bc = null;
+    this.resetLeaderElection();
   }
 
   private async initLeaderElection() {
@@ -222,6 +222,15 @@ class WebSocketStore {
 
   private resolveLeaderReady() {
     this.leaderReadyResolve?.();
+    this.leaderReadyResolve = null;
+  }
+
+  private resetLeaderElection() {
+    this.bc?.close();
+    this.bc = null;
+    this.isLeader = true;
+    this.leaderElectionStarted = false;
+    this.leaderReady = null;
     this.leaderReadyResolve = null;
   }
 

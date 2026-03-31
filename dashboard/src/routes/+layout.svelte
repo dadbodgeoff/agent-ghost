@@ -25,13 +25,19 @@
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
   let { children } = $props();
+  type BeforeInstallPromptEvent = Event & {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform?: string }>;
+  };
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeNetworkListeners: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -59,6 +65,21 @@
         document.documentElement.classList.add('light');
       }
     }
+  }
+
+  function handleOnline() {
+    offline = false;
+  }
+
+  function handleOffline() {
+    offline = true;
+    lastSync = new Date().toLocaleTimeString();
+  }
+
+  function handleBeforeInstallPrompt(event: Event) {
+    event.preventDefault();
+    deferredPrompt = event as BeforeInstallPromptEvent;
+    showInstallPrompt = true;
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -141,17 +162,17 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
-      offline = true;
-      lastSync = new Date().toLocaleTimeString();
-    });
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    removeNetworkListeners = () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      showInstallPrompt = true;
-    });
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeInstallPromptListener = () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +184,10 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeNetworkListeners?.();
+    removeNetworkListeners = null;
+    removeInstallPromptListener?.();
+    removeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -178,10 +203,8 @@
   async function installPWA() {
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
-    const result = await deferredPrompt.userChoice;
-    if (result.outcome === 'accepted') {
-      showInstallPrompt = false;
-    }
+    await deferredPrompt.userChoice;
+    showInstallPrompt = false;
     deferredPrompt = null;
   }
 

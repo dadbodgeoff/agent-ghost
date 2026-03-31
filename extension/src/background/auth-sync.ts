@@ -38,6 +38,16 @@ export async function initAuthSync(): Promise<AuthState> {
 }
 
 /**
+ * Load stored auth settings without forcing a validation request.
+ */
+export async function loadStoredAuthState(): Promise<AuthState> {
+  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
+  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
+  currentState.token = stored[JWT_TOKEN_KEY] || null;
+  return { ...currentState };
+}
+
+/**
  * Store JWT token from dashboard login.
  */
 export async function storeToken(token: string, gatewayUrl?: string): Promise<void> {

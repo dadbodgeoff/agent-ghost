@@ -50,7 +50,7 @@
     aria-valuenow={pct}
     aria-valuemin={0}
     aria-valuemax={100}
-    aria-label="{label || 'Cost'} utilization: {pct.toFixed(0)}%"
+    aria-label={`${label || 'Cost'} utilization: ${pct.toFixed(0)}%`}
   >
     <div class="fill" style="width: {pct}%; background: {color}"></div>
   </div>

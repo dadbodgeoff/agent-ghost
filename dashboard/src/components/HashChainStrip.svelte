@@ -65,7 +65,7 @@
       class:genesis={i === 0}
       class:broken={isBreak(i)}
       type="button"
-      title="Hash: {block.event_hash}\nPrev: {block.previous_hash}"
+      title={`Hash: ${block.event_hash}\nPrev: ${block.previous_hash}`}
       onclick={() => onblockclick?.(block, i)}
     >
       <span class="block-hash">{shortHash(block.event_hash)}</span>

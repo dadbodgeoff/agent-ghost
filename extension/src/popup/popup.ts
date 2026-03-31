@@ -2,7 +2,7 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -22,6 +22,16 @@ function updateConnectionIndicator(connected: boolean): void {
   }
 }
 
+function setAgentListMessage(message: string): void {
+  const container = document.getElementById('agentList');
+  if (!container) return;
+  container.replaceChildren();
+  const item = document.createElement('span');
+  item.className = 'agent-list-empty';
+  item.textContent = message;
+  container.append(item);
+}
+
 /**
  * Fetch and render the agent list from the gateway.
  */
@@ -32,20 +42,27 @@ async function loadAgentList(): Promise<void> {
   try {
     const agents = await getAgents();
     if (agents.length === 0) {
-      container.innerHTML = '<span class="agent-list-empty">No agents found</span>';
+      setAgentListMessage('No agents found');
       return;
     }
-    container.innerHTML = agents
-      .map(
-        (a) =>
-          `<div class="agent-list-item">` +
-          `<span class="agent-name">${a.name || a.id}</span>` +
-          `<span class="agent-state">${a.state}</span>` +
-          `</div>`
-      )
-      .join('');
+    const items = agents.map((agent) => {
+      const row = document.createElement('div');
+      row.className = 'agent-list-item';
+
+      const name = document.createElement('span');
+      name.className = 'agent-name';
+      name.textContent = agent.name || agent.id;
+
+      const state = document.createElement('span');
+      state.className = 'agent-state';
+      state.textContent = agent.state;
+
+      row.append(name, state);
+      return row;
+    });
+    container.replaceChildren(...items);
   } catch {
-    container.innerHTML = '<span class="agent-list-empty">Unable to load agents</span>';
+    setAgentListMessage('Unable to load agents');
   }
 }
 
@@ -87,11 +104,18 @@ function updateUI(data: { score: number; level: number; signals: number[] }): vo
   if (data.level >= 3 && alertEl && alertText) {
     alertEl.classList.add('visible');
     alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  } else if (alertEl && alertText) {
+    alertEl.classList.remove('visible');
+    alertText.textContent = '';
   }
 }
 
 // Request score from background
 chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
+  if (chrome.runtime.lastError) {
+    updateConnectionIndicator(false);
+    return;
+  }
   if (response && response.score !== undefined) {
     const level = response.score > 0.85 ? 4 :
                   response.score > 0.7 ? 3 :
@@ -107,24 +131,23 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
 
 // Session timer
 const sessionStart = Date.now();
-setInterval(() => {
+function updateSessionTimer(): void {
   const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
   const timerEl = document.getElementById('timer');
   if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
+}
+updateSessionTimer();
+setInterval(updateSessionTimer, 60000);
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
-  const auth = getAuthState();
+  const auth = await initAuthSync();
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {
     await loadAgentList();
   } else {
-    const container = document.getElementById('agentList');
-    if (container) {
-      container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
-    }
+    setAgentListMessage('Not connected to gateway');
   }
 
   await loadSyncStatus();

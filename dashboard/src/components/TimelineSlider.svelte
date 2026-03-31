@@ -99,7 +99,7 @@
     aria-valuemin={min}
     aria-valuemax={max}
     aria-valuenow={value}
-    aria-label="{label} position"
+    aria-label={`${label} position`}
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}

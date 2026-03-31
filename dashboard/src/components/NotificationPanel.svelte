@@ -9,6 +9,7 @@
   import { goto } from '$app/navigation';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
   import { getRuntime } from '$lib/platform/runtime';
+  import type { KnownWsEvent } from '@ghost/sdk';
 
   interface AppNotification {
     id: string;
@@ -31,43 +32,58 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function asEvent<T extends KnownWsEvent['type']>(
+    msg: WsMessage,
+    type: T,
+  ): Extract<KnownWsEvent, { type: T }> | null {
+    return msg.type === type ? (msg as Extract<KnownWsEvent, { type: T }>) : null;
+  }
+
   onMount(() => {
     loadFromStorage();
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const event = asEvent(msg, 'AgentStateChange');
+        if (!event?.agent_id) return;
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${event.agent_id} state changed`,
+          message: `New state: ${event.new_state ?? 'unknown'}`,
+          actionHref: `/agents/${event.agent_id}`,
+          agentId: event.agent_id,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
+        const event = asEvent(msg, 'KillSwitchActivation');
+        if (!event) return;
         addNotification({
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: event.reason ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const event = asEvent(msg, 'InterventionChange');
+        if (!event?.agent_id) return;
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${event.agent_id}: level → ${event.new_level ?? 'unknown'}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId: event.agent_id,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const event = asEvent(msg, 'ProposalUpdated');
+        if (!event) return;
+        const proposalId = event.proposal_id ?? '';
+        const change = event.change ?? 'updated';
+        const status = event.status ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -159,7 +175,23 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed)
+          ? parsed
+              .filter((notification): notification is AppNotification =>
+                Boolean(
+                  notification &&
+                  typeof notification.id === 'string' &&
+                  typeof notification.type === 'string' &&
+                  typeof notification.severity === 'string' &&
+                  typeof notification.title === 'string' &&
+                  typeof notification.message === 'string' &&
+                  typeof notification.timestamp === 'string' &&
+                  typeof notification.read === 'boolean',
+                ),
+              )
+              .slice(0, MAX_NOTIFICATIONS)
+          : [];
       }
     } catch { /* start fresh */ }
   }
@@ -174,7 +206,7 @@
   <button
     class="bell-button"
     onclick={() => panelOpen = !panelOpen}
-    aria-label="Notifications ({unreadCount} unread)"
+    aria-label={`Notifications (${unreadCount} unread)`}
   >
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>

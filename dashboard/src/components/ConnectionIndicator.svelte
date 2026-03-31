@@ -31,7 +31,7 @@
   class="indicator"
   title={info.label}
   role="status"
-  aria-label="WebSocket {info.label}"
+  aria-label={`WebSocket ${info.label}`}
 >
   <span
     class="dot"

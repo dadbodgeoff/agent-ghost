@@ -160,7 +160,7 @@
   }
 </script>
 
-<div class="causal-graph" role="img" aria-label="Causal relationship graph with {nodes.length} nodes and {edges.length} edges">
+<div class="causal-graph" role="img" aria-label={`Causal relationship graph with ${nodes.length} nodes and ${edges.length} edges`}>
   {#if nodes.length === 0}
     <p class="empty">No graph data available.</p>
   {:else}
