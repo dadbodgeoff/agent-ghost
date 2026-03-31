@@ -2,7 +2,7 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState, initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -113,8 +113,14 @@ setInterval(() => {
   if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
 }, 60000);
 
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
+// Phase 4: hydrate auth state in the popup context, then render connection status.
 (async () => {
+  try {
+    await initAuthSync();
+  } catch (error) {
+    console.error('[GHOST] Failed to initialize popup auth state', error);
+  }
+
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
 
