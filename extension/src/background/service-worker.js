@@ -40,7 +40,10 @@ function connectNative() {
 function handleNativeMessage(msg) {
   // Responses from convergence monitor (scores, interventions, etc.)
   if (msg.type === "score_update") {
-    chrome.storage.local.set({ latestScore: msg.data });
+    chrome.storage.local.set({
+      latestScore: msg.data,
+      "ghost-last-sync": Date.now(),
+    });
     // Forward to popup if open
     chrome.runtime.sendMessage({ type: "score_update", data: msg.data }).catch(() => {});
   }
@@ -56,12 +59,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
 
     case "get_status":
-      chrome.storage.local.get(["latestScore", "enabled", "privacyLevel"], (data) => {
+      chrome.storage.local.get(["latestScore", "enabled", "privacyLevel", "ghost-last-sync"], (data) => {
         sendResponse({
           connected: nativePort !== null,
           enabled: data.enabled ?? true,
           privacyLevel: data.privacyLevel ?? "standard",
           latestScore: data.latestScore ?? null,
+          lastSync: data["ghost-last-sync"] ?? null,
         });
       });
       return true; // async response

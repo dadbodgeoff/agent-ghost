@@ -24,6 +24,8 @@ let sessionStartTime = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   renderSignalList();
+  renderAgentState(false);
+  updateSyncStatus(null);
   requestStatus();
   startSessionTimer();
 
@@ -44,10 +46,20 @@ function requestStatus() {
     if (!response) return;
 
     const dot = document.getElementById("statusDot");
-    dot.className = `status-dot ${response.connected ? "connected" : "disconnected"}`;
-    dot.setAttribute("aria-label", response.connected ? "Connected" : "Disconnected");
+    const label = document.getElementById("statusLabel");
+    if (dot) {
+      dot.className = `status-dot ${response.connected ? "connected" : "disconnected"}`;
+      dot.setAttribute("aria-label", response.connected ? "Connected" : "Disconnected");
+    }
+    if (label) {
+      label.className = `status-label ${response.connected ? "connected" : "disconnected"}`;
+      label.textContent = response.connected ? "Connected" : "Disconnected";
+    }
 
-    if (response.latestScore) {
+    renderAgentState(response.connected);
+    updateSyncStatus(response.lastSync ?? null);
+
+    if (response.latestScore !== null && response.latestScore !== undefined) {
       updateDisplay(response.latestScore);
     }
   });
@@ -82,6 +94,8 @@ function updateDisplay(data) {
   // Platform
   if (data.platform) {
     document.getElementById("platform").textContent = data.platform;
+  } else {
+    document.getElementById("platform").textContent = "Native host";
   }
 
   // Alert banner
@@ -113,13 +127,37 @@ function renderSignalList() {
 function startSessionTimer() {
   sessionStartTime = Date.now();
   const el = document.getElementById("sessionDuration");
-  setInterval(() => {
+  const renderDuration = () => {
+    if (!el) return;
     const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
     const h = Math.floor(elapsed / 3600);
     const m = Math.floor((elapsed % 3600) / 60);
     const s = elapsed % 60;
     el.textContent = `${h}h ${m}m ${s}s`;
-  }, 1000);
+  };
+  renderDuration();
+  setInterval(renderDuration, 1000);
+}
+
+function renderAgentState(connected) {
+  const agentList = document.getElementById("agentList");
+  if (!agentList) return;
+
+  agentList.innerHTML = connected
+    ? '<span class="agent-list-empty">Agent details are available in the dashboard</span>'
+    : '<span class="agent-list-empty">Connect the desktop app to load agent state</span>';
+}
+
+function updateSyncStatus(timestamp) {
+  const el = document.getElementById("syncStatus");
+  if (!el) return;
+
+  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+    el.textContent = new Date(timestamp).toLocaleTimeString();
+    return;
+  }
+
+  el.textContent = "never";
 }
 
 function scoreColor(score) {
