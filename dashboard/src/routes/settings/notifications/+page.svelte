@@ -35,20 +35,41 @@
     };
   }
 
-  onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
-    if (pushSupported) {
-      permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
+  async function getReadyServiceWorkerRegistration(): Promise<ServiceWorkerRegistration | null> {
+    if (!('serviceWorker' in navigator)) {
+      return null;
+    }
+    return navigator.serviceWorker.ready.catch(() => null);
+  }
 
-      // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
-      if (saved) {
-        try {
-          enabledCategories = JSON.parse(saved);
-        } catch { /* use defaults */ }
+  onMount(async () => {
+    pushSupported =
+      'serviceWorker' in navigator &&
+      'PushManager' in window &&
+      'Notification' in window;
+    if (!pushSupported) {
+      return;
+    }
+
+    permissionState = Notification.permission;
+
+    const saved = localStorage.getItem('ghost-push-categories');
+    if (saved) {
+      try {
+        enabledCategories = JSON.parse(saved);
+      } catch {
+        // Use defaults if preferences are malformed.
       }
     }
+
+    if (permissionState !== 'granted') {
+      pushEnabled = false;
+      return;
+    }
+
+    const reg = await getReadyServiceWorkerRegistration();
+    const existingSub = await reg?.pushManager.getSubscription().catch(() => null);
+    pushEnabled = !!existingSub;
   });
 
   async function togglePush() {
@@ -58,38 +79,47 @@
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        pushEnabled = await subscribePush();
       }
     } else {
-      pushEnabled = false;
       await unsubscribePush();
+      pushEnabled = false;
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
+      const reg = await getReadyServiceWorkerRegistration();
+      if (!reg) return false;
+
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        return true;
+      }
+
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) return false;
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) return false;
       await client.push.subscribe(payload);
+      return true;
     } catch {
-      // Push subscription failed.
+      return false;
     }
   }
 
   async function unsubscribePush() {
     try {
+      const reg = await getReadyServiceWorkerRegistration();
+      if (!reg) return;
+
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
         const payload = pushSubscriptionToPayload(sub.toJSON());
@@ -105,7 +135,7 @@
 
   function toggleCategory(id: string) {
     if (enabledCategories.includes(id)) {
-      enabledCategories = enabledCategories.filter(c => c !== id);
+      enabledCategories = enabledCategories.filter((c) => c !== id);
     } else {
       enabledCategories = [...enabledCategories, id];
     }
@@ -115,10 +145,13 @@
   async function sendTestNotification() {
     testSending = true;
     try {
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await getReadyServiceWorkerRegistration();
+      if (!reg) return;
+
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
-        icon: '/icons/ghost-192.png',
+        icon: '/icons/ghost-icon.svg',
+        badge: '/icons/ghost-icon.svg',
         tag: 'ghost-test',
       });
     } catch {
@@ -219,26 +252,16 @@
     margin: var(--spacing-1) 0 0;
   }
 
-  .unsupported {
-    background: color-mix(in srgb, var(--color-severity-active) 15%, transparent);
-    color: var(--color-severity-active);
-    padding: var(--spacing-3) var(--spacing-4);
-    border-radius: var(--radius-md);
-    font-size: var(--font-size-sm);
-  }
-
+  .unsupported,
   .section {
-    background: var(--color-bg-elevated-1);
+    background: var(--color-bg-elevated-2);
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
-    padding: var(--spacing-4);
+    padding: var(--layout-card-padding);
   }
 
-  .section h2 {
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-semibold);
-    color: var(--color-text-primary);
-    margin: 0 0 var(--spacing-3);
+  .unsupported {
+    color: var(--color-text-muted);
   }
 
   .toggle-row {
@@ -250,38 +273,42 @@
 
   .toggle-label {
     display: block;
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-base);
     font-weight: var(--font-weight-semibold);
     color: var(--color-text-primary);
   }
 
   .toggle-desc {
     display: block;
-    font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
     margin-top: var(--spacing-1);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
   }
 
-  .toggle-btn {
-    padding: var(--spacing-1) var(--spacing-3);
-    border-radius: var(--radius-full);
-    font-size: var(--font-size-xs);
-    font-weight: var(--font-weight-bold);
+  .toggle-btn,
+  .test-btn {
     border: 1px solid var(--color-border-default);
-    background: var(--color-bg-base);
-    color: var(--color-text-muted);
-    cursor: pointer;
-    min-width: 48px;
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated-3);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    padding: var(--spacing-2) var(--spacing-4);
+    transition:
+      background var(--duration-fast) var(--easing-default),
+      border-color var(--duration-fast) var(--easing-default),
+      color var(--duration-fast) var(--easing-default);
   }
 
   .toggle-btn.active {
-    background: var(--color-score-high);
-    color: var(--color-text-inverse);
-    border-color: var(--color-score-high);
+    background: var(--color-brand-subtle);
+    border-color: var(--color-brand-primary);
+    color: var(--color-brand-primary);
   }
 
-  .toggle-btn:disabled {
-    opacity: 0.4;
+  .toggle-btn:disabled,
+  .test-btn:disabled {
+    opacity: 0.6;
     cursor: not-allowed;
   }
 
@@ -289,50 +316,26 @@
     display: flex;
     flex-direction: column;
     gap: var(--spacing-3);
+    margin-top: var(--spacing-4);
   }
 
   .category-row {
     display: flex;
     align-items: flex-start;
     gap: var(--spacing-3);
-    cursor: pointer;
-  }
-
-  .category-row input[type="checkbox"] {
-    accent-color: var(--color-interactive-primary);
-    margin-top: 2px;
+    color: var(--color-text-primary);
   }
 
   .cat-label {
     display: block;
     font-size: var(--font-size-sm);
-    color: var(--color-text-primary);
     font-weight: var(--font-weight-medium);
   }
 
   .cat-desc {
     display: block;
+    margin-top: var(--spacing-1);
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
-  }
-
-  .test-btn {
-    background: var(--color-interactive-primary);
-    color: var(--color-interactive-primary-text);
-    border: none;
-    padding: var(--spacing-2) var(--spacing-4);
-    border-radius: var(--radius-sm);
-    font-size: var(--font-size-sm);
-    font-weight: var(--font-weight-medium);
-    cursor: pointer;
-  }
-
-  .test-btn:hover:not(:disabled) {
-    opacity: 0.9;
-  }
-
-  .test-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 </style>
