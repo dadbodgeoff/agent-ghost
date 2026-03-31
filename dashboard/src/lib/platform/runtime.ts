@@ -28,6 +28,7 @@ export interface RuntimePlatform {
   requestNotificationPermission(): Promise<boolean>;
   sendNotification(notification: { title: string; body?: string }): Promise<void>;
   readKeybindings(): Promise<Array<{ key: string; command: string; when?: string }>>;
+  subscribeWindowFocus(listener: () => void): Promise<() => void>;
   spawnTerminalPty(options: { cols: number; rows: number }): Promise<RuntimeTerminalPty | null>;
 }
 

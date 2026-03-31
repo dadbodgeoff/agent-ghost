@@ -102,6 +102,9 @@ export const webRuntime: RuntimePlatform = {
   async readKeybindings() {
     return [];
   },
+  async subscribeWindowFocus() {
+    return () => {};
+  },
   async spawnTerminalPty() {
     return null;
   },

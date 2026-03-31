@@ -129,6 +129,14 @@ export const tauriRuntime: RuntimePlatform = {
   async readKeybindings() {
     return invoke<Array<{ key: string; command: string; when?: string }>>('read_keybindings');
   },
+  async subscribeWindowFocus(listener) {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    return getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) {
+        listener();
+      }
+    });
+  },
   async spawnTerminalPty(options) {
     const sessionId = await invoke<number>('open_terminal_session', options);
     return createTauriTerminalPty(sessionId);
