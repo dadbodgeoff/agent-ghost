@@ -16,6 +16,40 @@
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
 
+  function canUseBrowserPush(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      typeof navigator !== 'undefined' &&
+      'PushManager' in window &&
+      'Notification' in window &&
+      'serviceWorker' in navigator
+    );
+  }
+
+  function loadSavedCategories() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const saved = localStorage.getItem('ghost-push-categories');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')) {
+          enabledCategories = parsed;
+        }
+      }
+    } catch {
+      // Keep defaults when preferences are corrupt or unavailable.
+    }
+  }
+
+  function persistCategories() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    } catch {
+      // Ignore storage write failures.
+    }
+  }
+
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
     const normalized = (key + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -36,18 +70,27 @@
   }
 
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
-    if (pushSupported) {
-      permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
+    pushSupported = canUseBrowserPush();
+    loadSavedCategories();
 
-      // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
-      if (saved) {
-        try {
-          enabledCategories = JSON.parse(saved);
-        } catch { /* use defaults */ }
-      }
+    if (!pushSupported) {
+      permissionState = 'default';
+      pushEnabled = false;
+      return;
+    }
+
+    permissionState = Notification.permission;
+    if (permissionState !== 'granted') {
+      pushEnabled = false;
+      return;
+    }
+
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const subscription = await reg.pushManager.getSubscription();
+      pushEnabled = subscription != null;
+    } catch {
+      pushEnabled = false;
     }
   });
 
@@ -58,35 +101,48 @@
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        const subscribed = await subscribePush();
+        pushEnabled = subscribed;
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      const unsubscribed = await unsubscribePush();
+      pushEnabled = !unsubscribed;
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
+    if (!pushSupported) return false;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        const payload = pushSubscriptionToPayload(existing.toJSON());
+        if (payload) {
+          await client.push.subscribe(payload);
+          return true;
+        }
+        await existing.unsubscribe().catch(() => undefined);
+      }
+
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) return false;
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) return false;
       await client.push.subscribe(payload);
+      return true;
     } catch {
-      // Push subscription failed.
+      return false;
     }
   }
 
-  async function unsubscribePush() {
+  async function unsubscribePush(): Promise<boolean> {
+    if (!pushSupported) return false;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -98,8 +154,9 @@
         }
         await sub.unsubscribe();
       }
+      return true;
     } catch {
-      // Unsubscribe failed.
+      return false;
     }
   }
 
@@ -109,10 +166,11 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    persistCategories();
   }
 
   async function sendTestNotification() {
+    if (!pushSupported || permissionState !== 'granted') return;
     testSending = true;
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -188,7 +246,7 @@
       <div class="section">
         <button
           class="test-btn"
-          disabled={testSending}
+          disabled={testSending || permissionState !== 'granted'}
           onclick={sendTestNotification}
         >
           {testSending ? 'Sending...' : 'Send Test Notification'}

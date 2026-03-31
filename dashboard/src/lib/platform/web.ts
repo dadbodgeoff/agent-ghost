@@ -5,6 +5,70 @@ const CLIENT_ID_KEY = 'ghost-client-id';
 const SESSION_EPOCH_KEY = 'ghost-session-epoch';
 const listeners = new Set<(token: string | null) => void>();
 
+function canUseLocalStorage(): boolean {
+  return typeof localStorage !== 'undefined';
+}
+
+function canUseSessionStorage(): boolean {
+  return typeof sessionStorage !== 'undefined';
+}
+
+function getLocalStorageItem(key: string): string | null {
+  if (!canUseLocalStorage()) return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function setLocalStorageItem(key: string, value: string): void {
+  if (!canUseLocalStorage()) return;
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures in constrained browser contexts.
+  }
+}
+
+function getSessionStorageItem(key: string): string | null {
+  if (!canUseSessionStorage()) return null;
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function setSessionStorageItem(key: string, value: string): void {
+  if (!canUseSessionStorage()) return;
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures in constrained browser contexts.
+  }
+}
+
+function removeSessionStorageItem(key: string): void {
+  if (!canUseSessionStorage()) return;
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // Ignore storage failures in constrained browser contexts.
+  }
+}
+
+function canUseWindow(): boolean {
+  return typeof window !== 'undefined';
+}
+
+function createRandomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `ghost-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function emitTokenChange(token: string | null) {
   for (const listener of listeners) {
     listener(token);
@@ -12,10 +76,8 @@ function emitTokenChange(token: string | null) {
 }
 
 function resolveBaseUrl(): string {
-  if (typeof localStorage !== 'undefined') {
-    const override = localStorage.getItem('ghost-gateway-url');
-    if (override) return override;
-  }
+  const override = getLocalStorageItem('ghost-gateway-url');
+  if (override) return override;
 
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GHOST_GATEWAY_URL) {
     return import.meta.env.VITE_GHOST_GATEWAY_URL;
@@ -25,18 +87,18 @@ function resolveBaseUrl(): string {
 }
 
 function resolveReplayClientId(): string {
-  const existing = localStorage.getItem(CLIENT_ID_KEY);
+  const existing = getLocalStorageItem(CLIENT_ID_KEY);
   if (existing) return existing;
-  const clientId = crypto.randomUUID();
-  localStorage.setItem(CLIENT_ID_KEY, clientId);
+  const clientId = createRandomId();
+  setLocalStorageItem(CLIENT_ID_KEY, clientId);
   return clientId;
 }
 
 function resolveReplaySessionEpoch(): number {
-  const raw = localStorage.getItem(SESSION_EPOCH_KEY);
+  const raw = getLocalStorageItem(SESSION_EPOCH_KEY);
   const epoch = raw ? Number.parseInt(raw, 10) : 1;
   if (Number.isFinite(epoch) && epoch > 0) return epoch;
-  localStorage.setItem(SESSION_EPOCH_KEY, '1');
+  setLocalStorageItem(SESSION_EPOCH_KEY, '1');
   return 1;
 }
 
@@ -47,14 +109,14 @@ export const webRuntime: RuntimePlatform = {
     return resolveBaseUrl();
   },
   async getToken() {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return getSessionStorageItem(TOKEN_KEY);
   },
   async setToken(token: string) {
-    sessionStorage.setItem(TOKEN_KEY, token);
+    setSessionStorageItem(TOKEN_KEY, token);
     emitTokenChange(token);
   },
   async clearToken() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    removeSessionStorageItem(TOKEN_KEY);
     emitTokenChange(null);
   },
   async getReplayClientId() {
@@ -65,7 +127,7 @@ export const webRuntime: RuntimePlatform = {
   },
   async advanceReplaySessionEpoch() {
     const next = resolveReplaySessionEpoch() + 1;
-    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    setLocalStorageItem(SESSION_EPOCH_KEY, String(next));
     return next;
   },
   subscribeTokenChange(listener) {
@@ -82,6 +144,7 @@ export const webRuntime: RuntimePlatform = {
     throw new Error('Gateway lifecycle control is only available in the desktop app');
   },
   async openExternalUrl(url: string) {
+    if (!canUseWindow()) return;
     window.open(url, '_blank', 'noopener,noreferrer');
   },
   async requestNotificationPermission() {
