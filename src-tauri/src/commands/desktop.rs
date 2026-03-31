@@ -272,6 +272,8 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
     cols: u16,
     rows: u16,
 ) -> Result<u32, String> {
+    let cols = cols.max(1);
+    let rows = rows.max(1);
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -302,7 +304,9 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
         .map_err(|error| format!("Failed to spawn shell: {error}"))?;
     let child_killer = child.clone_killer();
 
-    let session_id = terminal_state.next_session_id.fetch_add(1, Ordering::Relaxed);
+    let session_id = terminal_state
+        .next_session_id
+        .fetch_add(1, Ordering::Relaxed);
     let session = Arc::new(TerminalSession {
         pair: Mutex::new(pair),
         child: Mutex::new(child),
@@ -397,7 +401,12 @@ pub async fn close_terminal_session(
     terminal_state: tauri::State<'_, DesktopTerminalState>,
     session_id: u32,
 ) -> Result<(), String> {
-    let session = session_for(&terminal_state, session_id)?;
+    let session = terminal_state
+        .sessions
+        .write()
+        .map_err(|_| "terminal session registry poisoned".to_string())?
+        .remove(&session_id)
+        .ok_or_else(|| format!("terminal session {session_id} not found"))?;
     session
         .child_killer
         .lock()
@@ -454,7 +463,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("create temp home");
         let _home = EnvVarGuard::set("HOME", temp.path().to_string_lossy().as_ref());
 
-        let bindings = read_keybindings().await.expect("missing file should not fail");
+        let bindings = read_keybindings()
+            .await
+            .expect("missing file should not fail");
 
         assert!(bindings.is_empty());
     }
@@ -475,7 +486,9 @@ mod tests {
         )
         .expect("write keybindings");
 
-        let bindings = read_keybindings().await.expect("valid keybindings should load");
+        let bindings = read_keybindings()
+            .await
+            .expect("valid keybindings should load");
 
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings[0].key, "mod+k");
@@ -494,7 +507,8 @@ mod tests {
 
         let config_dir = temp.path().join(".ghost");
         fs::create_dir_all(&config_dir).expect("create config dir");
-        fs::write(config_dir.join("keybindings.json"), "{not-json").expect("write malformed keybindings");
+        fs::write(config_dir.join("keybindings.json"), "{not-json")
+            .expect("write malformed keybindings");
 
         let error = read_keybindings()
             .await
@@ -577,7 +591,10 @@ mod tests {
         assert_eq!(get_auth_token().await.unwrap(), None);
 
         set_auth_token("secret-token".to_string()).await.unwrap();
-        assert_eq!(get_auth_token().await.unwrap().as_deref(), Some("secret-token"));
+        assert_eq!(
+            get_auth_token().await.unwrap().as_deref(),
+            Some("secret-token")
+        );
 
         let replay_state = get_replay_state().await.unwrap();
         assert_eq!(replay_state.session_epoch, 1);
@@ -605,7 +622,9 @@ mod tests {
         fs::create_dir_all(&config_dir).expect("create config dir");
         fs::write(config_dir.join(DESKTOP_STATE_FILE), "").expect("write empty desktop state");
 
-        let replay_state = get_replay_state().await.expect("empty file should self-heal");
+        let replay_state = get_replay_state()
+            .await
+            .expect("empty file should self-heal");
         assert_eq!(replay_state.session_epoch, 1);
     }
 }

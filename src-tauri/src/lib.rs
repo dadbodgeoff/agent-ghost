@@ -3,6 +3,8 @@ pub mod error;
 mod menu;
 mod tray;
 
+use std::sync::atomic::AtomicU16;
+
 use tauri::Manager;
 
 pub fn run() {
@@ -38,6 +40,10 @@ pub fn run() {
             menu::create(app)?;
 
             app.manage(commands::desktop::DesktopTerminalState::default());
+            app.manage(commands::gateway::GatewayProcess::default());
+            app.manage(commands::gateway::GatewayPort(AtomicU16::new(
+                commands::gateway::default_port(),
+            )));
 
             // --- Auto-start gateway sidecar ---
             let handle = app.handle().clone();
