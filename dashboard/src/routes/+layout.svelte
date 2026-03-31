@@ -24,12 +24,17 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
 
@@ -148,8 +153,9 @@
     });
 
     window.addEventListener('beforeinstallprompt', (e: Event) => {
+      const promptEvent = e as BeforeInstallPromptEvent;
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = promptEvent;
       showInstallPrompt = true;
     });
 

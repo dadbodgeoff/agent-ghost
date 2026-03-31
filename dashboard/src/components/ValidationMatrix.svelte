@@ -18,8 +18,14 @@
     passed: boolean;
   }
 
+  interface ScoreEntry {
+    score?: number;
+    threshold?: number;
+    passed?: boolean;
+  }
+
   interface Props {
-    scores?: Record<string, any>;
+    scores?: Record<string, number | ScoreEntry | undefined>;
     compact?: boolean;
   }
 
@@ -39,8 +45,8 @@
     Object.entries(dimensionLabels).map(([key, label]) => {
       const raw = scores[key] ?? scores[key.toUpperCase()] ?? {};
       const score = typeof raw === 'number' ? raw : (raw.score ?? 0);
-      const threshold = raw.threshold ?? 0.5;
-      const passed = raw.passed ?? score >= threshold;
+      const threshold = typeof raw === 'number' ? 0.5 : (raw.threshold ?? 0.5);
+      const passed = typeof raw === 'number' ? score >= threshold : (raw.passed ?? score >= threshold);
       return { dimension: key, label, score, threshold, passed } satisfies DimensionScore;
     })
   );

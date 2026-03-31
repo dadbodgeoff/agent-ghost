@@ -12,6 +12,9 @@
   let actionLoading = $state(false);
   let archiveReason = $state('Archived from ADE memory detail');
 
+  type SnapshotValue = string | number | boolean | null | SnapshotObject | SnapshotValue[];
+  type SnapshotObject = Record<string, SnapshotValue>;
+
   let snapshot = $derived(parseSnapshot(memory?.snapshot ?? '{}'));
   let isArchived = $derived(Boolean(snapshot.archived));
 
@@ -69,10 +72,13 @@
     }
   }
 
-  function parseSnapshot(raw: string | Record<string, unknown>): Record<string, any> {
-    if (typeof raw !== 'string') return raw;
+  function parseSnapshot(raw: string | Record<string, unknown>): SnapshotObject {
+    if (typeof raw !== 'string') return raw as SnapshotObject;
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as SnapshotObject)
+        : { raw };
     } catch {
       return { raw };
     }

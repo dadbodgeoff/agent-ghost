@@ -19,9 +19,15 @@
     focused?: boolean;
   } = $props();
 
-  function parseSnapshot(raw: string): Record<string, any> {
+  type SnapshotValue = string | number | boolean | null | SnapshotObject | SnapshotValue[];
+  type SnapshotObject = Record<string, SnapshotValue>;
+
+  function parseSnapshot(raw: string): SnapshotObject {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as SnapshotObject)
+        : { content: raw };
     } catch {
       return { content: raw };
     }
@@ -41,12 +47,12 @@
     IMPORTANCE_COLORS[(data.importance ?? '').toLowerCase()] ?? 'var(--color-text-muted)'
   );
 
-  function previewContent(data: Record<string, any>): string {
+  function previewContent(data: SnapshotObject): string {
     if (typeof data.summary === 'string' && data.summary.trim()) return data.summary;
     if (typeof data.content === 'string' && data.content.trim()) return data.content;
     if (data.content && typeof data.content === 'object') {
       for (const key of ['goal_text', 'text', 'message', 'description', 'fact']) {
-        const value = data.content[key];
+        const value = Array.isArray(data.content) ? undefined : data.content[key];
         if (typeof value === 'string' && value.trim()) return value;
       }
       return JSON.stringify(data.content).slice(0, 200);

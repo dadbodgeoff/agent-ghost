@@ -10,6 +10,8 @@
   let userGoal = $state('');
   let model = $state('claude-sonnet-4-6');
   let maxSteps = $state(5);
+  type SandboxArgValue = string | number | boolean | null | SandboxArgMap | SandboxArgValue[];
+  type SandboxArgMap = Record<string, SandboxArgValue>;
 
   let running = $state(false);
   let steps: Array<{
@@ -17,7 +19,7 @@
     action: string;
     reasoning: string;
     tool?: string;
-    args?: Record<string, any>;
+    args?: SandboxArgMap;
     simulated: boolean;
   }> = $state([]);
   let error = $state('');

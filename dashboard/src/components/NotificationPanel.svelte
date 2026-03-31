@@ -9,6 +9,7 @@
   import { goto } from '$app/navigation';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
   import { getRuntime } from '$lib/platform/runtime';
+  import type { KnownWsEvent } from '@ghost/sdk';
 
   interface AppNotification {
     id: string;
@@ -31,43 +32,60 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  type NotificationEvent =
+    | Extract<KnownWsEvent, { type: 'AgentStateChange' }>
+    | Extract<KnownWsEvent, { type: 'KillSwitchActivation' }>
+    | Extract<KnownWsEvent, { type: 'InterventionChange' }>
+    | Extract<KnownWsEvent, { type: 'ProposalUpdated' }>;
+
+  function isNotificationEvent<TType extends NotificationEvent['type']>(
+    msg: WsMessage,
+    type: TType,
+  ): msg is Extract<NotificationEvent, { type: TType }> {
+    return msg.type === type;
+  }
+
   onMount(() => {
     loadFromStorage();
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        if (!isNotificationEvent(msg, 'AgentStateChange')) return;
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${msg.agent_id} state changed`,
+          message: `New state: ${msg.new_state}`,
+          actionHref: `/agents/${msg.agent_id}`,
+          agentId: msg.agent_id,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
+        if (!isNotificationEvent(msg, 'KillSwitchActivation')) return;
         addNotification({
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: msg.reason,
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        if (!isNotificationEvent(msg, 'InterventionChange')) return;
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${msg.agent_id}: level → ${msg.new_level}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId: msg.agent_id,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        if (!isNotificationEvent(msg, 'ProposalUpdated')) return;
+        const proposalId = msg.proposal_id;
+        const change = msg.change;
+        const status = msg.status;
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -159,7 +177,8 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed) ? parsed : [];
       }
     } catch { /* start fresh */ }
   }

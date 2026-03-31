@@ -7,7 +7,7 @@
  * and event handler registration for view state.
  */
 
-import { GhostWebSocket, type WsEventType } from '@ghost/sdk';
+import { GhostWebSocket, type KnownWsEvent, type WsEventType } from '@ghost/sdk';
 import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
 
 export type ConnectionState =
@@ -251,8 +251,9 @@ class WebSocketStore {
     }
 
     if (msg.type === 'Resync') {
+      const resyncMsg = msg as Extract<KnownWsEvent, { type: 'Resync' }>;
       console.warn(
-        `[ws] Resync: missed ${(msg as { missed_events?: number }).missed_events ?? '?'} events — refreshing all stores`,
+        `[ws] Resync: missed ${resyncMsg.missed_events ?? '?'} events — refreshing all stores`,
       );
       this.notifyResync();
     }

@@ -9,6 +9,7 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
   import { shortcuts } from '$lib/shortcuts';
+  import type { AgentTemplate } from '$lib/types/studio';
   import type { StudioMessage } from '$lib/stores/studioChat.svelte';
   import ChatMessage from '../../components/ChatMessage.svelte';
   import ToolCallIndicator from '../../components/ToolCallIndicator.svelte';
@@ -20,7 +21,7 @@
 
   let responseTime = $state(0);
   let searchQuery = $state('');
-  let selectedTemplate = $state<any>(null);
+  let selectedTemplate = $state<AgentTemplate | null>(null);
   let artifacts = $state<Artifact[]>([]);
   let showArtifacts = $state(false);
   let chatAreaHeight = $state(0);
@@ -158,7 +159,7 @@
     responseTime = Math.round(performance.now() - start);
   }
 
-  function handleTemplateSelect(template: any) {
+  function handleTemplateSelect(template: AgentTemplate) {
     // Toggle selection — clicking the same template deselects it.
     if (selectedTemplate?.id === template.id) {
       selectedTemplate = null;
