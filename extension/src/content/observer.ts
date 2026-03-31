@@ -2,13 +2,13 @@
  * Content script — observes DOM for new messages and emits to background.
  */
 
-import { BasePlatformAdapter } from './adapters/base';
-import { ChatGPTAdapter } from './adapters/chatgpt';
-import { ClaudeAdapter } from './adapters/claude';
-import { CharacterAIAdapter } from './adapters/character-ai';
-import { GeminiAdapter } from './adapters/gemini';
-import { DeepSeekAdapter } from './adapters/deepseek';
-import { GrokAdapter } from './adapters/grok';
+import { BasePlatformAdapter } from './adapters/base.js';
+import { ChatGPTAdapter } from './adapters/chatgpt.js';
+import { ClaudeAdapter } from './adapters/claude.js';
+import { CharacterAIAdapter } from './adapters/character-ai.js';
+import { GeminiAdapter } from './adapters/gemini.js';
+import { DeepSeekAdapter } from './adapters/deepseek.js';
+import { GrokAdapter } from './adapters/grok.js';
 
 const adapters: BasePlatformAdapter[] = [
   new ChatGPTAdapter(),
@@ -18,6 +18,9 @@ const adapters: BasePlatformAdapter[] = [
   new DeepSeekAdapter(),
   new GrokAdapter(),
 ];
+
+let activeObserver: MutationObserver | null = null;
+let lastInitializedUrl: string | null = null;
 
 function init(): void {
   const url = window.location.href;
@@ -30,22 +33,28 @@ function init(): void {
 
   console.log(`[GHOST] Using adapter for: ${url}`);
 
-  // Notify session start
-  chrome.runtime.sendMessage({
-    type: 'SESSION_START',
-    platform: url,
-    sessionId: generateSessionId(),
-  });
+  activeObserver?.disconnect();
+
+  const sessionId = generateSessionId();
+
+  if (lastInitializedUrl !== url) {
+    chrome.runtime.sendMessage({
+      type: 'SESSION_START',
+      platform: url,
+      sessionId,
+    });
+    lastInitializedUrl = url;
+  }
 
   // Observe new messages
-  adapter.observeNewMessages(async (msg) => {
+  activeObserver = adapter.observeNewMessages(async (msg) => {
     const contentHash = await adapter.hashContent(msg.content);
     chrome.runtime.sendMessage({
       type: 'NEW_MESSAGE',
       platform: url,
       role: msg.role,
       contentHash,
-      sessionId: generateSessionId(),
+      sessionId,
     });
   });
 }
@@ -64,3 +73,12 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
+
+let lastUrl = window.location.href;
+setInterval(() => {
+  if (window.location.href !== lastUrl) {
+    lastUrl = window.location.href;
+    lastInitializedUrl = null;
+    init();
+  }
+}, 1000);

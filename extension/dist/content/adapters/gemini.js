@@ -1,7 +1,7 @@
 /**
  * Gemini DOM adapter.
  */
-import { BasePlatformAdapter } from './base';
+import { BasePlatformAdapter } from './base.js';
 export class GeminiAdapter extends BasePlatformAdapter {
     matches(url) {
         return url.includes('gemini.google.com');

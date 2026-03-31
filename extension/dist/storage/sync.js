@@ -4,7 +4,7 @@
  * Syncs pending IDB events to the gateway on reconnect.
  * Events queued while offline are replayed in order.
  */
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState } from '../background/auth-sync.js';
 const DB_NAME = 'ghost-convergence';
 const PENDING_STORE = 'pending_events';
 /**
@@ -56,23 +56,27 @@ export async function syncPendingEvents() {
             const events = request.result || [];
             let synced = 0;
             let failed = 0;
-            for (const event of events) {
-                try {
-                    await fetch(`${auth.gatewayUrl}/api/memory`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
+        for (const event of events) {
+            try {
+                const response = await fetch(`${auth.gatewayUrl}/api/memory`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
                             Authorization: `Bearer ${auth.token}`,
                         },
                         body: JSON.stringify({
                             type: event.type,
                             content: JSON.stringify(event.payload),
                             metadata: { source: 'extension-sync', original_timestamp: event.timestamp },
-                        }),
-                        signal: AbortSignal.timeout(5000),
-                    });
-                    // Mark as synced.
-                    const updateTx = db.transaction(PENDING_STORE, 'readwrite');
+                    }),
+                    signal: AbortSignal.timeout(5000),
+                });
+                if (!response.ok) {
+                    failed++;
+                    break;
+                }
+                // Mark as synced.
+                const updateTx = db.transaction(PENDING_STORE, 'readwrite');
                     const updateStore = updateTx.objectStore(PENDING_STORE);
                     updateStore.put({ ...event, synced: true });
                     synced++;
@@ -116,6 +120,11 @@ export async function cleanupSyncedEvents() {
  * `navigator.connection` change events if available.
  */
 export function initAutoSync() {
+    void syncPendingEvents().then(async (result) => {
+        if (result.synced > 0) {
+            await chrome.storage.local.set({ 'ghost-last-sync': Date.now() });
+        }
+    });
     // Sync pending events whenever the browser comes back online.
     self.addEventListener('online', async () => {
         const result = await syncPendingEvents();

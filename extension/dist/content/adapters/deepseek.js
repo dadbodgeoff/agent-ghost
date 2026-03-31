@@ -1,7 +1,7 @@
 /**
  * DeepSeek DOM adapter.
  */
-import { BasePlatformAdapter } from './base';
+import { BasePlatformAdapter } from './base.js';
 export class DeepSeekAdapter extends BasePlatformAdapter {
     matches(url) {
         return url.includes('chat.deepseek.com');

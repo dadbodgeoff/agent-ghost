@@ -1,7 +1,7 @@
 /**
  * Claude.ai DOM adapter.
  */
-import { BasePlatformAdapter } from './base';
+import { BasePlatformAdapter } from './base.js';
 export class ClaudeAdapter extends BasePlatformAdapter {
     matches(url) {
         return url.includes('claude.ai');

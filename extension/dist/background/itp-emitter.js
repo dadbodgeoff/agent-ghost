@@ -28,12 +28,12 @@ export class ITPEmitter {
             this.useNative = false;
         }
     }
-    emit(event) {
+    async emit(event) {
         if (this.useNative && this.nativePort) {
             this.nativePort.postMessage(event);
         }
         else {
-            this.storeInIndexedDB(event);
+            await this.storeInIndexedDB(event);
         }
     }
     getLatestScore() {

@@ -40,11 +40,11 @@ export class ITPEmitter {
     }
   }
 
-  emit(event: ITPEvent): void {
+  async emit(event: ITPEvent): Promise<void> {
     if (this.useNative && this.nativePort) {
       this.nativePort.postMessage(event);
     } else {
-      this.storeInIndexedDB(event);
+      await this.storeInIndexedDB(event);
     }
   }
 

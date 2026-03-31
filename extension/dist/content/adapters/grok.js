@@ -1,7 +1,7 @@
 /**
  * Grok DOM adapter.
  */
-import { BasePlatformAdapter } from './base';
+import { BasePlatformAdapter } from './base.js';
 export class GrokAdapter extends BasePlatformAdapter {
     matches(url) {
         return url.includes('grok.x.ai');

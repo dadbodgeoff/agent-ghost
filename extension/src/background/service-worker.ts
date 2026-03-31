@@ -2,39 +2,62 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
-import { ITPEmitter } from './itp-emitter';
+import { initAuthSync } from './auth-sync.js';
+import { ITPEmitter } from './itp-emitter.js';
+import { initAutoSync } from '../storage/sync.js';
 
 const emitter = new ITPEmitter();
 
-// Listen for messages from content scripts
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'NEW_MESSAGE') {
-    emitter.emit({
-      eventType: 'InteractionMessage',
-      platform: message.platform,
-      role: message.role,
-      contentHash: message.contentHash,
-      timestamp: new Date().toISOString(),
-      sessionId: message.sessionId,
-    });
-    sendResponse({ ok: true });
+void initAuthSync();
+initAutoSync();
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const type = typeof message?.type === 'string' ? message.type : '';
+
+  if (type === 'NEW_MESSAGE') {
+    void emitter
+      .emit({
+        eventType: 'InteractionMessage',
+        platform: typeof message.platform === 'string' ? message.platform : 'unknown',
+        role: typeof message.role === 'string' ? message.role : undefined,
+        contentHash: typeof message.contentHash === 'string' ? message.contentHash : undefined,
+        timestamp: new Date().toISOString(),
+        sessionId: typeof message.sessionId === 'string' ? message.sessionId : undefined,
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error: unknown) =>
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to store message event',
+        }),
+      );
+    return true;
   }
 
-  if (message.type === 'SESSION_START') {
-    emitter.emit({
-      eventType: 'SessionStart',
-      platform: message.platform,
-      timestamp: new Date().toISOString(),
-      sessionId: message.sessionId,
-    });
-    sendResponse({ ok: true });
+  if (type === 'SESSION_START') {
+    void emitter
+      .emit({
+        eventType: 'SessionStart',
+        platform: typeof message.platform === 'string' ? message.platform : 'unknown',
+        timestamp: new Date().toISOString(),
+        sessionId: typeof message.sessionId === 'string' ? message.sessionId : undefined,
+      })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error: unknown) =>
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to store session event',
+        }),
+      );
+    return true;
   }
 
-  if (message.type === 'GET_SCORE') {
+  if (type === 'GET_SCORE') {
     sendResponse({ score: emitter.getLatestScore() });
+    return false;
   }
 
-  return true; // Keep channel open for async response
+  return false;
 });
 
 // Periodic score refresh

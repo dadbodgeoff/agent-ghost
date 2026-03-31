@@ -1,7 +1,7 @@
 /**
  * Character.AI DOM adapter.
  */
-import { BasePlatformAdapter } from './base';
+import { BasePlatformAdapter } from './base.js';
 export class CharacterAIAdapter extends BasePlatformAdapter {
     matches(url) {
         return url.includes('character.ai');

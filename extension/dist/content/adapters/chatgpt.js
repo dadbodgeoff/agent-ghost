@@ -1,7 +1,7 @@
 /**
  * ChatGPT DOM adapter.
  */
-import { BasePlatformAdapter } from './base';
+import { BasePlatformAdapter } from './base.js';
 export class ChatGPTAdapter extends BasePlatformAdapter {
     matches(url) {
         return url.includes('chat.openai.com') || url.includes('chatgpt.com');

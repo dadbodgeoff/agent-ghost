@@ -5,7 +5,7 @@
  * Forwards ITP observations and retrieves agent state.
  */
 
-import { getAuthState } from './auth-sync';
+import { getAuthState } from './auth-sync.js';
 
 export interface AgentSummary {
   id: string;
@@ -20,6 +20,15 @@ export interface GatewayHealth {
 
 type JsonObject = Record<string, unknown>;
 
+function buildHeaders(token: string, headers?: HeadersInit): Headers {
+  const result = new Headers(headers);
+  result.set('Authorization', `Bearer ${token}`);
+  if (!result.has('Content-Type')) {
+    result.set('Content-Type', 'application/json');
+  }
+  return result;
+}
+
 /**
  * Make an authenticated request to the gateway.
  */
@@ -31,16 +40,21 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const resp = await fetch(`${auth.gatewayUrl}${path}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${auth.token}`,
-      ...(options.headers || {}),
-    },
+    headers: buildHeaders(auth.token, options.headers),
     signal: AbortSignal.timeout(10000),
   });
 
   if (!resp.ok) {
     throw new Error(`Gateway ${resp.status}: ${resp.statusText}`);
+  }
+
+  if (resp.status === 204) {
+    return undefined as T;
+  }
+
+  const contentType = resp.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return undefined as T;
   }
 
   return (await resp.json()) as T;

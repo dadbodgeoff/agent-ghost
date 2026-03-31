@@ -4,7 +4,15 @@
  * Provides typed API calls from the extension background to the gateway.
  * Forwards ITP observations and retrieves agent state.
  */
-import { getAuthState } from './auth-sync';
+import { getAuthState } from './auth-sync.js';
+function buildHeaders(token, headers) {
+    const result = new Headers(headers);
+    result.set('Authorization', `Bearer ${token}`);
+    if (!result.has('Content-Type')) {
+        result.set('Content-Type', 'application/json');
+    }
+    return result;
+}
 /**
  * Make an authenticated request to the gateway.
  */
@@ -15,15 +23,18 @@ async function request(path, options = {}) {
     }
     const resp = await fetch(`${auth.gatewayUrl}${path}`, {
         ...options,
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${auth.token}`,
-            ...(options.headers || {}),
-        },
+        headers: buildHeaders(auth.token, options.headers),
         signal: AbortSignal.timeout(10000),
     });
     if (!resp.ok) {
         throw new Error(`Gateway ${resp.status}: ${resp.statusText}`);
+    }
+    if (resp.status === 204) {
+        return undefined;
+    }
+    const contentType = resp.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+        return undefined;
     }
     return (await resp.json());
 }

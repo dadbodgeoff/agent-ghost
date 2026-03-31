@@ -4,14 +4,32 @@
 export class BasePlatformAdapter {
     observeNewMessages(callback) {
         const selector = this.getMessageContainerSelector();
-        const container = document.querySelector(selector);
+        let container = document.querySelector(selector);
+        const emittedElements = new WeakSet();
+        const emitParsedMessage = (element) => {
+            if (emittedElements.has(element)) {
+                return;
+            }
+            const msg = this.parseMessage(element);
+            if (!msg) {
+                return;
+            }
+            emittedElements.add(element);
+            callback(msg);
+        };
         const observer = new MutationObserver((mutations) => {
+            if (!container || !container.isConnected) {
+                container = document.querySelector(selector);
+                if (container) {
+                    observer.observe(container, { childList: true, subtree: true });
+                }
+            }
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
                     if (node instanceof Element) {
-                        const msg = this.parseMessage(node);
-                        if (msg) {
-                            callback(msg);
+                        emitParsedMessage(node);
+                        for (const descendant of node.querySelectorAll('*')) {
+                            emitParsedMessage(descendant);
                         }
                     }
                 }
@@ -19,6 +37,9 @@ export class BasePlatformAdapter {
         });
         if (container) {
             observer.observe(container, { childList: true, subtree: true });
+        }
+        else if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
         }
         return observer;
     }
