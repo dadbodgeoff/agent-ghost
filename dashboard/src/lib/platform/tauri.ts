@@ -133,4 +133,12 @@ export const tauriRuntime: RuntimePlatform = {
     const sessionId = await invoke<number>('open_terminal_session', options);
     return createTauriTerminalPty(sessionId);
   },
+  async onAppFocus(listener) {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    return getCurrentWindow().onFocusChanged(({ payload }) => {
+      if (payload) {
+        listener();
+      }
+    });
+  },
 };

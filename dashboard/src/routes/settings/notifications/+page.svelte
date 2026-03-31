@@ -15,6 +15,7 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let pushError = $state('');
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -36,7 +37,10 @@
   }
 
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported =
+      'PushManager' in window
+      && 'Notification' in window
+      && 'serviceWorker' in navigator;
     if (pushSupported) {
       permissionState = Notification.permission;
       pushEnabled = permissionState === 'granted';
@@ -53,40 +57,49 @@
 
   async function togglePush() {
     if (!pushSupported) return;
+    pushError = '';
 
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        pushEnabled = await subscribePush();
+      } else {
+        pushEnabled = false;
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      pushEnabled = !(await unsubscribePush());
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) {
+        pushError = 'Gateway did not provide a VAPID key.';
+        return false;
+      }
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) {
+        pushError = 'Browser returned an incomplete push subscription.';
+        return false;
+      }
       await client.push.subscribe(payload);
+      return true;
     } catch {
-      // Push subscription failed.
+      pushError = 'Push subscription failed. Check service worker and gateway availability.';
+      return false;
     }
   }
 
-  async function unsubscribePush() {
+  async function unsubscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -98,8 +111,10 @@
         }
         await sub.unsubscribe();
       }
+      return true;
     } catch {
-      // Unsubscribe failed.
+      pushError = 'Push unsubscription failed. Reload and try again.';
+      return false;
     }
   }
 
@@ -114,6 +129,7 @@
 
   async function sendTestNotification() {
     testSending = true;
+    pushError = '';
     try {
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
@@ -122,7 +138,7 @@
         tag: 'ghost-test',
       });
     } catch {
-      // Test failed.
+      pushError = 'Unable to display a test notification.';
     } finally {
       testSending = false;
     }
@@ -164,6 +180,10 @@
         </button>
       </div>
     </div>
+
+    {#if pushError}
+      <div class="unsupported" role="alert">{pushError}</div>
+    {/if}
 
     {#if pushEnabled}
       <div class="section">

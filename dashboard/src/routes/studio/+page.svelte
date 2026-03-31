@@ -7,7 +7,7 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
-  import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
+  import { getRuntime } from '$lib/platform/runtime';
   import { shortcuts } from '$lib/shortcuts';
   import type { StudioMessage } from '$lib/stores/studioChat.svelte';
   import ChatMessage from '../../components/ChatMessage.svelte';
@@ -34,6 +34,23 @@
   let authCheckInterval: ReturnType<typeof setInterval> | null = null;
   const artifactCache = new Map<string, Artifact[]>();
   const ARTIFACT_CACHE_MAX = 50;
+
+  async function refreshAuthExpiryWarning() {
+    const runtime = await getRuntime();
+    const token = await runtime.getToken();
+    if (!token) {
+      authExpiryWarning = false;
+      return;
+    }
+
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      const expMs = (payload.exp ?? 0) * 1000;
+      authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
+    } catch {
+      authExpiryWarning = false;
+    }
+  }
 
   function collectArtifacts(messages: StudioMessage[]): Artifact[] {
     const artifactCandidates = messages.filter(
@@ -67,18 +84,9 @@
     });
     let disposeTauriFocus: (() => void) | null = null;
 
-    // WP9-G: Check JWT expiry every 60s.
+    void refreshAuthExpiryWarning();
     authCheckInterval = setInterval(() => {
-      void (async () => {
-        const runtime = await getRuntime();
-        const token = await runtime.getToken();
-        if (!token) return;
-        try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          const expMs = (payload.exp ?? 0) * 1000;
-          authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
-        } catch { /* malformed token — ignore */ }
-      })();
+      void refreshAuthExpiryWarning();
     }, 60_000);
 
     const handleWindowFocus = () => {
@@ -94,20 +102,12 @@
     window.addEventListener('pageshow', handleWindowFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    if (isTauriEnvironment()) {
-      void import('@tauri-apps/api/window')
-        .then(({ getCurrentWindow }) =>
-          getCurrentWindow().onFocusChanged(({ payload }) => {
-            if (payload) {
-              scheduleStudioResumeSync();
-            }
-          }),
-        )
-        .then((unlisten) => {
-          disposeTauriFocus = unlisten;
-        })
-        .catch(() => {});
-    }
+    void getRuntime()
+      .then((runtime) => runtime.onAppFocus(() => scheduleStudioResumeSync()))
+      .then((dispose) => {
+        disposeTauriFocus = dispose;
+      })
+      .catch(() => {});
 
     return () => {
       disposeTauriFocus?.();
@@ -223,6 +223,7 @@
       studioInputRef?.refresh();
       await wsStore.reconnect();
       await studioChatStore.refreshActiveSession();
+      await refreshAuthExpiryWarning();
     } catch {
       // Best-effort foreground recovery. Existing banners surface real failures.
     } finally {
