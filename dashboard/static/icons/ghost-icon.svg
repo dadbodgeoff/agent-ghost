@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="ghost-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117" />
+      <stop offset="100%" stop-color="#111827" />
+    </linearGradient>
+    <linearGradient id="ghost-mark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7dd3fc" />
+      <stop offset="100%" stop-color="#38bdf8" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#ghost-bg)" />
+  <path
+    d="M256 92c-82.8 0-150 67.2-150 150v140c0 21 23.9 33 40.7 20.3l33.3-25.1c8.4-6.3 20.1-5.9 28 .9l27.8 23.8c11.9 10.2 29.3 10.2 41.2 0l27.8-23.8c7.9-6.8 19.6-7.2 28-.9l33.3 25.1C382.1 415 406 403 406 382V242c0-82.8-67.2-150-150-150Z"
+    fill="url(#ghost-mark)"
+  />
+  <circle cx="200" cy="244" r="24" fill="#0f172a" />
+  <circle cx="312" cy="244" r="24" fill="#0f172a" />
+  <path
+    d="M184 320c20 20 48 30 72 30s52-10 72-30"
+    fill="none"
+    stroke="#0f172a"
+    stroke-linecap="round"
+    stroke-width="24"
+  />
+</svg>

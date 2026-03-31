@@ -105,4 +105,7 @@ export const webRuntime: RuntimePlatform = {
   async spawnTerminalPty() {
     return null;
   },
+  async subscribeAppFocus() {
+    return null;
+  },
 };

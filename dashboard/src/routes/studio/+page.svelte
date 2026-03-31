@@ -65,7 +65,7 @@
     shortcuts.registerCommand('studio.cancelStream', () => {
       studioChatStore.cancelStreaming();
     });
-    let disposeTauriFocus: (() => void) | null = null;
+    let disposeRuntimeFocus: (() => void) | null = null;
 
     // WP9-G: Check JWT expiry every 60s.
     authCheckInterval = setInterval(() => {
@@ -95,22 +95,22 @@
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     if (isTauriEnvironment()) {
-      void import('@tauri-apps/api/window')
-        .then(({ getCurrentWindow }) =>
-          getCurrentWindow().onFocusChanged(({ payload }) => {
-            if (payload) {
+      void getRuntime()
+        .then((runtime) =>
+          runtime.subscribeAppFocus((focused) => {
+            if (focused) {
               scheduleStudioResumeSync();
             }
           }),
         )
-        .then((unlisten) => {
-          disposeTauriFocus = unlisten;
+        .then((unsubscribe) => {
+          disposeRuntimeFocus = unsubscribe;
         })
         .catch(() => {});
     }
 
     return () => {
-      disposeTauriFocus?.();
+      disposeRuntimeFocus?.();
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('pageshow', handleWindowFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);

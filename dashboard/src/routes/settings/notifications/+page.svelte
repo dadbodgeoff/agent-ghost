@@ -45,7 +45,10 @@
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          enabledCategories = Array.isArray(parsed)
+            ? parsed.filter((value): value is string => typeof value === 'string')
+            : enabledCategories;
         } catch { /* use defaults */ }
       }
     }
@@ -118,7 +121,7 @@
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
-        icon: '/icons/ghost-192.png',
+        icon: '/icons/ghost-icon.svg',
         tag: 'ghost-test',
       });
     } catch {
