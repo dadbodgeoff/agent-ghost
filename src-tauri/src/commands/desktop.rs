@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, PtyPair, PtySize};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutBinding {
@@ -85,10 +86,18 @@ struct TerminalSession {
     writer: Mutex<Box<dyn Write + Send>>,
 }
 
-#[derive(Default)]
 pub struct DesktopTerminalState {
     next_session_id: AtomicU32,
     sessions: RwLock<BTreeMap<u32, Arc<TerminalSession>>>,
+}
+
+impl Default for DesktopTerminalState {
+    fn default() -> Self {
+        Self {
+            next_session_id: AtomicU32::new(1),
+            sessions: RwLock::new(BTreeMap::new()),
+        }
+    }
 }
 
 fn desktop_state_path() -> Result<PathBuf, String> {
@@ -191,6 +200,18 @@ fn session_for(
         .map_err(|_| "terminal session registry poisoned".to_string())?
         .get(&session_id)
         .cloned()
+        .ok_or_else(|| format!("terminal session {session_id} not found"))
+}
+
+fn remove_terminal_session(
+    state: &DesktopTerminalState,
+    session_id: u32,
+) -> Result<Arc<TerminalSession>, String> {
+    state
+        .sessions
+        .write()
+        .map_err(|_| "terminal session registry poisoned".to_string())?
+        .remove(&session_id)
         .ok_or_else(|| format!("terminal session {session_id} not found"))
 }
 
@@ -348,6 +369,10 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
                 exit_code: exit_code as i32,
             },
         );
+
+        if let Some(terminal_state) = app_handle_clone.try_state::<DesktopTerminalState>() {
+            let _ = remove_terminal_session(&terminal_state, session_id);
+        }
     });
 
     Ok(session_id)
@@ -397,7 +422,7 @@ pub async fn close_terminal_session(
     terminal_state: tauri::State<'_, DesktopTerminalState>,
     session_id: u32,
 ) -> Result<(), String> {
-    let session = session_for(&terminal_state, session_id)?;
+    let session = remove_terminal_session(&terminal_state, session_id)?;
     session
         .child_killer
         .lock()

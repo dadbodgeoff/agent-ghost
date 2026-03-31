@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::sync::RwLock;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
@@ -8,8 +9,20 @@ use crate::error::GhostDesktopError;
 
 pub struct GatewayProcess(pub Mutex<Option<CommandChild>>);
 
+impl Default for GatewayProcess {
+    fn default() -> Self {
+        Self(Mutex::new(None))
+    }
+}
+
 /// Port resolved from ghost.yml, cached for the app lifetime.
-pub struct GatewayPort(pub u16);
+pub struct GatewayPort(pub RwLock<u16>);
+
+impl Default for GatewayPort {
+    fn default() -> Self {
+        Self(RwLock::new(default_port()))
+    }
+}
 
 // ── Minimal config parsing (no ghost-gateway dependency) ───────────
 
@@ -35,6 +48,21 @@ impl Default for MinimalGateway {
 
 fn default_port() -> u16 {
     39780
+}
+
+fn set_gateway_port(handle: &AppHandle, port: u16) {
+    if let Some(state) = handle.try_state::<GatewayPort>() {
+        if let Ok(mut guard) = state.0.write() {
+            *guard = port;
+        }
+    }
+}
+
+fn get_gateway_port(handle: &AppHandle) -> u16 {
+    handle
+        .try_state::<GatewayPort>()
+        .and_then(|state| state.0.read().ok().map(|guard| *guard))
+        .unwrap_or_else(default_port)
 }
 
 /// Read the gateway port from ghost.yml without pulling in ghost-gateway.
@@ -101,12 +129,22 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     })?;
 
     let port = read_port_from_config(&config_path);
-
-
-    // Store port for other commands to use.
-    handle.manage(GatewayPort(port));
+    set_gateway_port(&handle, port);
 
     let health_url = format!("http://127.0.0.1:{port}/api/health");
+    let process_state = handle
+        .try_state::<GatewayProcess>()
+        .ok_or_else(|| GhostDesktopError::ConfigError {
+            reason: "gateway process state not initialized".to_string(),
+        })?;
+
+    {
+        let guard = process_state.0.lock().await;
+        if guard.is_some() {
+            log::info!("Gateway sidecar already registered for port {port}");
+            return Ok(());
+        }
+    }
 
     // Phase 1: Check if gateway is already healthy (e.g., user ran `ghost serve` manually).
     let client = reqwest::Client::builder()
@@ -117,7 +155,6 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     if let Ok(resp) = client.get(&health_url).send().await {
         if resp.status().is_success() {
             log::info!("Gateway already healthy on port {port} — skipping sidecar launch");
-            handle.manage(GatewayProcess(Mutex::new(None)));
             return Ok(());
         }
     }
@@ -195,8 +232,10 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
         reason: e.to_string(),
     })?;
 
-    // Store child handle for shutdown.
-    handle.manage(GatewayProcess(Mutex::new(Some(child))));
+    {
+        let mut guard = process_state.0.lock().await;
+        *guard = Some(child);
+    }
 
     // Log sidecar stdout/stderr.
     tauri::async_runtime::spawn(async move {
@@ -230,6 +269,12 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+    if let Some(state) = handle.try_state::<GatewayProcess>() {
+        let mut guard = state.0.lock().await;
+        if let Some(child) = guard.take() {
+            let _ = child.kill();
+        }
+    }
     Err(GhostDesktopError::HealthCheckFailed {
         reason: format!("Gateway failed to become healthy on port {port} within 15s"),
     })
@@ -260,10 +305,7 @@ pub async fn stop_gateway(handle: AppHandle) -> Result<String, GhostDesktopError
 
 #[tauri::command]
 pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopError> {
-    let port = handle
-        .try_state::<GatewayPort>()
-        .map(|p| p.0)
-        .unwrap_or(39780);
+    let port = get_gateway_port(&handle);
     match reqwest::get(format!("http://127.0.0.1:{port}/api/health")).await {
         Ok(r) if r.status().is_success() => Ok("healthy".into()),
         _ => Ok("unreachable".into()),
@@ -272,8 +314,5 @@ pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopErr
 
 #[tauri::command]
 pub fn gateway_port(handle: AppHandle) -> u16 {
-    handle
-        .try_state::<GatewayPort>()
-        .map(|p| p.0)
-        .unwrap_or(39780)
+    get_gateway_port(&handle)
 }
