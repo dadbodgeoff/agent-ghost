@@ -2,8 +2,28 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState, initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+import { clearAlertBanner, updateAlertBanner } from './components/AlertBanner';
+import { renderSignalList, updateSignalList } from './components/SignalList';
+import { startSessionTimer } from './components/SessionTimer';
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function agentStateLabel(agent: {
+  effective_state?: string;
+  status?: string;
+  lifecycle_state?: string;
+}): string {
+  return agent.effective_state || agent.status || agent.lifecycle_state || 'unknown';
+}
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -39,8 +59,8 @@ async function loadAgentList(): Promise<void> {
       .map(
         (a) =>
           `<div class="agent-list-item">` +
-          `<span class="agent-name">${a.name || a.id}</span>` +
-          `<span class="agent-state">${a.state}</span>` +
+          `<span class="agent-name">${escapeHtml(a.name || a.id)}</span>` +
+          `<span class="agent-state">${escapeHtml(agentStateLabel(a))}</span>` +
           `</div>`
       )
       .join('');
@@ -66,27 +86,24 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  updateSignalList(data.signals);
 
-  // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl) {
+    if (data.level >= 2) {
+      updateAlertBanner(alertEl, data.level);
+    } else {
+      clearAlertBanner(alertEl);
+    }
   }
 }
 
@@ -105,18 +122,29 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
   }
 });
 
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
-
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
+  const signalListEl = document.getElementById('signalList');
+  if (signalListEl) {
+    renderSignalList(signalListEl);
+  }
+  const sessionDurationEl = document.getElementById('sessionDuration');
+  if (sessionDurationEl) {
+    startSessionTimer(sessionDurationEl);
+  }
+
+  await initAuthSync().catch(() => undefined);
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
+
+  const platformEl = document.getElementById('platform');
+  if (platformEl) {
+    try {
+      platformEl.textContent = new URL(auth.gatewayUrl).host;
+    } catch {
+      platformEl.textContent = auth.gatewayUrl;
+    }
+  }
 
   if (auth.authenticated) {
     await loadAgentList();
