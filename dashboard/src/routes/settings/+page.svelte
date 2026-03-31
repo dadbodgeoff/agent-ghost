@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
@@ -14,8 +15,7 @@
 
   let theme: ThemeChoice = $state('dark');
 
-  // Initialize from localStorage on mount.
-  $effect(() => {
+  onMount(() => {
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light' || stored === 'system') {
       theme = stored;
@@ -68,7 +68,7 @@
     if (!result.remoteSucceeded && result.reason) {
       alert(`Signed out locally, but the server logout endpoint did not confirm revocation: ${result.reason}`);
     }
-    goto('/login');
+    await goto('/login');
   }
 </script>
 

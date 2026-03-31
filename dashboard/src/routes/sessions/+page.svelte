@@ -21,7 +21,7 @@
 {:else if sessionsStore.error}
   <div class="error-state">
     <p>{sessionsStore.error}</p>
-    <button onclick={() => sessionsStore.refresh()}>Retry</button>
+    <button onclick={() => void sessionsStore.refresh()}>Retry</button>
   </div>
 {:else if sessionsStore.list.length === 0}
   <div class="empty-state">
@@ -67,7 +67,7 @@
 
   {#if sessionsStore.hasMore}
     <div class="load-more">
-      <button onclick={() => sessionsStore.loadMore()} disabled={sessionsStore.loadingMore}>
+      <button onclick={() => void sessionsStore.loadMore()} disabled={sessionsStore.loadingMore}>
         {sessionsStore.loadingMore ? 'Loading…' : 'Load More'}
       </button>
     </div>

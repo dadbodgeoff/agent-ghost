@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
   /**
    * CommandPalette — Enhanced Cmd+K global search overlay (Phase 2, Task 3.1).
    *
@@ -10,13 +11,13 @@
    *
    * Ref: T-3.13.2
    */
-    import { goto } from '$app/navigation';
-    import { getGhostClient } from '$lib/ghost-client';
-    import { hrefForSearchResult } from '$lib/search/navigation';
-    import { authSessionStore } from '$lib/stores/auth-session.svelte';
-    import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
-    import { frecencyTracker } from '$lib/frecency';
-    import { shortcuts } from '$lib/shortcuts';
+  import { goto } from '$app/navigation';
+  import { getGhostClient } from '$lib/ghost-client';
+  import { hrefForSearchResult } from '$lib/search/navigation';
+  import { authSessionStore } from '$lib/stores/auth-session.svelte';
+  import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
+  import { frecencyTracker } from '$lib/frecency';
+  import { shortcuts } from '$lib/shortcuts';
   import type { SearchResult } from '@ghost/sdk';
 
   type SearchPrefix = '>' | '@' | '#' | '/';
@@ -39,6 +40,17 @@
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let mode = $state<'search' | 'commands'>('search');
   let inputEl = $state<HTMLInputElement | null>(null);
+
+  onMount(() => {
+    void agentsStore.init();
+  });
+
+  onDestroy(() => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  });
 
   // Static commands
   const STATIC_COMMANDS: PaletteCommand[] = [

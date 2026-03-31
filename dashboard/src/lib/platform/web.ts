@@ -25,6 +25,9 @@ function resolveBaseUrl(): string {
 }
 
 function resolveReplayClientId(): string {
+  if (typeof localStorage === 'undefined') {
+    return 'web-client';
+  }
   const existing = localStorage.getItem(CLIENT_ID_KEY);
   if (existing) return existing;
   const clientId = crypto.randomUUID();
@@ -33,6 +36,9 @@ function resolveReplayClientId(): string {
 }
 
 function resolveReplaySessionEpoch(): number {
+  if (typeof localStorage === 'undefined') {
+    return 1;
+  }
   const raw = localStorage.getItem(SESSION_EPOCH_KEY);
   const epoch = raw ? Number.parseInt(raw, 10) : 1;
   if (Number.isFinite(epoch) && epoch > 0) return epoch;
@@ -47,13 +53,23 @@ export const webRuntime: RuntimePlatform = {
     return resolveBaseUrl();
   },
   async getToken() {
+    if (typeof sessionStorage === 'undefined') {
+      return null;
+    }
     return sessionStorage.getItem(TOKEN_KEY);
   },
   async setToken(token: string) {
+    if (typeof sessionStorage === 'undefined') {
+      return;
+    }
     sessionStorage.setItem(TOKEN_KEY, token);
     emitTokenChange(token);
   },
   async clearToken() {
+    if (typeof sessionStorage === 'undefined') {
+      emitTokenChange(null);
+      return;
+    }
     sessionStorage.removeItem(TOKEN_KEY);
     emitTokenChange(null);
   },
@@ -65,7 +81,9 @@ export const webRuntime: RuntimePlatform = {
   },
   async advanceReplaySessionEpoch() {
     const next = resolveReplaySessionEpoch() + 1;
-    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    }
     return next;
   },
   subscribeTokenChange(listener) {
@@ -82,7 +100,9 @@ export const webRuntime: RuntimePlatform = {
     throw new Error('Gateway lifecycle control is only available in the desktop app');
   },
   async openExternalUrl(url: string) {
-    window.open(url, '_blank', 'noopener,noreferrer');
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
   },
   async requestNotificationPermission() {
     if (typeof Notification === 'undefined') {

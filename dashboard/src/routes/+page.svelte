@@ -10,7 +10,10 @@
   let loading = $state(true);
   let error = $state('');
 
-  onMount(async () => {
+  async function loadDashboardData() {
+    loading = true;
+    error = '';
+
     try {
       const client = await getGhostClient();
       const [convData, agentData] = await Promise.all([
@@ -27,8 +30,16 @@
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load dashboard data';
       console.error('Failed to load dashboard data:', e);
+      agents = [];
+      score = 0;
+      level = 0;
+    } finally {
+      loading = false;
     }
-    loading = false;
+  }
+
+  onMount(() => {
+    void loadDashboardData();
   });
 </script>
 
@@ -43,7 +54,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={() => void loadDashboardData()}>Retry</button>
   </div>
 {:else}
   <div class="grid">

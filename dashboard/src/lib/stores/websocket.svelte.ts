@@ -141,8 +141,14 @@ class WebSocketStore {
     this.socket?.disconnect();
     this.socket = null;
     this.state = 'disconnected';
+    this.lastError = '';
+    this.reconnectAttempt = 0;
     this.bc?.close();
     this.bc = null;
+    this.isLeader = true;
+    this.leaderElectionStarted = false;
+    this.leaderReady = null;
+    this.leaderReadyResolve = null;
   }
 
   private async initLeaderElection() {
