@@ -2,6 +2,8 @@
  * ITP event emitter — sends events to native messaging host or IndexedDB fallback.
  */
 
+import { queueEvent } from '../storage/sync';
+
 interface ITPEvent {
   eventType: string;
   platform: string;
@@ -13,11 +15,24 @@ interface ITPEvent {
 
 export class ITPEmitter {
   private nativePort: chrome.runtime.Port | null = null;
-  private latestScore: number = 0;
+  private latestScore = 0;
   private useNative: boolean = false;
+  private readonly scoreListeners = new Set<(score: number) => void>();
 
   constructor() {
     this.tryConnectNative();
+  }
+
+  onScoreChange(listener: (score: number) => void): () => void {
+    this.scoreListeners.add(listener);
+    return () => this.scoreListeners.delete(listener);
+  }
+
+  private setLatestScore(score: number): void {
+    this.latestScore = score;
+    for (const listener of this.scoreListeners) {
+      listener(score);
+    }
   }
 
   private tryConnectNative(): void {
@@ -25,7 +40,7 @@ export class ITPEmitter {
       this.nativePort = chrome.runtime.connectNative('dev.ghost.monitor');
       this.nativePort.onMessage.addListener((msg: { score?: number }) => {
         if (typeof msg.score === 'number') {
-          this.latestScore = msg.score;
+          this.setLatestScore(msg.score);
         }
       });
       this.nativePort.onDisconnect.addListener(() => {
@@ -44,7 +59,7 @@ export class ITPEmitter {
     if (this.useNative && this.nativePort) {
       this.nativePort.postMessage(event);
     } else {
-      this.storeInIndexedDB(event);
+      void this.storeInIndexedDB(event);
     }
   }
 
@@ -59,28 +74,9 @@ export class ITPEmitter {
   }
 
   private async storeInIndexedDB(event: ITPEvent): Promise<void> {
-    const db = await this.openDB();
-    const tx = db.transaction('events', 'readwrite');
-    tx.objectStore('events').add({
+    await queueEvent('observation', {
       ...event,
       storedAt: new Date().toISOString(),
-    });
-  }
-
-  private openDB(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open('ghost-itp', 1);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains('events')) {
-          db.createObjectStore('events', { autoIncrement: true });
-        }
-        if (!db.objectStoreNames.contains('settings')) {
-          db.createObjectStore('settings', { keyPath: 'key' });
-        }
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
     });
   }
 }

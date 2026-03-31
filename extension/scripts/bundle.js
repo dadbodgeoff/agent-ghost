@@ -6,6 +6,10 @@ const path = require('path');
 const rootDir = path.resolve(__dirname, '..');
 const distDir = path.join(rootDir, 'dist');
 
+function createImportPattern() {
+  return /^\s*import\s+(\{[^}]+\}|\*\s+as\s+\w+|\w+)\s+from\s+['"](.+?)['"];\s*$/gm;
+}
+
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -71,6 +75,60 @@ function copyFile(relativePath) {
   fs.copyFileSync(sourcePath, targetPath);
 }
 
+function resolveImport(fromFile, specifier) {
+  if (!specifier.startsWith('.')) {
+    throw new Error(`Unsupported non-relative import "${specifier}" in ${fromFile}`);
+  }
+
+  const resolved = path.resolve(path.dirname(fromFile), specifier);
+  if (fs.existsSync(resolved)) {
+    return resolved;
+  }
+  if (fs.existsSync(`${resolved}.js`)) {
+    return `${resolved}.js`;
+  }
+  throw new Error(`Could not resolve import "${specifier}" from ${fromFile}`);
+}
+
+function transformModuleSource(source) {
+  return source
+    .replace(createImportPattern(), '')
+    .replace(/^\s*export\s+\{[^}]+\};\s*$/gm, '')
+    .replace(/\bexport\s+(?=(async\s+function|function|class|const|let|var))/g, '');
+}
+
+function bundleModule(entryFile) {
+  const visited = new Set();
+
+  function visit(filePath) {
+    const normalizedPath = path.normalize(filePath);
+    if (visited.has(normalizedPath)) {
+      return '';
+    }
+    visited.add(normalizedPath);
+
+    const source = fs.readFileSync(normalizedPath, 'utf8');
+    const dependencies = [];
+    const importPattern = createImportPattern();
+    let match;
+
+    while ((match = importPattern.exec(source)) !== null) {
+      dependencies.push(resolveImport(normalizedPath, match[2]));
+    }
+
+    const bundledDependencies = dependencies.map((dependency) => visit(dependency)).join('\n');
+    return `${bundledDependencies}\n${transformModuleSource(source)}`;
+  }
+
+  return visit(entryFile).trimStart() + '\n';
+}
+
+function bundleDistFile(relativePath) {
+  const targetPath = path.join(distDir, relativePath);
+  const bundled = bundleModule(targetPath);
+  fs.writeFileSync(targetPath, bundled);
+}
+
 function main() {
   ensureDir(distDir);
 
@@ -86,6 +144,8 @@ function main() {
 
   copyFile('src/popup/popup.html');
   copyFile('src/dashboard/index.html');
+  bundleDistFile('background/service-worker.js');
+  bundleDistFile('content/observer.js');
 
   const iconsDir = path.join(rootDir, 'icons');
   if (fs.existsSync(iconsDir)) {

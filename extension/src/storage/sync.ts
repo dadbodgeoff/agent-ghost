@@ -18,6 +18,14 @@ interface PendingEvent {
   synced: boolean;
 }
 
+function waitForTransaction(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 interface NavigatorWithConnection extends Navigator {
   connection?: {
     addEventListener(type: 'change', listener: () => void): void;
@@ -55,6 +63,7 @@ export async function queueEvent(type: string, payload: unknown): Promise<void> 
     payload,
     synced: false,
   });
+  await waitForTransaction(tx);
 }
 
 /**
@@ -98,6 +107,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
           const updateTx = db.transaction(PENDING_STORE, 'readwrite');
           const updateStore = updateTx.objectStore(PENDING_STORE);
           updateStore.put({ ...event, synced: true });
+          await waitForTransaction(updateTx);
           synced++;
         } catch {
           failed++;
@@ -132,6 +142,7 @@ export async function cleanupSyncedEvents(): Promise<void> {
       cursor.continue();
     }
   };
+  await waitForTransaction(tx);
 }
 
 /**

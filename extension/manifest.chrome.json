@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Passive convergence monitoring for AI chat platforms",
   "permissions": [
+    "alarms",
     "storage",
     "nativeMessaging",
     "activeTab",
