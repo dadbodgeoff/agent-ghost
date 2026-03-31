@@ -23,6 +23,7 @@ const PENDING_ACTIONS_DB_VERSION = 2;
 const PENDING_ACTIONS_STORE = 'pending_actions';
 const AUTH_STATE_STORE = 'auth_state';
 const AUTH_STATE_KEY = 'active';
+const PUSH_ICON = '/ghost-icon.svg';
 let activeReplayAuthState: ReplayAuthState | null = null;
 
 interface SyncCapableServiceWorkerRegistration extends ServiceWorkerRegistration {
@@ -678,8 +679,8 @@ self.addEventListener('push', (event: PushEvent) => {
 
   const options: NotificationOptions = {
     body: data.body,
-    icon: '/icons/ghost-192.png',
-    badge: '/icons/ghost-192.png',
+    icon: PUSH_ICON,
+    badge: PUSH_ICON,
     tag: data.tag ?? 'ghost-notification',
     data: { url: data.url ?? '/' },
   };

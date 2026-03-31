@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="ghost-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1220" />
+      <stop offset="100%" stop-color="#16243f" />
+    </linearGradient>
+    <linearGradient id="ghost-core" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#78f2df" />
+      <stop offset="100%" stop-color="#46a7ff" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="url(#ghost-bg)" />
+  <path
+    d="M256 92c-76.216 0-138 61.784-138 138v118c0 13.255 10.745 24 24 24h20v42c0 10.517 12.72 15.784 20.16 8.343L236 389.5l11.12 11.12c4.688 4.688 12.287 4.688 16.975 0l11.785-11.784 33.96 33.507C317.28 429.784 330 424.517 330 414v-42h40c13.255 0 24-10.745 24-24V230c0-76.216-61.784-138-138-138Z"
+    fill="url(#ghost-core)"
+  />
+  <circle cx="206" cy="229" r="22" fill="#0d1220" />
+  <circle cx="306" cy="229" r="22" fill="#0d1220" />
+  <path
+    d="M191 302c17.953 18.347 39.873 27.52 65.76 27.52 25.733 0 47.613-9.173 65.64-27.52"
+    fill="none"
+    stroke="#0d1220"
+    stroke-linecap="round"
+    stroke-width="22"
+  />
+</svg>

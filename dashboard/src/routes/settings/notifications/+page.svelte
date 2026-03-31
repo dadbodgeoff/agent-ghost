@@ -15,6 +15,7 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  const PUSH_ICON = '/ghost-icon.svg';
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -35,18 +36,37 @@
     };
   }
 
+  function loadSavedCategories() {
+    const saved = localStorage.getItem('ghost-push-categories');
+    if (!saved) return;
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
+        enabledCategories = parsed;
+      }
+    } catch {
+      // Fall back to defaults.
+    }
+  }
+
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported =
+      'serviceWorker' in navigator &&
+      'PushManager' in window &&
+      'Notification' in window;
     if (pushSupported) {
       permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
+      loadSavedCategories();
 
-      // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
-      if (saved) {
+      if (permissionState === 'granted') {
         try {
-          enabledCategories = JSON.parse(saved);
-        } catch { /* use defaults */ }
+          const reg = await navigator.serviceWorker.ready;
+          pushEnabled = (await reg.pushManager.getSubscription()) !== null;
+        } catch {
+          pushEnabled = false;
+          permissionState = 'default';
+        }
       }
     }
   });
@@ -58,31 +78,39 @@
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        pushEnabled = await subscribePush();
       }
     } else {
-      pushEnabled = false;
       await unsubscribePush();
+      pushEnabled = false;
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        const payload = pushSubscriptionToPayload(existing.toJSON());
+        if (!payload) return false;
+        await client.push.subscribe(payload);
+        return true;
+      }
+
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) return false;
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) return false;
       await client.push.subscribe(payload);
+      return true;
     } catch {
-      // Push subscription failed.
+      return false;
     }
   }
 
@@ -118,7 +146,7 @@
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
-        icon: '/icons/ghost-192.png',
+        icon: PUSH_ICON,
         tag: 'ghost-test',
       });
     } catch {
