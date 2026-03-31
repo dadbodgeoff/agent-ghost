@@ -21,6 +21,8 @@
   };
 
   async function loadAgents() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [agentData, convData] = await Promise.all([
@@ -32,8 +34,11 @@
       scoreMap = new Map(scores.map((s: ConvergenceScore) => [s.agent_id, s]));
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load agents';
+      agents = [];
+      scoreMap = new Map();
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   onMount(() => {
@@ -83,7 +88,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={loadAgents}>Retry</button>
   </div>
 {:else if agents.length === 0}
   <div class="empty-state">

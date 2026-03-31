@@ -78,6 +78,8 @@
   );
 
   async function loadScores() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [scoreData, healthData] = await Promise.all([
@@ -95,8 +97,12 @@
       if (!selectedAgentId && scores.length > 0) {
         selectedAgentId = scores[0].agent_id;
       }
+      if (selectedAgentId && !scores.some((score) => score.agent_id === selectedAgentId)) {
+        selectedAgentId = scores[0]?.agent_id ?? null;
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load convergence data';
+      scores = [];
     }
     loading = false;
   }
@@ -213,7 +219,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={loadScores}>Retry</button>
   </div>
 {:else if scores.length === 0}
   <div class="empty-state">
@@ -233,7 +239,6 @@
 
     <div class="card radar-card">
       <h2>Signal Radar</h2>
-      {#if true}
       {@const signals = signalScoresToArray(selectedAgent.signal_scores ?? {})}
       {@const R = 120}
       <svg viewBox="-180 -180 360 360" class="radar-svg">
@@ -276,7 +281,6 @@
           >{SIGNAL_SHORT[i]}</text>
         {/each}
       </svg>
-      {/if}
     </div>
   </div>
 

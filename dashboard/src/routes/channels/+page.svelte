@@ -50,7 +50,9 @@
 
   function timeAgo(dateStr: string | null): string {
     if (!dateStr) return 'Never';
-    const diff = Date.now() - new Date(dateStr).getTime();
+    const timestamp = new Date(dateStr).getTime();
+    if (!Number.isFinite(timestamp)) return 'Unknown';
+    const diff = Date.now() - timestamp;
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
@@ -60,6 +62,7 @@
   }
 
   async function loadChannels() {
+    loading = true;
     try {
       error = '';
       const client = await getGhostClient();
@@ -70,8 +73,11 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+      channels = [];
+      selectedChannel = null;
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
@@ -104,7 +110,10 @@
   }
 
   async function addChannel() {
-    if (!newAgentId) return;
+    if (!newAgentId) {
+      error = 'Create an agent before adding a channel.';
+      return;
+    }
     const config = parseChannelConfig();
     if (!config) return;
 
@@ -118,6 +127,7 @@
         config,
       });
       showAddForm = false;
+      selectedChannel = null;
       newChannelConfig = '{}';
       await loadChannels();
     } catch (e: unknown) {
@@ -129,6 +139,7 @@
 
   async function reconnect(channelId: string) {
     try {
+      error = '';
       const client = await getGhostClient();
       await client.channels.reconnect(channelId);
       await loadChannels();
@@ -140,8 +151,12 @@
   async function removeChannel(channelId: string) {
     if (!confirm('Remove this channel?')) return;
     try {
+      error = '';
       const client = await getGhostClient();
       await client.channels.delete(channelId);
+      if (selectedChannel?.id === channelId) {
+        selectedChannel = null;
+      }
       await loadChannels();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove channel';
@@ -206,6 +221,9 @@
       <button class="btn-primary" onclick={addChannel} disabled={creating}>
         {creating ? 'Creating…' : 'Create'}
       </button>
+      {#if agents.length === 0}
+        <p class="form-hint">No agents are available yet. Create an agent before adding a channel.</p>
+      {/if}
     </div>
   {/if}
 
@@ -265,7 +283,7 @@
         <dt>Messages</dt><dd>{selectedChannel.message_count}</dd>
         <dt>Last Message</dt><dd>{timeAgo(selectedChannel.last_message_at)}</dd>
       </dl>
-      {#if Object.keys(selectedChannel.config).length > 0}
+      {#if selectedChannel.config && Object.keys(selectedChannel.config).length > 0}
         <h3>Configuration</h3>
         <pre class="config-json">{JSON.stringify(selectedChannel.config, null, 2)}</pre>
       {/if}
@@ -328,6 +346,13 @@
 
   .config-field {
     grid-column: 1 / -1;
+  }
+
+  .form-hint {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
   }
 
   .config-field textarea {

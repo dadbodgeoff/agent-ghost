@@ -24,14 +24,22 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform?: string }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let cleanupOnlineListener: (() => void) | null = null;
+  let cleanupOfflineListener: (() => void) | null = null;
+  let cleanupInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -60,6 +68,41 @@
       }
     }
   }
+
+  function addWindowListener<K extends keyof WindowEventMap>(
+    type: K,
+    listener: (event: WindowEventMap[K]) => void,
+  ) {
+    window.addEventListener(type, listener);
+    return () => window.removeEventListener(type, listener);
+  }
+
+  async function retrySessionValidation() {
+    loadingBootState = true;
+    bootError = '';
+    try {
+      const client = await getGhostClient();
+      const session = await client.auth.session();
+      authSessionStore.hydrate(session);
+      await notifyAuthBoundary('ghost-auth-session');
+      await wsStore.connect();
+    } catch (error) {
+      if (isAuthResetError(error)) {
+        authSessionStore.clear();
+        await rotateAuthBoundarySession();
+        await runtime?.clearToken();
+        invalidateAuthClientState();
+        await notifyAuthBoundary('ghost-auth-cleared');
+        goto('/login');
+        return;
+      }
+      bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
+    } finally {
+      loadingBootState = false;
+    }
+  }
+
+  let loadingBootState = $state(false);
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
     const clientLabel = assessment.client.name === 'desktop' ? 'desktop' : 'dashboard';
@@ -141,15 +184,18 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    cleanupOnlineListener = addWindowListener('online', () => {
+      offline = false;
+      lastSync = new Date().toLocaleTimeString();
+    });
+    cleanupOfflineListener = addWindowListener('offline', () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
     });
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    cleanupInstallPromptListener = addWindowListener('beforeinstallprompt', (e) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
     });
 
@@ -163,6 +209,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    cleanupOnlineListener?.();
+    cleanupOnlineListener = null;
+    cleanupOfflineListener?.();
+    cleanupOfflineListener = null;
+    cleanupInstallPromptListener?.();
+    cleanupInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -233,7 +285,14 @@
 </svelte:head>
 
 {#if bootError}
-  <div class="offline-banner" role="alert">{bootError}</div>
+  <div class="offline-banner" role="alert">
+    <span>{bootError}</span>
+    {#if $page.url.pathname !== '/login'}
+      <button type="button" class="banner-action" onclick={retrySessionValidation} disabled={loadingBootState}>
+        {loadingBootState ? 'Retrying…' : 'Retry'}
+      </button>
+    {/if}
+  </div>
 {/if}
 
 {#if offline}
@@ -365,7 +424,6 @@
   .offline-banner {
     background: var(--color-severity-active);
     color: var(--color-text-inverse);
-    text-align: center;
     padding: var(--spacing-1) var(--spacing-4);
     font-size: var(--font-size-sm);
     position: fixed;
@@ -373,6 +431,20 @@
     left: 0;
     right: 0;
     z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-3);
+    text-align: center;
+  }
+
+  .banner-action {
+    background: rgba(255, 255, 255, 0.16);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    color: inherit;
+    border-radius: var(--radius-sm);
+    padding: 0.2rem 0.55rem;
+    font-size: inherit;
   }
 
   .install-banner {
