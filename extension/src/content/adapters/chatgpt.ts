@@ -5,6 +5,8 @@
 import { BasePlatformAdapter, ParsedMessage } from './base';
 
 export class ChatGPTAdapter extends BasePlatformAdapter {
+  readonly platformName = 'chatgpt';
+
   matches(url: string): boolean {
     return url.includes('chat.openai.com') || url.includes('chatgpt.com');
   }
