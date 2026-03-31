@@ -5,7 +5,7 @@
  * Events queued while offline are replayed in order.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { ensureAuthSync, getAuthState } from '../background/auth-sync';
 
 const DB_NAME = 'ghost-convergence';
 const PENDING_STORE = 'pending_events';
@@ -61,6 +61,7 @@ export async function queueEvent(type: string, payload: unknown): Promise<void> 
  * Sync all pending events to the gateway.
  */
 export async function syncPendingEvents(): Promise<{ synced: number; failed: number }> {
+  await ensureAuthSync();
   const auth = getAuthState();
   if (!auth.authenticated || !auth.token) {
     return { synced: 0, failed: 0 };

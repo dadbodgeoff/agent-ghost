@@ -22,6 +22,8 @@ const currentState: AuthState = {
   lastValidated: 0,
 };
 
+let initPromise: Promise<AuthState> | null = null;
+
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
@@ -35,6 +37,20 @@ export async function initAuthSync(): Promise<AuthState> {
   }
 
   return currentState;
+}
+
+/**
+ * Ensure auth state has been hydrated from extension storage in this context.
+ */
+export function ensureAuthSync(): Promise<AuthState> {
+  if (!initPromise) {
+    initPromise = initAuthSync().catch((error) => {
+      initPromise = null;
+      throw error;
+    });
+  }
+
+  return initPromise;
 }
 
 /**
@@ -52,6 +68,7 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
   });
 
   await validateToken();
+  initPromise = Promise.resolve(currentState);
 }
 
 /**
@@ -61,6 +78,7 @@ export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
+  initPromise = Promise.resolve(currentState);
 }
 
 /**
