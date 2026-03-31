@@ -120,6 +120,9 @@ class WebSocketStore {
           this.lastError = 'Connection lost - click to reconnect';
         },
         onError: (message) => {
+          if (!this.isLeader) {
+            return;
+          }
           this.lastError = message;
         },
       },
@@ -127,22 +130,29 @@ class WebSocketStore {
   }
 
   async reconnect() {
-    this.socket?.disconnect();
-    this.socket = null;
-    if (this.isLeader) {
-      this.state = 'disconnected';
-      this.lastError = '';
-      this.reconnectAttempt = 0;
-    }
+    this.teardownConnection({ preserveLeaderElection: false });
     await this.connect();
   }
 
   disconnect() {
+    this.teardownConnection({ preserveLeaderElection: false });
+  }
+
+  private teardownConnection(options: { preserveLeaderElection: boolean }) {
     this.socket?.disconnect();
     this.socket = null;
     this.state = 'disconnected';
+    this.lastError = '';
+    this.reconnectAttempt = 0;
     this.bc?.close();
     this.bc = null;
+
+    if (!options.preserveLeaderElection) {
+      this.isLeader = true;
+      this.leaderElectionStarted = false;
+      this.leaderReady = null;
+      this.leaderReadyResolve = null;
+    }
   }
 
   private async initLeaderElection() {

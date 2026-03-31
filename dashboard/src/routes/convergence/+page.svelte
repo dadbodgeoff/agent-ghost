@@ -78,6 +78,8 @@
   );
 
   async function loadScores() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [scoreData, healthData] = await Promise.all([
@@ -91,14 +93,20 @@
         lastMonitorUpdate = null;
       }
 
-      // Auto-select first agent if none selected
-      if (!selectedAgentId && scores.length > 0) {
+      if (scores.length === 0) {
+        selectedAgentId = null;
+        history = [];
+      } else if (!selectedAgentId || !scores.some((score) => score.agent_id === selectedAgentId)) {
         selectedAgentId = scores[0].agent_id;
       }
     } catch (e: unknown) {
+      scores = [];
+      selectedAgentId = null;
+      history = [];
       error = e instanceof Error ? e.message : 'Failed to load convergence data';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadHistory(agentId: string) {
@@ -213,7 +221,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={() => void loadScores()}>Retry</button>
   </div>
 {:else if scores.length === 0}
   <div class="empty-state">

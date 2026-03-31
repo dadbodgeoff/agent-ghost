@@ -1,10 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { costsStore } from '$lib/stores/costs.svelte';
   import type { AgentCostInfo } from '@ghost/sdk';
 
   onMount(() => {
     void costsStore.init();
+  });
+
+  onDestroy(() => {
+    costsStore.destroy();
   });
 
   let costs = $derived(costsStore.costs);

@@ -33,12 +33,25 @@
   });
 
   async function loadSessions() {
+    error = null;
     try {
       const client = await getGhostClient();
       const res = await client.runtimeSessions.list({ limit: 50 });
       sessions = getSessions(res);
+      if (sessions.length === 0) {
+        selectedSession = null;
+        spans = [];
+        totalSpans = 0;
+      } else if (!selectedSession || !sessions.some((session) => session.session_id === selectedSession)) {
+        selectedSession = sessions[0].session_id;
+        void loadTraces(selectedSession);
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load sessions';
+      sessions = [];
+      selectedSession = null;
+      spans = [];
+      totalSpans = 0;
     }
   }
 

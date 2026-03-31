@@ -10,7 +10,9 @@
   let loading = $state(true);
   let error = $state('');
 
-  onMount(async () => {
+  async function loadDashboard() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [convData, agentData] = await Promise.all([
@@ -18,17 +20,26 @@
         client.agents.list(),
       ]);
 
-      // Fix: unwrap {scores: [...]} wrapper, read correct field names.
+      score = 0;
+      level = 0;
       if (convData?.scores?.length > 0) {
         score = convData.scores[0].score ?? 0;
         level = convData.scores[0].level ?? 0;
       }
       agents = agentData ?? [];
     } catch (e: unknown) {
+      agents = [];
+      score = 0;
+      level = 0;
       error = e instanceof Error ? e.message : 'Failed to load dashboard data';
       console.error('Failed to load dashboard data:', e);
+    } finally {
+      loading = false;
     }
-    loading = false;
+  }
+
+  onMount(() => {
+    void loadDashboard();
   });
 </script>
 
@@ -43,7 +54,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={() => void loadDashboard()}>Retry</button>
   </div>
 {:else}
   <div class="grid">

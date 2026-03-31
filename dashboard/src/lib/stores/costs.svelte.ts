@@ -84,6 +84,9 @@ class CostsStore {
     for (const unsub of this.unsubs) unsub();
     this.unsubs = [];
     this.initialized = false;
+    this.costs = [];
+    this.loading = false;
+    this.error = '';
   }
 }
 

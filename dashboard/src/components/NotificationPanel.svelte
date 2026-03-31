@@ -31,18 +31,52 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function createNotificationId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `ghost-notification-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function readString(msg: WsMessage, key: string): string | undefined {
+    const value = msg[key];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
+  function parseStoredNotifications(raw: string): AppNotification[] {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter((item): item is AppNotification => {
+        return typeof item === 'object'
+          && item !== null
+          && typeof item.id === 'string'
+          && typeof item.type === 'string'
+          && typeof item.severity === 'string'
+          && typeof item.title === 'string'
+          && typeof item.message === 'string'
+          && typeof item.timestamp === 'string'
+          && typeof item.read === 'boolean';
+      })
+      .slice(0, MAX_NOTIFICATIONS);
+  }
+
   onMount(() => {
     loadFromStorage();
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const agentId = readString(msg, 'agent_id');
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${readString(msg, 'status') ?? readString(msg, 'new_state') ?? 'unknown'}`,
+          actionHref: agentId ? `/agents/${agentId}` : '/agents',
+          agentId,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -50,24 +84,25 @@
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: readString(msg, 'reason') ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const agentId = readString(msg, 'agent_id');
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level -> ${readString(msg, 'new_level') ?? 'unknown'}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const proposalId = readString(msg, 'proposal_id') ?? '';
+        const change = readString(msg, 'change') ?? 'updated';
+        const status = readString(msg, 'status') ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -90,7 +125,7 @@
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
     const notification: AppNotification = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: createNotificationId(),
       timestamp: new Date().toISOString(),
       read: false,
     };
@@ -130,7 +165,7 @@
     markRead(n.id);
     panelOpen = false;
     if (n.actionHref) {
-      goto(n.actionHref);
+      void goto(n.actionHref);
     }
   }
 
@@ -159,7 +194,7 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        notifications = parseStoredNotifications(stored);
       }
     } catch { /* start fresh */ }
   }
