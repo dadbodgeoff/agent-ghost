@@ -4,9 +4,12 @@
   "version": "0.1.0",
   "description": "Passive convergence monitoring for AI chat platforms",
   "permissions": [
+    "alarms",
     "storage",
     "nativeMessaging",
     "activeTab",
+    "http://localhost:39780/*",
+    "http://127.0.0.1:39780/*",
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",

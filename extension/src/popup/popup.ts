@@ -2,7 +2,7 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { ensureAuthStateReady, getAuthState } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -22,6 +22,46 @@ function updateConnectionIndicator(connected: boolean): void {
   }
 }
 
+function clearChildren(element: HTMLElement): void {
+  while (element.firstChild) {
+    element.removeChild(element.firstChild);
+  }
+}
+
+function renderEmptyAgentState(container: HTMLElement, message: string): void {
+  clearChildren(container);
+  const empty = document.createElement('span');
+  empty.className = 'agent-list-empty';
+  empty.textContent = message;
+  container.appendChild(empty);
+}
+
+function renderAgentList(
+  container: HTMLElement,
+  agents: Array<{ id: string; name: string; state: string }>,
+): void {
+  clearChildren(container);
+  const fragment = document.createDocumentFragment();
+
+  for (const agent of agents) {
+    const row = document.createElement('div');
+    row.className = 'agent-list-item';
+
+    const name = document.createElement('span');
+    name.className = 'agent-name';
+    name.textContent = agent.name || agent.id;
+
+    const state = document.createElement('span');
+    state.className = 'agent-state';
+    state.textContent = agent.state;
+
+    row.append(name, state);
+    fragment.appendChild(row);
+  }
+
+  container.appendChild(fragment);
+}
+
 /**
  * Fetch and render the agent list from the gateway.
  */
@@ -32,20 +72,12 @@ async function loadAgentList(): Promise<void> {
   try {
     const agents = await getAgents();
     if (agents.length === 0) {
-      container.innerHTML = '<span class="agent-list-empty">No agents found</span>';
+      renderEmptyAgentState(container, 'No agents found');
       return;
     }
-    container.innerHTML = agents
-      .map(
-        (a) =>
-          `<div class="agent-list-item">` +
-          `<span class="agent-name">${a.name || a.id}</span>` +
-          `<span class="agent-state">${a.state}</span>` +
-          `</div>`
-      )
-      .join('');
+    renderAgentList(container, agents);
   } catch {
-    container.innerHTML = '<span class="agent-list-empty">Unable to load agents</span>';
+    renderEmptyAgentState(container, 'Unable to load agents');
   }
 }
 
@@ -87,6 +119,9 @@ function updateUI(data: { score: number; level: number; signals: number[] }): vo
   if (data.level >= 3 && alertEl && alertText) {
     alertEl.classList.add('visible');
     alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  } else if (alertEl && alertText) {
+    alertEl.classList.remove('visible');
+    alertText.textContent = '';
   }
 }
 
@@ -115,6 +150,7 @@ setInterval(() => {
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
+  await ensureAuthStateReady();
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
 
@@ -123,7 +159,7 @@ setInterval(() => {
   } else {
     const container = document.getElementById('agentList');
     if (container) {
-      container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
+      renderEmptyAgentState(container, 'Not connected to gateway');
     }
   }
 

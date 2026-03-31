@@ -5,6 +5,16 @@
 import { ITPEmitter } from './itp-emitter';
 
 const emitter = new ITPEmitter();
+const SCORE_REFRESH_ALARM = 'ghost-refresh-score';
+const SCORE_REFRESH_INTERVAL_MINUTES = 0.5;
+
+function ensureScoreRefreshAlarm(): void {
+  chrome.alarms.create(SCORE_REFRESH_ALARM, {
+    periodInMinutes: SCORE_REFRESH_INTERVAL_MINUTES,
+  });
+}
+
+ensureScoreRefreshAlarm();
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -37,9 +47,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true; // Keep channel open for async response
 });
 
-// Periodic score refresh
-setInterval(() => {
-  emitter.refreshScore();
-}, 30_000);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === SCORE_REFRESH_ALARM) {
+    emitter.refreshScore();
+  }
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  ensureScoreRefreshAlarm();
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  ensureScoreRefreshAlarm();
+});
 
 console.log('[GHOST] Background service worker initialized');

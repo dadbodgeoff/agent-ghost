@@ -21,6 +21,7 @@ const currentState: AuthState = {
   token: null,
   lastValidated: 0,
 };
+let initPromise: Promise<AuthState> | null = null;
 
 /**
  * Initialize auth sync — loads stored credentials and validates.
@@ -35,6 +36,20 @@ export async function initAuthSync(): Promise<AuthState> {
   }
 
   return currentState;
+}
+
+/**
+ * Ensure auth state is hydrated from storage before consumers read it.
+ */
+export async function ensureAuthStateReady(): Promise<AuthState> {
+  if (!initPromise) {
+    initPromise = initAuthSync().catch((error) => {
+      initPromise = null;
+      throw error;
+    });
+  }
+
+  return initPromise;
 }
 
 /**
@@ -60,6 +75,7 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
 export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
+  currentState.lastValidated = 0;
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 

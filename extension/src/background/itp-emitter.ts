@@ -15,12 +15,17 @@ export class ITPEmitter {
   private nativePort: chrome.runtime.Port | null = null;
   private latestScore: number = 0;
   private useNative: boolean = false;
+  private connecting = false;
 
   constructor() {
     this.tryConnectNative();
   }
 
   private tryConnectNative(): void {
+    if (this.connecting || this.nativePort) {
+      return;
+    }
+    this.connecting = true;
     try {
       this.nativePort = chrome.runtime.connectNative('dev.ghost.monitor');
       this.nativePort.onMessage.addListener((msg: { score?: number }) => {
@@ -37,14 +42,19 @@ export class ITPEmitter {
     } catch {
       console.log('[GHOST] Native messaging unavailable, using IndexedDB fallback');
       this.useNative = false;
+    } finally {
+      this.connecting = false;
     }
   }
 
   emit(event: ITPEvent): void {
+    if (!this.nativePort) {
+      this.tryConnectNative();
+    }
     if (this.useNative && this.nativePort) {
       this.nativePort.postMessage(event);
     } else {
-      this.storeInIndexedDB(event);
+      void this.storeInIndexedDB(event);
     }
   }
 
@@ -53,6 +63,9 @@ export class ITPEmitter {
   }
 
   refreshScore(): void {
+    if (!this.nativePort) {
+      this.tryConnectNative();
+    }
     if (this.useNative && this.nativePort) {
       this.nativePort.postMessage({ type: 'GET_SCORE' });
     }
@@ -60,11 +73,20 @@ export class ITPEmitter {
 
   private async storeInIndexedDB(event: ITPEvent): Promise<void> {
     const db = await this.openDB();
-    const tx = db.transaction('events', 'readwrite');
-    tx.objectStore('events').add({
-      ...event,
-      storedAt: new Date().toISOString(),
-    });
+    try {
+      const tx = db.transaction('events', 'readwrite');
+      tx.objectStore('events').add({
+        ...event,
+        storedAt: new Date().toISOString(),
+      });
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error);
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally {
+      db.close();
+    }
   }
 
   private openDB(): Promise<IDBDatabase> {

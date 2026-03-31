@@ -20,6 +20,7 @@
   let newAgentId = $state('');
   let newChannelConfig = $state('{}');
   let agents: Array<{ id: string; name: string }> = $state([]);
+  let selectedChannel: ChannelInfo | null = $state(null);
 
   const CHANNEL_TYPES = ['cli', 'websocket', 'slack', 'discord', 'telegram', 'whatsapp'];
   const CHANNEL_EVENTS = [
@@ -50,7 +51,11 @@
 
   function timeAgo(dateStr: string | null): string {
     if (!dateStr) return 'Never';
-    const diff = Date.now() - new Date(dateStr).getTime();
+    const timestamp = new Date(dateStr).getTime();
+    if (!Number.isFinite(timestamp)) {
+      return 'Unknown';
+    }
+    const diff = Math.max(0, Date.now() - timestamp);
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
@@ -59,7 +64,23 @@
     return `${Math.floor(hours / 24)}d ago`;
   }
 
+  function channelConfig(channel: ChannelInfo): Record<string, unknown> {
+    const config = channel.config;
+    return config && typeof config === 'object' && !Array.isArray(config)
+      ? (config as Record<string, unknown>)
+      : {};
+  }
+
+  function channelAgentLabel(channel: ChannelInfo): string {
+    const name = channel.agent_name?.trim();
+    if (name) return name;
+    return channel.agent_id?.slice(0, 8) || 'Unassigned';
+  }
+
+  let canCreateChannel = $derived(agents.length > 0 && !!newAgentId);
+
   async function loadChannels() {
+    loading = true;
     try {
       error = '';
       const client = await getGhostClient();
@@ -70,8 +91,9 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
@@ -148,8 +170,6 @@
     }
   }
 
-  let selectedChannel: ChannelInfo | null = $state(null);
-
   onMount(() => {
     loadChannels();
     loadAgents();
@@ -203,9 +223,12 @@
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      <button class="btn-primary" onclick={addChannel} disabled={creating || !canCreateChannel}>
         {creating ? 'Creating…' : 'Create'}
       </button>
+      {#if !agents.length}
+        <p class="form-hint">Create or register an agent before adding channels.</p>
+      {/if}
     </div>
   {/if}
 
@@ -225,7 +248,7 @@
             <span class="status-dot" style="background: {statusColor(channel.status)}" aria-label={statusLabel(channel.status)}></span>
             <div class="channel-info">
               <span class="channel-type">{channel.channel_type}</span>
-              <span class="channel-agent">{channel.agent_name ?? channel.agent_id.slice(0, 8)}</span>
+              <span class="channel-agent">{channelAgentLabel(channel)}</span>
             </div>
             <span class="channel-status-label" style="color: {statusColor(channel.status)}">
               {statusLabel(channel.status)}
@@ -247,7 +270,7 @@
   {#if selectedChannel}
     <div class="channel-detail">
       <div class="detail-header">
-        <h2>{selectedChannel.channel_type} — {selectedChannel.agent_name ?? selectedChannel.agent_id.slice(0, 8)}</h2>
+        <h2>{selectedChannel.channel_type} — {channelAgentLabel(selectedChannel)}</h2>
         <div class="detail-actions">
           {#if selectedChannel.status === 'error' || selectedChannel.status === 'disconnected'}
             <button class="btn-secondary" onclick={() => reconnect(selectedChannel!.id)}>Reconnect</button>
@@ -258,16 +281,16 @@
       <dl class="detail-list">
         <dt>Channel ID</dt><dd>{selectedChannel.id}</dd>
         <dt>Type</dt><dd>{selectedChannel.channel_type}</dd>
-        <dt>Agent</dt><dd>{selectedChannel.agent_name ?? selectedChannel.agent_id}</dd>
+        <dt>Agent</dt><dd>{selectedChannel.agent_name ?? selectedChannel.agent_id ?? 'Unassigned'}</dd>
         <dt>Routing Key</dt><dd class="mono">{selectedChannel.routing_key}</dd>
         <dt>Source</dt><dd>{selectedChannel.source}</dd>
         <dt>Status</dt><dd style="color: {statusColor(selectedChannel.status)}">{statusLabel(selectedChannel.status)}</dd>
         <dt>Messages</dt><dd>{selectedChannel.message_count}</dd>
         <dt>Last Message</dt><dd>{timeAgo(selectedChannel.last_message_at)}</dd>
       </dl>
-      {#if Object.keys(selectedChannel.config).length > 0}
+      {#if Object.keys(channelConfig(selectedChannel)).length > 0}
         <h3>Configuration</h3>
-        <pre class="config-json">{JSON.stringify(selectedChannel.config, null, 2)}</pre>
+        <pre class="config-json">{JSON.stringify(channelConfig(selectedChannel), null, 2)}</pre>
       {/if}
     </div>
   {/if}
@@ -340,6 +363,13 @@
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);
     resize: vertical;
+  }
+
+  .form-hint {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
   }
 
   .channel-list {
