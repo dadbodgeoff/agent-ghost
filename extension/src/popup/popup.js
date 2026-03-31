@@ -44,11 +44,16 @@ function requestStatus() {
     if (!response) return;
 
     const dot = document.getElementById("statusDot");
+    const label = document.getElementById("statusLabel");
     dot.className = `status-dot ${response.connected ? "connected" : "disconnected"}`;
     dot.setAttribute("aria-label", response.connected ? "Connected" : "Disconnected");
+    label.className = `status-label ${response.connected ? "connected" : "disconnected"}`;
+    label.textContent = response.connected ? "Connected" : "Disconnected";
 
-    if (response.latestScore) {
+    if (response.latestScore !== null && response.latestScore !== undefined) {
       updateDisplay(response.latestScore);
+    } else {
+      updateDisplay({ composite_score: 0, level: 0, signals: [] });
     }
   });
 }
@@ -94,6 +99,7 @@ function updateDisplay(data) {
     banner.textContent = "Intervention Level 2 — Acknowledgment required";
   } else {
     banner.className = "alert-banner";
+    banner.textContent = "";
   }
 }
 
