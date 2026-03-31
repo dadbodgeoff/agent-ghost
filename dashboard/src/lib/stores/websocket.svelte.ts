@@ -141,8 +141,9 @@ class WebSocketStore {
     this.socket?.disconnect();
     this.socket = null;
     this.state = 'disconnected';
-    this.bc?.close();
-    this.bc = null;
+    // Keep the BroadcastChannel alive across auth churn and explicit reconnects.
+    // Follower tabs depend on the existing channel because the leader lock stays
+    // long-lived for the page lifetime.
   }
 
   private async initLeaderElection() {
