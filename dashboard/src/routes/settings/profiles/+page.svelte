@@ -25,9 +25,20 @@
 
   async function loadProfiles() {
     try {
+      error = null;
       const client = await getGhostClient();
       const res = await client.profiles.list();
       profiles = res.profiles ?? [];
+      if (!selectedProfile) {
+        return;
+      }
+
+      const refreshed = profiles.find((profile) => profile.name === selectedProfile?.name) ?? null;
+      selectedProfile = refreshed;
+      if (refreshed) {
+        editWeights = [...refreshed.weights];
+        editThresholds = [...refreshed.thresholds];
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load profiles';
     }
@@ -70,9 +81,14 @@
         weights: editWeights,
         thresholds: editThresholds,
       });
+      const createdProfileName = newProfileName.trim();
       newProfileName = '';
       success = 'Profile created.';
       await loadProfiles();
+      const createdProfile = profiles.find((profile) => profile.name === createdProfileName);
+      if (createdProfile) {
+        selectProfile(createdProfile);
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to create profile';
     } finally {

@@ -14,6 +14,8 @@
   let error = $state('');
   let showAddForm = $state(false);
   let creating = $state(false);
+  let loadingAgents = $state(false);
+  let agentLoadError = $state('');
 
   // Add channel form state
   let newChannelType = $state('cli');
@@ -50,7 +52,10 @@
 
   function timeAgo(dateStr: string | null): string {
     if (!dateStr) return 'Never';
-    const diff = Date.now() - new Date(dateStr).getTime();
+    const parsed = new Date(dateStr).getTime();
+    if (Number.isNaN(parsed)) return 'Unknown';
+    const diff = Date.now() - parsed;
+    if (diff < 0) return 'Just now';
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
@@ -59,7 +64,10 @@
     return `${Math.floor(hours / 24)}d ago`;
   }
 
-  async function loadChannels() {
+  async function loadChannels(showSpinner = true) {
+    if (showSpinner) {
+      loading = true;
+    }
     try {
       error = '';
       const client = await getGhostClient();
@@ -70,11 +78,14 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
+    loadingAgents = true;
+    agentLoadError = '';
     try {
       const client = await getGhostClient();
       const data = await client.agents.list();
@@ -82,7 +93,23 @@
       if (agents.length > 0 && !newAgentId) {
         newAgentId = agents[0].id;
       }
-    } catch { /* non-fatal */ }
+      if (agents.length === 0) {
+        newAgentId = '';
+      }
+    } catch (e: unknown) {
+      agents = [];
+      newAgentId = '';
+      agentLoadError = e instanceof Error ? e.message : 'Failed to load agents';
+    } finally {
+      loadingAgents = false;
+    }
+  }
+
+  function getConfigRecord(config: unknown): Record<string, unknown> {
+    if (config && typeof config === 'object' && !Array.isArray(config)) {
+      return config as Record<string, unknown>;
+    }
+    return {};
   }
 
   function parseChannelConfig(): Record<string, unknown> | null {
@@ -119,7 +146,7 @@
       });
       showAddForm = false;
       newChannelConfig = '{}';
-      await loadChannels();
+      await loadChannels(false);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to add channel';
     } finally {
@@ -131,7 +158,7 @@
     try {
       const client = await getGhostClient();
       await client.channels.reconnect(channelId);
-      await loadChannels();
+      await loadChannels(false);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to reconnect';
     }
@@ -142,7 +169,7 @@
     try {
       const client = await getGhostClient();
       await client.channels.delete(channelId);
-      await loadChannels();
+      await loadChannels(false);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to remove channel';
     }
@@ -153,8 +180,14 @@
   onMount(() => {
     loadChannels();
     loadAgents();
-    const unsubs = CHANNEL_EVENTS.map((eventType) => wsStore.on(eventType, () => { loadChannels(); }));
-    const unsubResync = wsStore.onResync(() => { loadChannels(); });
+    const unsubs = CHANNEL_EVENTS.map((eventType) =>
+      wsStore.on(eventType, () => {
+        void loadChannels(false);
+      }),
+    );
+    const unsubResync = wsStore.onResync(() => {
+      void loadChannels(false);
+    });
     return () => {
       unsubs.forEach((unsubscribe) => unsubscribe());
       unsubResync();
@@ -193,17 +226,26 @@
       </label>
       <label>
         <span class="label-text">Agent</span>
-        <select bind:value={newAgentId}>
-          {#each agents as agent}
-            <option value={agent.id}>{agent.name}</option>
-          {/each}
+        <select bind:value={newAgentId} disabled={loadingAgents || agents.length === 0}>
+          {#if loadingAgents}
+            <option value="">Loading agents…</option>
+          {:else if agents.length === 0}
+            <option value="">No agents available</option>
+          {:else}
+            {#each agents as agent}
+              <option value={agent.id}>{agent.name}</option>
+            {/each}
+          {/if}
         </select>
       </label>
       <label class="config-field">
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      {#if agentLoadError}
+        <p class="form-error" role="alert">{agentLoadError}</p>
+      {/if}
+      <button class="btn-primary" onclick={addChannel} disabled={creating || loadingAgents || !newAgentId}>
         {creating ? 'Creating…' : 'Create'}
       </button>
     </div>
@@ -265,9 +307,9 @@
         <dt>Messages</dt><dd>{selectedChannel.message_count}</dd>
         <dt>Last Message</dt><dd>{timeAgo(selectedChannel.last_message_at)}</dd>
       </dl>
-      {#if Object.keys(selectedChannel.config).length > 0}
+      {#if Object.keys(getConfigRecord(selectedChannel.config)).length > 0}
         <h3>Configuration</h3>
-        <pre class="config-json">{JSON.stringify(selectedChannel.config, null, 2)}</pre>
+        <pre class="config-json">{JSON.stringify(getConfigRecord(selectedChannel.config), null, 2)}</pre>
       {/if}
     </div>
   {/if}
@@ -340,6 +382,13 @@
     font-family: var(--font-family-mono);
     font-size: var(--font-size-xs);
     resize: vertical;
+  }
+
+  .form-error {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--color-severity-hard);
+    font-size: var(--font-size-xs);
   }
 
   .channel-list {

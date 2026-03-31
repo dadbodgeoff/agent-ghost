@@ -40,6 +40,7 @@
 
   async function connectProvider(name: string, scopes: string[]) {
     try {
+      error = '';
       const client = await getGhostClient();
       const data = await client.oauth.connect({ provider: name, scopes });
       window.location.href = data.authorization_url;
@@ -49,7 +50,7 @@
   }
 
   async function disconnectConnection(refId: string) {
-    const previousConnections = connections;
+    const previousConnections = [...connections];
     try {
       error = '';
       disconnectingRefId = refId;
@@ -76,6 +77,14 @@
 
   function statusLabel(status: string): string {
     return status.charAt(0).toUpperCase() + status.slice(1);
+  }
+
+  function formatConnectedAt(timestamp: string): string {
+    const parsed = new Date(timestamp);
+    if (Number.isNaN(parsed.getTime())) {
+      return 'Unknown date';
+    }
+    return parsed.toLocaleDateString();
   }
 
   function isConnected(providerName: string): boolean {
@@ -138,12 +147,16 @@
           </div>
           <div class="connection-meta">
             <span class="ref-id" title={conn.ref_id}>{conn.ref_id.slice(0, 8)}…</span>
-            <span class="connected-at">{new Date(conn.connected_at).toLocaleDateString()}</span>
+            <span class="connected-at">{formatConnectedAt(conn.connected_at)}</span>
           </div>
           <div class="connection-scopes">
-            {#each conn.scopes as scope}
-              <span class="scope-tag">{scope}</span>
-            {/each}
+            {#if conn.scopes.length === 0}
+              <span class="scope-tag">No scopes recorded</span>
+            {:else}
+              {#each conn.scopes as scope}
+                <span class="scope-tag">{scope}</span>
+              {/each}
+            {/if}
           </div>
           <button
             class="btn-disconnect"

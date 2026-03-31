@@ -38,6 +38,16 @@
       const data = await client.skills.list();
       installed = data.installed ?? [];
       available = data.available ?? [];
+      const visibleSkills = [...installed, ...available];
+      confirmSkill = confirmSkill
+        ? visibleSkills.find((skill) => skill.id === confirmSkill?.id) ?? null
+        : null;
+      quarantineSkill = quarantineSkill
+        ? visibleSkills.find((skill) => skill.id === quarantineSkill?.id) ?? null
+        : null;
+      if (!quarantineSkill) {
+        quarantineReason = '';
+      }
     } catch (e: unknown) {
       // T-5.9.2: Show error instead of swallowing.
       error = e instanceof Error ? e.message : 'Failed to load skills';
@@ -47,6 +57,7 @@
   }
 
   async function handleAction(skill: Skill, action: SkillAction) {
+    error = null;
     if (action === 'install') {
       if (!skill.installable) return;
       confirmSkill = skill;
@@ -63,8 +74,11 @@
 
   async function confirmInstall() {
     if (!confirmSkill) return;
-    await doAction(confirmSkill, 'install');
-    confirmSkill = null;
+    const skill = confirmSkill;
+    await doAction(skill, 'install');
+    if (!error) {
+      confirmSkill = null;
+    }
   }
 
   async function confirmQuarantine() {
@@ -83,6 +97,7 @@
 
   async function doAction(skill: Skill, action: SkillAction, reason?: string) {
     actionLoading = skill.id;
+    error = null;
     try {
       const client = await getGhostClient();
       switch (action) {
@@ -144,7 +159,7 @@
   </div>
 
   {#if error}
-    <div class="error-banner">
+    <div class="error-banner" role="alert">
       <p>{error}</p>
       <button onclick={() => { error = null; loadSkills(); }}>Retry</button>
     </div>
