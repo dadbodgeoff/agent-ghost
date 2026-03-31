@@ -57,8 +57,8 @@ export async function getHealth(): Promise<GatewayHealth> {
  * Get list of agents.
  */
 export async function getAgents(): Promise<AgentSummary[]> {
-  const data = await request<{ agents?: AgentSummary[] }>('/api/agents');
-  return data.agents || [];
+  const data = await request<AgentSummary[] | { agents?: AgentSummary[] }>('/api/agents');
+  return Array.isArray(data) ? data : (data.agents || []);
 }
 
 /**

@@ -2,7 +2,7 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
 /**
@@ -115,7 +115,7 @@ setInterval(() => {
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
-  const auth = getAuthState();
+  const auth = await initAuthSync();
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {

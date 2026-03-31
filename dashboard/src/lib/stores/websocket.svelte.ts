@@ -143,6 +143,12 @@ class WebSocketStore {
     this.state = 'disconnected';
     this.bc?.close();
     this.bc = null;
+    // Reset leader-election state so a later reconnect can recreate
+    // BroadcastChannel listeners after auth/logout teardown.
+    this.leaderElectionStarted = false;
+    this.leaderReady = null;
+    this.leaderReadyResolve = null;
+    this.isLeader = true;
   }
 
   private async initLeaderElection() {
