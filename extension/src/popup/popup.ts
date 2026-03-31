@@ -2,8 +2,66 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+
+const SIGNAL_LABELS = [
+  'Lexical overlap',
+  'Response latency',
+  'Turn-taking drift',
+  'Novelty decay',
+  'Alignment pressure',
+  'Escalation risk',
+  'Autonomy pressure',
+];
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function renderSignals(signals: number[]): void {
+  const container = document.getElementById('signalList');
+  if (!container) return;
+
+  const rows = SIGNAL_LABELS.map((label, index) => {
+    const value = signals[index] ?? 0;
+    const percent = Math.max(0, Math.min(100, value * 100));
+    return `
+      <div class="signal-row">
+        <span class="signal-name">${escapeHtml(label)}</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="signal-value">${value.toFixed(2)}</span>
+          <span class="signal-bar" aria-hidden="true">
+            <span class="signal-bar-fill" style="width:${percent}%;background:${percent >= 70 ? '#f87171' : percent >= 40 ? '#fbbf24' : '#22c55e'};"></span>
+          </span>
+        </div>
+      </div>
+    `;
+  });
+
+  container.innerHTML = rows.join('');
+}
+
+function updateSessionDuration(sessionStart: number): void {
+  const sessionEl = document.getElementById('sessionDuration');
+  if (!sessionEl) return;
+
+  const elapsedMinutes = Math.floor((Date.now() - sessionStart) / 60000);
+  sessionEl.textContent = elapsedMinutes <= 0 ? 'Just started' : `${elapsedMinutes}m`;
+}
+
+function updatePlatform(): void {
+  const platformEl = document.getElementById('platform');
+  if (!platformEl) return;
+
+  const uaPlatform = navigator.userAgentData?.platform || navigator.platform || 'Unknown';
+  platformEl.textContent = uaPlatform;
+}
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -66,27 +124,27 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  renderSignals(data.signals);
 
   // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl) {
+    if (data.level >= 3) {
+      alertEl.className = `alert-banner active ${data.level >= 4 ? 'alert-danger' : 'alert-warning'}`;
+      alertEl.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+    } else {
+      alertEl.className = 'alert-banner';
+      alertEl.textContent = '';
+    }
   }
 }
 
@@ -105,17 +163,14 @@ chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
   }
 });
 
-// Session timer
 const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
+updateSessionDuration(sessionStart);
+setInterval(() => updateSessionDuration(sessionStart), 60000);
+updatePlatform();
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
-  const auth = getAuthState();
+  const auth = await initAuthSync();
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {
