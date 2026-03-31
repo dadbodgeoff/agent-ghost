@@ -10,6 +10,7 @@
    *
    * Ref: T-3.13.2
    */
+    import { onDestroy } from 'svelte';
     import { goto } from '$app/navigation';
     import { getGhostClient } from '$lib/ghost-client';
     import { hrefForSearchResult } from '$lib/search/navigation';
@@ -40,6 +41,15 @@
   let mode = $state<'search' | 'commands'>('search');
   let inputEl = $state<HTMLInputElement | null>(null);
 
+  function toggleThemePreference() {
+    if (typeof document === 'undefined' || typeof localStorage === 'undefined') {
+      return;
+    }
+    document.documentElement.classList.toggle('light');
+    const isLight = document.documentElement.classList.contains('light');
+    localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+  }
+
   // Static commands
   const STATIC_COMMANDS: PaletteCommand[] = [
     { id: 'nav-overview', label: 'Go to Overview', category: 'command', action: () => goto('/'), frecencyScore: 0 },
@@ -54,11 +64,7 @@
     { id: 'nav-settings', label: 'Go to Settings', category: 'command', action: () => goto('/settings'), frecencyScore: 0 },
     { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
     { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
-    { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
-    }, frecencyScore: 0 },
+    { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: toggleThemePreference, frecencyScore: 0 },
     { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
     { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
     { id: 'nav-providers', label: 'Go to Providers', category: 'setting', action: () => goto('/settings/providers'), frecencyScore: 0 },
@@ -196,6 +202,13 @@
     }
   });
 
+  onDestroy(() => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  });
+
   function handleInput() {
     if (debounceTimer) clearTimeout(debounceTimer);
 
@@ -265,30 +278,40 @@
 
   let displayItems = $derived(getDisplayItems());
 
-  function handleKeydown(e: KeyboardEvent) {
+  async function executeDisplayItem(
+    item: { type: 'command'; item: PaletteCommand } | { type: 'result'; item: SearchResult },
+  ) {
+    if (item.type === 'command') {
+      frecencyTracker.record(item.item.id);
+      await item.item.action();
+      return;
+    }
+
+    const link = hrefForSearchResult(item.item, query.trim());
+    await goto(link);
+  }
+
+  async function handleKeydown(e: KeyboardEvent) {
     const total = displayItems.length;
-    if (e.key === 'ArrowDown') {
+    if (e.key === 'Escape') {
       e.preventDefault();
+      open = false;
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (total == 0) return;
       selectedIndex = Math.min(selectedIndex + 1, total - 1);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
+      if (total == 0) return;
       selectedIndex = Math.max(selectedIndex - 1, 0);
     } else if (e.key === 'Enter') {
       e.preventDefault();
       const item = displayItems[selectedIndex];
       if (item) {
-        if (item.type === 'command') {
-          frecencyTracker.record(item.item.id);
-          item.item.action();
-          open = false;
-        } else {
-          const r = item.item;
-          const link = hrefForSearchResult(r, query.trim());
-          goto(link);
-          open = false;
-        }
+        await executeDisplayItem(item);
+        open = false;
       } else if (query.trim()) {
-        goto(`/search?q=${encodeURIComponent(query.trim())}`);
+        await goto(`/search?q=${encodeURIComponent(query.trim())}`);
         open = false;
       }
     }
@@ -312,7 +335,7 @@
 
 {#if open}
   <div class="overlay" onclick={() => open = false} role="presentation">
-    <div class="palette" role="dialog" tabindex="-1" aria-modal="true" aria-label="Command Palette" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+    <div class="palette" role="dialog" tabindex="-1" aria-modal="true" aria-label="Command Palette" onclick={(e) => e.stopPropagation()}>
       <div class="input-row">
         <input
           type="text"
@@ -342,15 +365,8 @@
                 class:selected={i === selectedIndex}
                 role="option"
                 aria-selected={i === selectedIndex}
-                onclick={() => {
-                  if (item.type === 'command') {
-                    frecencyTracker.record(item.item.id);
-                    item.item.action();
-                  } else {
-                    const r = item.item;
-                    const link = hrefForSearchResult(r, query.trim());
-                    goto(link);
-                  }
+                onclick={async () => {
+                  await executeDisplayItem(item);
                   open = false;
                 }}
               >

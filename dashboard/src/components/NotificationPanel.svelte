@@ -31,6 +31,18 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function isNotificationRecord(value: unknown): value is AppNotification {
+    if (!value || typeof value !== 'object') return false;
+    const candidate = value as Partial<AppNotification>;
+    return typeof candidate.id === 'string'
+      && typeof candidate.type === 'string'
+      && typeof candidate.severity === 'string'
+      && typeof candidate.title === 'string'
+      && typeof candidate.message === 'string'
+      && typeof candidate.timestamp === 'string'
+      && typeof candidate.read === 'boolean';
+  }
+
   onMount(() => {
     loadFromStorage();
 
@@ -159,7 +171,10 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed)
+          ? parsed.filter(isNotificationRecord).slice(0, MAX_NOTIFICATIONS)
+          : [];
       }
     } catch { /* start fresh */ }
   }
@@ -167,6 +182,12 @@
   function persistToStorage() {
     if (typeof localStorage === 'undefined') return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+  }
+
+  function handlePanelKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      panelOpen = false;
+    }
   }
 </script>
 
@@ -187,7 +208,7 @@
 
   {#if panelOpen}
     <div class="panel-overlay" onclick={() => panelOpen = false} role="presentation"></div>
-    <div class="notification-panel" role="dialog" aria-label="Notifications">
+    <div class="notification-panel" role="dialog" aria-label="Notifications" tabindex="-1" onkeydown={handlePanelKeydown}>
       <div class="panel-header">
         <h3>Notifications</h3>
         {#if unreadCount > 0}

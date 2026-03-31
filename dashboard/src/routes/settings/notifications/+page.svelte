@@ -48,6 +48,19 @@
           enabledCategories = JSON.parse(saved);
         } catch { /* use defaults */ }
       }
+
+      if ('serviceWorker' in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.getSubscription();
+          pushEnabled = permissionState === 'granted' && sub !== null;
+        } catch {
+          pushEnabled = false;
+        }
+      } else {
+        pushSupported = false;
+        pushEnabled = false;
+      }
     }
   });
 
@@ -69,6 +82,10 @@
 
   async function subscribePush() {
     try {
+      if (!('serviceWorker' in navigator)) {
+        pushEnabled = false;
+        return;
+      }
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const keyData = await client.push.getVapidKey();
@@ -88,6 +105,10 @@
 
   async function unsubscribePush() {
     try {
+      if (!('serviceWorker' in navigator)) {
+        pushEnabled = false;
+        return;
+      }
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
@@ -115,6 +136,9 @@
   async function sendTestNotification() {
     testSending = true;
     try {
+      if (!('serviceWorker' in navigator)) {
+        return;
+      }
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
