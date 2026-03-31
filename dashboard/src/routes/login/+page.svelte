@@ -40,8 +40,9 @@
       error = e instanceof Error
         ? e.message
         : 'Gateway unreachable. Is ghost-gateway running? Check ghost.yml for the configured port.';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   function handleKeydown(e: KeyboardEvent) {

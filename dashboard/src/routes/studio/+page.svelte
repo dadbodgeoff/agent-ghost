@@ -7,7 +7,7 @@
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
-  import { getRuntime, isTauriEnvironment } from '$lib/platform/runtime';
+  import { getRuntime } from '$lib/platform/runtime';
   import { shortcuts } from '$lib/shortcuts';
   import type { StudioMessage } from '$lib/stores/studioChat.svelte';
   import ChatMessage from '../../components/ChatMessage.svelte';
@@ -65,8 +65,6 @@
     shortcuts.registerCommand('studio.cancelStream', () => {
       studioChatStore.cancelStreaming();
     });
-    let disposeTauriFocus: (() => void) | null = null;
-
     // WP9-G: Check JWT expiry every 60s.
     authCheckInterval = setInterval(() => {
       void (async () => {
@@ -94,23 +92,7 @@
     window.addEventListener('pageshow', handleWindowFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    if (isTauriEnvironment()) {
-      void import('@tauri-apps/api/window')
-        .then(({ getCurrentWindow }) =>
-          getCurrentWindow().onFocusChanged(({ payload }) => {
-            if (payload) {
-              scheduleStudioResumeSync();
-            }
-          }),
-        )
-        .then((unlisten) => {
-          disposeTauriFocus = unlisten;
-        })
-        .catch(() => {});
-    }
-
     return () => {
-      disposeTauriFocus?.();
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('pageshow', handleWindowFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);

@@ -23,13 +23,19 @@
   } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
+  import { applyThemeChoice, readStoredTheme, toggleStoredTheme } from '$lib/theme';
+
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
 
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
 
@@ -51,14 +57,7 @@
   }
 
   function applyTheme() {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light') {
-      document.documentElement.classList.add('light');
-    } else if (stored === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        document.documentElement.classList.add('light');
-      }
-    }
+    applyThemeChoice(readStoredTheme());
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -86,6 +85,18 @@
 
   onMount(async () => {
     applyTheme();
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
+      offline = true;
+      lastSync = new Date().toLocaleTimeString();
+    };
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      deferredPrompt = e as BeforeInstallPromptEvent;
+      showInstallPrompt = true;
+    };
 
     runtime = await getRuntime();
     unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
@@ -121,7 +132,7 @@
           await runtime.clearToken();
           invalidateAuthClientState();
           await notifyAuthBoundary('ghost-auth-cleared');
-          goto('/login');
+          await goto('/login');
           return;
         }
         bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
@@ -133,31 +144,27 @@
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
     shortcuts.registerCommand('theme.toggle', () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      toggleStoredTheme();
     });
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
-      offline = true;
-      lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      showInstallPrompt = true;
-    });
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
 
     await subscribeToPush();
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
   });
 
   onDestroy(() => {
@@ -179,9 +186,7 @@
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const result = await deferredPrompt.userChoice;
-    if (result.outcome === 'accepted') {
-      showInstallPrompt = false;
-    }
+    showInstallPrompt = false;
     deferredPrompt = null;
   }
 
@@ -192,7 +197,12 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (
+      typeof window === 'undefined'
+      || typeof Notification === 'undefined'
+      || !('PushManager' in window)
+      || !('serviceWorker' in navigator)
+    ) return;
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 
@@ -243,8 +253,8 @@
 {#if showInstallPrompt}
   <div class="install-banner">
     <span>Install GHOST Dashboard for quick access</span>
-    <button onclick={installPWA}>Install</button>
-    <button onclick={() => (showInstallPrompt = false)}>Dismiss</button>
+    <button type="button" onclick={installPWA}>Install</button>
+    <button type="button" onclick={() => { showInstallPrompt = false; deferredPrompt = null; }}>Dismiss</button>
   </div>
 {/if}
 

@@ -172,6 +172,7 @@
 
 <div class="notification-wrapper">
   <button
+    type="button"
     class="bell-button"
     onclick={() => panelOpen = !panelOpen}
     aria-label="Notifications ({unreadCount} unread)"
@@ -191,7 +192,7 @@
       <div class="panel-header">
         <h3>Notifications</h3>
         {#if unreadCount > 0}
-          <button class="mark-read-btn" onclick={markAllRead}>Mark all read</button>
+          <button type="button" class="mark-read-btn" onclick={markAllRead}>Mark all read</button>
         {/if}
       </div>
 

@@ -17,6 +17,7 @@
     import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
     import { frecencyTracker } from '$lib/frecency';
     import { shortcuts } from '$lib/shortcuts';
+    import { toggleStoredTheme } from '$lib/theme';
   import type { SearchResult } from '@ghost/sdk';
 
   type SearchPrefix = '>' | '@' | '#' | '/';
@@ -55,9 +56,7 @@
     { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
     { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
     { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      toggleStoredTheme();
     }, frecencyScore: 0 },
     { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
     { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
@@ -222,6 +221,7 @@
       }
       mode = 'commands';
       results = [];
+      loading = false;
       return;
     }
 
@@ -251,6 +251,14 @@
       loading = false;
     }
   }
+
+  $effect(() => {
+    if (!open && debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+      loading = false;
+    }
+  });
 
   function getDisplayItems(): Array<{ type: 'command'; item: PaletteCommand } | { type: 'result'; item: SearchResult }> {
     const items: Array<{ type: 'command'; item: PaletteCommand } | { type: 'result'; item: SearchResult }> = [];

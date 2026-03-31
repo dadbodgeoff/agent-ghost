@@ -25,14 +25,20 @@ function resolveBaseUrl(): string {
 }
 
 function resolveReplayClientId(): string {
+  if (typeof localStorage === 'undefined') {
+    return typeof crypto !== 'undefined' ? crypto.randomUUID() : `ghost-web-${Date.now()}`;
+  }
   const existing = localStorage.getItem(CLIENT_ID_KEY);
   if (existing) return existing;
-  const clientId = crypto.randomUUID();
+  const clientId = typeof crypto !== 'undefined' ? crypto.randomUUID() : `ghost-web-${Date.now()}`;
   localStorage.setItem(CLIENT_ID_KEY, clientId);
   return clientId;
 }
 
 function resolveReplaySessionEpoch(): number {
+  if (typeof localStorage === 'undefined') {
+    return 1;
+  }
   const raw = localStorage.getItem(SESSION_EPOCH_KEY);
   const epoch = raw ? Number.parseInt(raw, 10) : 1;
   if (Number.isFinite(epoch) && epoch > 0) return epoch;
@@ -47,14 +53,18 @@ export const webRuntime: RuntimePlatform = {
     return resolveBaseUrl();
   },
   async getToken() {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return typeof sessionStorage === 'undefined' ? null : sessionStorage.getItem(TOKEN_KEY);
   },
   async setToken(token: string) {
-    sessionStorage.setItem(TOKEN_KEY, token);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(TOKEN_KEY, token);
+    }
     emitTokenChange(token);
   },
   async clearToken() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem(TOKEN_KEY);
+    }
     emitTokenChange(null);
   },
   async getReplayClientId() {
@@ -65,7 +75,9 @@ export const webRuntime: RuntimePlatform = {
   },
   async advanceReplaySessionEpoch() {
     const next = resolveReplaySessionEpoch() + 1;
-    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    }
     return next;
   },
   subscribeTokenChange(listener) {
@@ -82,7 +94,9 @@ export const webRuntime: RuntimePlatform = {
     throw new Error('Gateway lifecycle control is only available in the desktop app');
   },
   async openExternalUrl(url: string) {
-    window.open(url, '_blank', 'noopener,noreferrer');
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
   },
   async requestNotificationPermission() {
     if (typeof Notification === 'undefined') {

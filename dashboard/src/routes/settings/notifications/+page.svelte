@@ -45,7 +45,8 @@
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          enabledCategories = Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : enabledCategories;
         } catch { /* use defaults */ }
       }
     }
@@ -68,6 +69,7 @@
   }
 
   async function subscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -87,6 +89,7 @@
   }
 
   async function unsubscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -109,10 +112,13 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    }
   }
 
   async function sendTestNotification() {
+    if (!('serviceWorker' in navigator)) return;
     testSending = true;
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -155,6 +161,7 @@
           </span>
         </div>
         <button
+          type="button"
           class="toggle-btn"
           class:active={pushEnabled}
           disabled={permissionState === 'denied'}
@@ -187,6 +194,7 @@
 
       <div class="section">
         <button
+          type="button"
           class="test-btn"
           disabled={testSending}
           onclick={sendTestNotification}

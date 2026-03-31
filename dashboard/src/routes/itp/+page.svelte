@@ -87,7 +87,8 @@
   }
 
   function formatTime(ts: string): string {
-    return new Date(ts).toLocaleString();
+    const timestamp = new Date(ts);
+    return Number.isNaN(timestamp.getTime()) ? 'Unknown time' : timestamp.toLocaleString();
   }
 
   function platformRouteLabel(event: ItpEvent): string {
@@ -226,7 +227,7 @@
 {#if error}
   <div class="error-banner" role="alert">
     <span>{error}</span>
-    <button onclick={() => loadEvents()}>Retry</button>
+    <button type="button" onclick={() => loadEvents()}>Retry</button>
   </div>
 {/if}
 
@@ -260,14 +261,25 @@
             <td>{event.source ?? '—'}</td>
             <td>{platformRouteLabel(event)}</td>
             <td class="mono">
-              <a href={event.session_path} title={event.session_id}>
-                {event.session_id.slice(0, 12)}…
-              </a>
+              {#if event.session_path}
+                <a href={event.session_path} title={event.session_id}>
+                  {event.session_id.slice(0, 12)}…
+                </a>
+              {:else}
+                <span title={event.session_id}>{event.session_id.slice(0, 12)}…</span>
+              {/if}
             </td>
             <td class="mono">{event.sequence_number}</td>
             <td class="actions">
-              <a href={event.session_path}>Detail</a>
-              <a href={event.replay_path}>Replay</a>
+              {#if event.session_path}
+                <a href={event.session_path}>Detail</a>
+              {/if}
+              {#if event.replay_path}
+                <a href={event.replay_path}>Replay</a>
+              {/if}
+              {#if !event.session_path && !event.replay_path}
+                <span>—</span>
+              {/if}
             </td>
           </tr>
         {/each}

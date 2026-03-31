@@ -50,7 +50,9 @@
 
   function timeAgo(dateStr: string | null): string {
     if (!dateStr) return 'Never';
-    const diff = Date.now() - new Date(dateStr).getTime();
+    const timestamp = new Date(dateStr).getTime();
+    if (!Number.isFinite(timestamp)) return 'Unknown';
+    const diff = Date.now() - timestamp;
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
@@ -60,6 +62,7 @@
   }
 
   async function loadChannels() {
+    loading = channels.length === 0;
     try {
       error = '';
       const client = await getGhostClient();
@@ -78,9 +81,11 @@
     try {
       const client = await getGhostClient();
       const data = await client.agents.list();
-      agents = data.map((agent) => ({ id: agent.id, name: agent.name }));
+      agents = Array.isArray(data) ? data.map((agent) => ({ id: agent.id, name: agent.name })) : [];
       if (agents.length > 0 && !newAgentId) {
         newAgentId = agents[0].id;
+      } else if (agents.length === 0) {
+        newAgentId = '';
       }
     } catch { /* non-fatal */ }
   }
@@ -96,6 +101,7 @@
         error = 'Channel config must be a JSON object';
         return null;
       }
+      error = '';
       return parsed as Record<string, unknown>;
     } catch (parseError) {
       error = parseError instanceof Error ? parseError.message : 'Invalid channel config JSON';
@@ -104,7 +110,7 @@
   }
 
   async function addChannel() {
-    if (!newAgentId) return;
+    if (!newAgentId || agents.length === 0) return;
     const config = parseChannelConfig();
     if (!config) return;
 
@@ -167,7 +173,7 @@
 {#if error}
   <div class="error-banner" role="alert">
     <span>{error}</span>
-    <button onclick={() => (error = '')}>Dismiss</button>
+    <button type="button" onclick={() => (error = '')}>Dismiss</button>
   </div>
 {/if}
 
@@ -176,7 +182,7 @@
 {:else}
   <div class="channels-toolbar">
     <span class="channel-count">{channels.length} channel{channels.length !== 1 ? 's' : ''}</span>
-    <button class="btn-primary" onclick={() => (showAddForm = !showAddForm)}>
+    <button type="button" class="btn-primary" onclick={() => (showAddForm = !showAddForm)}>
       {showAddForm ? 'Cancel' : '+ Add Channel'}
     </button>
   </div>
@@ -203,9 +209,12 @@
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      <button type="button" class="btn-primary" onclick={addChannel} disabled={creating || !newAgentId || agents.length === 0}>
         {creating ? 'Creating…' : 'Create'}
       </button>
+      {#if agents.length === 0}
+        <p class="empty-agents-hint">Create an agent first to attach a channel.</p>
+      {/if}
     </div>
   {/if}
 
@@ -250,9 +259,9 @@
         <h2>{selectedChannel.channel_type} — {selectedChannel.agent_name ?? selectedChannel.agent_id.slice(0, 8)}</h2>
         <div class="detail-actions">
           {#if selectedChannel.status === 'error' || selectedChannel.status === 'disconnected'}
-            <button class="btn-secondary" onclick={() => reconnect(selectedChannel!.id)}>Reconnect</button>
+            <button type="button" class="btn-secondary" onclick={() => reconnect(selectedChannel!.id)}>Reconnect</button>
           {/if}
-          <button class="btn-danger" onclick={() => removeChannel(selectedChannel!.id)}>Remove</button>
+          <button type="button" class="btn-danger" onclick={() => removeChannel(selectedChannel!.id)}>Remove</button>
         </div>
       </div>
       <dl class="detail-list">
@@ -302,6 +311,12 @@
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     margin-bottom: var(--spacing-4);
+  }
+
+  .empty-agents-hint {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
   }
 
   .add-channel-form label {
