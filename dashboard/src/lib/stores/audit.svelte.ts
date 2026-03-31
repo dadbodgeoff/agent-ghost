@@ -73,8 +73,9 @@ class AuditStore {
       this.page = data.page ?? filters.page ?? 1;
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load audit entries';
+    } finally {
+      this.loading = false;
     }
-    this.loading = false;
   }
 
   destroy() {

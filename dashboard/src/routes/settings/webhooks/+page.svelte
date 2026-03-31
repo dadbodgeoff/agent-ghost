@@ -15,11 +15,11 @@
   let testResult = $state<{ id: string; success: boolean; code: number } | null>(null);
 
   onMount(() => {
-    loadWebhooks();
+    void loadWebhooks();
 
     // T-5.9.1: Wire WebhookFired WS event to refresh webhook list.
-    const unsub = wsStore.on('WebhookFired', () => { loadWebhooks(); });
-    const unsubResync = wsStore.onResync(() => { loadWebhooks(); });
+    const unsub = wsStore.on('WebhookFired', () => { void loadWebhooks(); });
+    const unsubResync = wsStore.onResync(() => { void loadWebhooks(); });
     return () => {
       unsub();
       unsubResync();
@@ -44,6 +44,7 @@
   async function deleteWebhook(id: string) {
     if (!confirm('Delete this webhook?')) return;
     try {
+      error = null;
       const client = await getGhostClient();
       await client.webhooks.delete(id);
       await loadWebhooks();
@@ -71,7 +72,7 @@
     showForm = false;
     editId = null;
     editWebhookData = null;
-    loadWebhooks();
+    void loadWebhooks();
   }
 
   function editWebhook(wh: WebhookSummary) {
@@ -110,7 +111,7 @@
   {#if error}
     <div class="error-banner">
       <p>{error}</p>
-      <button onclick={() => { error = null; loadWebhooks(); }}>Retry</button>
+      <button onclick={() => { error = null; void loadWebhooks(); }}>Retry</button>
     </div>
   {/if}
 

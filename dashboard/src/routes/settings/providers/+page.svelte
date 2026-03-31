@@ -18,7 +18,7 @@
   let codexPollHandle: number | null = null;
 
   onMount(() => {
-    loadProviders();
+    void loadProviders();
   });
 
   onDestroy(() => {

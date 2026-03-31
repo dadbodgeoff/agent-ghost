@@ -10,13 +10,14 @@
    *
    * Ref: T-3.13.2
    */
-    import { goto } from '$app/navigation';
-    import { getGhostClient } from '$lib/ghost-client';
-    import { hrefForSearchResult } from '$lib/search/navigation';
-    import { authSessionStore } from '$lib/stores/auth-session.svelte';
-    import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
-    import { frecencyTracker } from '$lib/frecency';
-    import { shortcuts } from '$lib/shortcuts';
+  import { goto } from '$app/navigation';
+  import { onDestroy } from 'svelte';
+  import { getGhostClient } from '$lib/ghost-client';
+  import { hrefForSearchResult } from '$lib/search/navigation';
+  import { authSessionStore } from '$lib/stores/auth-session.svelte';
+  import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
+  import { frecencyTracker } from '$lib/frecency';
+  import { shortcuts } from '$lib/shortcuts';
   import type { SearchResult } from '@ghost/sdk';
 
   type SearchPrefix = '>' | '@' | '#' | '/';
@@ -37,6 +38,7 @@
   let loading = $state(false);
   let selectedIndex = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let searchRequestId = 0;
   let mode = $state<'search' | 'commands'>('search');
   let inputEl = $state<HTMLInputElement | null>(null);
 
@@ -235,10 +237,12 @@
 
   async function search() {
     if (!query.trim()) return;
+    const requestId = ++searchRequestId;
     loading = true;
     try {
       const client = await getGhostClient();
       const res = await client.search.query({ q: query.trim(), limit: 10 });
+      if (requestId !== searchRequestId) return;
       results = res.results ?? [];
       // If no command matches but search results exist, switch to search mode
       if (paletteCommands.length === 0 && results.length > 0) {
@@ -246,11 +250,23 @@
       }
       selectedIndex = 0;
     } catch {
-      results = [];
+      if (requestId === searchRequestId) {
+        results = [];
+      }
     } finally {
-      loading = false;
+      if (requestId === searchRequestId) {
+        loading = false;
+      }
     }
   }
+
+  onDestroy(() => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+    searchRequestId += 1;
+  });
 
   function getDisplayItems(): Array<{ type: 'command'; item: PaletteCommand } | { type: 'result'; item: SearchResult }> {
     const items: Array<{ type: 'command'; item: PaletteCommand } | { type: 'result'; item: SearchResult }> = [];

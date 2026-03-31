@@ -39,14 +39,15 @@ class MemoryStore {
       this.memories = data.memories ?? [];
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load memories';
+    } finally {
+      this.loading = false;
     }
-    this.loading = false;
 
     // Subscribe to Resync events for full re-fetch on reconnect gap.
     this.unsubs.push(
       wsStore.on('Resync', () => {
         // Stagger to avoid thundering herd on reconnect
-        setTimeout(() => this.refresh(), Math.random() * 2000);
+        setTimeout(() => void this.refresh(), Math.random() * 2000);
       }),
     );
   }

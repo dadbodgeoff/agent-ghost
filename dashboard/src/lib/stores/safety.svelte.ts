@@ -82,8 +82,9 @@ class SafetyStore {
       this.status = await loadSafetyStatus();
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load safety status';
+    } finally {
+      this.loading = false;
     }
-    this.loading = false;
 
     this.unsubs.push(
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -105,7 +106,7 @@ class SafetyStore {
       }),
       wsStore.on('Resync', () => {
         // Stagger to avoid thundering herd on reconnect
-        setTimeout(() => this.refresh(), Math.random() * 2000);
+        setTimeout(() => void this.refresh(), Math.random() * 2000);
       }),
     );
   }

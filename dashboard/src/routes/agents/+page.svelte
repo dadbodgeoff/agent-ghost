@@ -21,6 +21,8 @@
   };
 
   async function loadAgents() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [agentData, convData] = await Promise.all([
@@ -32,17 +34,18 @@
       scoreMap = new Map(scores.map((s: ConvergenceScore) => [s.agent_id, s]));
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load agents';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   onMount(() => {
-    loadAgents();
+    void loadAgents();
 
     // Canonical agent operational-state updates keep the grid truthful without reload.
-    const unsub = wsStore.on('AgentStateChange', () => { loadAgents(); });
-    const unsubOperational = wsStore.on('AgentOperationalStatusChanged', () => { loadAgents(); });
-    const unsubResync = wsStore.onResync(() => { loadAgents(); });
+    const unsub = wsStore.on('AgentStateChange', () => { void loadAgents(); });
+    const unsubOperational = wsStore.on('AgentOperationalStatusChanged', () => { void loadAgents(); });
+    const unsubResync = wsStore.onResync(() => { void loadAgents(); });
     return () => {
       unsub();
       unsubOperational();
@@ -83,7 +86,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={loadAgents}>Retry</button>
   </div>
 {:else if agents.length === 0}
   <div class="empty-state">

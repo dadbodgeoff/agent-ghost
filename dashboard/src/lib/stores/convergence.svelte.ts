@@ -49,8 +49,9 @@ class ConvergenceStore {
       this.scores = data.scores ?? [];
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load convergence data';
+    } finally {
+      this.loading = false;
     }
-    this.loading = false;
 
     // Subscribe to real-time score updates.
     this.unsubs.push(
@@ -81,7 +82,7 @@ class ConvergenceStore {
       }),
       wsStore.on('Resync', () => {
         // Stagger to avoid thundering herd on reconnect
-        setTimeout(() => this.refresh(), Math.random() * 2000);
+        setTimeout(() => void this.refresh(), Math.random() * 2000);
       }),
     );
   }

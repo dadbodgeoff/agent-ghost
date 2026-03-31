@@ -19,11 +19,11 @@
   type SkillAction = 'install' | 'uninstall' | 'quarantine' | 'resolve' | 'reverify';
 
   onMount(() => {
-    loadSkills();
+    void loadSkills();
 
     // T-5.9.1: Wire SkillChange WS event to refresh skills list.
-    const unsub = wsStore.on('SkillChange', () => { loadSkills(); });
-    const unsubResync = wsStore.onResync(() => { loadSkills(); });
+    const unsub = wsStore.on('SkillChange', () => { void loadSkills(); });
+    const unsubResync = wsStore.onResync(() => { void loadSkills(); });
     return () => {
       unsub();
       unsubResync();
@@ -83,6 +83,7 @@
 
   async function doAction(skill: Skill, action: SkillAction, reason?: string) {
     actionLoading = skill.id;
+    error = null;
     try {
       const client = await getGhostClient();
       switch (action) {
@@ -146,7 +147,7 @@
   {#if error}
     <div class="error-banner">
       <p>{error}</p>
-      <button onclick={() => { error = null; loadSkills(); }}>Retry</button>
+      <button onclick={() => { error = null; void loadSkills(); }}>Retry</button>
     </div>
   {/if}
 

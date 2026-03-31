@@ -37,13 +37,16 @@
   });
 
   async function loadStatus() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       status = await client.pcControl.getStatus();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load PC control status';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadActionLog() {
@@ -57,6 +60,7 @@
   async function toggleEnabled() {
     if (!status) return;
     try {
+      error = '';
       const client = await getGhostClient();
       status = await client.pcControl.updateStatus(!status.enabled);
     } catch (e: unknown) {
@@ -67,6 +71,7 @@
   async function addApp() {
     if (!newApp.trim() || !status) return;
     try {
+      error = '';
       const apps = [...status.allowed_apps, newApp.trim()];
       const client = await getGhostClient();
       status = await client.pcControl.setAllowedApps(apps);
@@ -79,6 +84,7 @@
   async function removeApp(app: string) {
     if (!status) return;
     try {
+      error = '';
       const apps = status.allowed_apps.filter(a => a !== app);
       const client = await getGhostClient();
       status = await client.pcControl.setAllowedApps(apps);
@@ -90,6 +96,7 @@
   async function addHotkey() {
     if (!newHotkey.trim() || !status) return;
     try {
+      error = '';
       const hotkeys = [...status.blocked_hotkeys, newHotkey.trim()];
       const client = await getGhostClient();
       status = await client.pcControl.setBlockedHotkeys(hotkeys);
@@ -102,6 +109,7 @@
   async function removeHotkey(key: string) {
     if (!status) return;
     try {
+      error = '';
       const hotkeys = status.blocked_hotkeys.filter(h => h !== key);
       const client = await getGhostClient();
       status = await client.pcControl.setBlockedHotkeys(hotkeys);
@@ -113,6 +121,7 @@
   async function addSafeZone(zone: SafeZone) {
     if (!status) return;
     try {
+      error = '';
       const client = await getGhostClient();
       status = await client.pcControl.setSafeZone(zone);
     } catch (e: unknown) {
@@ -123,6 +132,7 @@
   async function clearSafeZone() {
     if (!status) return;
     try {
+      error = '';
       const client = await getGhostClient();
       status = await client.pcControl.setSafeZone(null);
     } catch (e: unknown) {
@@ -235,15 +245,15 @@
   );
 
   onMount(() => {
-    loadStatus();
-    loadActionLog();
+    void loadStatus();
+    void loadActionLog();
     const unsub = wsStore.on('PcControlRuntimeChange', () => {
-      loadStatus();
-      loadActionLog();
+      void loadStatus();
+      void loadActionLog();
     });
     const unsubResync = wsStore.onResync(() => {
-      loadStatus();
-      loadActionLog();
+      void loadStatus();
+      void loadActionLog();
     });
     return () => {
       unsub();

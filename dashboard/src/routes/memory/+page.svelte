@@ -81,8 +81,9 @@
       await focusMemory();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load memories';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function handleSearch() {
@@ -107,8 +108,9 @@
       await focusMemory();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Search failed';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   function clearSearch() {
@@ -117,7 +119,7 @@
     typeFilter = '';
     importanceFilter = '';
     focusedMemoryId = '';
-    loadMemories();
+    void loadMemories();
   }
 
   $effect(() => {
@@ -125,7 +127,7 @@
     const urlState = $page.url.search;
     if (urlState === lastUrlState) return;
     lastUrlState = urlState;
-    hydrateFromUrl();
+    void hydrateFromUrl();
   });
 
   async function hydrateFromUrl() {

@@ -60,6 +60,7 @@
   }
 
   async function loadChannels() {
+    loading = true;
     try {
       error = '';
       const client = await getGhostClient();
@@ -70,8 +71,9 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
@@ -104,7 +106,10 @@
   }
 
   async function addChannel() {
-    if (!newAgentId) return;
+    if (!newAgentId) {
+      error = 'Select or create an agent before adding a channel';
+      return;
+    }
     const config = parseChannelConfig();
     if (!config) return;
 
@@ -129,6 +134,7 @@
 
   async function reconnect(channelId: string) {
     try {
+      error = '';
       const client = await getGhostClient();
       await client.channels.reconnect(channelId);
       await loadChannels();
@@ -140,6 +146,7 @@
   async function removeChannel(channelId: string) {
     if (!confirm('Remove this channel?')) return;
     try {
+      error = '';
       const client = await getGhostClient();
       await client.channels.delete(channelId);
       await loadChannels();
@@ -151,10 +158,10 @@
   let selectedChannel: ChannelInfo | null = $state(null);
 
   onMount(() => {
-    loadChannels();
-    loadAgents();
-    const unsubs = CHANNEL_EVENTS.map((eventType) => wsStore.on(eventType, () => { loadChannels(); }));
-    const unsubResync = wsStore.onResync(() => { loadChannels(); });
+    void loadChannels();
+    void loadAgents();
+    const unsubs = CHANNEL_EVENTS.map((eventType) => wsStore.on(eventType, () => { void loadChannels(); }));
+    const unsubResync = wsStore.onResync(() => { void loadChannels(); });
     return () => {
       unsubs.forEach((unsubscribe) => unsubscribe());
       unsubResync();

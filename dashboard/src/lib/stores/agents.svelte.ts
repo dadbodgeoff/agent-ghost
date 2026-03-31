@@ -56,8 +56,9 @@ class AgentsStore {
       this.list = await client.agents.list();
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load agents';
+    } finally {
+      this.loading = false;
     }
-    this.loading = false;
 
     // Subscribe to real-time updates.
     this.unsubs.push(
@@ -90,7 +91,7 @@ class AgentsStore {
       }),
       wsStore.on('Resync', () => {
         // Stagger to avoid thundering herd on reconnect
-        setTimeout(() => this.refresh(), Math.random() * 2000);
+        setTimeout(() => void this.refresh(), Math.random() * 2000);
       }),
     );
   }
