@@ -5,7 +5,7 @@
  * Forwards ITP observations and retrieves agent state.
  */
 
-import { getAuthState } from './auth-sync';
+import { ensureAuthStateLoaded, getAuthState } from './auth-sync';
 
 export interface AgentSummary {
   id: string;
@@ -24,6 +24,7 @@ type JsonObject = Record<string, unknown>;
  * Make an authenticated request to the gateway.
  */
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  await ensureAuthStateLoaded();
   const auth = getAuthState();
   if (!auth.authenticated || !auth.token) {
     throw new Error('Not authenticated with gateway');

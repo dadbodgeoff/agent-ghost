@@ -22,16 +22,78 @@ const currentState: AuthState = {
   lastValidated: 0,
 };
 
+let initializationPromise: Promise<AuthState> | null = null;
+let storageListenerRegistered = false;
+
+function registerStorageListener(): void {
+  if (storageListenerRegistered || !chrome.storage?.onChanged) {
+    return;
+  }
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') {
+      return;
+    }
+
+    if (JWT_TOKEN_KEY in changes) {
+      currentState.token = (changes[JWT_TOKEN_KEY]?.newValue as string | undefined) || null;
+    }
+
+    if (GATEWAY_URL_KEY in changes) {
+      currentState.gatewayUrl =
+        (changes[GATEWAY_URL_KEY]?.newValue as string | undefined) || 'http://localhost:39780';
+    }
+
+    if (!currentState.token) {
+      currentState.authenticated = false;
+      currentState.lastValidated = 0;
+      return;
+    }
+
+    void validateToken();
+  });
+
+  storageListenerRegistered = true;
+}
+
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
 export async function initAuthSync(): Promise<AuthState> {
-  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
-  currentState.token = stored[JWT_TOKEN_KEY] || null;
+  if (initializationPromise) {
+    return initializationPromise;
+  }
 
-  if (currentState.token) {
-    await validateToken();
+  registerStorageListener();
+
+  initializationPromise = (async () => {
+    const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
+    currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
+    currentState.token = stored[JWT_TOKEN_KEY] || null;
+
+    if (currentState.token) {
+      await validateToken();
+    }
+
+    return currentState;
+  })();
+
+  try {
+    return await initializationPromise;
+  } finally {
+    initializationPromise = null;
+  }
+}
+
+export async function ensureAuthStateLoaded(): Promise<AuthState> {
+  registerStorageListener();
+
+  if (!currentState.lastValidated && !initializationPromise) {
+    return initAuthSync();
+  }
+
+  if (initializationPromise) {
+    return initializationPromise;
   }
 
   return currentState;
