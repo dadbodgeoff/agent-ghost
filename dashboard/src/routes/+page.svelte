@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
+  import { reloadCurrentPage } from '$lib/browser';
   import type { Agent } from '@ghost/sdk';
   import ScoreGauge from '../components/ScoreGauge.svelte';
 
@@ -43,7 +44,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button type="button" onclick={reloadCurrentPage}>Retry</button>
   </div>
 {:else}
   <div class="grid">

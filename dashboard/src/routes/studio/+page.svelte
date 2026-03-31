@@ -3,6 +3,7 @@
    * Prompt Playground / Agent Studio — Enterprise chat with SSE streaming.
    */
   import { onMount, onDestroy } from 'svelte';
+  import { parseJwtPayload } from '$lib/browser';
   import { studioChatStore } from '$lib/stores/studioChat.svelte';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import { invalidateAuthClientState, notifyAuthBoundary } from '$lib/auth-boundary';
@@ -18,9 +19,19 @@
   import VirtualMessageList from '../../components/VirtualMessageList.svelte';
   import 'highlight.js/styles/github-dark.css';
 
+  interface AgentTemplateSelection {
+    id: string;
+    name: string;
+    description: string;
+    systemPrompt: string;
+    model: string;
+    temperature: number;
+    maxTokens: number;
+  }
+
   let responseTime = $state(0);
   let searchQuery = $state('');
-  let selectedTemplate = $state<any>(null);
+  let selectedTemplate = $state<AgentTemplateSelection | null>(null);
   let artifacts = $state<Artifact[]>([]);
   let showArtifacts = $state(false);
   let chatAreaHeight = $state(0);
@@ -34,6 +45,25 @@
   let authCheckInterval: ReturnType<typeof setInterval> | null = null;
   const artifactCache = new Map<string, Artifact[]>();
   const ARTIFACT_CACHE_MAX = 50;
+
+  async function refreshAuthExpiryWarning() {
+    const runtime = await getRuntime();
+    const token = await runtime.getToken();
+    if (!token) {
+      authExpiryWarning = false;
+      return;
+    }
+
+    const payload = parseJwtPayload(token);
+    const expSeconds = typeof payload?.exp === 'number' ? payload.exp : null;
+    if (expSeconds == null) {
+      authExpiryWarning = false;
+      return;
+    }
+
+    const expMs = expSeconds * 1000;
+    authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
+  }
 
   function collectArtifacts(messages: StudioMessage[]): Artifact[] {
     const artifactCandidates = messages.filter(
@@ -68,17 +98,9 @@
     let disposeTauriFocus: (() => void) | null = null;
 
     // WP9-G: Check JWT expiry every 60s.
+    void refreshAuthExpiryWarning();
     authCheckInterval = setInterval(() => {
-      void (async () => {
-        const runtime = await getRuntime();
-        const token = await runtime.getToken();
-        if (!token) return;
-        try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          const expMs = (payload.exp ?? 0) * 1000;
-          authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
-        } catch { /* malformed token — ignore */ }
-      })();
+      void refreshAuthExpiryWarning();
     }, 60_000);
 
     const handleWindowFocus = () => {
@@ -158,7 +180,7 @@
     responseTime = Math.round(performance.now() - start);
   }
 
-  function handleTemplateSelect(template: any) {
+  function handleTemplateSelect(template: AgentTemplateSelection) {
     // Toggle selection — clicking the same template deselects it.
     if (selectedTemplate?.id === template.id) {
       selectedTemplate = null;
@@ -288,9 +310,10 @@
             </button>
             <button
               class="session-delete"
+              type="button"
               onclick={(e) => { e.stopPropagation(); studioChatStore.deleteSession(s.id); }}
               title="Delete session"
-              aria-label="Delete session {s.title}"
+              aria-label={`Delete session ${s.title}`}
             >&times;</button>
           </li>
         {/each}

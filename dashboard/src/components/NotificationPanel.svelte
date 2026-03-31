@@ -22,6 +22,16 @@
     agentId?: string;
   }
 
+  type NotificationPayload = WsMessage & {
+    agent_id?: string;
+    status?: string;
+    new_state?: string;
+    reason?: string;
+    new_level?: number | string;
+    proposal_id?: string;
+    change?: string;
+  };
+
   let notifications = $state<AppNotification[]>([]);
   let panelOpen = $state(false);
   let unsubs: Array<() => void> = [];
@@ -31,43 +41,59 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function asPayload(message: WsMessage): NotificationPayload {
+    return message as NotificationPayload;
+  }
+
+  function asString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+
   onMount(() => {
     loadFromStorage();
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const payload = asPayload(msg);
+        const agentId = asString(payload.agent_id);
+        const status = asString(payload.status) ?? asString(payload.new_state) ?? 'unknown';
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${status}`,
+          actionHref: agentId ? `/agents/${agentId}` : '/agents',
+          agentId,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
+        const payload = asPayload(msg);
         addNotification({
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: asString(payload.reason) ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const payload = asPayload(msg);
+        const agentId = asString(payload.agent_id);
+        const nextLevel = payload.new_level ?? 'unknown';
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level -> ${String(nextLevel)}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const payload = asPayload(msg);
+        const proposalId = asString(payload.proposal_id) ?? '';
+        const change = asString(payload.change) ?? 'updated';
+        const status = asString(payload.status) ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',

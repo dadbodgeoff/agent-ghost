@@ -24,14 +24,22 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeBeforeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -51,6 +59,7 @@
   }
 
   function applyTheme() {
+    document.documentElement.classList.remove('light');
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
@@ -140,18 +149,28 @@
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
-    offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
+    };
+    const handleBeforeInstallPrompt = (event: Event) => {
+      const promptEvent = event as BeforeInstallPromptEvent;
+      promptEvent.preventDefault();
+      deferredPrompt = promptEvent;
       showInstallPrompt = true;
-    });
+    };
+
+    offline = !navigator.onLine;
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
+    removeBeforeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +182,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeBeforeInstallPromptListener?.();
+    removeBeforeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });

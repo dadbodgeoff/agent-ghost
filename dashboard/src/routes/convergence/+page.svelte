@@ -4,6 +4,7 @@
    * 8-axis radar chart, sparkline trends, agent selector, threshold config.
    */
   import { onMount } from 'svelte';
+  import { reloadCurrentPage } from '$lib/browser';
   import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import ScoreGauge from '../../components/ScoreGauge.svelte';
@@ -213,7 +214,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button type="button" onclick={reloadCurrentPage}>Retry</button>
   </div>
 {:else if scores.length === 0}
   <div class="empty-state">

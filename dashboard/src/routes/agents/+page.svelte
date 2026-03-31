@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { reloadCurrentPage } from '$lib/browser';
   import { getGhostClient } from '$lib/ghost-client';
   import { wsStore } from '$lib/stores/websocket.svelte';
   import type { Agent, ConvergenceScore } from '@ghost/sdk';
@@ -83,7 +84,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button type="button" onclick={reloadCurrentPage}>Retry</button>
   </div>
 {:else if agents.length === 0}
   <div class="empty-state">
