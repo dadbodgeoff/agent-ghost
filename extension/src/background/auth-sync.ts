@@ -21,17 +21,44 @@ const currentState: AuthState = {
   token: null,
   lastValidated: 0,
 };
+let initialized = false;
+
+async function readStoredState(): Promise<void> {
+  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
+  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
+  currentState.token = stored[JWT_TOKEN_KEY] || null;
+}
+
+function attachStorageListener(): void {
+  if (initialized) return;
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+
+    if (changes[GATEWAY_URL_KEY]) {
+      currentState.gatewayUrl = (changes[GATEWAY_URL_KEY].newValue as string) || 'http://localhost:39780';
+    }
+
+    if (changes[JWT_TOKEN_KEY]) {
+      currentState.token = (changes[JWT_TOKEN_KEY].newValue as string | null) || null;
+      currentState.authenticated = false;
+    }
+  });
+
+  initialized = true;
+}
 
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
 export async function initAuthSync(): Promise<AuthState> {
-  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
-  currentState.token = stored[JWT_TOKEN_KEY] || null;
+  attachStorageListener();
+  await readStoredState();
 
   if (currentState.token) {
     await validateToken();
+  } else {
+    currentState.authenticated = false;
   }
 
   return currentState;
