@@ -3,8 +3,13 @@
  */
 
 import { ITPEmitter } from './itp-emitter';
+import { initAuthSync } from './auth-sync';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync().catch((error) => {
+  console.warn('[GHOST] Failed to restore extension auth state', error);
+});
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
