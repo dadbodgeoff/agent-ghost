@@ -22,19 +22,53 @@ const currentState: AuthState = {
   lastValidated: 0,
 };
 
+let hydratePromise: Promise<AuthState> | null = null;
+const TOKEN_REVALIDATE_MS = 60_000;
+
+function applyStoredState(stored: Record<string, unknown>): void {
+  const gatewayUrl = stored[GATEWAY_URL_KEY];
+  const token = stored[JWT_TOKEN_KEY];
+
+  currentState.gatewayUrl = typeof gatewayUrl === 'string' && gatewayUrl.trim()
+    ? gatewayUrl
+    : 'http://localhost:39780';
+  currentState.token = typeof token === 'string' && token.trim() ? token : null;
+}
+
+async function hydrateFromStorage(forceValidation = false): Promise<AuthState> {
+  if (!hydratePromise) {
+    hydratePromise = chrome.storage.local
+      .get([GATEWAY_URL_KEY, JWT_TOKEN_KEY])
+      .then(async (stored) => {
+        applyStoredState(stored);
+
+        const needsValidation = Boolean(currentState.token) && (
+          forceValidation
+          || currentState.lastValidated === 0
+          || Date.now() - currentState.lastValidated > TOKEN_REVALIDATE_MS
+        );
+
+        if (needsValidation) {
+          await validateToken();
+        } else if (!currentState.token) {
+          currentState.authenticated = false;
+        }
+
+        return { ...currentState };
+      })
+      .finally(() => {
+        hydratePromise = null;
+      });
+  }
+
+  return hydratePromise;
+}
+
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
 export async function initAuthSync(): Promise<AuthState> {
-  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
-  currentState.token = stored[JWT_TOKEN_KEY] || null;
-
-  if (currentState.token) {
-    await validateToken();
-  }
-
-  return currentState;
+  return hydrateFromStorage(true);
 }
 
 /**
@@ -60,6 +94,7 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
 export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
+  currentState.lastValidated = 0;
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 
@@ -92,6 +127,28 @@ async function validateToken(): Promise<boolean> {
 /**
  * Get current auth state.
  */
-export function getAuthState(): AuthState {
-  return { ...currentState };
+export async function getAuthState(): Promise<AuthState> {
+  return hydrateFromStorage();
 }
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+
+  if (changes[GATEWAY_URL_KEY]) {
+    const next = changes[GATEWAY_URL_KEY].newValue;
+    currentState.gatewayUrl = typeof next === 'string' && next.trim()
+      ? next
+      : 'http://localhost:39780';
+    currentState.lastValidated = 0;
+  }
+
+  if (changes[JWT_TOKEN_KEY]) {
+    const next = changes[JWT_TOKEN_KEY].newValue;
+    currentState.token = typeof next === 'string' && next.trim() ? next : null;
+    currentState.authenticated = false;
+    currentState.lastValidated = 0;
+    if (currentState.token) {
+      void validateToken();
+    }
+  }
+});
