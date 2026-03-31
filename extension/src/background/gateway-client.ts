@@ -10,7 +10,10 @@ import { getAuthState } from './auth-sync';
 export interface AgentSummary {
   id: string;
   name: string;
-  state: string;
+  state?: string;
+  status?: string;
+  effective_state?: string;
+  lifecycle_state?: string;
 }
 
 export interface GatewayHealth {
@@ -57,8 +60,8 @@ export async function getHealth(): Promise<GatewayHealth> {
  * Get list of agents.
  */
 export async function getAgents(): Promise<AgentSummary[]> {
-  const data = await request<{ agents?: AgentSummary[] }>('/api/agents');
-  return data.agents || [];
+  const data = await request<AgentSummary[] | { agents?: AgentSummary[] }>('/api/agents');
+  return Array.isArray(data) ? data : data.agents || [];
 }
 
 /**
