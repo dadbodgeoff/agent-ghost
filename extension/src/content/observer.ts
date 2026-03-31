@@ -19,9 +19,22 @@ const adapters: BasePlatformAdapter[] = [
   new GrokAdapter(),
 ];
 
+let initialized = false;
+let activeObserver: MutationObserver | null = null;
+
+function sendRuntimeMessage(message: Record<string, unknown>): void {
+  chrome.runtime.sendMessage(message, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
 function init(): void {
+  if (initialized) return;
+  initialized = true;
+
   const url = window.location.href;
-  const adapter = adapters.find(a => a.matches(url));
+  const sessionId = generateSessionId();
+  const adapter = adapters.find((a) => a.matches(url));
 
   if (!adapter) {
     console.log('[GHOST] No adapter for this page');
@@ -31,21 +44,21 @@ function init(): void {
   console.log(`[GHOST] Using adapter for: ${url}`);
 
   // Notify session start
-  chrome.runtime.sendMessage({
+  sendRuntimeMessage({
     type: 'SESSION_START',
     platform: url,
-    sessionId: generateSessionId(),
+    sessionId,
   });
 
   // Observe new messages
-  adapter.observeNewMessages(async (msg) => {
+  activeObserver = adapter.observeNewMessages(async (msg) => {
     const contentHash = await adapter.hashContent(msg.content);
-    chrome.runtime.sendMessage({
+    sendRuntimeMessage({
       type: 'NEW_MESSAGE',
       platform: url,
       role: msg.role,
       contentHash,
-      sessionId: generateSessionId(),
+      sessionId,
     });
   });
 }
@@ -64,3 +77,8 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
+
+window.addEventListener('beforeunload', () => {
+  activeObserver?.disconnect();
+  activeObserver = null;
+});

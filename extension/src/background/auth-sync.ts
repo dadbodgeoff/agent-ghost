@@ -8,6 +8,13 @@
 const GATEWAY_URL_KEY = 'ghost-gateway-url';
 const JWT_TOKEN_KEY = 'ghost-jwt-token';
 
+function withTimeout(timeoutMs: number): AbortSignal | undefined {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  return undefined;
+}
+
 export interface AuthState {
   authenticated: boolean;
   gatewayUrl: string;
@@ -77,7 +84,7 @@ async function validateToken(): Promise<boolean> {
       headers: {
         Authorization: `Bearer ${currentState.token}`,
       },
-      signal: AbortSignal.timeout(5000),
+      signal: withTimeout(5000),
     });
 
     currentState.authenticated = resp.ok;

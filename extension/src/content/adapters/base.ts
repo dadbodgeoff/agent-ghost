@@ -15,8 +15,6 @@ export abstract class BasePlatformAdapter {
 
   observeNewMessages(callback: (msg: ParsedMessage) => void): MutationObserver {
     const selector = this.getMessageContainerSelector();
-    const container = document.querySelector(selector);
-
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
@@ -30,8 +28,20 @@ export abstract class BasePlatformAdapter {
       }
     });
 
-    if (container) {
+    const attachToContainer = () => {
+      const container = document.querySelector(selector);
+      if (!container) return false;
       observer.observe(container, { childList: true, subtree: true });
+      return true;
+    };
+
+    if (!attachToContainer()) {
+      const bootstrapObserver = new MutationObserver(() => {
+        if (attachToContainer()) {
+          bootstrapObserver.disconnect();
+        }
+      });
+      bootstrapObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     return observer;

@@ -24,6 +24,13 @@ interface NavigatorWithConnection extends Navigator {
   };
 }
 
+function withTimeout(timeoutMs: number): AbortSignal | undefined {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  return undefined;
+}
+
 /**
  * Open the IndexedDB database.
  */
@@ -91,7 +98,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
               content: JSON.stringify(event.payload),
               metadata: { source: 'extension-sync', original_timestamp: event.timestamp },
             }),
-            signal: AbortSignal.timeout(5000),
+            signal: withTimeout(5000),
           });
 
           // Mark as synced.
@@ -142,13 +149,22 @@ export async function cleanupSyncedEvents(): Promise<void> {
  * `navigator.connection` change events if available.
  */
 export function initAutoSync(): void {
-  // Sync pending events whenever the browser comes back online.
-  self.addEventListener('online', async () => {
+  const syncNow = async () => {
     const result = await syncPendingEvents();
     if (result.synced > 0) {
       await chrome.storage.local.set({ 'ghost-last-sync': Date.now() });
     }
-  });
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', () => {
+      void syncNow();
+    });
+  } else if (typeof self !== 'undefined' && 'addEventListener' in self) {
+    self.addEventListener('online', () => {
+      void syncNow();
+    });
+  }
 
   // If the Network Information API is available, also listen for
   // connection-type changes (e.g. switching from cellular to wifi).
@@ -156,10 +172,7 @@ export function initAutoSync(): void {
   if (nav.connection) {
     nav.connection.addEventListener('change', async () => {
       if (navigator.onLine) {
-        const result = await syncPendingEvents();
-        if (result.synced > 0) {
-          await chrome.storage.local.set({ 'ghost-last-sync': Date.now() });
-        }
+        await syncNow();
       }
     });
   }

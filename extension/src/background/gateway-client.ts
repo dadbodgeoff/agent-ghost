@@ -20,6 +20,13 @@ export interface GatewayHealth {
 
 type JsonObject = Record<string, unknown>;
 
+function withTimeout(timeoutMs: number): AbortSignal | undefined {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  return undefined;
+}
+
 /**
  * Make an authenticated request to the gateway.
  */
@@ -36,7 +43,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       Authorization: `Bearer ${auth.token}`,
       ...(options.headers || {}),
     },
-    signal: AbortSignal.timeout(10000),
+    signal: withTimeout(10000),
   });
 
   if (!resp.ok) {
