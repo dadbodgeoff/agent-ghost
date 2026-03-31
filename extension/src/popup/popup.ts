@@ -2,8 +2,14 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+import { updateAlertBanner } from './components/AlertBanner';
+import { updateScoreGauge } from './components/ScoreGauge';
+import { renderSignalList, updateSignalList } from './components/SignalList';
+import { startSessionTimer } from './components/SessionTimer';
+
+const DEFAULT_SIGNALS = [0, 0, 0, 0, 0, 0, 0];
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -20,6 +26,14 @@ function updateConnectionIndicator(connected: boolean): void {
     label.classList.add(connected ? 'connected' : 'disconnected');
     label.textContent = connected ? 'Connected' : 'Disconnected';
   }
+}
+
+function levelForScore(score: number): number {
+  if (score > 0.85) return 4;
+  if (score > 0.7) return 3;
+  if (score > 0.5) return 2;
+  if (score > 0.3) return 1;
+  return 0;
 }
 
 /**
@@ -66,56 +80,57 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
-
-  if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
-  if (levelEl) {
-    levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+  const scoreGauge = document.querySelector('.score-gauge') as HTMLElement | null;
+  if (scoreGauge) {
+    updateScoreGauge(scoreGauge, data.score, data.level);
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  const levelBadge = document.getElementById('levelBadge');
+  if (levelBadge) {
+    levelBadge.textContent = `Level ${data.level}`;
+    levelBadge.className = `level-badge level-${data.level}`;
+  }
 
-  // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  updateSignalList(data.signals);
+
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl) {
+    updateAlertBanner(alertEl, data.level);
   }
 }
 
-// Request score from background
+function bootstrapStaticUI(): void {
+  const signalList = document.getElementById('signalList');
+  if (signalList) {
+    renderSignalList(signalList);
+  }
+
+  const sessionDuration = document.getElementById('sessionDuration');
+  if (sessionDuration) {
+    startSessionTimer(sessionDuration);
+  }
+
+  const platform = document.getElementById('platform');
+  if (platform) {
+    platform.textContent = 'Browser';
+  }
+}
+
+bootstrapStaticUI();
+updateUI({ score: 0, level: 0, signals: DEFAULT_SIGNALS });
+
 chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
+  if (response && typeof response.score === 'number') {
     updateUI({
       score: response.score,
-      level,
-      signals: [0, 0, 0, 0, 0, 0, 0],
+      level: levelForScore(response.score),
+      signals: DEFAULT_SIGNALS,
     });
   }
 });
 
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
-
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
 (async () => {
-  const auth = getAuthState();
+  const auth = await initAuthSync();
   updateConnectionIndicator(auth.authenticated);
 
   if (auth.authenticated) {

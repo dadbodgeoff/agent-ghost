@@ -3,8 +3,11 @@
  */
 
 import { ITPEmitter } from './itp-emitter';
+import { initAuthSync } from './auth-sync';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync();
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
