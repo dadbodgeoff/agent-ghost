@@ -18,6 +18,13 @@ export interface GatewayHealth {
   version?: string;
 }
 
+export interface ScoreSnapshot {
+  score: number;
+  level: number;
+  signals: number[];
+  platform?: string;
+}
+
 type JsonObject = Record<string, unknown>;
 
 /**
@@ -64,8 +71,12 @@ export async function getAgents(): Promise<AgentSummary[]> {
 /**
  * Get convergence scores.
  */
-export async function getScores(): Promise<JsonObject> {
-  return request<JsonObject>('/api/convergence/scores');
+export async function getScores(): Promise<ScoreSnapshot[]> {
+  const data = await request<{ scores?: ScoreSnapshot[] } | ScoreSnapshot[]>('/api/convergence/scores');
+  if (Array.isArray(data)) {
+    return data;
+  }
+  return data.scores ?? [];
 }
 
 /**

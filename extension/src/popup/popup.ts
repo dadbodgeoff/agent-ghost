@@ -2,12 +2,12 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
-import { getAgents } from '../background/gateway-client';
+import { initAuthSync } from '../background/auth-sync';
+import { getAgents, getHealth, getScores, type AgentSummary } from '../background/gateway-client';
+import { updateAlertBanner } from './components/AlertBanner';
+import { renderSignalList, updateSignalList } from './components/SignalList';
+import { startSessionTimer, stopSessionTimer } from './components/SessionTimer';
 
-/**
- * Update the connection indicator (statusDot + statusLabel).
- */
 function updateConnectionIndicator(connected: boolean): void {
   const dot = document.getElementById('statusDot');
   const label = document.getElementById('statusLabel');
@@ -22,39 +22,53 @@ function updateConnectionIndicator(connected: boolean): void {
   }
 }
 
-/**
- * Fetch and render the agent list from the gateway.
- */
+function setAgentListMessage(container: HTMLElement, message: string): void {
+  container.textContent = '';
+  const empty = document.createElement('span');
+  empty.className = 'agent-list-empty';
+  empty.textContent = message;
+  container.append(empty);
+}
+
+function renderAgentList(container: HTMLElement, agents: AgentSummary[]): void {
+  container.textContent = '';
+
+  for (const agent of agents) {
+    const item = document.createElement('div');
+    item.className = 'agent-list-item';
+
+    const name = document.createElement('span');
+    name.className = 'agent-name';
+    name.textContent = agent.name || agent.id;
+
+    const state = document.createElement('span');
+    state.className = 'agent-state';
+    state.textContent = agent.state;
+
+    item.append(name, state);
+    container.append(item);
+  }
+}
+
 async function loadAgentList(): Promise<void> {
   const container = document.getElementById('agentList');
-  if (!container) return;
+  if (!(container instanceof HTMLElement)) return;
 
   try {
     const agents = await getAgents();
     if (agents.length === 0) {
-      container.innerHTML = '<span class="agent-list-empty">No agents found</span>';
+      setAgentListMessage(container, 'No agents found');
       return;
     }
-    container.innerHTML = agents
-      .map(
-        (a) =>
-          `<div class="agent-list-item">` +
-          `<span class="agent-name">${a.name || a.id}</span>` +
-          `<span class="agent-state">${a.state}</span>` +
-          `</div>`
-      )
-      .join('');
+    renderAgentList(container, agents);
   } catch {
-    container.innerHTML = '<span class="agent-list-empty">Unable to load agents</span>';
+    setAgentListMessage(container, 'Unable to load agents');
   }
 }
 
-/**
- * Load and display the last sync time from storage.
- */
 async function loadSyncStatus(): Promise<void> {
   const el = document.getElementById('syncStatus');
-  if (!el) return;
+  if (!(el instanceof HTMLElement)) return;
 
   const stored = await chrome.storage.local.get('ghost-last-sync');
   const ts = stored['ghost-last-sync'];
@@ -65,65 +79,99 @@ async function loadSyncStatus(): Promise<void> {
   }
 }
 
-function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+function updatePlatformLabel(platform: string | null | undefined): void {
+  const platformEl = document.getElementById('platform');
+  if (platformEl instanceof HTMLElement) {
+    platformEl.textContent = platform || 'unknown';
+  }
+}
+
+function updateUI(data: { score: number; level: number; signals: number[]; platform?: string }): void {
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
+  const alertEl = document.getElementById('alertBanner');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  updateSignalList(data.signals);
+  updatePlatformLabel(data.platform);
 
-  // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  if (alertEl instanceof HTMLElement) {
+    updateAlertBanner(alertEl, data.level);
   }
 }
 
-// Request score from background
-chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
-    updateUI({
-      score: response.score,
-      level,
-      signals: [0, 0, 0, 0, 0, 0, 0],
-    });
+function scoreToLevel(score: number): number {
+  if (score > 0.85) return 4;
+  if (score > 0.7) return 3;
+  if (score > 0.5) return 2;
+  if (score > 0.3) return 1;
+  return 0;
+}
+
+async function loadScoreData(): Promise<void> {
+  try {
+    const snapshots = await getScores();
+    const snapshot = snapshots[0];
+    if (snapshot) {
+      updateUI({
+        score: snapshot.score,
+        level: snapshot.level,
+        signals: snapshot.signals ?? [0, 0, 0, 0, 0, 0, 0],
+        platform: snapshot.platform,
+      });
+      return;
+    }
+  } catch {
+    // Fall back to the native-messaging score when the gateway score API is unavailable.
   }
-});
 
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
+  chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
+    if (chrome.runtime.lastError) {
+      return;
+    }
 
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
+    if (response && typeof response.score === 'number') {
+      updateUI({
+        score: response.score,
+        level: scoreToLevel(response.score),
+        signals: [0, 0, 0, 0, 0, 0, 0],
+      });
+    }
+  });
+}
+
 (async () => {
-  const auth = getAuthState();
+  const signalList = document.getElementById('signalList');
+  if (signalList instanceof HTMLElement) {
+    renderSignalList(signalList);
+  }
+
+  const sessionDuration = document.getElementById('sessionDuration');
+  if (sessionDuration instanceof HTMLElement) {
+    startSessionTimer(sessionDuration);
+    window.addEventListener('unload', () => stopSessionTimer(), { once: true });
+  }
+
+  const auth = await initAuthSync();
   updateConnectionIndicator(auth.authenticated);
+  await loadScoreData();
 
   if (auth.authenticated) {
+    try {
+      await getHealth();
+    } catch {
+      updateConnectionIndicator(false);
+    }
     await loadAgentList();
   } else {
     const container = document.getElementById('agentList');
-    if (container) {
-      container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
+    if (container instanceof HTMLElement) {
+      setAgentListMessage(container, 'Not connected to gateway');
     }
   }
 

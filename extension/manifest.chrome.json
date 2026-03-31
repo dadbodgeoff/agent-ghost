@@ -7,9 +7,14 @@
     "storage",
     "nativeMessaging",
     "activeTab",
-    "identity"
+    "identity",
+    "alarms"
   ],
   "host_permissions": [
+    "http://localhost:39780/*",
+    "http://127.0.0.1:39780/*",
+    "https://localhost:39780/*",
+    "https://127.0.0.1:39780/*",
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
