@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
+  import { getRuntime } from '$lib/platform/runtime';
 
   interface OAuthProvider {
     name: string;
@@ -42,7 +43,8 @@
     try {
       const client = await getGhostClient();
       const data = await client.oauth.connect({ provider: name, scopes });
-      window.location.href = data.authorization_url;
+      const runtime = await getRuntime();
+      await runtime.openExternalUrl(data.authorization_url);
     } catch (e: unknown) {
       error = `Connect failed: ${e instanceof Error ? e.message : String(e)}`;
     }

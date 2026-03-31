@@ -69,6 +69,8 @@
         selectedChannel = channels.find((channel) => channel.id === selectedChannel?.id) ?? null;
       }
     } catch (e: unknown) {
+      channels = [];
+      selectedChannel = null;
       error = e instanceof Error ? e.message : 'Failed to load channels';
     }
     loading = false;
@@ -86,6 +88,7 @@
   }
 
   function parseChannelConfig(): Record<string, unknown> | null {
+    error = '';
     if (!newChannelConfig.trim()) {
       return {};
     }
@@ -151,8 +154,8 @@
   let selectedChannel: ChannelInfo | null = $state(null);
 
   onMount(() => {
-    loadChannels();
-    loadAgents();
+    void loadChannels();
+    void loadAgents();
     const unsubs = CHANNEL_EVENTS.map((eventType) => wsStore.on(eventType, () => { loadChannels(); }));
     const unsubResync = wsStore.onResync(() => { loadChannels(); });
     return () => {

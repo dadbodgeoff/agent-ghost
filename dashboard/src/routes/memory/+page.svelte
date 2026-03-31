@@ -117,7 +117,8 @@
     typeFilter = '';
     importanceFilter = '';
     focusedMemoryId = '';
-    loadMemories();
+    error = '';
+    void loadMemories();
   }
 
   $effect(() => {
@@ -125,7 +126,7 @@
     const urlState = $page.url.search;
     if (urlState === lastUrlState) return;
     lastUrlState = urlState;
-    hydrateFromUrl();
+    void hydrateFromUrl();
   });
 
   async function hydrateFromUrl() {

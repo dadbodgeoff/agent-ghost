@@ -36,13 +36,16 @@
   }
 
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported =
+      'serviceWorker' in navigator &&
+      'PushManager' in window &&
+      'Notification' in window;
     if (pushSupported) {
       permissionState = Notification.permission;
       pushEnabled = permissionState === 'granted';
 
       // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
+      const saved = window.localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
           enabledCategories = JSON.parse(saved);
@@ -109,7 +112,7 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    window.localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
   }
 
   async function sendTestNotification() {
