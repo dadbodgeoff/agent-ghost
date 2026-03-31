@@ -13,10 +13,13 @@
     "https://character.ai/*",
     "https://gemini.google.com/*",
     "https://chat.deepseek.com/*",
-    "https://grok.x.ai/*"
+    "https://grok.x.ai/*",
+    "alarms"
   ],
   "background": {
-    "scripts": ["src/background/service-worker.js"]
+    "scripts": [
+      "src/background/service-worker.js"
+    ]
   },
   "content_scripts": [
     {
@@ -29,7 +32,9 @@
         "https://chat.deepseek.com/*",
         "https://grok.x.ai/*"
       ],
-      "js": ["src/content/observer.js"],
+      "js": [
+        "src/content/observer.js"
+      ],
       "run_at": "document_idle"
     }
   ],

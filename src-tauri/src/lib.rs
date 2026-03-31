@@ -32,12 +32,16 @@ pub fn run() {
         ])
         .setup(|app| {
             // --- Tray (Tauri v2 API: build in setup, NOT .system_tray()) ---
+            app.manage(commands::desktop::DesktopTerminalState::default());
+            app.manage(commands::gateway::GatewayProcess(tokio::sync::Mutex::new(
+                None,
+            )));
+            app.manage(commands::gateway::GatewayPort(std::sync::Mutex::new(39780)));
+
             tray::create(app)?;
 
             // --- Menu (Tauri v2 API: build in setup, NOT .menu()) ---
             menu::create(app)?;
-
-            app.manage(commands::desktop::DesktopTerminalState::default());
 
             // --- Auto-start gateway sidecar ---
             let handle = app.handle().clone();

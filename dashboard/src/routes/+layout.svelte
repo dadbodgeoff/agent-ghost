@@ -24,14 +24,22 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -59,6 +67,30 @@
         document.documentElement.classList.add('light');
       }
     }
+  }
+
+  function registerWindowListener<K extends keyof WindowEventMap>(
+    type: K,
+    listener: (event: WindowEventMap[K]) => void,
+  ) {
+    window.addEventListener(type, listener);
+    return () => window.removeEventListener(type, listener);
+  }
+
+  function handleOnline() {
+    offline = false;
+  }
+
+  function handleOffline() {
+    offline = true;
+    lastSync = new Date().toLocaleTimeString();
+  }
+
+  function handleBeforeInstallPrompt(event: Event) {
+    const installEvent = event as BeforeInstallPromptEvent;
+    installEvent.preventDefault();
+    deferredPrompt = installEvent;
+    showInstallPrompt = true;
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -141,17 +173,9 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
-      offline = true;
-      lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      showInstallPrompt = true;
-    });
+    removeOnlineListener = registerWindowListener('online', handleOnline);
+    removeOfflineListener = registerWindowListener('offline', handleOffline);
+    removeInstallPromptListener = registerWindowListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +187,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeInstallPromptListener?.();
+    removeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -177,11 +207,9 @@
 
   async function installPWA() {
     if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const result = await deferredPrompt.userChoice;
-    if (result.outcome === 'accepted') {
-      showInstallPrompt = false;
-    }
+    await deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    showInstallPrompt = false;
     deferredPrompt = null;
   }
 
@@ -192,9 +220,10 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
+    if (!('PushManager' in window) || !('serviceWorker' in navigator) || typeof Notification === 'undefined') {
+      return;
+    }
+    if (Notification.permission !== 'granted') return;
 
     try {
       const client = await getGhostClient();

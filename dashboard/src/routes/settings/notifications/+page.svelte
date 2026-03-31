@@ -35,17 +35,31 @@
     };
   }
 
+  async function resolvePushEnabled(): Promise<boolean> {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return false;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    return (await reg.pushManager.getSubscription()) != null;
+  }
+
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported =
+      'serviceWorker' in navigator &&
+      'PushManager' in window &&
+      'Notification' in window;
     if (pushSupported) {
       permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
+      pushEnabled = permissionState === 'granted' && (await resolvePushEnabled());
 
       // Load saved preferences.
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')) {
+            enabledCategories = parsed;
+          }
         } catch { /* use defaults */ }
       }
     }
@@ -71,6 +85,11 @@
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
+      const existingSub = await reg.pushManager.getSubscription();
+      if (existingSub) {
+        pushEnabled = true;
+        return;
+      }
       const keyData = await client.push.getVapidKey();
       if (!keyData.key) return;
 
@@ -81,8 +100,10 @@
       const payload = pushSubscriptionToPayload(sub.toJSON());
       if (!payload) return;
       await client.push.subscribe(payload);
+      pushEnabled = true;
     } catch {
       // Push subscription failed.
+      pushEnabled = false;
     }
   }
 
@@ -98,6 +119,7 @@
         }
         await sub.unsubscribe();
       }
+      pushEnabled = false;
     } catch {
       // Unsubscribe failed.
     }
@@ -109,10 +131,13 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    }
   }
 
   async function sendTestNotification() {
+    if (!pushSupported || !pushEnabled || !('serviceWorker' in navigator)) return;
     testSending = true;
     try {
       const reg = await navigator.serviceWorker.ready;

@@ -25,6 +25,9 @@ function resolveBaseUrl(): string {
 }
 
 function resolveReplayClientId(): string {
+  if (typeof localStorage === "undefined") {
+    return crypto.randomUUID();
+  }
   const existing = localStorage.getItem(CLIENT_ID_KEY);
   if (existing) return existing;
   const clientId = crypto.randomUUID();
@@ -33,6 +36,9 @@ function resolveReplayClientId(): string {
 }
 
 function resolveReplaySessionEpoch(): number {
+  if (typeof localStorage === "undefined") {
+    return 1;
+  }
   const raw = localStorage.getItem(SESSION_EPOCH_KEY);
   const epoch = raw ? Number.parseInt(raw, 10) : 1;
   if (Number.isFinite(epoch) && epoch > 0) return epoch;
@@ -47,13 +53,16 @@ export const webRuntime: RuntimePlatform = {
     return resolveBaseUrl();
   },
   async getToken() {
+    if (typeof sessionStorage === "undefined") return null;
     return sessionStorage.getItem(TOKEN_KEY);
   },
   async setToken(token: string) {
+    if (typeof sessionStorage === "undefined") return;
     sessionStorage.setItem(TOKEN_KEY, token);
     emitTokenChange(token);
   },
   async clearToken() {
+    if (typeof sessionStorage === "undefined") return;
     sessionStorage.removeItem(TOKEN_KEY);
     emitTokenChange(null);
   },
@@ -65,7 +74,9 @@ export const webRuntime: RuntimePlatform = {
   },
   async advanceReplaySessionEpoch() {
     const next = resolveReplaySessionEpoch() + 1;
-    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    }
     return next;
   },
   subscribeTokenChange(listener) {

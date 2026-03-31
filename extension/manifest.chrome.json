@@ -7,7 +7,8 @@
     "storage",
     "nativeMessaging",
     "activeTab",
-    "identity"
+    "identity",
+    "alarms"
   ],
   "host_permissions": [
     "https://chat.openai.com/*",
@@ -33,7 +34,9 @@
         "https://chat.deepseek.com/*",
         "https://grok.x.ai/*"
       ],
-      "js": ["src/content/observer.js"],
+      "js": [
+        "src/content/observer.js"
+      ],
       "run_at": "document_idle"
     }
   ],

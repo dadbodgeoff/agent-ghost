@@ -20,72 +20,146 @@ const LEVEL_CLASSES = ["level-0", "level-1", "level-2", "level-3", "level-4"];
 
 let sessionStartTime = null;
 
-// --- Initialization ---
+function scoreColor(score) {
+  if (score < 0.3) return "#22c55e";
+  if (score < 0.5) return "#eab308";
+  if (score < 0.7) return "#f97316";
+  return "#ef4444";
+}
 
-document.addEventListener("DOMContentLoaded", () => {
-  renderSignalList();
-  requestStatus();
-  startSessionTimer();
+function setText(id, value) {
+  const element = document.getElementById(id);
+  if (element) {
+    element.textContent = value;
+  }
+  return element;
+}
 
-  // Listen for live updates from background
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.type === "score_update") {
-      updateDisplay(msg.data);
-    }
+function renderStatusMessage(message) {
+  const container = document.getElementById("agentList");
+  if (!container) return;
+  container.replaceChildren();
+  const empty = document.createElement("span");
+  empty.className = "agent-list-empty";
+  empty.textContent = message;
+  container.append(empty);
+}
+
+function renderAgentList(agents) {
+  const container = document.getElementById("agentList");
+  if (!container) return;
+
+  container.replaceChildren();
+  for (const agent of agents) {
+    const row = document.createElement("div");
+    row.className = "agent-list-item";
+
+    const name = document.createElement("span");
+    name.className = "agent-name";
+    name.textContent = agent.name || agent.id || "Unknown agent";
+
+    const state = document.createElement("span");
+    state.className = "agent-state";
+    state.textContent = agent.state || "unknown";
+
+    row.append(name, state);
+    container.append(row);
+  }
+}
+
+function renderSignalList() {
+  const container = document.getElementById("signalList");
+  if (!container) return;
+
+  container.replaceChildren();
+  SIGNAL_NAMES.forEach((name, i) => {
+    const row = document.createElement("div");
+    row.className = "signal-row";
+
+    const label = document.createElement("span");
+    label.className = "signal-name";
+    label.textContent = name;
+
+    const value = document.createElement("span");
+    value.className = "signal-value";
+    value.id = `signal-value-${i}`;
+    value.textContent = "0.000";
+
+    const bar = document.createElement("div");
+    bar.className = "signal-bar";
+
+    const fill = document.createElement("div");
+    fill.className = "signal-bar-fill";
+    fill.id = `signal-bar-${i}`;
+    fill.style.width = "0%";
+
+    bar.append(fill);
+    row.append(label, value, bar);
+    container.append(row);
   });
+}
 
-  // Poll for updates every 5 seconds
-  setInterval(requestStatus, 5000);
-});
+async function requestStatus() {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: "get_status" }, (response) => {
+      if (chrome.runtime.lastError || !response) {
+        resolve(null);
+        return;
+      }
 
-function requestStatus() {
-  chrome.runtime.sendMessage({ type: "get_status" }, (response) => {
-    if (chrome.runtime.lastError) return;
-    if (!response) return;
+      const dot = document.getElementById("statusDot");
+      const label = document.getElementById("statusLabel");
+      if (dot) {
+        dot.className = `status-dot ${response.connected ? "connected" : "disconnected"}`;
+        dot.setAttribute("aria-label", response.connected ? "Connected" : "Disconnected");
+      }
+      if (label) {
+        label.className = `status-label ${response.connected ? "connected" : "disconnected"}`;
+        label.textContent = response.connected ? "Connected" : "Disconnected";
+      }
 
-    const dot = document.getElementById("statusDot");
-    dot.className = `status-dot ${response.connected ? "connected" : "disconnected"}`;
-    dot.setAttribute("aria-label", response.connected ? "Connected" : "Disconnected");
+      if (response.latestScore) {
+        updateDisplay(response.latestScore);
+      }
 
-    if (response.latestScore) {
-      updateDisplay(response.latestScore);
-    }
+      resolve(response);
+    });
   });
 }
 
 function updateDisplay(data) {
-  // Score
-  const scoreEl = document.getElementById("scoreValue");
-  const score = typeof data.composite_score === "number" ? data.composite_score : 0;
-  scoreEl.textContent = score.toFixed(2);
-  scoreEl.style.color = scoreColor(score);
+  const score = typeof data?.composite_score === "number" ? data.composite_score : 0;
+  const level = typeof data?.level === "number" ? data.level : 0;
 
-  // Level
-  const level = typeof data.level === "number" ? data.level : 0;
-  const badge = document.getElementById("levelBadge");
-  badge.textContent = LEVEL_LABELS[level] || `Level ${level}`;
-  badge.className = `level-badge ${LEVEL_CLASSES[level] || "level-0"}`;
+  const scoreEl = setText("scoreValue", score.toFixed(2));
+  if (scoreEl) {
+    scoreEl.style.color = scoreColor(score);
+  }
 
-  // Signals
-  if (Array.isArray(data.signals)) {
-    data.signals.forEach((val, i) => {
-      const valueEl = document.getElementById(`signal-value-${i}`);
+  const badge = setText("levelBadge", LEVEL_LABELS[level] || `Level ${level}`);
+  if (badge) {
+    badge.className = `level-badge ${LEVEL_CLASSES[level] || "level-0"}`;
+  }
+
+  if (Array.isArray(data?.signals)) {
+    data.signals.forEach((value, i) => {
+      if (typeof value !== "number") return;
+      setText(`signal-value-${i}`, value.toFixed(3));
       const barEl = document.getElementById(`signal-bar-${i}`);
-      if (valueEl) valueEl.textContent = val.toFixed(3);
       if (barEl) {
-        barEl.style.width = `${(val * 100).toFixed(0)}%`;
-        barEl.style.background = scoreColor(val);
+        barEl.style.width = `${Math.max(0, Math.min(100, value * 100)).toFixed(0)}%`;
+        barEl.style.background = scoreColor(value);
       }
     });
   }
 
-  // Platform
-  if (data.platform) {
-    document.getElementById("platform").textContent = data.platform;
+  if (typeof data?.platform === "string" && data.platform) {
+    setText("platform", data.platform);
   }
 
-  // Alert banner
   const banner = document.getElementById("alertBanner");
+  if (!banner) return;
+
   if (level >= 3) {
     banner.className = "alert-banner active alert-danger";
     banner.textContent = `Intervention Level ${level} — ${level === 4 ? "External escalation active" : "Session may be terminated"}`;
@@ -94,37 +168,59 @@ function updateDisplay(data) {
     banner.textContent = "Intervention Level 2 — Acknowledgment required";
   } else {
     banner.className = "alert-banner";
+    banner.textContent = "";
   }
-}
-
-function renderSignalList() {
-  const container = document.getElementById("signalList");
-  container.innerHTML = SIGNAL_NAMES.map((name, i) => `
-    <div class="signal-row">
-      <span class="signal-name">${name}</span>
-      <span class="signal-value" id="signal-value-${i}">0.000</span>
-      <div class="signal-bar">
-        <div class="signal-bar-fill" id="signal-bar-${i}" style="width:0%"></div>
-      </div>
-    </div>
-  `).join("");
 }
 
 function startSessionTimer() {
   sessionStartTime = Date.now();
   const el = document.getElementById("sessionDuration");
-  setInterval(() => {
+  if (!el) return;
+
+  const update = () => {
     const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
     const h = Math.floor(elapsed / 3600);
     const m = Math.floor((elapsed % 3600) / 60);
     const s = elapsed % 60;
     el.textContent = `${h}h ${m}m ${s}s`;
-  }, 1000);
+  };
+
+  update();
+  setInterval(update, 1000);
 }
 
-function scoreColor(score) {
-  if (score < 0.3) return "#22c55e";
-  if (score < 0.5) return "#eab308";
-  if (score < 0.7) return "#f97316";
-  return "#ef4444";
+async function loadAgents(status) {
+  if (!status?.connected) {
+    renderStatusMessage("Not connected to gateway");
+    return;
+  }
+
+  renderStatusMessage("Agents are only available from the native gateway surface.");
 }
+
+async function loadSyncStatus() {
+  const stored = await chrome.storage.local.get("ghost-last-sync");
+  const ts = stored["ghost-last-sync"];
+  setText("syncStatus", typeof ts === "number" ? new Date(ts).toLocaleTimeString() : "never");
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  renderSignalList();
+  startSessionTimer();
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === "score_update") {
+      updateDisplay(msg.data);
+    }
+  });
+
+  const status = await requestStatus();
+  await loadAgents(status);
+  await loadSyncStatus();
+
+  setInterval(async () => {
+    const latestStatus = await requestStatus();
+    await loadAgents(latestStatus);
+    await loadSyncStatus();
+  }, 5000);
+});

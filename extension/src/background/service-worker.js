@@ -9,17 +9,34 @@
 import { ITPEmitter } from "./itp-emitter.js";
 
 const NATIVE_HOST = "ghost_convergence_monitor";
+const SCORE_REFRESH_ALARM = "ghost-score-refresh";
+const SCORE_REFRESH_PERIOD_MINUTES = 0.5;
+
 let nativePort = null;
 let emitter = null;
+let refreshIntervalHandle = null;
 
-// --- Lifecycle ---
+function ensureEmitter() {
+  if (!emitter) {
+    emitter = new ITPEmitter();
+  }
+  return emitter;
+}
+
+async function initBackgroundState() {
+  await chrome.storage.local.set({ privacyLevel: "standard", enabled: true });
+  connectNative();
+  scheduleScoreRefresh();
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[GHOST] Extension installed");
-  chrome.storage.local.set({ privacyLevel: "standard", enabled: true });
+  void initBackgroundState();
 });
 
-// --- Native Messaging ---
+chrome.runtime.onStartup?.addListener(() => {
+  void initBackgroundState();
+});
 
 function connectNative() {
   try {
@@ -28,32 +45,32 @@ function connectNative() {
     nativePort.onDisconnect.addListener(() => {
       console.warn("[GHOST] Native host disconnected:", chrome.runtime.lastError?.message);
       nativePort = null;
-      // Fallback to IndexedDB storage
     });
     console.log("[GHOST] Connected to native messaging host");
   } catch (err) {
-    console.warn("[GHOST] Native messaging unavailable:", err.message);
+    console.warn("[GHOST] Native messaging unavailable:", err?.message ?? String(err));
     nativePort = null;
   }
 }
 
 function handleNativeMessage(msg) {
-  // Responses from convergence monitor (scores, interventions, etc.)
   if (msg.type === "score_update") {
-    chrome.storage.local.set({ latestScore: msg.data });
-    // Forward to popup if open
-    chrome.runtime.sendMessage({ type: "score_update", data: msg.data }).catch(() => {});
+    void chrome.storage.local.set({ latestScore: msg.data });
+    try {
+      chrome.runtime.sendMessage({ type: "score_update", data: msg.data });
+    } catch {
+      // Popup not open.
+    }
   }
 }
-
-// --- Content Script Communication ---
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.type) {
     case "itp_event":
-      handleITPEvent(msg.event);
-      sendResponse({ ok: true });
-      break;
+      void handleITPEvent(msg.event).then(() => sendResponse({ ok: true })).catch((error) => {
+        sendResponse({ error: error instanceof Error ? error.message : "Failed to handle ITP event" });
+      });
+      return true;
 
     case "get_status":
       chrome.storage.local.get(["latestScore", "enabled", "privacyLevel"], (data) => {
@@ -64,46 +81,58 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           latestScore: data.latestScore ?? null,
         });
       });
-      return true; // async response
+      return true;
 
     case "set_privacy_level":
-      chrome.storage.local.set({ privacyLevel: msg.level });
-      sendResponse({ ok: true });
-      break;
+      void chrome.storage.local.set({ privacyLevel: msg.level }).then(() => sendResponse({ ok: true }));
+      return true;
 
     case "set_enabled":
-      chrome.storage.local.set({ enabled: msg.enabled });
-      sendResponse({ ok: true });
-      break;
+      void chrome.storage.local.set({ enabled: msg.enabled }).then(() => sendResponse({ ok: true }));
+      return true;
 
     default:
       sendResponse({ error: `Unknown message type: ${msg.type}` });
+      return false;
   }
 });
 
-// --- ITP Event Handling ---
-
 async function handleITPEvent(event) {
-  if (!emitter) {
-    emitter = new ITPEmitter();
-  }
-
-  // Apply privacy level
+  const activeEmitter = ensureEmitter();
   const { privacyLevel } = await chrome.storage.local.get("privacyLevel");
-  const processed = emitter.applyPrivacy(event, privacyLevel || "standard");
+  const processed = activeEmitter.applyPrivacy(event, privacyLevel || "standard");
 
-  // Send to native host if connected, otherwise store in IndexedDB
   if (nativePort) {
     try {
       nativePort.postMessage({ type: "itp_event", event: processed });
+      return;
     } catch {
-      await emitter.storeLocally(processed);
+      nativePort = null;
     }
-  } else {
-    await emitter.storeLocally(processed);
+  }
+
+  await activeEmitter.storeLocally(processed);
+}
+
+function refreshScore() {
+  ensureEmitter().refreshScore();
+}
+
+function scheduleScoreRefresh() {
+  if (chrome.alarms?.create) {
+    chrome.alarms.create(SCORE_REFRESH_ALARM, { periodInMinutes: SCORE_REFRESH_PERIOD_MINUTES });
+    return;
+  }
+
+  if (refreshIntervalHandle == null) {
+    refreshIntervalHandle = setInterval(refreshScore, 30_000);
   }
 }
 
-// --- Initialization ---
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name === SCORE_REFRESH_ALARM) {
+    refreshScore();
+  }
+});
 
-connectNative();
+void initBackgroundState();
