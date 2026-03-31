@@ -60,6 +60,33 @@
     return nextArtifacts;
   }
 
+  function decodeJwtPayload(token: string): Record<string, unknown> | null {
+    const [, payload] = token.split('.');
+    if (!payload) return null;
+
+    try {
+      const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+      const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+      return JSON.parse(atob(normalized + padding)) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  async function updateAuthExpiryWarning() {
+    const runtime = await getRuntime();
+    const token = await runtime.getToken();
+    if (!token) {
+      authExpiryWarning = false;
+      return;
+    }
+
+    const payload = decodeJwtPayload(token);
+    const expSeconds = typeof payload?.exp === 'number' ? payload.exp : 0;
+    const expMs = expSeconds * 1000;
+    authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
+  }
+
   onMount(() => {
     studioChatStore.init();
     shortcuts.registerCommand('studio.cancelStream', () => {
@@ -68,17 +95,9 @@
     let disposeTauriFocus: (() => void) | null = null;
 
     // WP9-G: Check JWT expiry every 60s.
+    void updateAuthExpiryWarning();
     authCheckInterval = setInterval(() => {
-      void (async () => {
-        const runtime = await getRuntime();
-        const token = await runtime.getToken();
-        if (!token) return;
-        try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          const expMs = (payload.exp ?? 0) * 1000;
-          authExpiryWarning = expMs - Date.now() < 5 * 60 * 1000 && expMs > Date.now();
-        } catch { /* malformed token — ignore */ }
-      })();
+      void updateAuthExpiryWarning();
     }, 60_000);
 
     const handleWindowFocus = () => {
@@ -361,7 +380,7 @@
       {#if wsStore.state === 'disconnected' || wsStore.state === 'reconnecting'}
         <div class="status-banner banner-error">
           <span>Connection lost — {wsStore.state === 'reconnecting' ? `reconnecting (attempt ${wsStore.reconnectAttempt})...` : 'disconnected'}</span>
-          <button class="banner-btn" onclick={() => { void wsStore.connect(); }}>Reconnect</button>
+          <button class="banner-btn" onclick={() => { void wsStore.reconnect(); }}>Reconnect</button>
         </div>
       {/if}
 

@@ -34,8 +34,6 @@ export async function rotateAuthBoundarySession(): Promise<void> {
 }
 
 export async function notifyAuthBoundary(type: AuthBoundaryMessageType): Promise<void> {
-  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-
   let auth: AuthBoundaryState | undefined;
   if (type !== 'ghost-auth-cleared' && type !== 'ghost-replay-pending-actions') {
     const runtime = await getRuntime();
@@ -47,6 +45,8 @@ export async function notifyAuthBoundary(type: AuthBoundaryMessageType): Promise
   }
 
   await applyDurableReplayBoundary(type, auth);
+
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
 
   const payload = auth ? { type, auth } : { type };
   navigator.serviceWorker.controller?.postMessage(payload);
@@ -97,6 +97,10 @@ async function applyDurableReplayBoundary(
 
 function openReplayStateDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB unavailable'));
+      return;
+    }
     const request = indexedDB.open(PENDING_ACTIONS_DB, PENDING_ACTIONS_DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
