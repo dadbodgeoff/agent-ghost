@@ -31,18 +31,89 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  type NotificationStorageRecord = Partial<AppNotification> & { id?: string; timestamp?: string };
+
+  function messageString(value: unknown, fallback: string): string {
+    return typeof value === 'string' && value.trim().length > 0 ? value : fallback;
+  }
+
+  function messageAgentId(msg: WsMessage): string | null {
+    const value = msg.agent_id;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  }
+
+  function messageProposalId(msg: WsMessage): string | null {
+    const value = msg.proposal_id;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  }
+
+  function notificationId(): string {
+    return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `notification-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function isNotificationType(value: unknown): value is AppNotification['type'] {
+    return value === 'agent_state'
+      || value === 'safety_alert'
+      || value === 'approval_request'
+      || value === 'cost_warning'
+      || value === 'system';
+  }
+
+  function isNotificationSeverity(value: unknown): value is AppNotification['severity'] {
+    return value === 'info' || value === 'warning' || value === 'critical';
+  }
+
+  function normalizeNotification(record: NotificationStorageRecord): AppNotification | null {
+    if (!isNotificationType(record.type) || !isNotificationSeverity(record.severity)) {
+      return null;
+    }
+
+    const title = messageString(record.title, '');
+    const message = messageString(record.message, '');
+    const timestamp = messageString(record.timestamp, new Date().toISOString());
+    if (!title || !message) {
+      return null;
+    }
+
+    return {
+      id: messageString(record.id, notificationId()),
+      type: record.type,
+      severity: record.severity,
+      title,
+      message,
+      timestamp,
+      read: record.read === true,
+      actionHref: typeof record.actionHref === 'string' && record.actionHref.length > 0
+        ? record.actionHref
+        : undefined,
+      agentId: typeof record.agentId === 'string' && record.agentId.length > 0
+        ? record.agentId
+        : undefined,
+    };
+  }
+
   onMount(() => {
     loadFromStorage();
 
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        panelOpen = false;
+      }
+    };
+    window.addEventListener('keydown', handleKeydown);
+
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const agentId = messageAgentId(msg);
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${messageString(msg.status ?? msg.new_state, 'unknown')}`,
+          actionHref: agentId ? `/agents/${agentId}` : undefined,
+          agentId: agentId ?? undefined,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
@@ -50,35 +121,37 @@
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: messageString(msg.reason, 'No reason provided'),
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const agentId = messageAgentId(msg);
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level -> ${messageString(msg.new_level, 'unknown')}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId: agentId ?? undefined,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const proposalId = messageProposalId(msg);
+        const change = messageString(msg.change, 'updated');
+        const status = messageString(msg.status, 'updated');
         addNotification({
           type: 'approval_request',
           severity: 'info',
           title: change === 'created' ? 'Proposal Created' : 'Proposal Updated',
           message:
             change === 'created'
-              ? `Proposal ${proposalId} entered review as ${status}.`
-              : `Proposal ${proposalId} moved to ${status}.`,
+              ? `Proposal ${proposalId ?? 'unknown'} entered review as ${status}.`
+              : `Proposal ${proposalId ?? 'unknown'} moved to ${status}.`,
           actionHref: proposalId ? `/goals/${proposalId}` : '/goals',
         });
       }),
+      () => window.removeEventListener('keydown', handleKeydown),
     );
   });
 
@@ -90,7 +163,7 @@
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
     const notification: AppNotification = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: notificationId(),
       timestamp: new Date().toISOString(),
       read: false,
     };
@@ -159,14 +232,27 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) {
+          notifications = [];
+          persistToStorage();
+          return;
+        }
+        notifications = parsed
+          .map((item) => normalizeNotification(item as NotificationStorageRecord))
+          .filter((item): item is AppNotification => item !== null)
+          .slice(0, MAX_NOTIFICATIONS);
       }
     } catch { /* start fresh */ }
   }
 
   function persistToStorage() {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+    } catch {
+      // Ignore storage quota and privacy mode failures.
+    }
   }
 </script>
 

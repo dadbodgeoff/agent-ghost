@@ -24,14 +24,25 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
   let { children } = $props();
-  let runtime: RuntimePlatform | null = null;
+  let runtime = $state<RuntimePlatform | null>(null);
   let offline = $state(false);
   let bootError = $state('');
+  let compatibilityBlocked = $state(false);
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt = $state<BeforeInstallPromptEvent | null>(null);
   let lastSync = $state('unknown');
+  let authSurface = $state<'login' | 'app' | null>(null);
+  let authTransitionSeq = 0;
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeBeforeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -95,40 +106,18 @@
       }
       void authSessionStore.refresh().catch(() => {});
     });
-    const currentPath = $page.url.pathname;
-
     try {
       const client = await getGhostClient();
       const compatibility = await client.compatibility.assessCurrentClient();
       if (!compatibility.supported) {
+        compatibilityBlocked = true;
         bootError = compatibilityMessage(compatibility);
         return;
       }
+      compatibilityBlocked = false;
     } catch {
       // Compatibility probe is advisory at startup; hard enforcement lives in the gateway.
     }
-
-    if (currentPath !== '/login') {
-      try {
-        const client = await getGhostClient();
-        const session = await client.auth.session();
-        authSessionStore.hydrate(session);
-        await notifyAuthBoundary('ghost-auth-session');
-      } catch (error) {
-        if (isAuthResetError(error)) {
-          authSessionStore.clear();
-          await rotateAuthBoundarySession();
-          await runtime.clearToken();
-          invalidateAuthClientState();
-          await notifyAuthBoundary('ghost-auth-cleared');
-          goto('/login');
-          return;
-        }
-        bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
-      }
-    }
-
-    await wsStore.connect();
 
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
@@ -141,17 +130,26 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    };
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
-    });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
+    removeBeforeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,8 +161,56 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeBeforeInstallPromptListener?.();
+    removeBeforeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
+  });
+
+  $effect(() => {
+    if (!runtime) return;
+    if (compatibilityBlocked) {
+      wsStore.disconnect();
+      return;
+    }
+
+    const nextSurface = $page.url.pathname === '/login' ? 'login' : 'app';
+    if (authSurface === nextSurface) return;
+    authSurface = nextSurface;
+
+    if (nextSurface === 'login') {
+      bootError = '';
+      wsStore.disconnect();
+      return;
+    }
+
+    const transitionSeq = ++authTransitionSeq;
+    void (async () => {
+      try {
+        const client = await getGhostClient();
+        const session = await client.auth.session();
+        if (transitionSeq !== authTransitionSeq) return;
+        authSessionStore.hydrate(session);
+        await notifyAuthBoundary('ghost-auth-session');
+        await wsStore.connect();
+      } catch (error) {
+        if (transitionSeq !== authTransitionSeq) return;
+        if (isAuthResetError(error)) {
+          authSessionStore.clear();
+          await rotateAuthBoundarySession();
+          await runtime.clearToken();
+          invalidateAuthClientState();
+          await notifyAuthBoundary('ghost-auth-cleared');
+          goto('/login');
+          return;
+        }
+        bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
+      }
+    })();
   });
 
   $effect(() => {
@@ -179,10 +225,9 @@
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const result = await deferredPrompt.userChoice;
-    if (result.outcome === 'accepted') {
-      showInstallPrompt = false;
-    }
+    showInstallPrompt = false;
     deferredPrompt = null;
+    if (result.outcome !== 'accepted') return;
   }
 
   async function subscribeToPush() {
@@ -192,13 +237,15 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!('PushManager' in window) || !('serviceWorker' in navigator)) return;
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 
     try {
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
+      const reg =
+        (await navigator.serviceWorker.getRegistration()) ??
+        (await navigator.serviceWorker.register('/service-worker.js'));
       const sub = await reg.pushManager.getSubscription();
       if (sub) return;
 

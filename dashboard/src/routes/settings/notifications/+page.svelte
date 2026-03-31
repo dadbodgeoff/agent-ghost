@@ -15,6 +15,9 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let subscriptionError = $state('');
+
+  const CATEGORY_IDS = new Set(CATEGORIES.map((category) => category.id));
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -35,61 +38,103 @@
     };
   }
 
+  function parseCategoryPreferences(raw: string | null): string[] {
+    if (!raw) return ['intervention', 'kill_switch'];
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return ['intervention', 'kill_switch'];
+      const valid = parsed.filter((value): value is string =>
+        typeof value === 'string' && CATEGORY_IDS.has(value)
+      );
+      return valid.length > 0 ? valid : ['intervention', 'kill_switch'];
+    } catch {
+      return ['intervention', 'kill_switch'];
+    }
+  }
+
+  async function getServiceWorkerRegistration() {
+    if (!('serviceWorker' in navigator)) return null;
+    return (
+      (await navigator.serviceWorker.getRegistration())
+      ?? await navigator.serviceWorker.register('/service-worker.js')
+    );
+  }
+
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported = 'PushManager' in window && 'Notification' in window && 'serviceWorker' in navigator;
     if (pushSupported) {
       permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
+      enabledCategories = parseCategoryPreferences(localStorage.getItem('ghost-push-categories'));
 
-      // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
-      if (saved) {
+      if (permissionState === 'granted') {
         try {
-          enabledCategories = JSON.parse(saved);
-        } catch { /* use defaults */ }
+          const reg = await getServiceWorkerRegistration();
+          const sub = await reg?.pushManager.getSubscription();
+          pushEnabled = Boolean(sub);
+        } catch {
+          pushEnabled = false;
+        }
       }
     }
   });
 
   async function togglePush() {
     if (!pushSupported) return;
+    subscriptionError = '';
 
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        pushEnabled = await subscribePush();
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      pushEnabled = !(await unsubscribePush());
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await getServiceWorkerRegistration();
+      if (!reg) {
+        subscriptionError = 'Push notifications require a registered service worker.';
+        return false;
+      }
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) {
+        subscriptionError = 'Gateway did not return a VAPID key.';
+        return false;
+      }
 
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeApplicationServerKey(keyData.key),
-      });
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeApplicationServerKey(keyData.key),
+        });
+      }
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) {
+        subscriptionError = 'Browser returned an incomplete push subscription.';
+        return false;
+      }
       await client.push.subscribe(payload);
+      return true;
     } catch {
-      // Push subscription failed.
+      subscriptionError = 'Push subscription failed. Check gateway availability and browser permissions.';
+      return false;
     }
   }
 
-  async function unsubscribePush() {
+  async function unsubscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await getServiceWorkerRegistration();
+      if (!reg) {
+        return true;
+      }
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
         const payload = pushSubscriptionToPayload(sub.toJSON());
@@ -98,8 +143,10 @@
         }
         await sub.unsubscribe();
       }
+      return true;
     } catch {
-      // Unsubscribe failed.
+      subscriptionError = 'Push notifications could not be disabled cleanly.';
+      return false;
     }
   }
 
@@ -114,15 +161,20 @@
 
   async function sendTestNotification() {
     testSending = true;
+    subscriptionError = '';
     try {
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await getServiceWorkerRegistration();
+      if (!reg) {
+        subscriptionError = 'Service worker is not available for local notifications.';
+        return;
+      }
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
         icon: '/icons/ghost-192.png',
         tag: 'ghost-test',
       });
     } catch {
-      // Test failed.
+      subscriptionError = 'Test notification failed. Verify browser notification permission.';
     } finally {
       testSending = false;
     }
@@ -164,6 +216,10 @@
         </button>
       </div>
     </div>
+
+    {#if subscriptionError}
+      <div class="error-banner" role="alert">{subscriptionError}</div>
+    {/if}
 
     {#if pushEnabled}
       <div class="section">
@@ -224,6 +280,15 @@
     color: var(--color-severity-active);
     padding: var(--spacing-3) var(--spacing-4);
     border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+  }
+
+  .error-banner {
+    padding: var(--spacing-3) var(--spacing-4);
+    border-radius: var(--radius-md);
+    border: 1px solid color-mix(in srgb, var(--color-severity-hard) 35%, transparent);
+    background: color-mix(in srgb, var(--color-severity-hard) 10%, transparent);
+    color: var(--color-severity-hard);
     font-size: var(--font-size-sm);
   }
 
