@@ -2,8 +2,11 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState, initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+import { updateAlertBanner, clearAlertBanner } from './components/AlertBanner';
+import { renderSignalList, updateSignalList } from './components/SignalList';
+import { startSessionTimer } from './components/SessionTimer';
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -66,55 +69,64 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
+  const platformEl = document.getElementById('platform');
 
   if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
   if (levelEl) {
     levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.className = `level-badge level-${data.level}`;
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
-  data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
-  });
+  updateSignalList(data.signals);
+  if (platformEl) {
+    platformEl.textContent = 'Browser Extension';
+  }
 
-  // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (alertEl instanceof HTMLElement) {
+    if (data.level >= 2) {
+      updateAlertBanner(alertEl, data.level);
+    } else {
+      clearAlertBanner(alertEl);
+    }
   }
 }
 
-// Request score from background
-chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
-    updateUI({
-      score: response.score,
-      level,
-      signals: [0, 0, 0, 0, 0, 0, 0],
-    });
+function loadScore(): void {
+  chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.warn('[GHOST] Unable to read score from background', chrome.runtime.lastError.message);
+      return;
+    }
+
+    if (response && typeof response.score === 'number') {
+      const level = response.score > 0.85 ? 4 :
+                    response.score > 0.7 ? 3 :
+                    response.score > 0.5 ? 2 :
+                    response.score > 0.3 ? 1 : 0;
+      updateUI({
+        score: response.score,
+        level,
+        signals: [0, 0, 0, 0, 0, 0, 0],
+      });
+    }
+  });
+}
+
+async function bootstrap(): Promise<void> {
+  const signalList = document.getElementById('signalList');
+  const sessionDuration = document.getElementById('sessionDuration');
+
+  if (signalList instanceof HTMLElement) {
+    renderSignalList(signalList);
   }
-});
+  if (sessionDuration instanceof HTMLElement) {
+    startSessionTimer(sessionDuration);
+  }
 
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
-
-// Phase 4: Check auth state and update connection indicator, agent list, sync status
-(async () => {
+  await initAuthSync();
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
 
@@ -128,4 +140,10 @@ setInterval(() => {
   }
 
   await loadSyncStatus();
-})();
+  loadScore();
+}
+
+void bootstrap().catch((error) => {
+  console.error('[GHOST] Popup bootstrap failed', error);
+  updateConnectionIndicator(false);
+});
