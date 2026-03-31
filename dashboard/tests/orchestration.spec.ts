@@ -215,6 +215,40 @@ test.describe('Orchestration route', () => {
     );
   });
 
+  test('reuses a discovered agent card URL without duplicating the well-known path', async ({ page }) => {
+    await mockApis(page);
+    await page.route('**/api/a2a/discover**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          agents: [
+            {
+              name: 'Remote Planner',
+              description: 'Planning agent',
+              endpoint_url: 'http://remote-agent.test/.well-known/agent.json',
+              capabilities: ['planning'],
+              trust_score: 1,
+              version: '1.0.0',
+              reachable: true,
+              verified: true,
+            },
+          ],
+        }),
+      }),
+    );
+    await authenticate(page);
+    await page.goto('/orchestration', { waitUntil: 'networkidle' });
+
+    await page.getByRole('tab', { name: 'A2A Discovery' }).click();
+    await page.getByRole('button', { name: 'Discover Agents' }).click();
+    await page.locator('.agent-grid').getByRole('button', { name: 'Send Task' }).click();
+
+    await expect(page.locator('input.send-input')).toHaveValue(
+      'http://remote-agent.test/.well-known/agent.json',
+    );
+  });
+
   test('surfaces invalid JSON before attempting to send a task', async ({ page }) => {
     await navigateToOrchestration(page);
 

@@ -159,8 +159,17 @@
     return Math.min((round.approvals / Math.max(round.threshold, 1)) * 100, 100);
   }
 
+  function resolveAgentCardUrl(endpointUrl: string): string {
+    const trimmed = endpointUrl.trim();
+    if (!trimmed) return '';
+    if (trimmed.endsWith('/.well-known/agent.json')) {
+      return trimmed;
+    }
+    return `${trimmed.replace(/\/+$/, '')}/.well-known/agent.json`;
+  }
+
   function handleSendTaskFromAgent(agent: DiscoveredA2AAgent) {
-    sendTarget = `${agent.endpoint_url}/.well-known/agent.json`;
+    sendTarget = resolveAgentCardUrl(agent.endpoint_url);
     activeTab = 'a2a';
   }
 
