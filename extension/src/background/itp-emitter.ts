@@ -42,9 +42,15 @@ export class ITPEmitter {
 
   emit(event: ITPEvent): void {
     if (this.useNative && this.nativePort) {
-      this.nativePort.postMessage(event);
+      try {
+        this.nativePort.postMessage(event);
+      } catch {
+        this.nativePort = null;
+        this.useNative = false;
+        void this.storeInIndexedDB(event);
+      }
     } else {
-      this.storeInIndexedDB(event);
+      void this.storeInIndexedDB(event);
     }
   }
 
@@ -60,11 +66,17 @@ export class ITPEmitter {
 
   private async storeInIndexedDB(event: ITPEvent): Promise<void> {
     const db = await this.openDB();
-    const tx = db.transaction('events', 'readwrite');
-    tx.objectStore('events').add({
-      ...event,
-      storedAt: new Date().toISOString(),
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('events', 'readwrite');
+      tx.objectStore('events').add({
+        ...event,
+        storedAt: new Date().toISOString(),
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
     });
+    db.close();
   }
 
   private openDB(): Promise<IDBDatabase> {

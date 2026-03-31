@@ -48,13 +48,19 @@ function openDB(): Promise<IDBDatabase> {
  */
 export async function queueEvent(type: string, payload: unknown): Promise<void> {
   const db = await openDB();
-  const tx = db.transaction(PENDING_STORE, 'readwrite');
-  tx.objectStore(PENDING_STORE).add({
-    timestamp: Date.now(),
-    type,
-    payload,
-    synced: false,
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(PENDING_STORE, 'readwrite');
+    tx.objectStore(PENDING_STORE).add({
+      timestamp: Date.now(),
+      type,
+      payload,
+      synced: false,
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
+  db.close();
 }
 
 /**
@@ -80,7 +86,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
 
       for (const event of events) {
         try {
-          await fetch(`${auth.gatewayUrl}/api/memory`, {
+          const response = await fetch(`${auth.gatewayUrl}/api/memory`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -93,11 +99,20 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
             }),
             signal: AbortSignal.timeout(5000),
           });
+          if (!response.ok) {
+            failed++;
+            break;
+          }
 
           // Mark as synced.
-          const updateTx = db.transaction(PENDING_STORE, 'readwrite');
-          const updateStore = updateTx.objectStore(PENDING_STORE);
-          updateStore.put({ ...event, synced: true });
+          await new Promise<void>((resolveUpdate, rejectUpdate) => {
+            const updateTx = db.transaction(PENDING_STORE, 'readwrite');
+            const updateStore = updateTx.objectStore(PENDING_STORE);
+            updateStore.put({ ...event, synced: true });
+            updateTx.oncomplete = () => resolveUpdate();
+            updateTx.onerror = () => rejectUpdate(updateTx.error);
+            updateTx.onabort = () => rejectUpdate(updateTx.error);
+          });
           synced++;
         } catch {
           failed++;
@@ -105,9 +120,13 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
         }
       }
 
+      db.close();
       resolve({ synced, failed });
     };
-    request.onerror = () => resolve({ synced: 0, failed: 0 });
+    request.onerror = () => {
+      db.close();
+      resolve({ synced: 0, failed: 0 });
+    };
   });
 }
 
@@ -117,21 +136,28 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
 export async function cleanupSyncedEvents(): Promise<void> {
   const db = await openDB();
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const tx = db.transaction(PENDING_STORE, 'readwrite');
-  const store = tx.objectStore(PENDING_STORE);
-  const index = store.index('timestamp');
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(PENDING_STORE, 'readwrite');
+    const store = tx.objectStore(PENDING_STORE);
+    const index = store.index('timestamp');
 
-  const request = index.openCursor(IDBKeyRange.upperBound(cutoff));
-  request.onsuccess = () => {
-    const cursor = request.result;
-    if (cursor) {
-      const event = cursor.value as PendingEvent;
-      if (event.synced) {
-        cursor.delete();
+    const request = index.openCursor(IDBKeyRange.upperBound(cutoff));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (cursor) {
+        const event = cursor.value as PendingEvent;
+        if (event.synced) {
+          cursor.delete();
+        }
+        cursor.continue();
       }
-      cursor.continue();
-    }
-  };
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+  db.close();
 }
 
 /**
@@ -142,25 +168,25 @@ export async function cleanupSyncedEvents(): Promise<void> {
  * `navigator.connection` change events if available.
  */
 export function initAutoSync(): void {
-  // Sync pending events whenever the browser comes back online.
-  self.addEventListener('online', async () => {
+  const syncIfOnline = async () => {
+    if (!navigator.onLine) return;
     const result = await syncPendingEvents();
     if (result.synced > 0) {
       await chrome.storage.local.set({ 'ghost-last-sync': Date.now() });
     }
+  };
+
+  // Sync pending events whenever the browser comes back online.
+  self.addEventListener('online', () => {
+    void syncIfOnline();
   });
 
   // If the Network Information API is available, also listen for
   // connection-type changes (e.g. switching from cellular to wifi).
   const nav = navigator as NavigatorWithConnection;
   if (nav.connection) {
-    nav.connection.addEventListener('change', async () => {
-      if (navigator.onLine) {
-        const result = await syncPendingEvents();
-        if (result.synced > 0) {
-          await chrome.storage.local.set({ 'ghost-last-sync': Date.now() });
-        }
-      }
+    nav.connection.addEventListener('change', () => {
+      void syncIfOnline();
     });
   }
 }

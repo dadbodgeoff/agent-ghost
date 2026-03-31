@@ -428,7 +428,7 @@ async function registerPendingActionSync(): Promise<void> {
 
 // ── Background Sync (T-4.7.3) ──────────────────────────────────────────
 
-self.addEventListener('sync' as any, (event: any) => {
+self.addEventListener('sync', (event: SyncEvent) => {
   if (event.tag === 'ghost-pending-actions') {
     event.waitUntil(replayPendingActions());
   }

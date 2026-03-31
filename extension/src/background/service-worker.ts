@@ -18,6 +18,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sessionId: message.sessionId,
     });
     sendResponse({ ok: true });
+    return false;
   }
 
   if (message.type === 'SESSION_START') {
@@ -28,13 +29,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sessionId: message.sessionId,
     });
     sendResponse({ ok: true });
+    return false;
   }
 
   if (message.type === 'GET_SCORE') {
     sendResponse({ score: emitter.getLatestScore() });
+    return false;
   }
 
-  return true; // Keep channel open for async response
+  return false;
 });
 
 // Periodic score refresh

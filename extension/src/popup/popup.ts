@@ -5,6 +5,12 @@
 import { getAuthState } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
 
+function clearChildren(node: HTMLElement): void {
+  while (node.firstChild) {
+    node.removeChild(node.firstChild);
+  }
+}
+
 /**
  * Update the connection indicator (statusDot + statusLabel).
  */
@@ -31,21 +37,35 @@ async function loadAgentList(): Promise<void> {
 
   try {
     const agents = await getAgents();
+    clearChildren(container);
     if (agents.length === 0) {
-      container.innerHTML = '<span class="agent-list-empty">No agents found</span>';
+      const empty = document.createElement('span');
+      empty.className = 'agent-list-empty';
+      empty.textContent = 'No agents found';
+      container.appendChild(empty);
       return;
     }
-    container.innerHTML = agents
-      .map(
-        (a) =>
-          `<div class="agent-list-item">` +
-          `<span class="agent-name">${a.name || a.id}</span>` +
-          `<span class="agent-state">${a.state}</span>` +
-          `</div>`
-      )
-      .join('');
+    for (const agent of agents) {
+      const item = document.createElement('div');
+      item.className = 'agent-list-item';
+
+      const name = document.createElement('span');
+      name.className = 'agent-name';
+      name.textContent = agent.name || agent.id;
+
+      const state = document.createElement('span');
+      state.className = 'agent-state';
+      state.textContent = agent.state;
+
+      item.append(name, state);
+      container.appendChild(item);
+    }
   } catch {
-    container.innerHTML = '<span class="agent-list-empty">Unable to load agents</span>';
+    clearChildren(container);
+    const empty = document.createElement('span');
+    empty.className = 'agent-list-empty';
+    empty.textContent = 'Unable to load agents';
+    container.appendChild(empty);
   }
 }
 
@@ -87,6 +107,9 @@ function updateUI(data: { score: number; level: number; signals: number[] }): vo
   if (data.level >= 3 && alertEl && alertText) {
     alertEl.classList.add('visible');
     alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  } else if (alertEl && alertText) {
+    alertEl.classList.remove('visible');
+    alertText.textContent = '';
   }
 }
 
@@ -123,7 +146,11 @@ setInterval(() => {
   } else {
     const container = document.getElementById('agentList');
     if (container) {
-      container.innerHTML = '<span class="agent-list-empty">Not connected to gateway</span>';
+      clearChildren(container);
+      const empty = document.createElement('span');
+      empty.className = 'agent-list-empty';
+      empty.textContent = 'Not connected to gateway';
+      container.appendChild(empty);
     }
   }
 
