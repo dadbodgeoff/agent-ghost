@@ -11,6 +11,26 @@ pub struct GatewayProcess(pub Mutex<Option<CommandChild>>);
 /// Port resolved from ghost.yml, cached for the app lifetime.
 pub struct GatewayPort(pub u16);
 
+fn cache_gateway_port(handle: &AppHandle, port: u16) {
+    if handle.try_state::<GatewayPort>().is_none() {
+        handle.manage(GatewayPort(port));
+    }
+}
+
+async fn store_gateway_process(
+    handle: &AppHandle,
+    child: Option<CommandChild>,
+) -> Result<(), GhostDesktopError> {
+    if let Some(state) = handle.try_state::<GatewayProcess>() {
+        let mut guard = state.0.lock().await;
+        *guard = child;
+        return Ok(());
+    }
+
+    handle.manage(GatewayProcess(Mutex::new(child)));
+    Ok(())
+}
+
 // ── Minimal config parsing (no ghost-gateway dependency) ───────────
 
 #[derive(Deserialize, Default)]
@@ -103,8 +123,8 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     let port = read_port_from_config(&config_path);
 
 
-    // Store port for other commands to use.
-    handle.manage(GatewayPort(port));
+    // Cache the resolved port once for dashboard/runtime lookups.
+    cache_gateway_port(&handle, port);
 
     let health_url = format!("http://127.0.0.1:{port}/api/health");
 
@@ -117,7 +137,7 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     if let Ok(resp) = client.get(&health_url).send().await {
         if resp.status().is_success() {
             log::info!("Gateway already healthy on port {port} — skipping sidecar launch");
-            handle.manage(GatewayProcess(Mutex::new(None)));
+            store_gateway_process(&handle, None).await?;
             return Ok(());
         }
     }
@@ -195,8 +215,8 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
         reason: e.to_string(),
     })?;
 
-    // Store child handle for shutdown.
-    handle.manage(GatewayProcess(Mutex::new(Some(child))));
+    // Store or replace the child handle for shutdown/restart flows.
+    store_gateway_process(&handle, Some(child)).await?;
 
     // Log sidecar stdout/stderr.
     tauri::async_runtime::spawn(async move {
