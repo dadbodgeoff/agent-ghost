@@ -7,6 +7,7 @@
 
 const GATEWAY_URL_KEY = 'ghost-gateway-url';
 const JWT_TOKEN_KEY = 'ghost-jwt-token';
+const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:39780';
 
 export interface AuthState {
   authenticated: boolean;
@@ -17,7 +18,7 @@ export interface AuthState {
 
 const currentState: AuthState = {
   authenticated: false,
-  gatewayUrl: 'http://localhost:39780',
+  gatewayUrl: DEFAULT_GATEWAY_URL,
   token: null,
   lastValidated: 0,
 };
@@ -27,7 +28,7 @@ const currentState: AuthState = {
  */
 export async function initAuthSync(): Promise<AuthState> {
   const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
+  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || DEFAULT_GATEWAY_URL;
   currentState.token = stored[JWT_TOKEN_KEY] || null;
 
   if (currentState.token) {
