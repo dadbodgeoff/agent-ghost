@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { readLocalStorage, writeLocalStorage } from '$lib/browser';
   import { getGhostClient } from '$lib/ghost-client';
 
   const CATEGORIES = [
@@ -15,6 +16,8 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let statusMessage = $state('');
+  let errorMessage = $state('');
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -42,10 +45,13 @@
       pushEnabled = permissionState === 'granted';
 
       // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
+      const saved = readLocalStorage('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            enabledCategories = parsed.filter((value): value is string => typeof value === 'string');
+          }
         } catch { /* use defaults */ }
       }
     }
@@ -53,43 +59,59 @@
 
   async function togglePush() {
     if (!pushSupported) return;
+    statusMessage = '';
+    errorMessage = '';
 
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        const subscribed = await subscribePush();
+        pushEnabled = subscribed;
+        if (!subscribed) {
+          errorMessage = 'Push permission was granted, but the subscription could not be completed.';
+        }
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      const unsubscribed = await unsubscribePush();
+      if (unsubscribed) {
+        pushEnabled = false;
+      } else {
+        errorMessage = 'Push notifications could not be disabled cleanly.';
+      }
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
+      if (!('serviceWorker' in navigator)) return false;
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) return false;
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) return false;
 
-      const sub = await reg.pushManager.subscribe({
+      const existing = await reg.pushManager.getSubscription();
+      const sub = existing ?? await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) return false;
       await client.push.subscribe(payload);
+      statusMessage = 'Push notifications enabled.';
+      return true;
     } catch {
-      // Push subscription failed.
+      return false;
     }
   }
 
-  async function unsubscribePush() {
+  async function unsubscribePush(): Promise<boolean> {
     try {
+      if (!('serviceWorker' in navigator)) return false;
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) return false;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
         const payload = pushSubscriptionToPayload(sub.toJSON());
@@ -98,8 +120,10 @@
         }
         await sub.unsubscribe();
       }
+      statusMessage = 'Push notifications disabled.';
+      return true;
     } catch {
-      // Unsubscribe failed.
+      return false;
     }
   }
 
@@ -109,20 +133,29 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    writeLocalStorage('ghost-push-categories', JSON.stringify(enabledCategories));
   }
 
   async function sendTestNotification() {
     testSending = true;
+    statusMessage = '';
+    errorMessage = '';
     try {
-      const reg = await navigator.serviceWorker.ready;
+      if (!('serviceWorker' in navigator)) {
+        throw new Error('Service worker unavailable');
+      }
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) {
+        throw new Error('Service worker not registered');
+      }
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
         icon: '/icons/ghost-192.png',
         tag: 'ghost-test',
       });
+      statusMessage = 'Test notification sent.';
     } catch {
-      // Test failed.
+      errorMessage = 'Test notification failed. Check browser notification and service worker permissions.';
     } finally {
       testSending = false;
     }
@@ -134,6 +167,14 @@
     <h1>Notifications</h1>
     <p class="subtitle">Configure push notification preferences</p>
   </header>
+
+  {#if errorMessage}
+    <div class="status error" role="alert">{errorMessage}</div>
+  {/if}
+
+  {#if statusMessage}
+    <div class="status success" role="status">{statusMessage}</div>
+  {/if}
 
   {#if !pushSupported}
     <div class="unsupported">
@@ -225,6 +266,24 @@
     padding: var(--spacing-3) var(--spacing-4);
     border-radius: var(--radius-md);
     font-size: var(--font-size-sm);
+  }
+
+  .status {
+    padding: var(--spacing-3) var(--spacing-4);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+  }
+
+  .status.error {
+    background: var(--color-severity-hard-bg);
+    color: var(--color-severity-hard);
+    border: 1px solid var(--color-severity-hard);
+  }
+
+  .status.success {
+    background: color-mix(in srgb, var(--color-severity-normal) 15%, transparent);
+    color: var(--color-severity-normal);
+    border: 1px solid color-mix(in srgb, var(--color-severity-normal) 40%, transparent);
   }
 
   .section {

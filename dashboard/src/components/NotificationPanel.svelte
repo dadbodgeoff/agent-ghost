@@ -8,6 +8,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
+  import { generateUuid, readLocalStorage, writeLocalStorage } from '$lib/browser';
   import { getRuntime } from '$lib/platform/runtime';
 
   interface AppNotification {
@@ -41,7 +42,7 @@
           severity: 'info',
           title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
           message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
+          actionHref: typeof (msg as any).agent_id === 'string' ? `/agents/${(msg as any).agent_id}` : undefined,
           agentId: (msg as any).agent_id as string,
         });
       }),
@@ -90,7 +91,7 @@
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
     const notification: AppNotification = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: generateUuid(),
       timestamp: new Date().toISOString(),
       read: false,
     };
@@ -155,18 +156,26 @@
   }
 
   function loadFromStorage() {
-    if (typeof localStorage === 'undefined') return;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = readLocalStorage(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed)
+          ? parsed.filter((item): item is AppNotification =>
+            !!item
+            && typeof item.id === 'string'
+            && typeof item.title === 'string'
+            && typeof item.message === 'string'
+            && typeof item.timestamp === 'string'
+            && typeof item.read === 'boolean'
+          ).slice(0, MAX_NOTIFICATIONS)
+          : [];
       }
     } catch { /* start fresh */ }
   }
 
   function persistToStorage() {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+    writeLocalStorage(STORAGE_KEY, JSON.stringify(notifications));
   }
 </script>
 

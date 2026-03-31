@@ -10,13 +10,15 @@
    *
    * Ref: T-3.13.2
    */
-    import { goto } from '$app/navigation';
-    import { getGhostClient } from '$lib/ghost-client';
-    import { hrefForSearchResult } from '$lib/search/navigation';
-    import { authSessionStore } from '$lib/stores/auth-session.svelte';
-    import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
-    import { frecencyTracker } from '$lib/frecency';
-    import { shortcuts } from '$lib/shortcuts';
+  import { onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { getGhostClient } from '$lib/ghost-client';
+  import { toggleStoredThemeChoice } from '$lib/theme';
+  import { hrefForSearchResult } from '$lib/search/navigation';
+  import { authSessionStore } from '$lib/stores/auth-session.svelte';
+  import { agentsStore, type Agent } from '$lib/stores/agents.svelte';
+  import { frecencyTracker } from '$lib/frecency';
+  import { shortcuts } from '$lib/shortcuts';
   import type { SearchResult } from '@ghost/sdk';
 
   type SearchPrefix = '>' | '@' | '#' | '/';
@@ -39,34 +41,33 @@
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let mode = $state<'search' | 'commands'>('search');
   let inputEl = $state<HTMLInputElement | null>(null);
+  let commandError = $state('');
+  let searchRequestId = 0;
 
-  // Static commands
-  const STATIC_COMMANDS: PaletteCommand[] = [
-    { id: 'nav-overview', label: 'Go to Overview', category: 'command', action: () => goto('/'), frecencyScore: 0 },
-    { id: 'nav-convergence', label: 'Go to Convergence', category: 'command', action: () => goto('/convergence'), frecencyScore: 0 },
-    { id: 'nav-memory', label: 'Go to Memory', category: 'command', action: () => goto('/memory'), frecencyScore: 0 },
-    { id: 'nav-goals', label: 'Go to Proposals', category: 'command', action: () => goto('/goals'), frecencyScore: 0 },
-    { id: 'nav-sessions', label: 'Go to Sessions', category: 'command', action: () => goto('/sessions'), frecencyScore: 0 },
-    { id: 'nav-agents', label: 'Go to Agents', category: 'command', action: () => goto('/agents'), frecencyScore: 0 },
-    { id: 'nav-studio', label: 'Go to Studio', category: 'command', action: () => goto('/studio'), frecencyScore: 0 },
-    { id: 'nav-security', label: 'Go to Security', category: 'command', action: () => goto('/security'), frecencyScore: 0 },
-    { id: 'nav-costs', label: 'Go to Costs', category: 'command', action: () => goto('/costs'), frecencyScore: 0 },
-    { id: 'nav-settings', label: 'Go to Settings', category: 'command', action: () => goto('/settings'), frecencyScore: 0 },
-    { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
-    { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
-    { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
-    }, frecencyScore: 0 },
-    { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
-    { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
-    { id: 'nav-providers', label: 'Go to Providers', category: 'setting', action: () => goto('/settings/providers'), frecencyScore: 0 },
-    { id: 'nav-channels', label: 'Go to Channels', category: 'setting', action: () => goto('/channels'), frecencyScore: 0 },
-    { id: 'nav-webhooks', label: 'Go to Webhooks', category: 'setting', action: () => goto('/settings/webhooks'), frecencyScore: 0 },
-    { id: 'nav-oauth', label: 'Go to OAuth Settings', category: 'setting', action: () => goto('/settings/oauth'), frecencyScore: 0 },
-    { id: 'nav-backups', label: 'Go to Backups', category: 'setting', action: () => goto('/settings/backups'), frecencyScore: 0 },
-  ];
+  function getStaticCommands(): PaletteCommand[] {
+    return [
+      { id: 'nav-overview', label: 'Go to Overview', category: 'command', action: () => goto('/'), frecencyScore: 0 },
+      { id: 'nav-convergence', label: 'Go to Convergence', category: 'command', action: () => goto('/convergence'), frecencyScore: 0 },
+      { id: 'nav-memory', label: 'Go to Memory', category: 'command', action: () => goto('/memory'), frecencyScore: 0 },
+      { id: 'nav-goals', label: 'Go to Proposals', category: 'command', action: () => goto('/goals'), frecencyScore: 0 },
+      { id: 'nav-sessions', label: 'Go to Sessions', category: 'command', action: () => goto('/sessions'), frecencyScore: 0 },
+      { id: 'nav-agents', label: 'Go to Agents', category: 'command', action: () => goto('/agents'), frecencyScore: 0 },
+      { id: 'nav-studio', label: 'Go to Studio', category: 'command', action: () => goto('/studio'), frecencyScore: 0 },
+      { id: 'nav-security', label: 'Go to Security', category: 'command', action: () => goto('/security'), frecencyScore: 0 },
+      { id: 'nav-costs', label: 'Go to Costs', category: 'command', action: () => goto('/costs'), frecencyScore: 0 },
+      { id: 'nav-settings', label: 'Go to Settings', category: 'command', action: () => goto('/settings'), frecencyScore: 0 },
+      { id: 'nav-workflows', label: 'Go to Workflows', category: 'command', action: () => goto('/workflows'), frecencyScore: 0 },
+      { id: 'nav-skills', label: 'Go to Skills', category: 'command', action: () => goto('/skills'), frecencyScore: 0 },
+      { id: 'theme-toggle', label: 'Toggle Theme', category: 'setting', shortcut: shortcuts.getShortcutDisplay('theme.toggle'), action: () => toggleStoredThemeChoice(), frecencyScore: 0 },
+      { id: 'search-global', label: 'Global Search', category: 'command', shortcut: shortcuts.getShortcutDisplay('search.global'), action: () => goto('/search'), frecencyScore: 0 },
+      { id: 'new-session', label: 'New Studio Session', category: 'command', shortcut: shortcuts.getShortcutDisplay('studio.newSession'), action: () => goto('/studio'), frecencyScore: 0 },
+      { id: 'nav-providers', label: 'Go to Providers', category: 'setting', action: () => goto('/settings/providers'), frecencyScore: 0 },
+      { id: 'nav-channels', label: 'Go to Channels', category: 'setting', action: () => goto('/channels'), frecencyScore: 0 },
+      { id: 'nav-webhooks', label: 'Go to Webhooks', category: 'setting', action: () => goto('/settings/webhooks'), frecencyScore: 0 },
+      { id: 'nav-oauth', label: 'Go to OAuth Settings', category: 'setting', action: () => goto('/settings/oauth'), frecencyScore: 0 },
+      { id: 'nav-backups', label: 'Go to Backups', category: 'setting', action: () => goto('/settings/backups'), frecencyScore: 0 },
+    ];
+  }
 
   function parseQuery(raw: string): { prefix: SearchPrefix | null; query: string } {
     const prefixes: SearchPrefix[] = ['>', '@', '#', '/'];
@@ -161,7 +162,18 @@
   }
 
   function getAllCommands(): PaletteCommand[] {
-    return [...STATIC_COMMANDS, ...buildAgentCommands(agentsStore.list)];
+    return [...getStaticCommands(), ...buildAgentCommands(agentsStore.list)];
+  }
+
+  async function executeCommand(command: PaletteCommand) {
+    commandError = '';
+    try {
+      frecencyTracker.record(command.id);
+      await command.action();
+      open = false;
+    } catch (error) {
+      commandError = error instanceof Error ? error.message : 'Command failed';
+    }
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
@@ -171,6 +183,7 @@
       if (open) {
         query = '';
         results = [];
+        commandError = '';
         selectedIndex = 0;
         // Show recent commands on open
         const allCmds = getAllCommands();
@@ -196,13 +209,24 @@
     }
   });
 
+  onDestroy(() => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  });
+
   function handleInput() {
     if (debounceTimer) clearTimeout(debounceTimer);
+    commandError = '';
 
     const { prefix, query: queryStr } = parseQuery(query);
 
     // If prefix is used or query starts with prefix chars, show commands
     if (prefix) {
+      searchRequestId += 1;
+      loading = false;
+      results = [];
       mode = 'commands';
       paletteCommands = filterCommands(getAllCommands(), prefix, queryStr);
       selectedIndex = 0;
@@ -210,6 +234,8 @@
     }
 
     if (!query.trim()) {
+      searchRequestId += 1;
+      loading = false;
       // Show recent commands when empty
       const allCmds = getAllCommands();
       const recentIds = frecencyTracker.getRecent(8);
@@ -235,10 +261,12 @@
 
   async function search() {
     if (!query.trim()) return;
+    const requestId = ++searchRequestId;
     loading = true;
     try {
       const client = await getGhostClient();
       const res = await client.search.query({ q: query.trim(), limit: 10 });
+      if (requestId !== searchRequestId) return;
       results = res.results ?? [];
       // If no command matches but search results exist, switch to search mode
       if (paletteCommands.length === 0 && results.length > 0) {
@@ -246,9 +274,12 @@
       }
       selectedIndex = 0;
     } catch {
+      if (requestId !== searchRequestId) return;
       results = [];
     } finally {
-      loading = false;
+      if (requestId === searchRequestId) {
+        loading = false;
+      }
     }
   }
 
@@ -278,9 +309,7 @@
       const item = displayItems[selectedIndex];
       if (item) {
         if (item.type === 'command') {
-          frecencyTracker.record(item.item.id);
-          item.item.action();
-          open = false;
+          void executeCommand(item.item);
         } else {
           const r = item.item;
           const link = hrefForSearchResult(r, query.trim());
@@ -330,6 +359,10 @@
         <div class="scope-label">{categoryLabel(currentPrefix)}</div>
       {/if}
 
+      {#if commandError}
+        <p class="hint error">{commandError}</p>
+      {/if}
+
       {#if loading}
         <p class="hint">Searching...</p>
       {:else if displayItems.length > 0}
@@ -344,8 +377,7 @@
                 aria-selected={i === selectedIndex}
                 onclick={() => {
                   if (item.type === 'command') {
-                    frecencyTracker.record(item.item.id);
-                    item.item.action();
+                    void executeCommand(item.item);
                   } else {
                     const r = item.item;
                     const link = hrefForSearchResult(r, query.trim());
@@ -505,5 +537,11 @@
     text-align: center;
     color: var(--color-text-muted);
     font-size: var(--font-size-sm);
+  }
+
+  .hint.error {
+    color: var(--color-severity-hard);
+    border-bottom: 1px solid var(--color-border-subtle);
+    text-align: left;
   }
 </style>

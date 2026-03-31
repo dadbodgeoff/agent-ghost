@@ -23,6 +23,7 @@
   } from '$lib/auth-boundary';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
+  import { applyThemeChoice, readThemeChoice, toggleStoredThemeChoice } from '$lib/theme';
 
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
@@ -32,6 +33,9 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -51,14 +55,22 @@
   }
 
   function applyTheme() {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light') {
-      document.documentElement.classList.add('light');
-    } else if (stored === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        document.documentElement.classList.add('light');
-      }
-    }
+    applyThemeChoice(readThemeChoice());
+  }
+
+  function handleOnline() {
+    offline = false;
+  }
+
+  function handleOffline() {
+    offline = true;
+    lastSync = new Date().toLocaleTimeString();
+  }
+
+  function handleBeforeInstallPrompt(e: Event) {
+    e.preventDefault();
+    deferredPrompt = e;
+    showInstallPrompt = true;
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -133,25 +145,18 @@
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
     shortcuts.registerCommand('theme.toggle', () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
+      toggleStoredThemeChoice();
     });
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
-      offline = true;
-      lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      showInstallPrompt = true;
-    });
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
+    removeInstallListener = () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +168,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOfflineListener?.();
+    removeInstallListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener = null;
+    removeInstallListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,13 +203,21 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (
+      typeof window === 'undefined'
+      || typeof Notification === 'undefined'
+      || !('PushManager' in window)
+      || !('serviceWorker' in navigator)
+    ) {
+      return;
+    }
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 
     try {
       const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) return;
       const sub = await reg.pushManager.getSubscription();
       if (sub) return;
 

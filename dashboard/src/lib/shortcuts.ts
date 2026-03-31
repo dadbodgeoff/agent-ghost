@@ -9,6 +9,7 @@
  */
 
 import { getRuntime } from '$lib/platform/runtime';
+import { isMacPlatform } from '$lib/browser';
 
 export interface ShortcutBinding {
   key: string;          // e.g., "cmd+shift+k"
@@ -88,7 +89,7 @@ class ShortcutManager {
     const binding = this.bindings.find(b => b.command === command);
     if (!binding) return undefined;
     return binding.key
-      .replace('cmd', navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl')
+      .replace('cmd', isMacPlatform() ? '\u2318' : 'Ctrl')
       .replace('shift', '\u21E7')
       .replace('alt', '\u2325')
       .replace('enter', '\u23CE')
