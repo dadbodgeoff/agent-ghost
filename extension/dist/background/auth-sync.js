@@ -12,6 +12,7 @@ const currentState = {
     token: null,
     lastValidated: 0,
 };
+let listenerRegistered = false;
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
@@ -19,6 +20,7 @@ export async function initAuthSync() {
     const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
     currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
     currentState.token = stored[JWT_TOKEN_KEY] || null;
+    registerStorageListener();
     if (currentState.token) {
         await validateToken();
     }
@@ -44,6 +46,7 @@ export async function storeToken(token, gatewayUrl) {
 export async function clearToken() {
     currentState.token = null;
     currentState.authenticated = false;
+    currentState.lastValidated = Date.now();
     await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 /**
@@ -75,5 +78,28 @@ async function validateToken() {
  */
 export function getAuthState() {
     return { ...currentState };
+}
+function registerStorageListener() {
+    if (listenerRegistered) {
+        return;
+    }
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== 'local') {
+            return;
+        }
+        if (changes[GATEWAY_URL_KEY]) {
+            currentState.gatewayUrl =
+                changes[GATEWAY_URL_KEY].newValue || 'http://localhost:39780';
+        }
+        if (changes[JWT_TOKEN_KEY]) {
+            currentState.token = changes[JWT_TOKEN_KEY].newValue || null;
+            currentState.authenticated = false;
+            currentState.lastValidated = Date.now();
+            if (currentState.token) {
+                void validateToken();
+            }
+        }
+    });
+    listenerRegistered = true;
 }
 //# sourceMappingURL=auth-sync.js.map

@@ -2,7 +2,9 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
 import { ITPEmitter } from './itp-emitter';
+import { initAutoSync } from '../storage/sync';
 
 const emitter = new ITPEmitter();
 
@@ -41,5 +43,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 setInterval(() => {
   emitter.refreshScore();
 }, 30_000);
+
+chrome.runtime.onInstalled.addListener(() => {
+  void chrome.storage.local.set({ enabled: true, privacyLevel: 'standard' });
+  void initAuthSync();
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  void initAuthSync();
+});
+
+void initAuthSync();
+initAutoSync();
 
 console.log('[GHOST] Background service worker initialized');
