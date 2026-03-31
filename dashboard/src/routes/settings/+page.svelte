@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
+  import { applyThemeChoice, getStoredThemeChoice, type ThemeChoice } from '$lib/browser';
   import { getRuntime } from '$lib/platform/runtime';
   import {
     invalidateAuthClientState,
@@ -10,35 +12,14 @@
   } from '$lib/auth-boundary';
   import { wsStore } from '$lib/stores/websocket.svelte';
 
-  type ThemeChoice = 'dark' | 'light' | 'system';
-
   let theme: ThemeChoice = $state('dark');
 
-  // Initialize from localStorage on mount.
-  $effect(() => {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light' || stored === 'system') {
-      theme = stored;
-    } else {
-      theme = 'dark';
-    }
+  onMount(() => {
+    theme = getStoredThemeChoice();
   });
 
   function setTheme(choice: ThemeChoice) {
-    theme = choice;
-    localStorage.setItem('ghost-theme', choice);
-
-    const html = document.documentElement;
-    html.classList.remove('light');
-
-    if (choice === 'light') {
-      html.classList.add('light');
-    } else if (choice === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        html.classList.add('light');
-      }
-    }
-    // 'dark' = no .light class = dark theme (default).
+    theme = applyThemeChoice(choice);
   }
 
   async function logout() {

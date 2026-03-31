@@ -21,6 +21,12 @@
     notifyAuthBoundary,
     rotateAuthBoundarySession,
   } from '$lib/auth-boundary';
+  import {
+    applyStoredThemeChoice,
+    supportsPushNotifications,
+    supportsServiceWorker,
+    toggleStoredTheme,
+  } from '$lib/browser';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
@@ -32,6 +38,9 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -48,17 +57,6 @@
       endpoint: subscription.endpoint,
       keys: subscription.keys,
     };
-  }
-
-  function applyTheme() {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light') {
-      document.documentElement.classList.add('light');
-    } else if (stored === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        document.documentElement.classList.add('light');
-      }
-    }
   }
 
   function compatibilityMessage(assessment: GhostCompatibilityAssessment): string {
@@ -85,7 +83,7 @@
   }
 
   onMount(async () => {
-    applyTheme();
+    applyStoredThemeChoice();
 
     runtime = await getRuntime();
     unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
@@ -132,28 +130,32 @@
 
     shortcuts.init();
     shortcuts.registerCommand('sidebar.toggle', () => { /* PanelLayout handles */ });
-    shortcuts.registerCommand('theme.toggle', () => {
-      document.documentElement.classList.toggle('light');
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ghost-theme', isLight ? 'light' : 'dark');
-    });
+    shortcuts.registerCommand('theme.toggle', () => toggleStoredTheme());
     shortcuts.registerCommand('search.global', () => goto('/search'));
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredPrompt = e;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeInstallPromptListener = () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-    if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
+    if (!runtime.isDesktop() && supportsServiceWorker()) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
     }
 
@@ -163,6 +165,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeInstallPromptListener?.();
+    removeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,7 +200,7 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!supportsPushNotifications() || !supportsServiceWorker()) return;
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 
@@ -260,7 +268,7 @@
         <a href="/memory" class:active={$page.url.pathname.startsWith('/memory')} aria-current={$page.url.pathname.startsWith('/memory') ? 'page' : undefined}>Memory</a>
         <a href="/goals" class:active={$page.url.pathname.startsWith('/goals')} aria-current={$page.url.pathname.startsWith('/goals') ? 'page' : undefined}>Proposals</a>
         <a href="/sessions" class:active={$page.url.pathname.startsWith('/sessions')} aria-current={$page.url.pathname.startsWith('/sessions') ? 'page' : undefined}>Sessions</a>
-        <a href="/agents" class:active={$page.url.pathname === '/agents'} aria-current={$page.url.pathname === '/agents' ? 'page' : undefined}>Agents</a>
+        <a href="/agents" class:active={$page.url.pathname.startsWith('/agents')} aria-current={$page.url.pathname.startsWith('/agents') ? 'page' : undefined}>Agents</a>
         <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')} aria-current={$page.url.pathname.startsWith('/workflows') ? 'page' : undefined}>Workflows</a>
         <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')} aria-current={$page.url.pathname.startsWith('/skills') ? 'page' : undefined}>Skills</a>
         <a href="/studio" class:active={$page.url.pathname.startsWith('/studio')} aria-current={$page.url.pathname.startsWith('/studio') ? 'page' : undefined}>Studio</a>

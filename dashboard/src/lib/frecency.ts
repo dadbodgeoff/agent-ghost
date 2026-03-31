@@ -3,6 +3,7 @@
  *
  * Persists usage history in localStorage with 7-day half-life decay.
  */
+import { readLocalStorage, writeLocalStorage } from '$lib/browser';
 
 export interface FrecencyEntry {
   commandId: string;
@@ -52,9 +53,8 @@ class FrecencyTracker {
   }
 
   private load(): void {
-    if (typeof localStorage === 'undefined') return;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = readLocalStorage(STORAGE_KEY);
       if (stored) {
         const parsed: [string, FrecencyEntry][] = JSON.parse(stored);
         this.entries = new Map(parsed);
@@ -65,8 +65,7 @@ class FrecencyTracker {
   }
 
   private persist(): void {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(
+    writeLocalStorage(
       STORAGE_KEY,
       JSON.stringify([...this.entries.entries()]),
     );

@@ -76,6 +76,7 @@
    * sanitization to prevent XSS. Code artifacts remain as safe <code> text.
    */
   import DOMPurify from 'dompurify';
+  import { hasClipboardWrite } from '$lib/browser';
 
   let { artifacts = [], collapsed = false }: {
     artifacts: Artifact[];
@@ -116,6 +117,11 @@
   );
 
   async function copyToClipboard(content: string) {
+    if (!hasClipboardWrite()) {
+      copyFeedback = 'Clipboard unavailable';
+      setTimeout(() => copyFeedback = null, 2000);
+      return;
+    }
     try {
       await navigator.clipboard.writeText(content);
       copyFeedback = 'Copied!';

@@ -7,6 +7,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
+  import { generateId, readLocalStorage, writeLocalStorage } from '$lib/browser';
   import { wsStore, type WsMessage } from '$lib/stores/websocket.svelte';
   import { getRuntime } from '$lib/platform/runtime';
 
@@ -90,7 +91,7 @@
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
     const notification: AppNotification = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: generateId(),
       timestamp: new Date().toISOString(),
       read: false,
     };
@@ -155,9 +156,8 @@
   }
 
   function loadFromStorage() {
-    if (typeof localStorage === 'undefined') return;
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = readLocalStorage(STORAGE_KEY);
       if (stored) {
         notifications = JSON.parse(stored);
       }
@@ -165,8 +165,7 @@
   }
 
   function persistToStorage() {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+    writeLocalStorage(STORAGE_KEY, JSON.stringify(notifications));
   }
 </script>
 

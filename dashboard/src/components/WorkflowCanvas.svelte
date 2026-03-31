@@ -3,6 +3,7 @@
    * WorkflowCanvas — visual DAG editor for the currently supported runtime nodes.
    * The canvas is intentionally limited to semantics the backend can execute.
    */
+  import { generateId } from '$lib/browser';
 
   export interface WorkflowNode {
     id: string;
@@ -265,7 +266,7 @@
   // ── Public API ─────────────────────────────────────────────────
 
   export function addNode(type: string, label: string) {
-    const id = crypto.randomUUID();
+    const id = generateId();
     const x = viewBox.x + viewBox.w / 2 - NODE_W / 2;
     const y = viewBox.y + viewBox.h / 2 - NODE_H / 2;
     nodes = [...nodes, { id, type, label, x, y, config: {} }];

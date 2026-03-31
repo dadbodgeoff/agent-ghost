@@ -96,6 +96,9 @@ async function applyDurableReplayBoundary(
 }
 
 function openReplayStateDb(): Promise<IDBDatabase> {
+  if (typeof indexedDB === 'undefined') {
+    return Promise.reject(new Error('IndexedDB unavailable'));
+  }
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(PENDING_ACTIONS_DB, PENDING_ACTIONS_DB_VERSION);
     request.onupgradeneeded = () => {

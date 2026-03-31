@@ -16,6 +16,7 @@
 declare const self: ServiceWorkerGlobalScope;
 
 import { build, files, version } from '$service-worker';
+import { generateId } from '$lib/browser';
 
 const CACHE_NAME = `ghost-cache-${version}`;
 const PENDING_ACTIONS_DB = 'ghost-pending-actions';
@@ -593,9 +594,9 @@ function cloneReplayHeaders(headers: Headers): Record<string, string> {
 }
 
 function buildOperationEnvelope(request: Request): OperationEnvelope {
-  const requestId = request.headers.get('X-Request-ID') ?? crypto.randomUUID();
-  const operationId = request.headers.get('X-Ghost-Operation-ID') ?? crypto.randomUUID();
-  const idempotencyKey = request.headers.get('Idempotency-Key') ?? crypto.randomUUID();
+  const requestId = request.headers.get('X-Request-ID') ?? generateId();
+  const operationId = request.headers.get('X-Ghost-Operation-ID') ?? generateId();
+  const idempotencyKey = request.headers.get('Idempotency-Key') ?? generateId();
 
   return {
     request_id: requestId,

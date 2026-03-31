@@ -1,5 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import {
+    readLocalStorage,
+    supportsPushNotifications,
+    supportsServiceWorker,
+    writeLocalStorage,
+  } from '$lib/browser';
   import { getGhostClient } from '$lib/ghost-client';
 
   const CATEGORIES = [
@@ -15,6 +21,7 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let error = $state('');
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -36,13 +43,12 @@
   }
 
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported = supportsPushNotifications() && supportsServiceWorker();
     if (pushSupported) {
       permissionState = Notification.permission;
       pushEnabled = permissionState === 'granted';
 
-      // Load saved preferences.
-      const saved = localStorage.getItem('ghost-push-categories');
+      const saved = readLocalStorage('ghost-push-categories');
       if (saved) {
         try {
           enabledCategories = JSON.parse(saved);
@@ -53,6 +59,7 @@
 
   async function togglePush() {
     if (!pushSupported) return;
+    error = '';
 
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
@@ -60,6 +67,8 @@
       if (permission === 'granted') {
         pushEnabled = true;
         await subscribePush();
+      } else if (permission === 'denied') {
+        error = 'Push permission is blocked in the browser. Update site permissions to enable notifications.';
       }
     } else {
       pushEnabled = false;
@@ -68,6 +77,10 @@
   }
 
   async function subscribePush() {
+    if (!supportsServiceWorker()) {
+      error = 'Service workers are unavailable in this runtime.';
+      return;
+    }
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -81,12 +94,14 @@
       const payload = pushSubscriptionToPayload(sub.toJSON());
       if (!payload) return;
       await client.push.subscribe(payload);
-    } catch {
-      // Push subscription failed.
+    } catch (e: unknown) {
+      pushEnabled = false;
+      error = e instanceof Error ? e.message : 'Push subscription failed.';
     }
   }
 
   async function unsubscribePush() {
+    if (!supportsServiceWorker()) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -98,8 +113,8 @@
         }
         await sub.unsubscribe();
       }
-    } catch {
-      // Unsubscribe failed.
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Push unsubscribe failed.';
     }
   }
 
@@ -109,11 +124,16 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    writeLocalStorage('ghost-push-categories', JSON.stringify(enabledCategories));
   }
 
   async function sendTestNotification() {
+    if (!supportsServiceWorker()) {
+      error = 'Service workers are unavailable in this runtime.';
+      return;
+    }
     testSending = true;
+    error = '';
     try {
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
@@ -121,8 +141,8 @@
         icon: '/icons/ghost-192.png',
         tag: 'ghost-test',
       });
-    } catch {
-      // Test failed.
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Test notification failed.';
     } finally {
       testSending = false;
     }
@@ -134,6 +154,12 @@
     <h1>Notifications</h1>
     <p class="subtitle">Configure push notification preferences</p>
   </header>
+
+  {#if error}
+    <div class="unsupported" role="alert">
+      {error}
+    </div>
+  {/if}
 
   {#if !pushSupported}
     <div class="unsupported">

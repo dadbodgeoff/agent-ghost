@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hasClipboardWrite } from '$lib/browser';
   import type { StudioMessage } from '$lib/stores/studioChat.svelte';
   import { renderStudioMarkdown } from '$lib/render/studioMarkdown';
 
@@ -24,6 +25,7 @@
   }
 
   async function copyContent() {
+    if (!hasClipboardWrite()) return;
     try {
       await navigator.clipboard.writeText(message.content);
       copied = true;

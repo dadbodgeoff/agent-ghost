@@ -82,7 +82,9 @@
     return connections.some(c => c.provider === providerName && c.status === 'connected');
   }
 
-  onMount(loadData);
+  onMount(() => {
+    void loadData();
+  });
 </script>
 
 <h1>OAuth Connections</h1>

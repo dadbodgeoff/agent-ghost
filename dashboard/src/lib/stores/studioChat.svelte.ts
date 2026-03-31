@@ -7,6 +7,7 @@
  */
 
 import { getGhostClient } from '$lib/ghost-client';
+import { generateId, readLocalStorage, removeLocalStorage, writeLocalStorage } from '$lib/browser';
 import { wsStore } from '$lib/stores/websocket.svelte';
 import type {
   RecoverStreamResult,
@@ -284,10 +285,7 @@ class StudioChatStore {
       this.hasMoreSessions = data.has_more ?? false;
       this.nextSessionsCursor = data.next_cursor ?? null;
 
-      const savedId =
-        typeof localStorage !== 'undefined'
-          ? localStorage.getItem(STORAGE_KEY)
-          : null;
+      const savedId = readLocalStorage(STORAGE_KEY);
 
       if (savedId && this.sessions.some((s) => s.id === savedId)) {
         await this.loadSession(savedId);
@@ -516,7 +514,7 @@ class StudioChatStore {
 
     // Optimistically add user message.
     const userMsg: StudioMessage = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       role: 'user',
       content,
       token_count: 0,
@@ -527,7 +525,7 @@ class StudioChatStore {
 
     // Add placeholder assistant message with a temporary ID so the Svelte
     // keyed {#each} doesn't change keys when stream_start arrives.
-    const tempId = `_pending_${crypto.randomUUID()}`;
+    const tempId = `_pending_${generateId()}`;
     const placeholderMsg: StudioMessage = {
       id: tempId,
       role: 'assistant',
@@ -1022,12 +1020,10 @@ class StudioChatStore {
   }
 
   private persistActiveId(id: string | null) {
-    if (typeof localStorage !== 'undefined') {
-      if (id) {
-        localStorage.setItem(STORAGE_KEY, id);
-      } else {
-        localStorage.removeItem(STORAGE_KEY);
-      }
+    if (id) {
+      writeLocalStorage(STORAGE_KEY, id);
+    } else {
+      removeLocalStorage(STORAGE_KEY);
     }
   }
 }

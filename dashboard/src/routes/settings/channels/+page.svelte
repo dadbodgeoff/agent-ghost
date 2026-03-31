@@ -3,13 +3,9 @@
   import { onMount } from 'svelte';
 
   onMount(() => {
-    goto('/channels', { replaceState: true });
+    void goto('/channels', { replaceState: true, noScroll: true });
   });
 </script>
-
-<svelte:head>
-  <meta http-equiv="refresh" content="0;url=/channels" />
-</svelte:head>
 
 <div class="redirect-page">
   <p>Channels moved to the canonical surface at <a href="/channels">/channels</a>.</p>
