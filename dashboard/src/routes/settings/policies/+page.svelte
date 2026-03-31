@@ -20,10 +20,11 @@
   let error: string | null = $state(null);
 
   onMount(() => {
-    loadPolicies();
+    void loadPolicies();
   });
 
   async function loadPolicies() {
+    error = null;
     try {
       const client = await getGhostClient();
       const status = await client.safety.status();
@@ -44,9 +45,11 @@
   let saveSuccess: string | null = $state(null);
 
   async function saveLimits() {
+    saving = true;
     error = null;
     saveSuccess = null;
     error = 'Gateway settings limits are not exposed by the runtime API yet.';
+    saving = false;
   }
 
   const SAFETY_POLICIES = [

@@ -16,11 +16,11 @@
   let success: string | null = $state(null);
 
   onMount(() => {
-    loadBackups();
+    void loadBackups();
 
     // T-5.9.1: Wire BackupComplete WS event to refresh backup list.
-    const unsub = wsStore.on('BackupComplete', () => { loadBackups(); });
-    const unsubResync = wsStore.onResync(() => { loadBackups(); });
+    const unsub = wsStore.on('BackupComplete', () => { void loadBackups(); });
+    const unsubResync = wsStore.onResync(() => { void loadBackups(); });
     return () => {
       unsub();
       unsubResync();
@@ -29,6 +29,7 @@
 
   async function loadBackups() {
     loading = true;
+    error = null;
     try {
       const client = await getGhostClient();
       const res = await client.backups.list();

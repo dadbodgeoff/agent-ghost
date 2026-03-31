@@ -78,6 +78,8 @@
   );
 
   async function loadScores() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [scoreData, healthData] = await Promise.all([
@@ -95,10 +97,17 @@
       if (!selectedAgentId && scores.length > 0) {
         selectedAgentId = scores[0].agent_id;
       }
+      if (selectedAgentId && !scores.some((score) => score.agent_id === selectedAgentId)) {
+        selectedAgentId = scores[0]?.agent_id ?? null;
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load convergence data';
+      scores = [];
+      history = [];
+      selectedAgentId = null;
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadHistory(agentId: string) {
@@ -163,9 +172,9 @@
   }
 
   onMount(() => {
-    loadScores();
-    const unsub = wsStore.on('ScoreUpdate', () => { loadScores(); });
-    const unsubResync = wsStore.onResync(() => { loadScores(); });
+    void loadScores();
+    const unsub = wsStore.on('ScoreUpdate', () => { void loadScores(); });
+    const unsubResync = wsStore.onResync(() => { void loadScores(); });
     return () => {
       unsub();
       unsubResync();
@@ -213,7 +222,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button onclick={loadScores}>Retry</button>
   </div>
 {:else if scores.length === 0}
   <div class="empty-state">

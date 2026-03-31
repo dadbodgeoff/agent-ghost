@@ -117,7 +117,7 @@
     typeFilter = '';
     importanceFilter = '';
     focusedMemoryId = '';
-    loadMemories();
+    void loadMemories();
   }
 
   $effect(() => {

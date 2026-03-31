@@ -15,11 +15,11 @@
   let testResult = $state<{ id: string; success: boolean; code: number } | null>(null);
 
   onMount(() => {
-    loadWebhooks();
+    void loadWebhooks();
 
     // T-5.9.1: Wire WebhookFired WS event to refresh webhook list.
-    const unsub = wsStore.on('WebhookFired', () => { loadWebhooks(); });
-    const unsubResync = wsStore.onResync(() => { loadWebhooks(); });
+    const unsub = wsStore.on('WebhookFired', () => { void loadWebhooks(); });
+    const unsubResync = wsStore.onResync(() => { void loadWebhooks(); });
     return () => {
       unsub();
       unsubResync();
@@ -43,6 +43,7 @@
 
   async function deleteWebhook(id: string) {
     if (!confirm('Delete this webhook?')) return;
+    error = null;
     try {
       const client = await getGhostClient();
       await client.webhooks.delete(id);
@@ -56,11 +57,13 @@
   async function testWebhook(id: string) {
     testingId = id;
     testResult = null;
+    error = null;
     try {
       const client = await getGhostClient();
       const data = await client.webhooks.test(id);
       testResult = { id, success: data.success, code: data.status_code };
-    } catch {
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Webhook test failed';
       testResult = { id, success: false, code: 0 };
     } finally {
       testingId = null;
@@ -71,7 +74,7 @@
     showForm = false;
     editId = null;
     editWebhookData = null;
-    loadWebhooks();
+    void loadWebhooks();
   }
 
   function editWebhook(wh: WebhookSummary) {

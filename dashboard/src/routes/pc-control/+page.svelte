@@ -37,13 +37,17 @@
   });
 
   async function loadStatus() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       status = await client.pcControl.getStatus();
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load PC control status';
+      status = null;
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadActionLog() {
@@ -57,6 +61,7 @@
   async function toggleEnabled() {
     if (!status) return;
     try {
+      error = '';
       const client = await getGhostClient();
       status = await client.pcControl.updateStatus(!status.enabled);
     } catch (e: unknown) {
@@ -66,8 +71,14 @@
 
   async function addApp() {
     if (!newApp.trim() || !status) return;
+    const normalizedApp = newApp.trim();
+    if (status.allowed_apps.includes(normalizedApp)) {
+      error = 'That app is already allowed';
+      return;
+    }
     try {
-      const apps = [...status.allowed_apps, newApp.trim()];
+      error = '';
+      const apps = [...status.allowed_apps, normalizedApp];
       const client = await getGhostClient();
       status = await client.pcControl.setAllowedApps(apps);
       newApp = '';
@@ -79,6 +90,7 @@
   async function removeApp(app: string) {
     if (!status) return;
     try {
+      error = '';
       const apps = status.allowed_apps.filter(a => a !== app);
       const client = await getGhostClient();
       status = await client.pcControl.setAllowedApps(apps);
@@ -89,8 +101,14 @@
 
   async function addHotkey() {
     if (!newHotkey.trim() || !status) return;
+    const normalizedHotkey = newHotkey.trim();
+    if (status.blocked_hotkeys.includes(normalizedHotkey)) {
+      error = 'That hotkey is already blocked';
+      return;
+    }
     try {
-      const hotkeys = [...status.blocked_hotkeys, newHotkey.trim()];
+      error = '';
+      const hotkeys = [...status.blocked_hotkeys, normalizedHotkey];
       const client = await getGhostClient();
       status = await client.pcControl.setBlockedHotkeys(hotkeys);
       newHotkey = '';
@@ -102,6 +120,7 @@
   async function removeHotkey(key: string) {
     if (!status) return;
     try {
+      error = '';
       const hotkeys = status.blocked_hotkeys.filter(h => h !== key);
       const client = await getGhostClient();
       status = await client.pcControl.setBlockedHotkeys(hotkeys);
@@ -113,6 +132,7 @@
   async function addSafeZone(zone: SafeZone) {
     if (!status) return;
     try {
+      error = '';
       const client = await getGhostClient();
       status = await client.pcControl.setSafeZone(zone);
     } catch (e: unknown) {
@@ -123,6 +143,7 @@
   async function clearSafeZone() {
     if (!status) return;
     try {
+      error = '';
       const client = await getGhostClient();
       status = await client.pcControl.setSafeZone(null);
     } catch (e: unknown) {
@@ -153,7 +174,7 @@
     const h = Math.abs(drawCurrent.y - drawStart.y);
     if (w > 10 && h > 10) {
       const label = 'Primary Safe Zone';
-      addSafeZone({
+      void addSafeZone({
         x: toHostX(x),
         y: toHostY(y),
         width: toHostWidth(w),
@@ -230,20 +251,26 @@
 
   let filteredLog = $derived(
     logFilter
-      ? actionLog.filter(a => a.action_type.includes(logFilter) || a.target.includes(logFilter))
+      ? actionLog.filter((a) => {
+          const needle = logFilter.toLowerCase();
+          return (
+            a.action_type.toLowerCase().includes(needle) ||
+            a.target.toLowerCase().includes(needle)
+          );
+        })
       : actionLog
   );
 
   onMount(() => {
-    loadStatus();
-    loadActionLog();
+    void loadStatus();
+    void loadActionLog();
     const unsub = wsStore.on('PcControlRuntimeChange', () => {
-      loadStatus();
-      loadActionLog();
+      void loadStatus();
+      void loadActionLog();
     });
     const unsubResync = wsStore.onResync(() => {
-      loadStatus();
-      loadActionLog();
+      void loadStatus();
+      void loadActionLog();
     });
     return () => {
       unsub();

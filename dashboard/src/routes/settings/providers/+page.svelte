@@ -18,7 +18,7 @@
   let codexPollHandle: number | null = null;
 
   onMount(() => {
-    loadProviders();
+    void loadProviders();
   });
 
   onDestroy(() => {
@@ -175,6 +175,7 @@
   function cancelEditing() {
     editingEnv = null;
     keyInput = '';
+    error = null;
   }
 
   function providerLabel(name: string): string {

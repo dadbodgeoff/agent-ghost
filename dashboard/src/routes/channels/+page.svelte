@@ -60,6 +60,7 @@
   }
 
   async function loadChannels() {
+    loading = true;
     try {
       error = '';
       const client = await getGhostClient();
@@ -70,8 +71,11 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load channels';
+      channels = [];
+      selectedChannel = null;
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadAgents() {
@@ -81,6 +85,8 @@
       agents = data.map((agent) => ({ id: agent.id, name: agent.name }));
       if (agents.length > 0 && !newAgentId) {
         newAgentId = agents[0].id;
+      } else if (agents.length === 0) {
+        newAgentId = '';
       }
     } catch { /* non-fatal */ }
   }
@@ -104,7 +110,10 @@
   }
 
   async function addChannel() {
-    if (!newAgentId) return;
+    if (!newAgentId) {
+      error = 'Select an agent before creating a channel';
+      return;
+    }
     const config = parseChannelConfig();
     if (!config) return;
 
@@ -151,10 +160,10 @@
   let selectedChannel: ChannelInfo | null = $state(null);
 
   onMount(() => {
-    loadChannels();
-    loadAgents();
-    const unsubs = CHANNEL_EVENTS.map((eventType) => wsStore.on(eventType, () => { loadChannels(); }));
-    const unsubResync = wsStore.onResync(() => { loadChannels(); });
+    void loadChannels();
+    void loadAgents();
+    const unsubs = CHANNEL_EVENTS.map((eventType) => wsStore.on(eventType, () => { void loadChannels(); }));
+    const unsubResync = wsStore.onResync(() => { void loadChannels(); });
     return () => {
       unsubs.forEach((unsubscribe) => unsubscribe());
       unsubResync();
@@ -203,7 +212,7 @@
         <span class="label-text">Config (JSON)</span>
         <textarea bind:value={newChannelConfig} rows="5" spellcheck="false"></textarea>
       </label>
-      <button class="btn-primary" onclick={addChannel} disabled={creating}>
+      <button class="btn-primary" onclick={addChannel} disabled={creating || agents.length === 0}>
         {creating ? 'Creating…' : 'Create'}
       </button>
     </div>

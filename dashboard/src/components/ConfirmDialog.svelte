@@ -6,6 +6,8 @@
    * Ref: T-X.16, DESIGN_SYSTEM §8.4
    */
 
+  import { onMount } from 'svelte';
+
   let {
     title = 'Confirm',
     message = 'Are you sure?',
@@ -24,6 +26,12 @@
     oncancel?: () => void;
   } = $props();
 
+  let dialogEl = $state<HTMLDivElement | null>(null);
+
+  onMount(() => {
+    dialogEl?.focus();
+  });
+
   function confirm() {
     onconfirm?.();
   }
@@ -33,7 +41,15 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') cancel();
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      cancel();
+      return;
+    }
+    if (e.key === 'Enter' && !loading) {
+      e.preventDefault();
+      confirm();
+    }
   }
 </script>
 
@@ -41,6 +57,7 @@
 <div class="overlay" onclick={cancel} onkeydown={handleKeydown} role="presentation">
   <div
     class="dialog"
+    bind:this={dialogEl}
     role="alertdialog"
     tabindex="-1"
     aria-modal="true"

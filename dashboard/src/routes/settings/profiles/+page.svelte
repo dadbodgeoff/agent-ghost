@@ -20,14 +20,27 @@
   let success: string | null = $state(null);
 
   onMount(() => {
-    loadProfiles();
+    void loadProfiles();
   });
 
   async function loadProfiles() {
+    error = null;
     try {
       const client = await getGhostClient();
       const res = await client.profiles.list();
       profiles = res.profiles ?? [];
+      if (selectedProfile) {
+        const refreshedProfile = profiles.find((profile) => profile.name === selectedProfile?.name) ?? null;
+        if (refreshedProfile) {
+          selectProfile(refreshedProfile);
+        } else if (profiles.length > 0) {
+          selectProfile(profiles[0]);
+        } else {
+          selectedProfile = null;
+        }
+      } else if (profiles.length > 0) {
+        selectProfile(profiles[0]);
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load profiles';
     }
@@ -60,19 +73,24 @@
   }
 
   async function createProfile() {
-    if (!newProfileName.trim()) return;
+    const profileName = newProfileName.trim();
+    if (!profileName) return;
     saving = true;
     error = null;
     try {
       const client = await getGhostClient();
       await client.profiles.create({
-        name: newProfileName.trim(),
+        name: profileName,
         weights: editWeights,
         thresholds: editThresholds,
       });
       newProfileName = '';
       success = 'Profile created.';
       await loadProfiles();
+      const createdProfile = profiles.find((profile) => profile.name === profileName);
+      if (createdProfile) {
+        selectProfile(createdProfile);
+      }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to create profile';
     } finally {

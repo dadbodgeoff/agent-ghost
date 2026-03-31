@@ -33,6 +33,12 @@
 
   onMount(() => {
     loadFromStorage();
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        panelOpen = false;
+      }
+    };
+    window.addEventListener('keydown', handleKeydown);
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
@@ -80,6 +86,10 @@
         });
       }),
     );
+
+    return () => {
+      window.removeEventListener('keydown', handleKeydown);
+    };
   });
 
   onDestroy(() => {
@@ -159,7 +169,21 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed)
+          ? parsed
+              .filter((item): item is AppNotification => {
+                return (
+                  item &&
+                  typeof item.id === 'string' &&
+                  typeof item.title === 'string' &&
+                  typeof item.message === 'string' &&
+                  typeof item.timestamp === 'string' &&
+                  typeof item.read === 'boolean'
+                );
+              })
+              .slice(0, MAX_NOTIFICATIONS)
+          : [];
       }
     } catch { /* start fresh */ }
   }

@@ -46,6 +46,8 @@
   }
 
   async function loadGraph() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const data = await client.memory.graph();
@@ -53,8 +55,11 @@
       graphEdges = data?.edges ?? [];
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load knowledge graph';
+      graphNodes = [];
+      graphEdges = [];
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   async function loadNodeDetail(nodeId: string) {
@@ -227,7 +232,7 @@
   }
 
   onMount(() => {
-    loadGraph();
+    void loadGraph();
     return () => {
       simulation?.stop();
     };
@@ -262,7 +267,7 @@
 {#if error}
   <div class="error-banner" role="alert">
     <span>{error}</span>
-    <button onclick={() => { error = ''; loadGraph(); }}>Retry</button>
+    <button onclick={loadGraph}>Retry</button>
   </div>
 {/if}
 
