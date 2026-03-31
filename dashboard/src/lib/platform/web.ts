@@ -5,6 +5,15 @@ const CLIENT_ID_KEY = 'ghost-client-id';
 const SESSION_EPOCH_KEY = 'ghost-session-epoch';
 const listeners = new Set<(token: string | null) => void>();
 
+function storageAvailable(storage: 'localStorage' | 'sessionStorage'): boolean {
+  return typeof window !== 'undefined' && storage in window && window[storage] != null;
+}
+
+function normalizeBaseUrl(url: string): string {
+  const trimmed = url.trim();
+  return trimmed ? trimmed.replace(/\/+$/, '') : 'http://127.0.0.1:39780';
+}
+
 function emitTokenChange(token: string | null) {
   for (const listener of listeners) {
     listener(token);
@@ -12,19 +21,22 @@ function emitTokenChange(token: string | null) {
 }
 
 function resolveBaseUrl(): string {
-  if (typeof localStorage !== 'undefined') {
+  if (storageAvailable('localStorage')) {
     const override = localStorage.getItem('ghost-gateway-url');
-    if (override) return override;
+    if (override) return normalizeBaseUrl(override);
   }
 
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GHOST_GATEWAY_URL) {
-    return import.meta.env.VITE_GHOST_GATEWAY_URL;
+    return normalizeBaseUrl(import.meta.env.VITE_GHOST_GATEWAY_URL);
   }
 
   return 'http://127.0.0.1:39780';
 }
 
 function resolveReplayClientId(): string {
+  if (!storageAvailable('localStorage')) {
+    return crypto.randomUUID();
+  }
   const existing = localStorage.getItem(CLIENT_ID_KEY);
   if (existing) return existing;
   const clientId = crypto.randomUUID();
@@ -33,6 +45,9 @@ function resolveReplayClientId(): string {
 }
 
 function resolveReplaySessionEpoch(): number {
+  if (!storageAvailable('localStorage')) {
+    return 1;
+  }
   const raw = localStorage.getItem(SESSION_EPOCH_KEY);
   const epoch = raw ? Number.parseInt(raw, 10) : 1;
   if (Number.isFinite(epoch) && epoch > 0) return epoch;
@@ -47,14 +62,18 @@ export const webRuntime: RuntimePlatform = {
     return resolveBaseUrl();
   },
   async getToken() {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return storageAvailable('sessionStorage') ? sessionStorage.getItem(TOKEN_KEY) : null;
   },
   async setToken(token: string) {
-    sessionStorage.setItem(TOKEN_KEY, token);
+    if (storageAvailable('sessionStorage')) {
+      sessionStorage.setItem(TOKEN_KEY, token);
+    }
     emitTokenChange(token);
   },
   async clearToken() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    if (storageAvailable('sessionStorage')) {
+      sessionStorage.removeItem(TOKEN_KEY);
+    }
     emitTokenChange(null);
   },
   async getReplayClientId() {
@@ -65,7 +84,9 @@ export const webRuntime: RuntimePlatform = {
   },
   async advanceReplaySessionEpoch() {
     const next = resolveReplaySessionEpoch() + 1;
-    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    if (storageAvailable('localStorage')) {
+      localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    }
     return next;
   },
   subscribeTokenChange(listener) {

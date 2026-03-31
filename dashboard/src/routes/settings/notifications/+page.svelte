@@ -45,7 +45,8 @@
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          enabledCategories = Array.isArray(parsed) ? parsed : enabledCategories;
         } catch { /* use defaults */ }
       }
     }

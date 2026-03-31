@@ -20,22 +20,30 @@ export interface GatewayHealth {
 
 type JsonObject = Record<string, unknown>;
 
+function buildUrl(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 /**
  * Make an authenticated request to the gateway.
  */
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, requireAuth = true): Promise<T> {
   const auth = getAuthState();
-  if (!auth.authenticated || !auth.token) {
+  if (requireAuth && (!auth.authenticated || !auth.token)) {
     throw new Error('Not authenticated with gateway');
   }
 
-  const resp = await fetch(`${auth.gatewayUrl}${path}`, {
+  const headers = new Headers(options.headers);
+  if (!headers.has('Content-Type') && options.body) {
+    headers.set('Content-Type', 'application/json');
+  }
+  if (auth.token) {
+    headers.set('Authorization', `Bearer ${auth.token}`);
+  }
+
+  const resp = await fetch(buildUrl(auth.gatewayUrl, path), {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${auth.token}`,
-      ...(options.headers || {}),
-    },
+    headers,
     signal: AbortSignal.timeout(10000),
   });
 
@@ -43,14 +51,28 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error(`Gateway ${resp.status}: ${resp.statusText}`);
   }
 
-  return (await resp.json()) as T;
+  if (resp.status === 204) {
+    return undefined as T;
+  }
+
+  const contentType = resp.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return undefined as T;
+  }
+
+  const text = await resp.text();
+  if (!text.trim()) {
+    return undefined as T;
+  }
+
+  return JSON.parse(text) as T;
 }
 
 /**
  * Get gateway health status.
  */
 export async function getHealth(): Promise<GatewayHealth> {
-  return request<GatewayHealth>('/api/health');
+  return request<GatewayHealth>('/api/health', {}, false);
 }
 
 /**

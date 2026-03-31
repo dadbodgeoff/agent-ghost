@@ -105,6 +105,8 @@
     try {
       const runtime = await getRuntime();
       if (!runtime.isDesktop()) return;
+      const granted = await runtime.requestNotificationPermission();
+      if (!granted) return;
       await runtime.sendNotification({
         title: n.title,
         body: n.message,
@@ -159,14 +161,19 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed) ? parsed : [];
       }
     } catch { /* start fresh */ }
   }
 
   function persistToStorage() {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(notifications));
+    } catch {
+      // Non-fatal: keep in-memory notifications even if persistence is unavailable.
+    }
   }
 </script>
 

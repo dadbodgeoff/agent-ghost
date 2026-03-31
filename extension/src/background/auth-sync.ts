@@ -22,13 +22,28 @@ const currentState: AuthState = {
   lastValidated: 0,
 };
 
+function normalizeGatewayUrl(value: unknown): string {
+  if (typeof value !== 'string') {
+    return 'http://localhost:39780';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 'http://localhost:39780';
+  }
+
+  return trimmed.replace(/\/+$/, '');
+}
+
 /**
  * Initialize auth sync — loads stored credentials and validates.
  */
 export async function initAuthSync(): Promise<AuthState> {
   const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
-  currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
-  currentState.token = stored[JWT_TOKEN_KEY] || null;
+  currentState.gatewayUrl = normalizeGatewayUrl(stored[GATEWAY_URL_KEY]);
+  currentState.token = typeof stored[JWT_TOKEN_KEY] === 'string' && stored[JWT_TOKEN_KEY].trim()
+    ? stored[JWT_TOKEN_KEY].trim()
+    : null;
 
   if (currentState.token) {
     await validateToken();
@@ -41,13 +56,13 @@ export async function initAuthSync(): Promise<AuthState> {
  * Store JWT token from dashboard login.
  */
 export async function storeToken(token: string, gatewayUrl?: string): Promise<void> {
-  currentState.token = token;
+  currentState.token = token.trim() || null;
   if (gatewayUrl) {
-    currentState.gatewayUrl = gatewayUrl;
+    currentState.gatewayUrl = normalizeGatewayUrl(gatewayUrl);
   }
 
   await chrome.storage.local.set({
-    [JWT_TOKEN_KEY]: token,
+    [JWT_TOKEN_KEY]: currentState.token,
     [GATEWAY_URL_KEY]: currentState.gatewayUrl,
   });
 
@@ -60,6 +75,7 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
 export async function clearToken(): Promise<void> {
   currentState.token = null;
   currentState.authenticated = false;
+  currentState.lastValidated = Date.now();
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 
@@ -85,6 +101,7 @@ async function validateToken(): Promise<boolean> {
     return resp.ok;
   } catch {
     currentState.authenticated = false;
+    currentState.lastValidated = Date.now();
     return false;
   }
 }

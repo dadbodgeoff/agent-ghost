@@ -43,18 +43,31 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
+function waitForTransaction(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'));
+  });
+}
+
 /**
  * Queue an event for sync.
  */
 export async function queueEvent(type: string, payload: unknown): Promise<void> {
   const db = await openDB();
-  const tx = db.transaction(PENDING_STORE, 'readwrite');
-  tx.objectStore(PENDING_STORE).add({
-    timestamp: Date.now(),
-    type,
-    payload,
-    synced: false,
-  });
+  try {
+    const tx = db.transaction(PENDING_STORE, 'readwrite');
+    tx.objectStore(PENDING_STORE).add({
+      timestamp: Date.now(),
+      type,
+      payload,
+      synced: false,
+    });
+    await waitForTransaction(tx);
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -67,48 +80,58 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
   }
 
   const db = await openDB();
-  const tx = db.transaction(PENDING_STORE, 'readonly');
-  const store = tx.objectStore(PENDING_STORE);
-  const index = store.index('synced');
-  const request = index.getAll(IDBKeyRange.only(false));
+  try {
+    const tx = db.transaction(PENDING_STORE, 'readonly');
+    const store = tx.objectStore(PENDING_STORE);
+    const index = store.index('synced');
+    const request = index.getAll(IDBKeyRange.only(false));
 
-  return new Promise((resolve) => {
-    request.onsuccess = async () => {
-      const events: PendingEvent[] = request.result || [];
-      let synced = 0;
-      let failed = 0;
+    const events: PendingEvent[] = await new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
 
-      for (const event of events) {
-        try {
-          await fetch(`${auth.gatewayUrl}/api/memory`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${auth.token}`,
-            },
-            body: JSON.stringify({
-              type: event.type,
-              content: JSON.stringify(event.payload),
-              metadata: { source: 'extension-sync', original_timestamp: event.timestamp },
-            }),
-            signal: AbortSignal.timeout(5000),
-          });
+    let synced = 0;
+    let failed = 0;
 
-          // Mark as synced.
-          const updateTx = db.transaction(PENDING_STORE, 'readwrite');
-          const updateStore = updateTx.objectStore(PENDING_STORE);
-          updateStore.put({ ...event, synced: true });
-          synced++;
-        } catch {
+    for (const event of events) {
+      try {
+        const response = await fetch(`${auth.gatewayUrl}/api/memory`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${auth.token}`,
+          },
+          body: JSON.stringify({
+            type: event.type,
+            content: JSON.stringify(event.payload),
+            metadata: { source: 'extension-sync', original_timestamp: event.timestamp },
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
+
+        if (!response.ok) {
           failed++;
-          break; // Stop on first failure — retry later.
+          break;
         }
-      }
 
-      resolve({ synced, failed });
-    };
-    request.onerror = () => resolve({ synced: 0, failed: 0 });
-  });
+        const updateTx = db.transaction(PENDING_STORE, 'readwrite');
+        const updateStore = updateTx.objectStore(PENDING_STORE);
+        updateStore.put({ ...event, synced: true });
+        await waitForTransaction(updateTx);
+        synced++;
+      } catch {
+        failed++;
+        break;
+      }
+    }
+
+    return { synced, failed };
+  } catch {
+    return { synced: 0, failed: 0 };
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -116,22 +139,33 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
  */
 export async function cleanupSyncedEvents(): Promise<void> {
   const db = await openDB();
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const tx = db.transaction(PENDING_STORE, 'readwrite');
-  const store = tx.objectStore(PENDING_STORE);
-  const index = store.index('timestamp');
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const tx = db.transaction(PENDING_STORE, 'readwrite');
+    const store = tx.objectStore(PENDING_STORE);
+    const index = store.index('timestamp');
 
-  const request = index.openCursor(IDBKeyRange.upperBound(cutoff));
-  request.onsuccess = () => {
-    const cursor = request.result;
-    if (cursor) {
-      const event = cursor.value as PendingEvent;
-      if (event.synced) {
-        cursor.delete();
-      }
-      cursor.continue();
-    }
-  };
+    await new Promise<void>((resolve, reject) => {
+      const request = index.openCursor(IDBKeyRange.upperBound(cutoff));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          const event = cursor.value as PendingEvent;
+          if (event.synced) {
+            cursor.delete();
+          }
+          cursor.continue();
+          return;
+        }
+
+        resolve();
+      };
+      request.onerror = () => reject(request.error);
+    });
+    await waitForTransaction(tx);
+  } finally {
+    db.close();
+  }
 }
 
 /**

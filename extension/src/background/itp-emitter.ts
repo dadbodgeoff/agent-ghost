@@ -2,6 +2,8 @@
  * ITP event emitter — sends events to native messaging host or IndexedDB fallback.
  */
 
+import { storeEvent } from '../storage/idb';
+
 interface ITPEvent {
   eventType: string;
   platform: string;
@@ -42,9 +44,26 @@ export class ITPEmitter {
 
   emit(event: ITPEvent): void {
     if (this.useNative && this.nativePort) {
-      this.nativePort.postMessage(event);
-    } else {
-      this.storeInIndexedDB(event);
+      try {
+        this.nativePort.postMessage(event);
+        return;
+      } catch {
+        this.nativePort = null;
+        this.useNative = false;
+      }
+    }
+
+    void this.storeLocally(event);
+  }
+
+  private async storeLocally(event: ITPEvent): Promise<void> {
+    try {
+      await storeEvent({
+        ...event,
+        storedAt: new Date().toISOString(),
+      });
+    } catch {
+      console.warn('[GHOST] Failed to store ITP event locally');
     }
   }
 
@@ -54,33 +73,12 @@ export class ITPEmitter {
 
   refreshScore(): void {
     if (this.useNative && this.nativePort) {
-      this.nativePort.postMessage({ type: 'GET_SCORE' });
+      try {
+        this.nativePort.postMessage({ type: 'GET_SCORE' });
+      } catch {
+        this.nativePort = null;
+        this.useNative = false;
+      }
     }
-  }
-
-  private async storeInIndexedDB(event: ITPEvent): Promise<void> {
-    const db = await this.openDB();
-    const tx = db.transaction('events', 'readwrite');
-    tx.objectStore('events').add({
-      ...event,
-      storedAt: new Date().toISOString(),
-    });
-  }
-
-  private openDB(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open('ghost-itp', 1);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains('events')) {
-          db.createObjectStore('events', { autoIncrement: true });
-        }
-        if (!db.objectStoreNames.contains('settings')) {
-          db.createObjectStore('settings', { keyPath: 'key' });
-        }
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
   }
 }

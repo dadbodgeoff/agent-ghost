@@ -15,7 +15,8 @@
 
   async function login() {
     error = '';
-    if (!token.trim()) {
+    const normalizedToken = token.trim();
+    if (!normalizedToken) {
       error = 'Token is required';
       return;
     }
@@ -23,12 +24,12 @@
     loading = true;
     try {
       const client = await getGhostClient();
-      const data = await client.auth.login({ token: token.trim() });
+      const data = await client.auth.login({ token: normalizedToken });
       const runtime = await getRuntime();
       if (data.access_token) {
         await runtime.setToken(data.access_token);
       } else {
-        await runtime.setToken(token.trim());
+        await runtime.setToken(normalizedToken);
       }
       await rotateAuthBoundarySession();
       invalidateAuthClientState();
@@ -40,8 +41,9 @@
       error = e instanceof Error
         ? e.message
         : 'Gateway unreachable. Is ghost-gateway running? Check ghost.yml for the configured port.';
+    } finally {
+      loading = false;
     }
-    loading = false;
   }
 
   function handleKeydown(e: KeyboardEvent) {
