@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
+  import { applyThemeChoice, readStoredTheme, type ThemeChoice } from '$lib/theme';
   import {
     invalidateAuthClientState,
     isAuthResetError,
@@ -9,36 +11,32 @@
     rotateAuthBoundarySession,
   } from '$lib/auth-boundary';
   import { wsStore } from '$lib/stores/websocket.svelte';
-
-  type ThemeChoice = 'dark' | 'light' | 'system';
-
   let theme: ThemeChoice = $state('dark');
+  let removeThemeListener: (() => void) | null = null;
 
-  // Initialize from localStorage on mount.
-  $effect(() => {
-    const stored = localStorage.getItem('ghost-theme');
-    if (stored === 'light' || stored === 'system') {
-      theme = stored;
-    } else {
-      theme = 'dark';
-    }
+  onMount(() => {
+    theme = readStoredTheme();
+
+    const media = window.matchMedia('(prefers-color-scheme: light)');
+    const handleSystemThemeChange = () => {
+      if (readStoredTheme() === 'system') {
+        theme = 'system';
+        applyThemeChoice('system');
+      }
+    };
+
+    media.addEventListener('change', handleSystemThemeChange);
+    removeThemeListener = () => media.removeEventListener('change', handleSystemThemeChange);
+  });
+
+  onDestroy(() => {
+    removeThemeListener?.();
+    removeThemeListener = null;
   });
 
   function setTheme(choice: ThemeChoice) {
     theme = choice;
-    localStorage.setItem('ghost-theme', choice);
-
-    const html = document.documentElement;
-    html.classList.remove('light');
-
-    if (choice === 'light') {
-      html.classList.add('light');
-    } else if (choice === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        html.classList.add('light');
-      }
-    }
-    // 'dark' = no .light class = dark theme (default).
+    applyThemeChoice(choice);
   }
 
   async function logout() {
@@ -68,7 +66,7 @@
     if (!result.remoteSucceeded && result.reason) {
       alert(`Signed out locally, but the server logout endpoint did not confirm revocation: ${result.reason}`);
     }
-    goto('/login');
+    await goto('/login');
   }
 </script>
 

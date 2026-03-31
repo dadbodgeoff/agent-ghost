@@ -15,6 +15,7 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let setupError = $state('');
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -48,6 +49,10 @@
           enabledCategories = JSON.parse(saved);
         } catch { /* use defaults */ }
       }
+
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+      }
     }
   });
 
@@ -58,36 +63,50 @@
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        const subscribed = await subscribePush();
+        pushEnabled = subscribed;
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      const unsubscribed = await unsubscribePush();
+      pushEnabled = !unsubscribed;
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
+      if (!('serviceWorker' in navigator)) {
+        setupError = 'Service workers are unavailable in this browser.';
+        return false;
+      }
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) {
+        setupError = 'Push is not configured on the gateway.';
+        return false;
+      }
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) {
+        setupError = 'Browser returned an invalid push subscription.';
+        return false;
+      }
       await client.push.subscribe(payload);
-    } catch {
-      // Push subscription failed.
+      setupError = '';
+      return true;
+    } catch (e: unknown) {
+      setupError = e instanceof Error ? e.message : 'Push subscription failed.';
+      return false;
     }
   }
 
-  async function unsubscribePush() {
+  async function unsubscribePush(): Promise<boolean> {
     try {
+      if (!('serviceWorker' in navigator)) return true;
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
@@ -98,8 +117,11 @@
         }
         await sub.unsubscribe();
       }
-    } catch {
-      // Unsubscribe failed.
+      setupError = '';
+      return true;
+    } catch (e: unknown) {
+      setupError = e instanceof Error ? e.message : 'Failed to disable push notifications.';
+      return false;
     }
   }
 
@@ -115,14 +137,19 @@
   async function sendTestNotification() {
     testSending = true;
     try {
+      if (!('serviceWorker' in navigator)) {
+        setupError = 'Service workers are unavailable in this browser.';
+        return;
+      }
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
-        icon: '/icons/ghost-192.png',
+        icon: '/icons/128x128.png',
         tag: 'ghost-test',
       });
-    } catch {
-      // Test failed.
+      setupError = '';
+    } catch (e: unknown) {
+      setupError = e instanceof Error ? e.message : 'Test notification failed.';
     } finally {
       testSending = false;
     }
@@ -141,6 +168,9 @@
     </div>
   {:else}
     <div class="section">
+      {#if setupError}
+        <div class="error-banner" role="alert">{setupError}</div>
+      {/if}
       <div class="toggle-row">
         <div>
           <span class="toggle-label">Push Notifications</span>
@@ -232,6 +262,16 @@
     border: 1px solid var(--color-border-default);
     border-radius: var(--radius-md);
     padding: var(--spacing-4);
+  }
+
+  .error-banner {
+    margin-bottom: var(--spacing-3);
+    background: color-mix(in srgb, var(--color-severity-hard) 14%, transparent);
+    border: 1px solid var(--color-severity-hard);
+    border-radius: var(--radius-sm);
+    color: var(--color-severity-hard);
+    font-size: var(--font-size-sm);
+    padding: var(--spacing-2) var(--spacing-3);
   }
 
   .section h2 {

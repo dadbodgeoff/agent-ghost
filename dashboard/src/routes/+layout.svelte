@@ -32,6 +32,10 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeInstallPromptListener: (() => void) | null = null;
+  let removeSystemThemeListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -52,10 +56,13 @@
 
   function applyTheme() {
     const stored = localStorage.getItem('ghost-theme');
+    document.documentElement.classList.remove('light');
+
     if (stored === 'light') {
       document.documentElement.classList.add('light');
     } else if (stored === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+      const media = window.matchMedia('(prefers-color-scheme: light)');
+      if (media.matches) {
         document.documentElement.classList.add('light');
       }
     }
@@ -141,17 +148,37 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+      lastSync = new Date().toLocaleTimeString();
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredPrompt = e;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    const systemThemeQuery = window.matchMedia('(prefers-color-scheme: light)');
+    const handleSystemThemeChange = () => {
+      if (localStorage.getItem('ghost-theme') === 'system') {
+        applyTheme();
+      }
+    };
+    systemThemeQuery.addEventListener('change', handleSystemThemeChange);
+    removeSystemThemeListener = () =>
+      systemThemeQuery.removeEventListener('change', handleSystemThemeChange);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +190,14 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeInstallPromptListener?.();
+    removeInstallPromptListener = null;
+    removeSystemThemeListener?.();
+    removeSystemThemeListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -260,7 +295,7 @@
         <a href="/memory" class:active={$page.url.pathname.startsWith('/memory')} aria-current={$page.url.pathname.startsWith('/memory') ? 'page' : undefined}>Memory</a>
         <a href="/goals" class:active={$page.url.pathname.startsWith('/goals')} aria-current={$page.url.pathname.startsWith('/goals') ? 'page' : undefined}>Proposals</a>
         <a href="/sessions" class:active={$page.url.pathname.startsWith('/sessions')} aria-current={$page.url.pathname.startsWith('/sessions') ? 'page' : undefined}>Sessions</a>
-        <a href="/agents" class:active={$page.url.pathname === '/agents'} aria-current={$page.url.pathname === '/agents' ? 'page' : undefined}>Agents</a>
+        <a href="/agents" class:active={$page.url.pathname.startsWith('/agents')} aria-current={$page.url.pathname.startsWith('/agents') ? 'page' : undefined}>Agents</a>
         <a href="/workflows" class:active={$page.url.pathname.startsWith('/workflows')} aria-current={$page.url.pathname.startsWith('/workflows') ? 'page' : undefined}>Workflows</a>
         <a href="/skills" class:active={$page.url.pathname.startsWith('/skills')} aria-current={$page.url.pathname.startsWith('/skills') ? 'page' : undefined}>Skills</a>
         <a href="/studio" class:active={$page.url.pathname.startsWith('/studio')} aria-current={$page.url.pathname.startsWith('/studio') ? 'page' : undefined}>Studio</a>

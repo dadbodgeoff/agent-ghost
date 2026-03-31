@@ -165,6 +165,8 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
+    if (e.isComposing) return;
+
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
       e.preventDefault();
       open = !open;
@@ -186,6 +188,7 @@
       }
     }
     if (e.key === 'Escape' && open) {
+      e.preventDefault();
       open = false;
     }
   }
@@ -279,7 +282,7 @@
       if (item) {
         if (item.type === 'command') {
           frecencyTracker.record(item.item.id);
-          item.item.action();
+          void item.item.action();
           open = false;
         } else {
           const r = item.item;
@@ -345,7 +348,7 @@
                 onclick={() => {
                   if (item.type === 'command') {
                     frecencyTracker.record(item.item.id);
-                    item.item.action();
+                    void item.item.action();
                   } else {
                     const r = item.item;
                     const link = hrefForSearchResult(r, query.trim());

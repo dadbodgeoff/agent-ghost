@@ -31,6 +31,13 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function createNotificationId(): string {
+    if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+      return crypto.randomUUID();
+    }
+    return `notification-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   onMount(() => {
     loadFromStorage();
 
@@ -90,7 +97,7 @@
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
     const notification: AppNotification = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: createNotificationId(),
       timestamp: new Date().toISOString(),
       read: false,
     };
@@ -159,7 +166,17 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed)
+          ? parsed.filter((entry): entry is AppNotification =>
+              !!entry
+              && typeof entry.id === 'string'
+              && typeof entry.title === 'string'
+              && typeof entry.message === 'string'
+              && typeof entry.timestamp === 'string'
+              && typeof entry.read === 'boolean',
+            )
+          : [];
       }
     } catch { /* start fresh */ }
   }
@@ -172,6 +189,7 @@
 
 <div class="notification-wrapper">
   <button
+    type="button"
     class="bell-button"
     onclick={() => panelOpen = !panelOpen}
     aria-label="Notifications ({unreadCount} unread)"
@@ -191,7 +209,7 @@
       <div class="panel-header">
         <h3>Notifications</h3>
         {#if unreadCount > 0}
-          <button class="mark-read-btn" onclick={markAllRead}>Mark all read</button>
+          <button type="button" class="mark-read-btn" onclick={markAllRead}>Mark all read</button>
         {/if}
       </div>
 
