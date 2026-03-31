@@ -78,6 +78,8 @@
   );
 
   async function loadScores() {
+    loading = true;
+    error = '';
     try {
       const client = await getGhostClient();
       const [scoreData, healthData] = await Promise.all([
@@ -97,6 +99,8 @@
       }
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : 'Failed to load convergence data';
+      scores = [];
+      history = [];
     }
     loading = false;
   }
@@ -213,7 +217,7 @@
 {:else if error}
   <div class="error-state">
     <p>{error}</p>
-    <button onclick={() => location.reload()}>Retry</button>
+    <button type="button" onclick={loadScores}>Retry</button>
   </div>
 {:else if scores.length === 0}
   <div class="empty-state">

@@ -31,43 +31,83 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  type NotificationPayload = WsMessage & {
+    agent_id?: string;
+    status?: string;
+    new_state?: string;
+    reason?: string;
+    new_level?: string | number;
+    proposal_id?: string;
+    change?: string;
+  };
+
+  function asPayload(msg: WsMessage): NotificationPayload {
+    return msg as NotificationPayload;
+  }
+
+  function normalizeStoredNotifications(value: unknown): AppNotification[] {
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .filter((entry): entry is AppNotification => {
+        return Boolean(
+          entry
+          && typeof entry === 'object'
+          && typeof (entry as AppNotification).id === 'string'
+          && typeof (entry as AppNotification).type === 'string'
+          && typeof (entry as AppNotification).severity === 'string'
+          && typeof (entry as AppNotification).title === 'string'
+          && typeof (entry as AppNotification).message === 'string'
+          && typeof (entry as AppNotification).timestamp === 'string'
+          && typeof (entry as AppNotification).read === 'boolean',
+        );
+      })
+      .slice(0, MAX_NOTIFICATIONS);
+  }
+
   onMount(() => {
     loadFromStorage();
 
     unsubs.push(
       wsStore.on('AgentStateChange', (msg: WsMessage) => {
+        const payload = asPayload(msg);
+        const agentId = payload.agent_id?.trim();
         addNotification({
           type: 'agent_state',
           severity: 'info',
-          title: `Agent ${(msg as any).agent_id ?? 'unknown'} state changed`,
-          message: `New state: ${(msg as any).status ?? (msg as any).new_state ?? 'unknown'}`,
-          actionHref: `/agents/${(msg as any).agent_id}`,
-          agentId: (msg as any).agent_id as string,
+          title: `Agent ${agentId ?? 'unknown'} state changed`,
+          message: `New state: ${payload.status ?? payload.new_state ?? 'unknown'}`,
+          actionHref: agentId ? `/agents/${agentId}` : undefined,
+          agentId,
         });
       }),
       wsStore.on('KillSwitchActivation', (msg: WsMessage) => {
+        const payload = asPayload(msg);
         addNotification({
           type: 'safety_alert',
           severity: 'critical',
           title: 'Kill Switch Activated',
-          message: (msg as any).reason ?? 'No reason provided',
+          message: payload.reason ?? 'No reason provided',
           actionHref: '/security',
         });
       }),
       wsStore.on('InterventionChange', (msg: WsMessage) => {
+        const payload = asPayload(msg);
+        const agentId = payload.agent_id?.trim();
         addNotification({
           type: 'safety_alert',
           severity: 'warning',
           title: 'Intervention Level Changed',
-          message: `Agent ${(msg as any).agent_id}: level → ${(msg as any).new_level ?? 'unknown'}`,
+          message: `Agent ${agentId ?? 'unknown'}: level -> ${payload.new_level ?? 'unknown'}`,
           actionHref: '/convergence',
-          agentId: (msg as any).agent_id as string,
+          agentId,
         });
       }),
       wsStore.on('ProposalUpdated', (msg: WsMessage) => {
-        const proposalId = (msg as any).proposal_id ?? '';
-        const change = (msg as any).change ?? 'updated';
-        const status = (msg as any).status ?? 'updated';
+        const payload = asPayload(msg);
+        const proposalId = payload.proposal_id ?? '';
+        const change = payload.change ?? 'updated';
+        const status = payload.status ?? 'updated';
         addNotification({
           type: 'approval_request',
           severity: 'info',
@@ -130,7 +170,7 @@
     markRead(n.id);
     panelOpen = false;
     if (n.actionHref) {
-      goto(n.actionHref);
+      void goto(n.actionHref);
     }
   }
 
@@ -159,7 +199,7 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        notifications = normalizeStoredNotifications(JSON.parse(stored));
       }
     } catch { /* start fresh */ }
   }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { onMount } from 'svelte';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
   import {
@@ -13,9 +14,9 @@
   type ThemeChoice = 'dark' | 'light' | 'system';
 
   let theme: ThemeChoice = $state('dark');
+  let logoutWarning = $state('');
 
-  // Initialize from localStorage on mount.
-  $effect(() => {
+  onMount(() => {
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light' || stored === 'system') {
       theme = stored;
@@ -66,13 +67,20 @@
 
     const result = { remoteSucceeded, reason };
     if (!result.remoteSucceeded && result.reason) {
-      alert(`Signed out locally, but the server logout endpoint did not confirm revocation: ${result.reason}`);
+      logoutWarning = `Signed out locally, but the server logout endpoint did not confirm revocation: ${result.reason}`;
     }
-    goto('/login');
+    await goto('/login');
   }
 </script>
 
 <h1 class="page-title">Settings</h1>
+
+{#if logoutWarning}
+  <div class="warning-banner" role="alert">
+    <span>{logoutWarning}</span>
+    <button type="button" onclick={() => (logoutWarning = '')}>Dismiss</button>
+  </div>
+{/if}
 
 <div class="section">
   <h2 class="section-title">Theme</h2>
@@ -136,6 +144,27 @@
     border-radius: var(--radius-md);
     padding: var(--layout-card-padding);
     margin-bottom: var(--spacing-4);
+  }
+
+  .warning-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-3);
+    margin-bottom: var(--spacing-4);
+    padding: var(--spacing-3) var(--spacing-4);
+    border: 1px solid var(--color-severity-active);
+    border-radius: var(--radius-md);
+    background: var(--color-severity-active-bg);
+    color: var(--color-text-primary);
+  }
+
+  .warning-banner button {
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: var(--spacing-1) var(--spacing-3);
+    background: var(--color-bg-elevated-3);
+    color: var(--color-text-primary);
   }
 
   .section-title {

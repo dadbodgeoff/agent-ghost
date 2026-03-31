@@ -32,6 +32,9 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let onlineListener: (() => void) | null = null;
+  let offlineListener: (() => void) | null = null;
+  let beforeInstallPromptListener: ((event: Event) => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -82,6 +85,21 @@
     }
 
     return `This ${clientLabel} build is incompatible with gateway ${assessment.gatewayVersion}. Update the client before continuing.`;
+  }
+
+  function handleOnline() {
+    offline = false;
+  }
+
+  function handleOffline() {
+    offline = true;
+    lastSync = new Date().toLocaleTimeString();
+  }
+
+  function handleBeforeInstallPrompt(event: Event) {
+    event.preventDefault();
+    deferredPrompt = event;
+    showInstallPrompt = true;
   }
 
   onMount(async () => {
@@ -141,17 +159,12 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
-      offline = true;
-      lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      showInstallPrompt = true;
-    });
+    onlineListener = handleOnline;
+    offlineListener = handleOffline;
+    beforeInstallPromptListener = handleBeforeInstallPrompt;
+    window.addEventListener('online', onlineListener);
+    window.addEventListener('offline', offlineListener);
+    window.addEventListener('beforeinstallprompt', beforeInstallPromptListener);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +176,18 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    if (onlineListener) {
+      window.removeEventListener('online', onlineListener);
+      onlineListener = null;
+    }
+    if (offlineListener) {
+      window.removeEventListener('offline', offlineListener);
+      offlineListener = null;
+    }
+    if (beforeInstallPromptListener) {
+      window.removeEventListener('beforeinstallprompt', beforeInstallPromptListener);
+      beforeInstallPromptListener = null;
+    }
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -253,7 +278,7 @@
 {:else}
   <PanelLayout>
     {#snippet sidebar()}
-      <nav aria-label="Primary navigation">
+      <nav aria-label="Primary navigation" data-sveltekit-preload-data="hover">
         <div class="logo" role="banner">GHOST</div>
         <a href="/" class:active={$page.url.pathname === '/'} aria-current={$page.url.pathname === '/' ? 'page' : undefined}>Overview</a>
         <a href="/convergence" class:active={$page.url.pathname === '/convergence'} aria-current={$page.url.pathname === '/convergence' ? 'page' : undefined}>Convergence</a>

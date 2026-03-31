@@ -30,9 +30,12 @@
   let auditError = $state('');
   let reviewError = $state('');
   let agentsError = $state('');
+  let actionError = $state('');
   let focusedAuditId = $state('');
   let mounted = $state(false);
   let lastUrlState = $state('');
+  let killingAll = $state(false);
+  let exportingFormat = $state<NonNullable<AuditExportParams['format']> | ''>('');
   let activeFilters = $state<SecurityFilterState>({
     from: '',
     to: '',
@@ -191,16 +194,22 @@
     if (!confirm('Are you sure you want to trigger KILL_ALL? This will stop all agents.')) {
       return;
     }
+    actionError = '';
+    killingAll = true;
     try {
       const client = await getGhostClient();
       await client.safety.killAll('Manual trigger from dashboard', 'dashboard_ui');
       await refreshSecuritySurface();
     } catch (e: unknown) {
-      alert('Failed to trigger kill switch: ' + (e instanceof Error ? e.message : String(e)));
+      actionError = e instanceof Error ? e.message : 'Failed to trigger kill switch';
+    } finally {
+      killingAll = false;
     }
   }
 
   async function exportAudit(format: NonNullable<AuditExportParams['format']>) {
+    actionError = '';
+    exportingFormat = format;
     try {
       const client = await getGhostClient();
       const blob = await client.audit.exportBlob(buildAuditExportParams(activeFilters, format));
@@ -211,7 +220,9 @@
       a.click();
       URL.revokeObjectURL(url);
     } catch (e: unknown) {
-      alert('Export failed: ' + (e instanceof Error ? e.message : String(e)));
+      actionError = e instanceof Error ? e.message : 'Export failed';
+    } finally {
+      exportingFormat = '';
     }
   }
 
@@ -233,6 +244,13 @@
 </script>
 
 <h1 class="page-title">Security</h1>
+
+{#if actionError}
+  <div class="error-banner" role="alert">
+    <span>{actionError}</span>
+    <button type="button" onclick={() => (actionError = '')}>Dismiss</button>
+  </div>
+{/if}
 
 {#if loading}
   <div class="skeleton-block">&nbsp;</div>
