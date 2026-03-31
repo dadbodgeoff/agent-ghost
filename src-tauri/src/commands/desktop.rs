@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, PtyPair, PtySize};
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutBinding {
@@ -89,6 +89,10 @@ struct TerminalSession {
 pub struct DesktopTerminalState {
     next_session_id: AtomicU32,
     sessions: RwLock<BTreeMap<u32, Arc<TerminalSession>>>,
+}
+
+fn clamp_terminal_dimension(value: u16) -> u16 {
+    value.max(1)
 }
 
 fn desktop_state_path() -> Result<PathBuf, String> {
@@ -194,6 +198,26 @@ fn session_for(
         .ok_or_else(|| format!("terminal session {session_id} not found"))
 }
 
+fn remove_terminal_session(
+    state: &DesktopTerminalState,
+    session_id: u32,
+) -> Result<Option<Arc<TerminalSession>>, String> {
+    state
+        .sessions
+        .write()
+        .map_err(|_| "terminal session registry poisoned".to_string())?
+        .remove(&session_id)
+        .ok_or_else(|| format!("terminal session {session_id} not found"))
+        .map(Some)
+        .or_else(|error| {
+            if error.contains("not found") {
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        })
+}
+
 #[tauri::command]
 pub async fn read_keybindings() -> Result<Vec<ShortcutBinding>, String> {
     let path = ghost_config_path("keybindings.json")?;
@@ -275,8 +299,8 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
-            rows,
-            cols,
+            rows: clamp_terminal_dimension(rows),
+            cols: clamp_terminal_dimension(cols),
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -302,7 +326,10 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
         .map_err(|error| format!("Failed to spawn shell: {error}"))?;
     let child_killer = child.clone_killer();
 
-    let session_id = terminal_state.next_session_id.fetch_add(1, Ordering::Relaxed);
+    let session_id = terminal_state
+        .next_session_id
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
     let session = Arc::new(TerminalSession {
         pair: Mutex::new(pair),
         child: Mutex::new(child),
@@ -348,6 +375,10 @@ pub async fn open_terminal_session<R: tauri::Runtime>(
                 exit_code: exit_code as i32,
             },
         );
+
+        if let Some(state) = app_handle_clone.try_state::<DesktopTerminalState>() {
+            let _ = remove_terminal_session(&state, session_id);
+        }
     });
 
     Ok(session_id)
@@ -360,13 +391,14 @@ pub async fn write_terminal_input(
     data: String,
 ) -> Result<(), String> {
     let session = session_for(&terminal_state, session_id)?;
-    let result = session
+    let mut writer = session
         .writer
         .lock()
-        .map_err(|_| "terminal writer poisoned".to_string())?
+        .map_err(|_| "terminal writer poisoned".to_string())?;
+    writer
         .write_all(data.as_bytes())
-        .map_err(|error| format!("Failed to write terminal input: {error}"));
-    result
+        .and_then(|_| writer.flush())
+        .map_err(|error| format!("Failed to write terminal input: {error}"))
 }
 
 #[tauri::command]
@@ -383,8 +415,8 @@ pub async fn resize_terminal_session(
         .map_err(|_| "terminal pair poisoned".to_string())?
         .master
         .resize(PtySize {
-            rows,
-            cols,
+            rows: clamp_terminal_dimension(rows),
+            cols: clamp_terminal_dimension(cols),
             pixel_width: 0,
             pixel_height: 0,
         })
@@ -397,13 +429,14 @@ pub async fn close_terminal_session(
     terminal_state: tauri::State<'_, DesktopTerminalState>,
     session_id: u32,
 ) -> Result<(), String> {
-    let session = session_for(&terminal_state, session_id)?;
-    session
-        .child_killer
-        .lock()
-        .map_err(|_| "terminal killer poisoned".to_string())?
-        .kill()
-        .map_err(|error| format!("Failed to close terminal session: {error}"))?;
+    let Some(session) = remove_terminal_session(&terminal_state, session_id)? else {
+        return Ok(());
+    };
+
+    if let Ok(mut killer) = session.child_killer.lock() {
+        let _ = killer.kill();
+    }
+
     Ok(())
 }
 
@@ -502,6 +535,13 @@ mod tests {
 
         assert!(error.contains("Failed to parse keybindings"));
         assert!(error.contains("keybindings.json"));
+    }
+
+    #[test]
+    fn clamp_terminal_dimension_never_returns_zero() {
+        assert_eq!(clamp_terminal_dimension(0), 1);
+        assert_eq!(clamp_terminal_dimension(1), 1);
+        assert_eq!(clamp_terminal_dimension(120), 120);
     }
 
     #[tokio::test]

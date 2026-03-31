@@ -9,7 +9,28 @@ use crate::error::GhostDesktopError;
 pub struct GatewayProcess(pub Mutex<Option<CommandChild>>);
 
 /// Port resolved from ghost.yml, cached for the app lifetime.
-pub struct GatewayPort(pub u16);
+pub struct GatewayPort(pub Mutex<u16>);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GatewayLifecycle {
+    Stopped,
+    Starting,
+    Healthy,
+    Unreachable,
+}
+
+impl GatewayLifecycle {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Starting => "starting",
+            Self::Healthy => "healthy",
+            Self::Unreachable => "unreachable",
+        }
+    }
+}
+
+pub struct GatewayRuntimeStatus(pub Mutex<GatewayLifecycle>);
 
 // ── Minimal config parsing (no ghost-gateway dependency) ───────────
 
@@ -90,6 +111,40 @@ fn resolve_desktop_gateway_token() -> String {
     format!("ghost-desktop-{}", uuid::Uuid::now_v7())
 }
 
+fn set_gateway_port(handle: &AppHandle, port: u16) {
+    if let Some(state) = handle.try_state::<GatewayPort>() {
+        if let Ok(mut guard) = state.0.try_lock() {
+            *guard = port;
+        }
+    }
+}
+
+fn read_cached_gateway_port(handle: &AppHandle) -> u16 {
+    if let Some(state) = handle.try_state::<GatewayPort>() {
+        if let Ok(guard) = state.0.try_lock() {
+            return *guard;
+        }
+    }
+    39780
+}
+
+fn set_gateway_status(handle: &AppHandle, status: GatewayLifecycle) {
+    if let Some(state) = handle.try_state::<GatewayRuntimeStatus>() {
+        if let Ok(mut guard) = state.0.try_lock() {
+            *guard = status;
+        }
+    }
+}
+
+fn read_gateway_status(handle: &AppHandle) -> GatewayLifecycle {
+    if let Some(state) = handle.try_state::<GatewayRuntimeStatus>() {
+        if let Ok(guard) = state.0.try_lock() {
+            return *guard;
+        }
+    }
+    GatewayLifecycle::Unreachable
+}
+
 pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     let config_path = resolve_config_path(&handle);
     let desktop_gateway_token = resolve_desktop_gateway_token();
@@ -101,10 +156,8 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     })?;
 
     let port = read_port_from_config(&config_path);
-
-
-    // Store port for other commands to use.
-    handle.manage(GatewayPort(port));
+    set_gateway_port(&handle, port);
+    set_gateway_status(&handle, GatewayLifecycle::Starting);
 
     let health_url = format!("http://127.0.0.1:{port}/api/health");
 
@@ -117,7 +170,19 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     if let Ok(resp) = client.get(&health_url).send().await {
         if resp.status().is_success() {
             log::info!("Gateway already healthy on port {port} — skipping sidecar launch");
-            handle.manage(GatewayProcess(Mutex::new(None)));
+            if let Some(state) = handle.try_state::<GatewayProcess>() {
+                let mut guard = state.0.lock().await;
+                *guard = None;
+            }
+            set_gateway_status(&handle, GatewayLifecycle::Healthy);
+            return Ok(());
+        }
+    }
+
+    if let Some(state) = handle.try_state::<GatewayProcess>() {
+        let guard = state.0.lock().await;
+        if guard.is_some() {
+            log::info!("Gateway sidecar already managed on port {port} — skipping duplicate launch");
             return Ok(());
         }
     }
@@ -196,9 +261,13 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
     })?;
 
     // Store child handle for shutdown.
-    handle.manage(GatewayProcess(Mutex::new(Some(child))));
+    if let Some(state) = handle.try_state::<GatewayProcess>() {
+        let mut guard = state.0.lock().await;
+        *guard = Some(child);
+    }
 
     // Log sidecar stdout/stderr.
+    let log_handle = handle.clone();
     tauri::async_runtime::spawn(async move {
         use tauri_plugin_shell::process::CommandEvent;
         while let Some(event) = rx.recv().await {
@@ -211,6 +280,11 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
                 }
                 CommandEvent::Terminated(status) => {
                     log::info!("[gateway] exited: {status:?}");
+                    if let Some(state) = log_handle.try_state::<GatewayProcess>() {
+                        let mut guard = state.0.lock().await;
+                        *guard = None;
+                    }
+                    set_gateway_status(&log_handle, GatewayLifecycle::Stopped);
                     break;
                 }
                 _ => {}
@@ -226,10 +300,13 @@ pub async fn auto_start(handle: AppHandle) -> Result<(), GhostDesktopError> {
             .unwrap_or(false)
         {
             log::info!("Gateway healthy on port {port} after {}ms", i * 500);
+            set_gateway_status(&handle, GatewayLifecycle::Healthy);
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+    auto_stop(handle.clone()).await;
+    set_gateway_status(&handle, GatewayLifecycle::Unreachable);
     Err(GhostDesktopError::HealthCheckFailed {
         reason: format!("Gateway failed to become healthy on port {port} within 15s"),
     })
@@ -245,6 +322,7 @@ pub async fn auto_stop(handle: AppHandle) {
             log::info!("No sidecar to stop (external gateway or already stopped)");
         }
     }
+    set_gateway_status(&handle, GatewayLifecycle::Stopped);
 }
 
 #[tauri::command]
@@ -260,20 +338,27 @@ pub async fn stop_gateway(handle: AppHandle) -> Result<String, GhostDesktopError
 
 #[tauri::command]
 pub async fn gateway_status(handle: AppHandle) -> Result<String, GhostDesktopError> {
-    let port = handle
-        .try_state::<GatewayPort>()
-        .map(|p| p.0)
-        .unwrap_or(39780);
+    let port = read_cached_gateway_port(&handle);
     match reqwest::get(format!("http://127.0.0.1:{port}/api/health")).await {
-        Ok(r) if r.status().is_success() => Ok("healthy".into()),
-        _ => Ok("unreachable".into()),
+        Ok(r) if r.status().is_success() => {
+            set_gateway_status(&handle, GatewayLifecycle::Healthy);
+            Ok(GatewayLifecycle::Healthy.as_str().into())
+        }
+        _ => {
+            if let Some(state) = handle.try_state::<GatewayProcess>() {
+                let guard = state.0.lock().await;
+                if guard.is_some() {
+                    set_gateway_status(&handle, GatewayLifecycle::Starting);
+                    return Ok(GatewayLifecycle::Starting.as_str().into());
+                }
+            }
+
+            Ok(read_gateway_status(&handle).as_str().into())
+        }
     }
 }
 
 #[tauri::command]
 pub fn gateway_port(handle: AppHandle) -> u16 {
-    handle
-        .try_state::<GatewayPort>()
-        .map(|p| p.0)
-        .unwrap_or(39780)
+    read_cached_gateway_port(&handle)
 }

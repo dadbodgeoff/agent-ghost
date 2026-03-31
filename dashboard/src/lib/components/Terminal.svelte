@@ -70,11 +70,17 @@
   });
 
   onDestroy(() => {
-    void pty?.close();
-    ptyDisposables.forEach((d) => d.dispose());
+    const activePty = pty;
+    pty = null;
+    const disposables = ptyDisposables;
     ptyDisposables = [];
+    disposables.forEach((d) => d.dispose());
     resizeObserver?.disconnect();
+    resizeObserver = null;
+    void activePty?.close();
     term?.dispose();
+    term = null;
+    fitAddon = null;
   });
 
   async function startPty(runtime: Awaited<ReturnType<typeof getRuntime>>) {
@@ -111,6 +117,7 @@
       // Handle exit
       const exitSub = activePty.onExit(({ exitCode }: { exitCode: number }) => {
         term?.writeln(`\r\n[Process exited with code ${exitCode}]`);
+        pty = null;
       });
       ptyDisposables.push(exitSub);
     } catch (err) {

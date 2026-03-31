@@ -4,6 +4,7 @@ mod menu;
 mod tray;
 
 use tauri::Manager;
+use tokio::sync::Mutex;
 
 pub fn run() {
     tauri::Builder::default()
@@ -38,6 +39,11 @@ pub fn run() {
             menu::create(app)?;
 
             app.manage(commands::desktop::DesktopTerminalState::default());
+            app.manage(commands::gateway::GatewayProcess(Mutex::new(None)));
+            app.manage(commands::gateway::GatewayPort(Mutex::new(39780)));
+            app.manage(commands::gateway::GatewayRuntimeStatus(Mutex::new(
+                commands::gateway::GatewayLifecycle::Stopped,
+            )));
 
             // --- Auto-start gateway sidecar ---
             let handle = app.handle().clone();
