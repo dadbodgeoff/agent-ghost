@@ -15,6 +15,7 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  let error = $state('');
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -45,7 +46,10 @@
       const saved = localStorage.getItem('ghost-push-categories');
       if (saved) {
         try {
-          enabledCategories = JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+            enabledCategories = parsed;
+          }
         } catch { /* use defaults */ }
       }
     }
@@ -53,53 +57,76 @@
 
   async function togglePush() {
     if (!pushSupported) return;
+    error = '';
 
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        try {
+          await subscribePush();
+          pushEnabled = true;
+        } catch (e: unknown) {
+          pushEnabled = false;
+          error = e instanceof Error ? e.message : 'Failed to enable push notifications';
+        }
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      try {
+        await unsubscribePush();
+        pushEnabled = false;
+      } catch (e: unknown) {
+        pushEnabled = true;
+        error = e instanceof Error ? e.message : 'Failed to disable push notifications';
+      }
     }
   }
 
   async function subscribePush() {
-    try {
-      const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
-      const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
-
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: decodeApplicationServerKey(keyData.key),
-      });
-      const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
-      await client.push.subscribe(payload);
-    } catch {
-      // Push subscription failed.
+    if (!('serviceWorker' in navigator)) {
+      throw new Error('Service workers are unavailable in this browser');
     }
+    const client = await getGhostClient();
+    const reg = await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+    if (existing) {
+      const existingPayload = pushSubscriptionToPayload(existing.toJSON());
+      if (existingPayload) {
+        await client.push.subscribe(existingPayload);
+      }
+      return;
+    }
+
+    const keyData = await client.push.getVapidKey();
+    if (!keyData.key) {
+      throw new Error('Gateway did not return a VAPID key');
+    }
+
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: decodeApplicationServerKey(keyData.key),
+    });
+    const payload = pushSubscriptionToPayload(sub.toJSON());
+    if (!payload) {
+      await sub.unsubscribe().catch(() => {});
+      throw new Error('Browser returned an incomplete push subscription');
+    }
+    await client.push.subscribe(payload);
   }
 
   async function unsubscribePush() {
-    try {
-      const client = await getGhostClient();
-      const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.getSubscription();
-      if (sub) {
-        const payload = pushSubscriptionToPayload(sub.toJSON());
-        if (payload) {
-          await client.push.unsubscribe(payload);
-        }
-        await sub.unsubscribe();
+    if (!('serviceWorker' in navigator)) {
+      return;
+    }
+    const client = await getGhostClient();
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      const payload = pushSubscriptionToPayload(sub.toJSON());
+      if (payload) {
+        await client.push.unsubscribe(payload);
       }
-    } catch {
-      // Unsubscribe failed.
+      await sub.unsubscribe();
     }
   }
 
@@ -114,15 +141,19 @@
 
   async function sendTestNotification() {
     testSending = true;
+    error = '';
     try {
+      if (!('serviceWorker' in navigator)) {
+        throw new Error('Service workers are unavailable in this browser');
+      }
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
         icon: '/icons/ghost-192.png',
         tag: 'ghost-test',
       });
-    } catch {
-      // Test failed.
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : 'Failed to send test notification';
     } finally {
       testSending = false;
     }
@@ -134,6 +165,10 @@
     <h1>Notifications</h1>
     <p class="subtitle">Configure push notification preferences</p>
   </header>
+
+  {#if error}
+    <div class="error-banner" role="alert">{error}</div>
+  {/if}
 
   {#if !pushSupported}
     <div class="unsupported">
@@ -224,6 +259,15 @@
     color: var(--color-severity-active);
     padding: var(--spacing-3) var(--spacing-4);
     border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+  }
+
+  .error-banner {
+    background: color-mix(in srgb, var(--color-severity-hard) 16%, transparent);
+    color: var(--color-severity-hard);
+    border: 1px solid var(--color-severity-hard);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-3) var(--spacing-4);
     font-size: var(--font-size-sm);
   }
 

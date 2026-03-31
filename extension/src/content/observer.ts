@@ -21,7 +21,9 @@ const adapters: BasePlatformAdapter[] = [
 
 function init(): void {
   const url = window.location.href;
-  const adapter = adapters.find(a => a.matches(url));
+  const adapter = adapters.find((a) => a.matches(url));
+  const platform = new URL(url).hostname;
+  const sessionId = generateSessionId();
 
   if (!adapter) {
     console.log('[GHOST] No adapter for this page');
@@ -33,8 +35,8 @@ function init(): void {
   // Notify session start
   chrome.runtime.sendMessage({
     type: 'SESSION_START',
-    platform: url,
-    sessionId: generateSessionId(),
+    platform,
+    sessionId,
   });
 
   // Observe new messages
@@ -42,10 +44,10 @@ function init(): void {
     const contentHash = await adapter.hashContent(msg.content);
     chrome.runtime.sendMessage({
       type: 'NEW_MESSAGE',
-      platform: url,
+      platform,
       role: msg.role,
       contentHash,
-      sessionId: generateSessionId(),
+      sessionId,
     });
   });
 }

@@ -24,14 +24,20 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt(): Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let cleanupHandlers: Array<() => void> = [];
 
   let wsState = $derived(wsStore.state);
 
@@ -88,6 +94,7 @@
     applyTheme();
 
     runtime = await getRuntime();
+    cleanupHandlers = [];
     unsubscribeTokenChange = runtime.subscribeTokenChange((token) => {
       if (!token) {
         authSessionStore.clear();
@@ -125,7 +132,13 @@
           return;
         }
         bootError = 'Dashboard could not verify the current session. The gateway may be unavailable.';
+        return;
       }
+    }
+
+    if (currentPath === '/login') {
+      shortcuts.init();
+      return;
     }
 
     await wsStore.connect();
@@ -141,17 +154,27 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    if (offline) {
+      lastSync = new Date().toLocaleTimeString();
+    }
+
+    const handleOnline = () => (offline = false);
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    cleanupHandlers.push(() => window.removeEventListener('online', handleOnline));
+    cleanupHandlers.push(() => window.removeEventListener('offline', handleOffline));
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    cleanupHandlers.push(() => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt));
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -161,6 +184,10 @@
   });
 
   onDestroy(() => {
+    for (const cleanup of cleanupHandlers) {
+      cleanup();
+    }
+    cleanupHandlers = [];
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
     wsStore.disconnect();
@@ -192,7 +219,9 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!('PushManager' in window) || typeof Notification === 'undefined' || !('serviceWorker' in navigator)) {
+      return;
+    }
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 

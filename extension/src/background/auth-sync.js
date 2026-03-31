@@ -1,31 +1,18 @@
 /**
- * JWT auth sync between extension and GHOST dashboard (T-4.9.1).
- *
- * Reads JWT token from chrome.storage.local and validates it against
- * the gateway /api/health endpoint. Syncs auth state with dashboard.
+ * JWT auth sync between extension and GHOST dashboard.
  */
 
 const GATEWAY_URL_KEY = 'ghost-gateway-url';
 const JWT_TOKEN_KEY = 'ghost-jwt-token';
 
-export interface AuthState {
-  authenticated: boolean;
-  gatewayUrl: string;
-  token: string | null;
-  lastValidated: number;
-}
-
-const currentState: AuthState = {
+const currentState = {
   authenticated: false,
   gatewayUrl: 'http://localhost:39780',
   token: null,
   lastValidated: 0,
 };
 
-/**
- * Initialize auth sync — loads stored credentials and validates.
- */
-export async function initAuthSync(): Promise<AuthState> {
+export async function initAuthSync() {
   const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
   currentState.gatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
   currentState.token = stored[JWT_TOKEN_KEY] || null;
@@ -37,13 +24,10 @@ export async function initAuthSync(): Promise<AuthState> {
     currentState.lastValidated = 0;
   }
 
-  return currentState;
+  return { ...currentState };
 }
 
-/**
- * Store JWT token from dashboard login.
- */
-export async function storeToken(token: string, gatewayUrl?: string): Promise<void> {
+export async function storeToken(token, gatewayUrl) {
   currentState.token = token;
   if (gatewayUrl) {
     currentState.gatewayUrl = gatewayUrl;
@@ -57,20 +41,14 @@ export async function storeToken(token: string, gatewayUrl?: string): Promise<vo
   await validateToken();
 }
 
-/**
- * Clear stored token.
- */
-export async function clearToken(): Promise<void> {
+export async function clearToken() {
   currentState.token = null;
   currentState.authenticated = false;
   currentState.lastValidated = 0;
   await chrome.storage.local.remove([JWT_TOKEN_KEY]);
 }
 
-/**
- * Validate the current token against the gateway.
- */
-async function validateToken(): Promise<boolean> {
+async function validateToken() {
   if (!currentState.token) {
     currentState.authenticated = false;
     currentState.lastValidated = 0;
@@ -94,9 +72,6 @@ async function validateToken(): Promise<boolean> {
   }
 }
 
-/**
- * Get current auth state.
- */
-export function getAuthState(): AuthState {
+export function getAuthState() {
   return { ...currentState };
 }
