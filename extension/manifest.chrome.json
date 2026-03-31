@@ -10,6 +10,8 @@
     "identity"
   ],
   "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
     "https://chat.openai.com/*",
     "https://chatgpt.com/*",
     "https://claude.ai/*",
