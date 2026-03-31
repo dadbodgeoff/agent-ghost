@@ -5,6 +5,7 @@
   "description": "Passive convergence monitoring for AI chat platforms",
   "permissions": [
     "storage",
+    "alarms",
     "nativeMessaging",
     "activeTab",
     "identity"

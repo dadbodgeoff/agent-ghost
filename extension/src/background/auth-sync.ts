@@ -73,16 +73,28 @@ async function validateToken(): Promise<boolean> {
   }
 
   try {
-    const resp = await fetch(`${currentState.gatewayUrl}/api/health`, {
+    const sessionResp = await fetch(`${currentState.gatewayUrl}/api/auth/session`, {
       headers: {
         Authorization: `Bearer ${currentState.token}`,
       },
       signal: AbortSignal.timeout(5000),
     });
 
-    currentState.authenticated = resp.ok;
+    if (sessionResp.status === 404) {
+      const healthResp = await fetch(`${currentState.gatewayUrl}/api/health`, {
+        headers: {
+          Authorization: `Bearer ${currentState.token}`,
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+      currentState.authenticated = healthResp.ok;
+      currentState.lastValidated = Date.now();
+      return healthResp.ok;
+    }
+
+    currentState.authenticated = sessionResp.ok;
     currentState.lastValidated = Date.now();
-    return resp.ok;
+    return sessionResp.ok;
   } catch {
     currentState.authenticated = false;
     return false;
