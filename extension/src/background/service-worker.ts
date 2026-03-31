@@ -2,9 +2,27 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
 import { ITPEmitter } from './itp-emitter';
+import { initAutoSync } from '../storage/sync';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync().catch(() => {
+  console.warn('[GHOST] Failed to initialize auth sync');
+});
+initAutoSync();
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (
+    areaName === 'local' &&
+    ('ghost-jwt-token' in changes || 'ghost-gateway-url' in changes)
+  ) {
+    void initAuthSync().catch(() => {
+      console.warn('[GHOST] Failed to refresh auth sync');
+    });
+  }
+});
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

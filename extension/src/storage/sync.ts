@@ -80,7 +80,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
 
       for (const event of events) {
         try {
-          await fetch(`${auth.gatewayUrl}/api/memory`, {
+          const response = await fetch(`${auth.gatewayUrl}/api/memory`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -93,6 +93,11 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
             }),
             signal: AbortSignal.timeout(5000),
           });
+
+          if (!response.ok) {
+            failed++;
+            break;
+          }
 
           // Mark as synced.
           const updateTx = db.transaction(PENDING_STORE, 'readwrite');
