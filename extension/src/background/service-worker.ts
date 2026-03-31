@@ -2,9 +2,21 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
 import { ITPEmitter } from './itp-emitter';
+import { initAutoSync } from '../storage/sync';
 
 const emitter = new ITPEmitter();
+
+async function bootstrap(): Promise<void> {
+  await initAuthSync();
+  initAutoSync();
+  emitter.refreshScore();
+}
+
+void bootstrap().catch((error) => {
+  console.error('[GHOST] Background bootstrap failed', error);
+});
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
