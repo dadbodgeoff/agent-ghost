@@ -2,8 +2,72 @@
  * Popup script — displays convergence score and signals.
  */
 
-import { getAuthState } from '../background/auth-sync';
+import { getAuthState, initAuthSync } from '../background/auth-sync';
 import { getAgents } from '../background/gateway-client';
+
+const SIGNAL_NAMES = [
+  'Session Duration',
+  'Inter-Session Gap',
+  'Response Latency',
+  'Vocabulary Convergence',
+  'Goal Boundary Erosion',
+  'Initiative Balance',
+  'Disengagement Resistance',
+];
+
+const LEVEL_LABELS = [
+  'Level 0 - Normal',
+  'Level 1 - Soft',
+  'Level 2 - Active',
+  'Level 3 - Hard',
+  'Level 4 - External',
+];
+
+const LEVEL_CLASSES = ['level-0', 'level-1', 'level-2', 'level-3', 'level-4'];
+
+let sessionStartTime: number | null = null;
+
+function scoreColor(score: number): string {
+  if (score < 0.3) return '#22c55e';
+  if (score < 0.5) return '#eab308';
+  if (score < 0.7) return '#f97316';
+  return '#ef4444';
+}
+
+function renderSignalList(): void {
+  const container = document.getElementById('signalList');
+  if (!container) return;
+
+  container.innerHTML = SIGNAL_NAMES.map(
+    (name, index) => `
+      <div class="signal-row">
+        <span class="signal-name">${name}</span>
+        <span class="signal-value" id="signal-value-${index}">0.000</span>
+        <div class="signal-bar">
+          <div class="signal-bar-fill" id="signal-bar-${index}" style="width:0%"></div>
+        </div>
+      </div>
+    `
+  ).join('');
+}
+
+function startSessionTimer(): void {
+  sessionStartTime = Date.now();
+  const durationEl = document.getElementById('sessionDuration');
+  if (!durationEl) return;
+
+  const tick = () => {
+    if (sessionStartTime == null) return;
+    const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
+    const hours = Math.floor(elapsed / 3600);
+    const minutes = Math.floor((elapsed % 3600) / 60);
+    const seconds = elapsed % 60;
+    durationEl.textContent = `${hours}h ${minutes}m ${seconds}s`;
+  };
+
+  tick();
+  setInterval(tick, 1000);
+}
 
 /**
  * Update the connection indicator (statusDot + statusLabel).
@@ -66,55 +130,80 @@ async function loadSyncStatus(): Promise<void> {
 }
 
 function updateUI(data: { score: number; level: number; signals: number[] }): void {
-  const scoreEl = document.getElementById('score');
-  const levelEl = document.getElementById('level');
+  const scoreEl = document.getElementById('scoreValue');
+  const levelEl = document.getElementById('levelBadge');
+  const platformEl = document.getElementById('platform');
 
-  if (scoreEl) scoreEl.textContent = data.score.toFixed(2);
+  if (scoreEl) {
+    scoreEl.textContent = data.score.toFixed(2);
+    (scoreEl as HTMLElement).style.color = scoreColor(data.score);
+  }
   if (levelEl) {
-    levelEl.textContent = `Level ${data.level}`;
-    levelEl.className = `level level-${data.level}`;
+    levelEl.textContent = LEVEL_LABELS[data.level] || `Level ${data.level}`;
+    levelEl.className = `level-badge ${LEVEL_CLASSES[data.level] || 'level-0'}`;
+  }
+  if (platformEl) {
+    platformEl.textContent = 'Browser extension';
   }
 
-  const signalIds = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
   data.signals.forEach((val, i) => {
-    const el = document.getElementById(signalIds[i]);
-    if (el) el.textContent = val.toFixed(2);
+    const valueEl = document.getElementById(`signal-value-${i}`);
+    const barEl = document.getElementById(`signal-bar-${i}`);
+    if (valueEl) {
+      valueEl.textContent = val.toFixed(3);
+    }
+    if (barEl) {
+      (barEl as HTMLElement).style.width = `${(val * 100).toFixed(0)}%`;
+      (barEl as HTMLElement).style.background = scoreColor(val);
+    }
   });
 
   // Alert banner
-  const alertEl = document.getElementById('alert');
-  const alertText = document.getElementById('alert-text');
-  if (data.level >= 3 && alertEl && alertText) {
-    alertEl.classList.add('visible');
-    alertText.textContent = `Convergence level ${data.level} detected. Consider taking a break.`;
+  const alertEl = document.getElementById('alertBanner');
+  if (!alertEl) return;
+
+  if (data.level >= 3) {
+    alertEl.className = 'alert-banner active alert-danger';
+    alertEl.textContent =
+      data.level === 4
+        ? 'Intervention Level 4 - External escalation active'
+        : `Intervention Level ${data.level} - Session may be terminated`;
+  } else if (data.level >= 2) {
+    alertEl.className = 'alert-banner active alert-warning';
+    alertEl.textContent = 'Intervention Level 2 - Acknowledgment required';
+  } else {
+    alertEl.className = 'alert-banner';
+    alertEl.textContent = '';
   }
 }
 
-// Request score from background
-chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
-  if (response && response.score !== undefined) {
-    const level = response.score > 0.85 ? 4 :
-                  response.score > 0.7 ? 3 :
-                  response.score > 0.5 ? 2 :
-                  response.score > 0.3 ? 1 : 0;
+function requestScore(): void {
+  chrome.runtime.sendMessage({ type: 'GET_SCORE' }, (response) => {
+    if (!response || response.score === undefined) {
+      return;
+    }
+
+    const level =
+      response.score > 0.85 ? 4 :
+      response.score > 0.7 ? 3 :
+      response.score > 0.5 ? 2 :
+      response.score > 0.3 ? 1 : 0;
+
     updateUI({
       score: response.score,
       level,
       signals: [0, 0, 0, 0, 0, 0, 0],
     });
-  }
-});
-
-// Session timer
-const sessionStart = Date.now();
-setInterval(() => {
-  const elapsed = Math.floor((Date.now() - sessionStart) / 60000);
-  const timerEl = document.getElementById('timer');
-  if (timerEl) timerEl.textContent = `Session: ${elapsed}m`;
-}, 60000);
+  });
+}
 
 // Phase 4: Check auth state and update connection indicator, agent list, sync status
-(async () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  renderSignalList();
+  startSessionTimer();
+  requestScore();
+
+  await initAuthSync();
   const auth = getAuthState();
   updateConnectionIndicator(auth.authenticated);
 
@@ -128,4 +217,4 @@ setInterval(() => {
   }
 
   await loadSyncStatus();
-})();
+});
