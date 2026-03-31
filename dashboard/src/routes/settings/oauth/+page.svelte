@@ -14,11 +14,11 @@
     status: 'connected' | 'expired' | 'revoked' | 'error';
   }
 
-  let providers: OAuthProvider[] = [];
-  let connections: OAuthConnection[] = [];
-  let loading = true;
-  let error = '';
-  let disconnectingRefId: string | null = null;
+  let providers: OAuthProvider[] = $state([]);
+  let connections: OAuthConnection[] = $state([]);
+  let loading = $state(true);
+  let error = $state('');
+  let disconnectingRefId: string | null = $state(null);
 
   async function loadData(showSpinner = true) {
     try {
