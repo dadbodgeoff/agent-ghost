@@ -24,6 +24,20 @@ interface NavigatorWithConnection extends Navigator {
   };
 }
 
+function waitForTransaction(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+  });
+}
+
+async function markEventSynced(db: IDBDatabase, event: PendingEvent): Promise<void> {
+  const tx = db.transaction(PENDING_STORE, 'readwrite');
+  tx.objectStore(PENDING_STORE).put({ ...event, synced: true });
+  await waitForTransaction(tx);
+}
+
 /**
  * Open the IndexedDB database.
  */
@@ -55,6 +69,7 @@ export async function queueEvent(type: string, payload: unknown): Promise<void> 
     payload,
     synced: false,
   });
+  await waitForTransaction(tx);
 }
 
 /**
@@ -80,7 +95,7 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
 
       for (const event of events) {
         try {
-          await fetch(`${auth.gatewayUrl}/api/memory`, {
+          const response = await fetch(`${auth.gatewayUrl}/api/memory`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -94,10 +109,12 @@ export async function syncPendingEvents(): Promise<{ synced: number; failed: num
             signal: AbortSignal.timeout(5000),
           });
 
-          // Mark as synced.
-          const updateTx = db.transaction(PENDING_STORE, 'readwrite');
-          const updateStore = updateTx.objectStore(PENDING_STORE);
-          updateStore.put({ ...event, synced: true });
+          if (!response.ok) {
+            throw new Error(`Gateway ${response.status}: ${response.statusText}`);
+          }
+
+          // Mark as synced only after the gateway accepted the event.
+          await markEventSynced(db, event);
           synced++;
         } catch {
           failed++;
@@ -122,16 +139,23 @@ export async function cleanupSyncedEvents(): Promise<void> {
   const index = store.index('timestamp');
 
   const request = index.openCursor(IDBKeyRange.upperBound(cutoff));
-  request.onsuccess = () => {
-    const cursor = request.result;
-    if (cursor) {
+  await new Promise<void>((resolve, reject) => {
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+
       const event = cursor.value as PendingEvent;
       if (event.synced) {
         cursor.delete();
       }
       cursor.continue();
-    }
-  };
+    };
+    request.onerror = () => reject(request.error);
+  });
+  await waitForTransaction(tx);
 }
 
 /**
