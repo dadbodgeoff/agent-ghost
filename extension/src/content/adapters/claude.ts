@@ -9,6 +9,10 @@ export class ClaudeAdapter extends BasePlatformAdapter {
     return url.includes('claude.ai');
   }
 
+  getPlatformName(): string {
+    return 'claude';
+  }
+
   getMessageContainerSelector(): string {
     return '[class*="conversation-content"]';
   }

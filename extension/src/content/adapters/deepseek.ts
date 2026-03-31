@@ -9,6 +9,10 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     return url.includes('chat.deepseek.com');
   }
 
+  getPlatformName(): string {
+    return 'deepseek';
+  }
+
   getMessageContainerSelector(): string {
     return '.chat-message-list';
   }

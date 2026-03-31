@@ -24,14 +24,22 @@
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime, type RuntimePlatform } from '$lib/platform/runtime';
 
+  interface BeforeInstallPromptEvent extends Event {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  }
+
   let { children } = $props();
   let runtime: RuntimePlatform | null = null;
   let offline = $state(false);
   let bootError = $state('');
   let showInstallPrompt = $state(false);
-  let deferredPrompt: any = null;
+  let deferredPrompt: BeforeInstallPromptEvent | null = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let onlineHandler: (() => void) | null = null;
+  let offlineHandler: (() => void) | null = null;
+  let beforeInstallPromptHandler: ((event: Event) => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -51,6 +59,7 @@
   }
 
   function applyTheme() {
+    document.documentElement.classList.remove('light');
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
@@ -141,17 +150,20 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    onlineHandler = () => (offline = false);
+    offlineHandler = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', onlineHandler);
+    window.addEventListener('offline', offlineHandler);
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    beforeInstallPromptHandler = (e: Event) => {
       e.preventDefault();
-      deferredPrompt = e;
+      deferredPrompt = e as BeforeInstallPromptEvent;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', beforeInstallPromptHandler);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +175,18 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    if (onlineHandler) {
+      window.removeEventListener('online', onlineHandler);
+      onlineHandler = null;
+    }
+    if (offlineHandler) {
+      window.removeEventListener('offline', offlineHandler);
+      offlineHandler = null;
+    }
+    if (beforeInstallPromptHandler) {
+      window.removeEventListener('beforeinstallprompt', beforeInstallPromptHandler);
+      beforeInstallPromptHandler = null;
+    }
     wsStore.disconnect();
     shortcuts.destroy();
   });

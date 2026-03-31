@@ -9,6 +9,10 @@ export class GeminiAdapter extends BasePlatformAdapter {
     return url.includes('gemini.google.com');
   }
 
+  getPlatformName(): string {
+    return 'gemini';
+  }
+
   getMessageContainerSelector(): string {
     return '.conversation-container';
   }

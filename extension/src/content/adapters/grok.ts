@@ -9,6 +9,10 @@ export class GrokAdapter extends BasePlatformAdapter {
     return url.includes('grok.x.ai');
   }
 
+  getPlatformName(): string {
+    return 'grok';
+  }
+
   getMessageContainerSelector(): string {
     return '.chat-container';
   }

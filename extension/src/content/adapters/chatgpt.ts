@@ -9,6 +9,10 @@ export class ChatGPTAdapter extends BasePlatformAdapter {
     return url.includes('chat.openai.com') || url.includes('chatgpt.com');
   }
 
+  getPlatformName(): string {
+    return 'chatgpt';
+  }
+
   getMessageContainerSelector(): string {
     return '[class*="react-scroll-to-bottom"]';
   }

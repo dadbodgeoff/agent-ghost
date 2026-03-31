@@ -9,6 +9,10 @@ export class CharacterAIAdapter extends BasePlatformAdapter {
     return url.includes('character.ai');
   }
 
+  getPlatformName(): string {
+    return 'character-ai';
+  }
+
   getMessageContainerSelector(): string {
     return '[class*="chat-messages"]';
   }
