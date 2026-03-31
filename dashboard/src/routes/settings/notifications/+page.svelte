@@ -58,35 +58,35 @@
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        pushEnabled = await subscribePush();
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      pushEnabled = !(await unsubscribePush());
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) return false;
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) return false;
       await client.push.subscribe(payload);
+      return true;
     } catch {
       // Push subscription failed.
+      return false;
     }
   }
 
-  async function unsubscribePush() {
+  async function unsubscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -98,8 +98,10 @@
         }
         await sub.unsubscribe();
       }
+      return true;
     } catch {
       // Unsubscribe failed.
+      return false;
     }
   }
 
@@ -118,7 +120,7 @@
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
-        icon: '/icons/ghost-192.png',
+        icon: '/icons/ghost-app-icon.svg',
         tag: 'ghost-test',
       });
     } catch {

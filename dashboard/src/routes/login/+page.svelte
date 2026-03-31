@@ -40,12 +40,9 @@
       error = e instanceof Error
         ? e.message
         : 'Gateway unreachable. Is ghost-gateway running? Check ghost.yml for the configured port.';
+    } finally {
+      loading = false;
     }
-    loading = false;
-  }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') login();
   }
 </script>
 
@@ -63,7 +60,6 @@
         placeholder="GHOST_TOKEN or JWT"
         autocomplete="off"
         disabled={loading}
-        onkeydown={handleKeydown}
       />
       <button type="submit" disabled={loading}>
         {#if loading}

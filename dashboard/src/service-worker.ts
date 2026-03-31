@@ -678,8 +678,8 @@ self.addEventListener('push', (event: PushEvent) => {
 
   const options: NotificationOptions = {
     body: data.body,
-    icon: '/icons/ghost-192.png',
-    badge: '/icons/ghost-192.png',
+    icon: '/icons/ghost-app-icon.svg',
+    badge: '/icons/ghost-app-icon.svg',
     tag: data.tag ?? 'ghost-notification',
     data: { url: data.url ?? '/' },
   };
