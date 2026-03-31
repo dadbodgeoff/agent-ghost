@@ -32,6 +32,8 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let disposeConnectivityListeners: (() => void) | null = null;
+  let disposeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -52,6 +54,7 @@
 
   function applyTheme() {
     const stored = localStorage.getItem('ghost-theme');
+    document.documentElement.classList.remove('light');
     if (stored === 'light') {
       document.documentElement.classList.add('light');
     } else if (stored === 'system') {
@@ -141,17 +144,30 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+      lastSync = new Date().toLocaleTimeString();
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    disposeConnectivityListeners = () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
 
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredPrompt = e;
       showInstallPrompt = true;
-    });
+    };
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    disposeInstallPromptListener = () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +179,10 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    disposeConnectivityListeners?.();
+    disposeConnectivityListeners = null;
+    disposeInstallPromptListener?.();
+    disposeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -179,9 +199,7 @@
     if (!deferredPrompt) return;
     deferredPrompt.prompt();
     const result = await deferredPrompt.userChoice;
-    if (result.outcome === 'accepted') {
-      showInstallPrompt = false;
-    }
+    showInstallPrompt = false;
     deferredPrompt = null;
   }
 
@@ -192,7 +210,9 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!('PushManager' in window) || !('serviceWorker' in navigator) || typeof Notification === 'undefined') {
+      return;
+    }
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 

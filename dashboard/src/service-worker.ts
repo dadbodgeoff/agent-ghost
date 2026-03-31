@@ -434,6 +434,13 @@ self.addEventListener('sync' as any, (event: any) => {
   }
 });
 
+function fallbackRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `ghost-sw-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 async function replayPendingActions(): Promise<void> {
   const db = await openPendingActionsDB();
   const activeAuth = await loadReplayAuthState();
@@ -593,9 +600,9 @@ function cloneReplayHeaders(headers: Headers): Record<string, string> {
 }
 
 function buildOperationEnvelope(request: Request): OperationEnvelope {
-  const requestId = request.headers.get('X-Request-ID') ?? crypto.randomUUID();
-  const operationId = request.headers.get('X-Ghost-Operation-ID') ?? crypto.randomUUID();
-  const idempotencyKey = request.headers.get('Idempotency-Key') ?? crypto.randomUUID();
+  const requestId = request.headers.get('X-Request-ID') ?? fallbackRequestId();
+  const operationId = request.headers.get('X-Ghost-Operation-ID') ?? fallbackRequestId();
+  const idempotencyKey = request.headers.get('Idempotency-Key') ?? fallbackRequestId();
 
   return {
     request_id: requestId,

@@ -36,7 +36,7 @@
   }
 
   onMount(async () => {
-    pushSupported = 'PushManager' in window && 'Notification' in window;
+    pushSupported = 'PushManager' in window && 'Notification' in window && 'serviceWorker' in navigator;
     if (pushSupported) {
       permissionState = Notification.permission;
       pushEnabled = permissionState === 'granted';
@@ -55,6 +55,7 @@
     if (!pushSupported) return;
 
     if (!pushEnabled) {
+      if (typeof Notification === 'undefined') return;
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
@@ -68,6 +69,7 @@
   }
 
   async function subscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -87,6 +89,7 @@
   }
 
   async function unsubscribePush() {
+    if (!('serviceWorker' in navigator)) return;
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -115,7 +118,9 @@
   async function sendTestNotification() {
     testSending = true;
     try {
+      if (!('serviceWorker' in navigator)) return;
       const reg = await navigator.serviceWorker.ready;
+      if (!('showNotification' in reg) || typeof reg.showNotification !== 'function') return;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
         icon: '/icons/ghost-192.png',

@@ -5,6 +5,13 @@ const CLIENT_ID_KEY = 'ghost-client-id';
 const SESSION_EPOCH_KEY = 'ghost-session-epoch';
 const listeners = new Set<(token: string | null) => void>();
 
+function safeRandomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `ghost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function emitTokenChange(token: string | null) {
   for (const listener of listeners) {
     listener(token);
@@ -27,7 +34,7 @@ function resolveBaseUrl(): string {
 function resolveReplayClientId(): string {
   const existing = localStorage.getItem(CLIENT_ID_KEY);
   if (existing) return existing;
-  const clientId = crypto.randomUUID();
+  const clientId = safeRandomId();
   localStorage.setItem(CLIENT_ID_KEY, clientId);
   return clientId;
 }

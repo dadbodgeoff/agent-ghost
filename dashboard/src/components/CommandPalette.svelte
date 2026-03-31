@@ -10,6 +10,7 @@
    *
    * Ref: T-3.13.2
    */
+    import { onDestroy } from 'svelte';
     import { goto } from '$app/navigation';
     import { getGhostClient } from '$lib/ghost-client';
     import { hrefForSearchResult } from '$lib/search/navigation';
@@ -210,6 +211,7 @@
     }
 
     if (!query.trim()) {
+      loading = false;
       // Show recent commands when empty
       const allCmds = getAllCommands();
       const recentIds = frecencyTracker.getRecent(8);
@@ -232,6 +234,13 @@
     // Also search via API
     debounceTimer = setTimeout(search, 200);
   }
+
+  onDestroy(() => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+      debounceTimer = null;
+    }
+  });
 
   async function search() {
     if (!query.trim()) return;
