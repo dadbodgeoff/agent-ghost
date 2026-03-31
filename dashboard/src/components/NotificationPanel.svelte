@@ -31,6 +31,13 @@
   const STORAGE_KEY = 'ghost-notifications';
   const MAX_NOTIFICATIONS = 100;
 
+  function createNotificationId(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return `notification-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   onMount(() => {
     loadFromStorage();
 
@@ -90,7 +97,7 @@
   function addNotification(partial: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) {
     const notification: AppNotification = {
       ...partial,
-      id: crypto.randomUUID(),
+      id: createNotificationId(),
       timestamp: new Date().toISOString(),
       read: false,
     };
@@ -159,7 +166,8 @@
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
-        notifications = JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        notifications = Array.isArray(parsed) ? parsed.slice(0, MAX_NOTIFICATIONS) : [];
       }
     } catch { /* start fresh */ }
   }

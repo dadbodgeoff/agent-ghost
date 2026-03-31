@@ -39,7 +39,7 @@
     pushSupported = 'PushManager' in window && 'Notification' in window;
     if (pushSupported) {
       permissionState = Notification.permission;
-      pushEnabled = permissionState === 'granted';
+      pushEnabled = permissionState === 'granted' && 'serviceWorker' in navigator;
 
       // Load saved preferences.
       const saved = localStorage.getItem('ghost-push-categories');
@@ -52,7 +52,7 @@
   });
 
   async function togglePush() {
-    if (!pushSupported) return;
+    if (!pushSupported || !('serviceWorker' in navigator)) return;
 
     if (!pushEnabled) {
       const permission = await Notification.requestPermission();
@@ -109,7 +109,9 @@
     } else {
       enabledCategories = [...enabledCategories, id];
     }
-    localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ghost-push-categories', JSON.stringify(enabledCategories));
+    }
   }
 
   async function sendTestNotification() {

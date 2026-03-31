@@ -32,6 +32,9 @@
   let deferredPrompt: any = null;
   let lastSync = $state('unknown');
   let unsubscribeTokenChange: (() => void) | null = null;
+  let removeOnlineListener: (() => void) | null = null;
+  let removeOfflineListener: (() => void) | null = null;
+  let removeBeforeInstallPromptListener: (() => void) | null = null;
 
   let wsState = $derived(wsStore.state);
 
@@ -51,12 +54,14 @@
   }
 
   function applyTheme() {
+    const root = document.documentElement;
+    root.classList.remove('light');
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light') {
-      document.documentElement.classList.add('light');
+      root.classList.add('light');
     } else if (stored === 'system') {
       if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        document.documentElement.classList.add('light');
+        root.classList.add('light');
       }
     }
   }
@@ -141,17 +146,26 @@
     shortcuts.registerCommand('studio.newSession', () => goto('/studio'));
 
     offline = !navigator.onLine;
-    window.addEventListener('online', () => (offline = false));
-    window.addEventListener('offline', () => {
+    const handleOnline = () => {
+      offline = false;
+    };
+    const handleOffline = () => {
       offline = true;
       lastSync = new Date().toLocaleTimeString();
-    });
-
-    window.addEventListener('beforeinstallprompt', (e: Event) => {
+    };
+    const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
       deferredPrompt = e;
       showInstallPrompt = true;
-    });
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    removeOnlineListener = () => window.removeEventListener('online', handleOnline);
+    removeOfflineListener = () => window.removeEventListener('offline', handleOffline);
+    removeBeforeInstallPromptListener = () =>
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     if (!runtime.isDesktop() && 'serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(() => {});
@@ -163,6 +177,12 @@
   onDestroy(() => {
     unsubscribeTokenChange?.();
     unsubscribeTokenChange = null;
+    removeOnlineListener?.();
+    removeOnlineListener = null;
+    removeOfflineListener?.();
+    removeOfflineListener = null;
+    removeBeforeInstallPromptListener?.();
+    removeBeforeInstallPromptListener = null;
     wsStore.disconnect();
     shortcuts.destroy();
   });
@@ -192,7 +212,9 @@
       } catch { /* non-fatal */ }
       return;
     }
-    if (!('PushManager' in window)) return;
+    if (!('PushManager' in window) || !('serviceWorker' in navigator) || typeof Notification === 'undefined') {
+      return;
+    }
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') return;
 

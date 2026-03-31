@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
@@ -14,8 +15,7 @@
 
   let theme: ThemeChoice = $state('dark');
 
-  // Initialize from localStorage on mount.
-  $effect(() => {
+  onMount(() => {
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light' || stored === 'system') {
       theme = stored;
@@ -26,6 +26,9 @@
 
   function setTheme(choice: ThemeChoice) {
     theme = choice;
+    if (typeof localStorage === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
     localStorage.setItem('ghost-theme', choice);
 
     const html = document.documentElement;
@@ -33,7 +36,7 @@
 
     if (choice === 'light') {
       html.classList.add('light');
-    } else if (choice === 'system') {
+    } else if (choice === 'system' && typeof window !== 'undefined') {
       if (window.matchMedia('(prefers-color-scheme: light)').matches) {
         html.classList.add('light');
       }

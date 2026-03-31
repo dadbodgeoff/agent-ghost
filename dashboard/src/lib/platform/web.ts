@@ -5,6 +5,21 @@ const CLIENT_ID_KEY = 'ghost-client-id';
 const SESSION_EPOCH_KEY = 'ghost-session-epoch';
 const listeners = new Set<(token: string | null) => void>();
 
+function hasLocalStorage(): boolean {
+  return typeof localStorage !== 'undefined';
+}
+
+function hasSessionStorage(): boolean {
+  return typeof sessionStorage !== 'undefined';
+}
+
+function createRandomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `ghost-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function emitTokenChange(token: string | null) {
   for (const listener of listeners) {
     listener(token);
@@ -12,7 +27,7 @@ function emitTokenChange(token: string | null) {
 }
 
 function resolveBaseUrl(): string {
-  if (typeof localStorage !== 'undefined') {
+  if (hasLocalStorage()) {
     const override = localStorage.getItem('ghost-gateway-url');
     if (override) return override;
   }
@@ -25,14 +40,20 @@ function resolveBaseUrl(): string {
 }
 
 function resolveReplayClientId(): string {
+  if (!hasLocalStorage()) {
+    return createRandomId();
+  }
   const existing = localStorage.getItem(CLIENT_ID_KEY);
   if (existing) return existing;
-  const clientId = crypto.randomUUID();
+  const clientId = createRandomId();
   localStorage.setItem(CLIENT_ID_KEY, clientId);
   return clientId;
 }
 
 function resolveReplaySessionEpoch(): number {
+  if (!hasLocalStorage()) {
+    return 1;
+  }
   const raw = localStorage.getItem(SESSION_EPOCH_KEY);
   const epoch = raw ? Number.parseInt(raw, 10) : 1;
   if (Number.isFinite(epoch) && epoch > 0) return epoch;
@@ -47,14 +68,18 @@ export const webRuntime: RuntimePlatform = {
     return resolveBaseUrl();
   },
   async getToken() {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return hasSessionStorage() ? sessionStorage.getItem(TOKEN_KEY) : null;
   },
   async setToken(token: string) {
-    sessionStorage.setItem(TOKEN_KEY, token);
+    if (hasSessionStorage()) {
+      sessionStorage.setItem(TOKEN_KEY, token);
+    }
     emitTokenChange(token);
   },
   async clearToken() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    if (hasSessionStorage()) {
+      sessionStorage.removeItem(TOKEN_KEY);
+    }
     emitTokenChange(null);
   },
   async getReplayClientId() {
@@ -65,7 +90,9 @@ export const webRuntime: RuntimePlatform = {
   },
   async advanceReplaySessionEpoch() {
     const next = resolveReplaySessionEpoch() + 1;
-    localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    if (hasLocalStorage()) {
+      localStorage.setItem(SESSION_EPOCH_KEY, String(next));
+    }
     return next;
   },
   subscribeTokenChange(listener) {
@@ -82,10 +109,12 @@ export const webRuntime: RuntimePlatform = {
     throw new Error('Gateway lifecycle control is only available in the desktop app');
   },
   async openExternalUrl(url: string) {
-    window.open(url, '_blank', 'noopener,noreferrer');
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
   },
   async requestNotificationPermission() {
-    if (typeof Notification === 'undefined') {
+    if (typeof window === 'undefined' || typeof Notification === 'undefined') {
       return false;
     }
     if (Notification.permission === 'granted') {
