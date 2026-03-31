@@ -95,3 +95,32 @@ async function validateToken(): Promise<boolean> {
 export function getAuthState(): AuthState {
   return { ...currentState };
 }
+
+/**
+ * Read the latest auth state from storage before returning it.
+ *
+ * Popup and other extension contexts do not share in-memory module state with the
+ * background worker, so they need an explicit hydration step.
+ */
+export async function getStoredAuthState(): Promise<AuthState> {
+  if (!currentState.lastValidated && !currentState.token) {
+    return initAuthSync();
+  }
+
+  const stored = await chrome.storage.local.get([GATEWAY_URL_KEY, JWT_TOKEN_KEY]);
+  const storedGatewayUrl = stored[GATEWAY_URL_KEY] || 'http://localhost:39780';
+  const storedToken = stored[JWT_TOKEN_KEY] || null;
+
+  if (storedGatewayUrl !== currentState.gatewayUrl || storedToken !== currentState.token) {
+    currentState.gatewayUrl = storedGatewayUrl;
+    currentState.token = storedToken;
+    if (currentState.token) {
+      await validateToken();
+    } else {
+      currentState.authenticated = false;
+      currentState.lastValidated = 0;
+    }
+  }
+
+  return { ...currentState };
+}
