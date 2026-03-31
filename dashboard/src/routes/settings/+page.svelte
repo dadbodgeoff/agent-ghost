@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { getGhostClient } from '$lib/ghost-client';
   import { getRuntime } from '$lib/platform/runtime';
@@ -13,32 +14,46 @@
   type ThemeChoice = 'dark' | 'light' | 'system';
 
   let theme: ThemeChoice = $state('dark');
+  let systemThemeQuery: MediaQueryList | null = null;
 
-  // Initialize from localStorage on mount.
-  $effect(() => {
+  function applyThemeChoice(choice: ThemeChoice) {
+    const html = document.documentElement;
+    html.classList.remove('light');
+
+    if (choice === 'light') {
+      html.classList.add('light');
+    } else if (choice === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      html.classList.add('light');
+    }
+  }
+
+  onMount(() => {
     const stored = localStorage.getItem('ghost-theme');
     if (stored === 'light' || stored === 'system') {
       theme = stored;
     } else {
       theme = 'dark';
     }
+    applyThemeChoice(theme);
+
+    systemThemeQuery = window.matchMedia('(prefers-color-scheme: light)');
+    const syncSystemTheme = () => {
+      if (theme === 'system') {
+        applyThemeChoice('system');
+      }
+    };
+    systemThemeQuery.addEventListener('change', syncSystemTheme);
+
+    return () => {
+      systemThemeQuery?.removeEventListener('change', syncSystemTheme);
+      systemThemeQuery = null;
+    };
   });
 
   function setTheme(choice: ThemeChoice) {
     theme = choice;
     localStorage.setItem('ghost-theme', choice);
-
-    const html = document.documentElement;
-    html.classList.remove('light');
-
-    if (choice === 'light') {
-      html.classList.add('light');
-    } else if (choice === 'system') {
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        html.classList.add('light');
-      }
-    }
-    // 'dark' = no .light class = dark theme (default).
+    applyThemeChoice(choice);
   }
 
   async function logout() {

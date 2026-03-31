@@ -671,6 +671,8 @@ function openPendingActionsDB(): Promise<IDBDatabase> {
 
 // ── Push Notifications ──────────────────────────────────────────────────
 
+const NOTIFICATION_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='28' fill='%230f172a'/%3E%3Cpath d='M38 92V54c0-15 11-26 26-26s26 11 26 26v38H78V54c0-8-6-14-14-14s-14 6-14 14v38Z' fill='%2338bdf8'/%3E%3Ccircle cx='54' cy='56' r='6' fill='%23e2e8f0'/%3E%3Ccircle cx='74' cy='56' r='6' fill='%23e2e8f0'/%3E%3C/svg%3E";
+
 self.addEventListener('push', (event: PushEvent) => {
   if (!event.data) return;
 
@@ -678,8 +680,8 @@ self.addEventListener('push', (event: PushEvent) => {
 
   const options: NotificationOptions = {
     body: data.body,
-    icon: '/icons/ghost-192.png',
-    badge: '/icons/ghost-192.png',
+    icon: NOTIFICATION_ICON,
+    badge: NOTIFICATION_ICON,
     tag: data.tag ?? 'ghost-notification',
     data: { url: data.url ?? '/' },
   };

@@ -15,6 +15,7 @@
   let permissionState = $state<NotificationPermission>('default');
   let enabledCategories = $state<string[]>(['intervention', 'kill_switch']);
   let testSending = $state(false);
+  const TEST_NOTIFICATION_ICON = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='28' fill='%230f172a'/%3E%3Cpath d='M38 92V54c0-15 11-26 26-26s26 11 26 26v38H78V54c0-8-6-14-14-14s-14 6-14 14v38Z' fill='%2338bdf8'/%3E%3Ccircle cx='54' cy='56' r='6' fill='%23e2e8f0'/%3E%3Ccircle cx='74' cy='56' r='6' fill='%23e2e8f0'/%3E%3C/svg%3E";
 
   function decodeApplicationServerKey(key: string): ArrayBuffer {
     const padding = '='.repeat((4 - (key.length % 4)) % 4);
@@ -58,35 +59,42 @@
       const permission = await Notification.requestPermission();
       permissionState = permission;
       if (permission === 'granted') {
-        pushEnabled = true;
-        await subscribePush();
+        pushEnabled = await subscribePush();
       }
     } else {
-      pushEnabled = false;
-      await unsubscribePush();
+      const unsubscribed = await unsubscribePush();
+      if (unsubscribed) {
+        pushEnabled = false;
+      }
     }
   }
 
-  async function subscribePush() {
+  async function subscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        return true;
+      }
       const keyData = await client.push.getVapidKey();
-      if (!keyData.key) return;
+      if (!keyData.key) return false;
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: decodeApplicationServerKey(keyData.key),
       });
       const payload = pushSubscriptionToPayload(sub.toJSON());
-      if (!payload) return;
+      if (!payload) return false;
       await client.push.subscribe(payload);
+      return true;
     } catch {
       // Push subscription failed.
+      return false;
     }
   }
 
-  async function unsubscribePush() {
+  async function unsubscribePush(): Promise<boolean> {
     try {
       const client = await getGhostClient();
       const reg = await navigator.serviceWorker.ready;
@@ -98,8 +106,10 @@
         }
         await sub.unsubscribe();
       }
+      return true;
     } catch {
       // Unsubscribe failed.
+      return false;
     }
   }
 
@@ -118,7 +128,7 @@
       const reg = await navigator.serviceWorker.ready;
       await reg.showNotification('GHOST Test', {
         body: 'Push notifications are working correctly.',
-        icon: '/icons/ghost-192.png',
+        icon: TEST_NOTIFICATION_ICON,
         tag: 'ghost-test',
       });
     } catch {

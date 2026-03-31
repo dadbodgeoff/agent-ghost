@@ -8,22 +8,20 @@
   "background_color": "#0d0d1a",
   "icons": [
     {
-      "src": "/icons/ghost-192.png",
-      "sizes": "192x192",
-      "type": "image/png"
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='28' fill='%230f172a'/%3E%3Cpath d='M38 92V54c0-15 11-26 26-26s26 11 26 26v38H78V54c0-8-6-14-14-14s-14 6-14 14v38Z' fill='%2338bdf8'/%3E%3Ccircle cx='54' cy='56' r='6' fill='%23e2e8f0'/%3E%3Ccircle cx='74' cy='56' r='6' fill='%23e2e8f0'/%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml"
     },
     {
-      "src": "/icons/ghost-512.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    },
-    {
-      "src": "/icons/ghost-512-maskable.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='28' fill='%230f172a'/%3E%3Cpath d='M38 92V54c0-15 11-26 26-26s26 11 26 26v38H78V54c0-8-6-14-14-14s-14 6-14 14v38Z' fill='%2338bdf8'/%3E%3Ccircle cx='54' cy='56' r='6' fill='%23e2e8f0'/%3E%3Ccircle cx='74' cy='56' r='6' fill='%23e2e8f0'/%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
     }
   ],
-  "categories": ["developer", "utilities"],
+  "categories": [
+    "developer",
+    "utilities"
+  ],
   "orientation": "any"
 }
