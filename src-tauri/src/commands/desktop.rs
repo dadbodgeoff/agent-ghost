@@ -397,7 +397,15 @@ pub async fn close_terminal_session(
     terminal_state: tauri::State<'_, DesktopTerminalState>,
     session_id: u32,
 ) -> Result<(), String> {
-    let session = session_for(&terminal_state, session_id)?;
+    let session = {
+        let mut sessions = terminal_state
+            .sessions
+            .write()
+            .map_err(|_| "terminal session registry poisoned".to_string())?;
+        sessions
+            .remove(&session_id)
+            .ok_or_else(|| format!("terminal session {session_id} not found"))?
+    };
     session
         .child_killer
         .lock()

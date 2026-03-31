@@ -2,9 +2,14 @@
  * Background service worker — manages ITP emission and native messaging.
  */
 
+import { initAuthSync } from './auth-sync';
 import { ITPEmitter } from './itp-emitter';
 
 const emitter = new ITPEmitter();
+
+void initAuthSync().catch(() => {
+  // Popup and gateway calls should still work in degraded mode without cached auth.
+});
 
 // Listen for messages from content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
